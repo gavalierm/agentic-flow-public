@@ -663,6 +663,30 @@ export function accountEmailCall(tool, toolInput, email) {
   return EMAIL_WEB_TOOLS.includes(tool) || EMAIL_NET.test(text.replaceAll(email, ' ').replace(/\\(?:\\|[nrt])/g, ' '));
 }
 
+/**
+ * `claude plugin install|enable` and `claude plugin marketplace add` default to scope user: the plugin is then on in
+ * every session of the machine (operator 2026-11-07). Each such call needs --scope project|local; `claude mcp add`
+ * is refused only with scope user (its default is local). Quoted text (commit messages) does not count.
+ * Returns the offending call or null.
+ */
+export function pluginScopeCall(command) {
+  for (const seg of executedText(command).split(/\s*(?:&&|\|\||;|\n|\|)\s*/)) {
+    const words = seg.trim().split(/\s+/).filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+    const i = words.findIndex((w) => w.replace(/^\(+/, '').split('/').pop() === 'claude');
+    if (i < 0) continue;
+    const [a, b, c] = words.slice(i + 1);
+    const plugin = /^plugins?$/.test(a || '') && (/^(install|i|enable)$/.test(b || '') || (b === 'marketplace' && c === 'add'));
+    const mcp = a === 'mcp' && b === 'add';
+    if (!plugin && !mcp) continue;
+    if (words.some((w) => w === '--help' || w === '-h')) continue;
+    const rest = words.slice(i + 1).join(' ');
+    const scope = (rest.match(/(?:--scope[\s=]|-s\s+)(\S+)/) || [])[1] || null;
+    if (plugin && !['project', 'local'].includes(scope)) return { call: words.slice(i).join(' '), scope };
+    if (mcp && scope === 'user') return { call: words.slice(i).join(' '), scope };
+  }
+  return null;
+}
+
 export function run(input) {
   const ctx = loadContext({ requireBrain: false });
   const tool = input.tool_name;
@@ -728,6 +752,11 @@ export function run(input) {
   const denials = [...(state ? stateDenials(state) : []), ...transcriptDenials(input.transcript_path, state?.turn_started_at || '')];
   const bypass = denials.length ? bypassOf({ tool, toolInput, cwd, anchors, denials }) : null;
   if (bypass) return permissionOutput('deny', bypassReason(bypass, cwd));
+
+  if (tool === 'Bash' || tool === 'PowerShell') {
+    const p = pluginScopeCall(toolInput.command || '');
+    if (p) return permissionOutput('deny', `${p.call}: scope ${p.scope || 'user (default)'} turns it on in every session of this machine; install only for this repository: cd "${ctx.projectDir}" && <the same command> --scope project (or --scope local when it must not be committed)`);
+  }
 
   const out = pathChecks(input, ctx, cwd);
   const decision = out?.hookSpecificOutput?.permissionDecision;

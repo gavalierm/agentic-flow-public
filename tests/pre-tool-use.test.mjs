@@ -175,3 +175,24 @@ test('grep -h over several files, a glob or recursively adds a hint; one file, s
     assert.match(r.json.hookSpecificOutput.additionalContext, /drops file names/);
   } finally { fx.cleanup(); }
 });
+
+test('claude plugin install|enable and marketplace add without --scope project|local are denied; mcp add only with scope user', async () => {
+  const { pluginScopeCall } = await import('../hooks/pre-tool-use.mjs');
+  for (const c of ['claude plugin install x@y', 'claude plugin install x --scope user', 'claude plugins i x', 'claude plugin marketplace add o/r',
+    'cd a && claude plugin install x --scope project && claude plugin enable y', 'claude mcp add -s user srv cmd', 'FOO=1 /usr/local/bin/claude plugin enable z']) {
+    assert.ok(pluginScopeCall(c), c);
+  }
+  for (const c of ['claude plugins i x -s project', 'claude plugin install x --scope=local', 'claude plugin list', 'claude plugin install --help',
+    'git commit -m "claude plugin install x"', 'claude mcp add srv cmd', 'claude mcp add --scope project srv cmd', 'echo claude']) {
+    assert.equal(pluginScopeCall(c), null, c);
+  }
+  const fx = setup();
+  try {
+    const r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'claude plugin install foo@bar' } });
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /--scope project/);
+    assert.ok(r.json.hookSpecificOutput.permissionDecisionReason.includes(fx.project));
+    const ok = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'claude plugin install foo@bar --scope project' } });
+    assert.notEqual(ok.json.hookSpecificOutput?.permissionDecision, 'deny');
+  } finally { fx.cleanup(); }
+});
