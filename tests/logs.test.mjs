@@ -53,7 +53,7 @@ test('third occurrence of a sequence signals once on the next prompt; read-only 
     assert.equal(fx.run('error.mjs', ['resolve', '1']).status, 0);
     assert.equal(logView(fx, 'failures.log').trim(), '');
     // P-003 step 5: every error is reported to the workflow maintainer
-    assert.match(fx.run('error.mjs', ['check', 'curl']).stdout, /report the error to the workflow maintainer: comms send --to maintainer\/workflow-dev/);
+    assert.match(fx.run('error.mjs', ['check', 'curl']).stdout, /report the error to the workflow maintainer: error\.mjs report --title/);
     // the maintainer's own thread is not told to mail itself
     assert.equal(fx.run('topic.mjs', ['create', 'workflow-dev', '--subject', 'Workflow']).status, 0);
     assert.match(fx.run('error.mjs', ['check', 'curl']).stdout, /this thread holds workflow-dev: do not mail the report to yourself/);

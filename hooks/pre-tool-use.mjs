@@ -196,6 +196,56 @@ export function recursiveModeChange(command, cwd, scratchDir) {
   return hits.length ? hits : null;
 }
 
+/**
+ * `grep -h` (no file names) over several files, a glob or a recursive search: the output cannot be split back into files,
+ * and assigning lines to files by assumed order gives false claims (alice 2026-11-07: two non-existent conflicts between
+ * daily reports 11-06/11-07). Returns a one-line hint, not a block: `-h` is fine for a plain union of matches.
+ */
+const GREP_VALUE_OPTS = new Set(['e', 'f', 'A', 'B', 'C', 'm', 'd', 'D']);
+export function grepNoFilename(command) {
+  for (const seg of maskShell(command).split(/&&|\|\||[;|\n]/)) {
+    const words = seg.trim().split(/\s+/).filter((w) => w && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+    const prog = (words[0] || '').replace(/^\(+/, '').split('/').pop();
+    if (!['grep', 'egrep', 'fgrep'].includes(prog)) continue;
+    let noName = false, recursive = false, pattern = false, opts = true;
+    const files = [];
+    for (let i = 1; i < words.length; i++) {
+      const w = words[i];
+      if (opts && w === '--') { opts = false; continue; }
+      if (opts && w.startsWith('--')) {
+        if (w === '--no-filename') noName = true;
+        else if (w === '--with-filename') noName = false;
+        else if (/^--(recursive|dereference-recursive)$/.test(w)) recursive = true;
+        else if (/^--(regexp|file)(=|$)/.test(w)) { pattern = true; if (!w.includes('=')) i++; }
+        else if (/^--(after-context|before-context|context|max-count|directories|devices)$/.test(w)) i++;
+        continue;
+      }
+      if (opts && /^-[A-Za-z]/.test(w)) {
+        for (let j = 1; j < w.length; j++) {
+          const c = w[j];
+          if (c === 'h') noName = true;
+          else if (c === 'H') noName = false;
+          else if (c === 'r' || c === 'R') recursive = true;
+          if (GREP_VALUE_OPTS.has(c)) {
+            if (c === 'e' || c === 'f') pattern = true;
+            if (j === w.length - 1) i++;
+            break;
+          }
+        }
+        continue;
+      }
+      if (/^[<>]|^\d*>/.test(w)) { if (/^\d*[<>]+&?$/.test(w)) i++; continue; }
+      if (!pattern) { pattern = true; continue; }
+      files.push(unmask(w));
+    }
+    const many = recursive || files.length > 1 || files.some((f) => /[*?[]/.test(f));
+    if (noName && many) {
+      return `grep -h over several files (${files.length ? files.slice(0, 3).join(' ') : 'recursive'}) drops file names: lines cannot be assigned to files by order; to claim which file contains what, use grep -H or one grep per file`;
+    }
+  }
+  return null;
+}
+
 export function bashTargets(command, cwd = process.cwd()) {
   const targets = [];
   let base = cwd;
@@ -776,6 +826,8 @@ function pathChecks(input, ctx, cwd) {
     for (const t of targets) if (!fs.existsSync(t) && !isInside(path.join(ctx.projectDir, SCRATCH_DIR), t)) rememberCreated(ctx, t);
     // A tracked clean file this command changes becomes the thread's own edit (hash recorded by PostToolUse).
     claimOwn(ctx, [...targets, ...edits].filter((t) => fs.existsSync(t) && !ownWork(ctx, t) && classifyTarget(t).reason === 'tracked and clean'));
+    const grepHint = grepNoFilename(cmd);
+    if (grepHint) return contextOutput('PreToolUse', grepHint);
   }
   return {};
 }

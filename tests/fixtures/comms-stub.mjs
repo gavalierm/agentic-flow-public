@@ -4,7 +4,8 @@
 //     turn: 'ok'|'unknown'|'old' (old: no opened_at, --opened-at is an unknown option), opened_at: '<iso>' (answer of open),
 //     message: { <id>: { ...GET /message fields } }
 //     register_fail: true (register-topic exits 2: comms unavailable), by_topic: true (count with --topic lists only the
-//     messages of that topic, thread-only count lists none), wake: { running, ... } (count field of comms >= 0.4.6) }
+//     messages of that topic, thread-only count lists none), wake: { running, ... } (count field of comms >= 0.4.6),
+//     send_held: true (send to an unregistered topic: state held + notice), send_id: '<id>' (id of a sent message) }
 // Every call is appended to STUB_COMMS_LOG as one JSON line (argv). Interface as in hotfix-contract (count ids, send --ttl, turn).
 import fs from 'node:fs';
 
@@ -54,7 +55,8 @@ switch (cmd) {
   case 'send':
     if (state.send_no_path && argv.includes('--reply-to')) { process.stderr.write(JSON.stringify({ error: 'na pôvodnú správu sa nedá odpovedať: nemá vlákno ani zdrojovú tému', code: 'ERROR', status: 400 }) + '\n'); process.exit(1); }
     if (state.send_closed && argv.includes('--reply-to')) { process.stderr.write(JSON.stringify({ error: 'odosielateľ pôvodnej správy už tému uzavrel: project/gone uzavretá 2026-11-02T21:39:48.512Z', code: 'ERROR', status: 410, details: { closed_at: '2026-11-02T21:39:48.512Z' } }) + '\n'); process.exit(1); }
-    print({ id: 'm-sent', state: 'pending', expires_at: opt('ttl') ? '2026-11-01T12:30:00.000Z' : null }); break;
+    if (state.send_held) { print({ id: 'm-held', state: 'held', notice_id: 'n-1', expires_at: '2026-11-01T12:30:00.000Z' }); break; }
+    print({ id: state.send_id || 'm-sent', state: 'pending', expires_at: opt('ttl') ? '2026-11-01T12:30:00.000Z' : null }); break;
   case 'turn':
     if (state.turn === 'unknown') { process.stderr.write('unknown command: turn\n'); process.exit(1); }
     if (state.turn === 'old') {

@@ -160,3 +160,18 @@ test('subagent: a script only named as an argument or in quotes is not executed;
     assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny');
   } finally { fx.cleanup(); }
 });
+
+test('grep -h over several files, a glob or recursively adds a hint; one file, stdin or -H stay silent', async () => {
+  const { grepNoFilename } = await import('../hooks/pre-tool-use.mjs');
+  for (const c of ['grep -h foo a.md b.md', 'grep -hn "x y" reports/*.md', 'cd d && grep -rh foo .', 'grep --no-filename -e x a b', 'grep -iA3 -h pat a b | head']) {
+    assert.match(grepNoFilename(c) || '', /grep -H/, c);
+  }
+  for (const c of ['grep -h foo a.md', 'cat a b | grep -h foo', 'grep -H foo a b', 'grep foo a b', 'grep -hH foo a b', 'echo "grep -h x a b"', 'grep -h "a b" c.md']) {
+    assert.equal(grepNoFilename(c), null, c);
+  }
+  const fx = setup();
+  try {
+    const r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'grep -h x README.md src/app.js' } });
+    assert.match(r.json.hookSpecificOutput.additionalContext, /drops file names/);
+  } finally { fx.cleanup(); }
+});

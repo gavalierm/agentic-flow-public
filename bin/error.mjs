@@ -3,6 +3,8 @@
 //   error.mjs list [--agent <id>]
 //   error.mjs check <tool-or-work>      -> existing brain skill to extend, or "none"
 //   error.mjs resolve <n>               -> remove failure line n after the lesson was saved
+//   error.mjs report --title "..." --text "..."   -> report to the maintainer: mail, else public issue, else draft (P-003)
+//   error.mjs report --from <message id>          -> a mailed report without pickup (no reply / undelivered) as an issue
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
 import { listFailures, resolveFailureOp } from '../scripts/logs.mjs';
@@ -11,9 +13,10 @@ import { readSkills } from '../scripts/records.mjs';
 import { tokens } from '../scripts/keys.mjs';
 import { brainWrite } from '../scripts/brain.mjs';
 import { heldTopics } from '../scripts/topic.mjs';
+import { report } from '../scripts/report.mjs';
 
 // P-003 step 5: every error goes to the workflow maintainer, or the lesson stays in one brain.
-const REPORT_LINE = 'then report the error to the workflow maintainer: comms send --to maintainer/workflow-dev --level assist: what happened, cause, what you saved (P-003)';
+const REPORT_LINE = 'then report the error to the workflow maintainer: error.mjs report --title "<short>" --text "chyba: ...; príčina: ...; uložené: ..."; only its line "reported: ..." means reported (P-003)';
 
 const args = parseArgs(process.argv.slice(2));
 const [cmd, arg] = args._;
@@ -41,8 +44,17 @@ try {
     const r = resolveFailureOp(ctx.brainDir, n);
     brainWrite(ctx, { internal: true, ops: [r.op], message: `error: failure ${n} processed` });
     out(`failure ${n} processed; remaining ${r.remaining}`);
+  } else if (cmd === 'report') {
+    const maintainer = ctx.brainDir && ctx.thread && heldTopics(ctx.brainDir, ctx.thread).some((t) => t.id === 'workflow-dev');
+    if (maintainer) fail('this thread holds workflow-dev: do not report to yourself; fix the error here (skill fix) (P-003)');
+    const fromId = args.from && args.from !== true ? String(args.from) : null;
+    const text = args.text && args.text !== true ? String(args.text) : null;
+    if (!fromId && !text) fail('usage: error.mjs report --title "<short>" --text "chyba: ...; príčina: ...; uložené: ..." | --from <message id>');
+    const title = args.title && args.title !== true ? String(args.title) : (text || '').split(/[;\n]/)[0].slice(0, 80);
+    const r = await report(ctx, { text, title, fromId });
+    out(r.line);
   } else {
-    fail('usage: error.mjs list | check <tool> | resolve <n>');
+    fail('usage: error.mjs list | check <tool> | resolve <n> | report --title ... --text ... | report --from <id>');
   }
 } catch (err) {
   fail(err.message);

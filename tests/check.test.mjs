@@ -10,7 +10,7 @@ test('same version asks for a report; older loaded version prints the current ru
     const sha = shortSha(PLUGIN_ROOT);
     const same = fx.run('check.mjs', ['--loaded', sha]);
     assert.equal(same.status, 0, same.out);
-    assert.match(same.stdout, /up to date: .*--to maintainer\/workflow-dev /);
+    assert.match(same.stdout, /up to date: .*error\.mjs report --title/);
     const older = fx.run('check.mjs', ['--loaded', '0000000']);
     assert.equal(older.status, 0, older.out);
     assert.match(older.stdout, /newer workflow installed/);

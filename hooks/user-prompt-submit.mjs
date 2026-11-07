@@ -9,6 +9,8 @@ import { statusInfo, rulesHash, BOOT_MARKERS } from '../scripts/boot.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { recordTurn, runClient, mailNoticeLine, isMainTopic } from '../scripts/comms.mjs';
 import { waitOnlyStep } from '../scripts/waker.mjs';
+import { readReports } from '../scripts/report.mjs';
+import { PLUGIN_ROOT, toPosix } from '../scripts/util.mjs';
 import { threadTitleSignal } from '../scripts/thread-title.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 
@@ -113,7 +115,11 @@ export function run(input) {
         : 'wake: no new mail; end the turn');
   } else if (messageBell) {
     const res = runClient(ctx, ['message', '--id', parsed.id]);
-    extras.unshift(messageBellLine(kind, parsed.id, res.ok ? res.data : null));
+    // An error report the maintainer did not pick up goes on as an issue (P-003), not "send elsewhere" by guess.
+    const errReport = (ctx.brainDir || ctx.projectDir) && readReports(ctx)[parsed.id];
+    extras.unshift(errReport
+      ? `${messageBellLine(kind, parsed.id, res.ok ? res.data : null).replace(P047_ACTIONS, '')}: this is an error report to the workflow maintainer; run node ${toPosix(PLUGIN_ROOT)}/bin/error.mjs report --from ${parsed.id} and tell the operator its line (P-003)`
+      : messageBellLine(kind, parsed.id, res.ok ? res.data : null));
   }
   // P-057: the thread timer fired (the wake module rang at resume_at): its step comes first; the timer is spent.
   const timer = state?.timer && Date.parse(state.timer.at) <= Date.now() + 90_000 ? state.timer : null;

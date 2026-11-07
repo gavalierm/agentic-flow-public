@@ -26,7 +26,7 @@ const tag = git(['describe', '--tags', '--exact-match'], { cwd: PLUGIN_ROOT }).s
 const same = installed.startsWith(loaded) || loaded.startsWith(installed);
 out(`loaded: workflow ${loaded}; installed: workflow ${installed} (${tag})`);
 if (same) {
-  out('up to date: no newer workflow is installed; report the problem to the workflow maintainer (comms send --to maintainer/workflow-dev --level assist), with what you expected, what happened and the command');
+  out('up to date: no newer workflow is installed; report the problem to the workflow maintainer (node <plugin>/bin/error.mjs report --title ... --text ...: mail, else an issue; only "reported: ..." means reported), with what you expected, what happened and the command');
 } else {
   try {
     const ctx = loadContext({ requireBrain: false });
