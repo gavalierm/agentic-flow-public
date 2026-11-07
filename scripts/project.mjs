@@ -1,14 +1,14 @@
 // Project wizard (skill workflow:project): find a project on disk and on GitHub, restore it, connect its
 // repositories, adopt an older setup, or create a new one. Repositories live under the operator's account.
-// Layout (operator 2026-11-04): ~/agentic/<project>/ holds the code repositories of the project and one shared
-// brain ~/agentic/<project>/<project>-brain; each code repository is a T3 project. Older projects sit flat in
+// Layout (operator 2026-11-04): ~/agentic/<Project>/ (upper case first letter, domainDirName, operator 2026-11-07)
+// holds the code repositories of the project and one shared brain ~/agentic/<Project>/<project>-brain; each code repository is a T3 project. Older projects sit flat in
 // ~/agentic (<name> next to <name>-brain); restore still handles them.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PLUGIN_ROOT, git, gitRemote, exists, readJson, toPosix } from './util.mjs';
-import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv } from './config.mjs';
+import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir } from './config.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
 import { gh, ghOwner, ghOwnedRepos, ghRootNames, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
 
@@ -55,7 +55,7 @@ export function sessionRoot(projectDir, brainDir) {
   const proj = path.resolve(projectDir);
   const parent = path.dirname(proj);
   const brain = brainDir ? path.resolve(brainDir) : null;
-  const nested = brain && brain !== proj && path.dirname(brain) === parent && path.basename(brain).startsWith(`${path.basename(parent)}-`);
+  const nested = brain && brain !== proj && path.dirname(brain) === parent && path.basename(brain).toLowerCase().startsWith(`${path.basename(parent).toLowerCase()}-`);
   return nested ? path.dirname(parent) : parent;
 }
 
@@ -149,7 +149,7 @@ function pullIfClean(dir, label) {
  */
 export function restore(name, { root = DEFAULT_ROOT } = {}) {
   checkName(name);
-  const base = path.join(root, name);
+  const base = domainDir(root, name);
   const repos = exists(path.join(base, WORKFLOW_CONFIG)) ? [base] : subdirs(base).map((c) => path.join(base, c)).filter((d) => exists(path.join(d, WORKFLOW_CONFIG)));
   if (!repos.length) throw new Error(`${base} holds no workflow project (no ${WORKFLOW_CONFIG}); use connect or adopt`);
   const lines = [];
@@ -188,7 +188,7 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
   const name = checkName(project);
   const repoName = checkName(repo || name);
   const brainName = `${name}-brain`;
-  const base = path.join(root, name);
+  const base = domainDir(root, name);
   if (exists(base) && exists(path.join(base, '.git'))) throw new Error(`${base} is a repository, not a project folder; nothing is overwritten (P-018)`);
   fs.mkdirSync(base, { recursive: true });
   const projectDir = path.join(base, repoName);
@@ -257,7 +257,7 @@ export async function create({ name, repo = null, purpose, root = DEFAULT_ROOT, 
   checkName(name);
   const repoName = checkName(repo || name);
   if (!String(purpose || '').trim()) throw new Error('create needs --purpose "<one sentence>"');
-  const base = path.join(root, name);
+  const base = domainDir(root, name);
   if (exists(base)) throw new Error(`${base} already exists; nothing is overwritten (P-018)`);
   const projectDir = path.join(base, repoName);
   const brainDir = path.join(base, `${name}-brain`);

@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PLUGIN_ROOT, readJson, writeJson, gitToplevel, git, isInside } from './util.mjs';
+import { PLUGIN_ROOT, readJson, writeJson, gitToplevel, git, isInside, realPathLoose } from './util.mjs';
 
 export const WORKFLOW_CONFIG = '.workflow.json';
 export const LOCAL_CONFIG = path.join('local', 'workflow.json');
@@ -246,6 +246,26 @@ export function allowOutside(policy, home = os.homedir()) {
 }
 
 export const DOMAIN_MARKER = '.agentic-domain';
+/**
+ * Folder name of a domain, the folder wrapping a persona's or a project's repositories: always with an upper case
+ * first letter ("bob" -> "Bob", operator 2026-11-07). Repository names inside stay lower case (agent-bob, bob-brain).
+ */
+export function domainDirName(name) {
+  const s = String(name || '');
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+/**
+ * Domain folder of <name> under root: an existing folder of that name in any case (older lower case domains are
+ * reused, not duplicated next to a capitalized one; on Windows and macOS they are the same folder), else the
+ * capitalized name.
+ */
+export function domainDir(root, name) {
+  const want = domainDirName(name);
+  let entries = [];
+  try { entries = fs.readdirSync(root); } catch { /* root does not exist yet */ }
+  const found = entries.includes(want) ? want : entries.find((e) => e.toLowerCase() === want.toLowerCase());
+  return path.join(root, found || want);
+}
 /** Code topic worktrees of a domain: `<domain>/.worktrees/<repo>/<topic>/` (hidden: every visible folder is a repo). */
 export const WORKTREES_DIR = '.worktrees';
 /** Installed releases the running services use (v3, D-0003): `~/services/<repo>/`; WORKFLOW_SERVICES_DIR for tests. */
@@ -275,10 +295,15 @@ export function resolveDomain(projectDir, home = os.homedir()) {
 export function foreignProjectCwd(ctx, explicit) {
   if (explicit || !ctx.brainDir) return null;
   const top = gitToplevel(process.cwd());
-  if (!top || path.resolve(top) === path.resolve(ctx.projectDir)) return null;
+  if (!top || realPathLoose(top) === realPathLoose(ctx.projectDir)) return null;
+  // cwd is another brain itself (a brain has no .workflow.json): brain.mjs write from <domain>/<x>-brain went to the
+  // session's brain (alice 2026-11-07: path rewrite of other personas' brains wrote 11 files into agent-alice).
+  if (brainExists(top) && realPathLoose(top) !== realPathLoose(ctx.brainDir)) {
+    return `cwd is in brain ${path.basename(top)}, but the session's brain is ${path.basename(ctx.brainDir)}: this would write into ${path.basename(ctx.brainDir)}. Pass --project <the project whose brain is ${path.basename(top)}> to write there, or --project ${ctx.projectDir} (or run from the session dir) to write into ${ctx.projectName}`;
+  }
   const info = resolveBrain(top);
   const other = info && !info.error ? info.brain : null;
-  if (!other || !brainExists(other) || path.resolve(other) === path.resolve(ctx.brainDir)) return null;
+  if (!other || !brainExists(other) || realPathLoose(other) === realPathLoose(ctx.brainDir)) return null;
   return `cwd is in project ${path.basename(top)} with its own brain, but the session project is ${ctx.projectName}: this would write into the brain of ${ctx.projectName}. Pass --project ${top} to write into ${path.basename(top)}, or --project ${ctx.projectDir} (or run from the session dir) to write into ${ctx.projectName}`;
 }
 

@@ -4,7 +4,8 @@
 //   project.mjs restore <name> [--root <dir>]                        pull the repositories and brain when clean, regenerate settings
 //   project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--root <dir>]
 //   project.mjs create <name> [--repo <repo>] --purpose "<one sentence>" [--root <dir>]
-// Layout: ~/agentic/<name>/<repo> (code repositories, each a T3 project) and ~/agentic/<name>/<name>-brain.
+// Layout: ~/agentic/<Name>/<repo> (code repositories, each a T3 project) and ~/agentic/<Name>/<name>-brain;
+// the project folder (domain) has an upper case first letter, repositories stay lower case.
 //   project.mjs inventory <dir> [--json]                             files of a repository by group, with dead paths
 //   project.mjs tidy --project <dir> --plan <file.json>              apply the agreed removals and moves in the brain
 //   project.mjs wizard start <name> | end                           open (2 h) or close the window in which the wizard asks in a dialog

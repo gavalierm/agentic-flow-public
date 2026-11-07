@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { setup } from './helpers.mjs';
 import { parseFrontmatter } from '../scripts/frontmatter.mjs';
 
@@ -264,5 +265,30 @@ test('save from inside another workflow project refuses: the session project wou
     assert.equal(r.status, 0, r.stderr);
     r = fx.run('topic.mjs', ['list'], { cwd: fx.projectB, env });
     assert.equal(r.status, 1, 'topic refuses too');
+  } finally { fx.cleanup(); }
+});
+
+test('brain.mjs write/remove from another brain or project refuses; --project writes there (alice 2026-11-07)', () => {
+  const fx = setup({ second: true });
+  try {
+    const env = { WORKFLOW_PROJECT_DIR: fx.project };
+    const src = path.join(fx.root, 'note.md');
+    fs.writeFileSync(src, 'x\n');
+    const headA = () => spawnSync('git', ['-C', fx.brain, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+    const before = headA();
+    for (const cwd of [fx.brainB, fx.projectB]) {
+      const r = fx.run('brain.mjs', ['write', 'docs/note.md', '--file', src, '--message', 'm'], { cwd, env });
+      assert.equal(r.status, 1, `write from ${cwd} must refuse: ${r.stdout}`);
+      assert.match(r.stderr, /cwd is in (brain|project) .*--project/s);
+    }
+    let r = fx.run('brain.mjs', ['remove', 'docs/note.md', '--message', 'm'], { cwd: fx.brainB, env });
+    assert.equal(r.status, 1, 'remove refuses too');
+    assert.equal(headA(), before, 'nothing landed in the session brain');
+    r = fx.run('brain.mjs', ['write', 'docs/note.md', '--project', fx.projectB, '--file', src, '--message', 'm'], { cwd: fx.brainB, env });
+    assert.equal(r.status, 0, r.stderr + r.stdout + (r.out || ''));
+    assert.ok(fs.existsSync(path.join(fx.brainB, 'docs', 'note.md')), 'written into brain-b');
+    assert.equal(headA(), before);
+    r = fx.run('brain.mjs', ['status'], { cwd: fx.brainB, env });
+    assert.equal(r.status, 0, 'read-only commands are not refused');
   } finally { fx.cleanup(); }
 });

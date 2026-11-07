@@ -62,7 +62,7 @@ test('assertPersonaRemote: only agent-* repositories (ssh url or path)', () => {
   assert.throws(() => assertPersonaRemote('git@example.com:o/bob-brain.git'), /agent-<name>/);
 });
 
-test('createPersona: creates agent-<name> in domain <name>/ with the domain marker, pushed to origin (v3)', async () => {
+test('createPersona: creates agent-<name> in domain <Name>/ with the domain marker, pushed to origin (v3)', async () => {
   const gh = await fakeGithub();
   const sb = sandbox();
   try {
@@ -70,8 +70,8 @@ test('createPersona: creates agent-<name> in domain <name>/ with the domain mark
     const res = await createPersona('bob', { root: sb.root, tokenFile: sb.tokenFile, apiUrl: gh.apiUrl, remoteFor: () => origin });
     assert.deepEqual(gh.created, ['agent-bob']);
     assert.equal(res.repo, 'agent-bob');
-    assert.equal(res.dir, path.join(sb.root, 'bob', 'agent-bob'));
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(sb.root, 'bob', '.agentic-domain'), 'utf8')), { brain: 'agent-bob' });
+    assert.equal(res.dir, path.join(sb.root, 'Bob', 'agent-bob'));
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(sb.root, 'Bob', '.agentic-domain'), 'utf8')), { brain: 'agent-bob' });
     assert.ok(fs.existsSync(path.join(res.dir, '.git')));
     assert.match(git(origin, 'log', '--oneline', 'main'), /init brain/);
   } finally { await gh.close(); sb.cleanup(); }
@@ -88,7 +88,7 @@ test('createPersona: existing agent-<name> fails, no repo is created, no fallbac
     assert.deepEqual(gh.created, []);
     assert.equal(fs.existsSync(path.join(sb.root, 'agent-bob')), false);
     assert.equal(fs.existsSync(path.join(sb.root, 'bob')), false);
-    assert.equal(fs.existsSync(path.join(sb.root, 'bob', 'agent-bob')), false);
+    assert.equal(fs.existsSync(path.join(sb.root, 'Bob')), false);
   } finally { await gh.close(); sb.cleanup(); }
 });
 

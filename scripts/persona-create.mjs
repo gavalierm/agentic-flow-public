@@ -1,4 +1,5 @@
-// Create a persona: private GitHub repo "agent-<name>" + brain in its domain ~/agentic/<name>/agent-<name> (P-024, v3).
+// Create a persona: private GitHub repo "agent-<name>" + brain in its domain ~/agentic/<Name>/agent-<name> (P-024, v3;
+// the domain folder has an upper case first letter, domainDirName).
 // The domain folder carries the .agentic-domain marker with brain agent-<name>; the persona repo is its own brain (".").
 // The repo name is derived here; if it already exists the script fails (no fallback name).
 import fs from 'node:fs';
@@ -7,7 +8,7 @@ import path from 'node:path';
 import { personaRepoName } from './persona-name.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
 import { gh, sshRemote, DEFAULT_TOKEN_FILE } from './github.mjs';
-import { DOMAIN_MARKER } from './config.mjs';
+import { DOMAIN_MARKER, domainDir } from './config.mjs';
 
 export async function createPersona(name, {
   root = path.join(os.homedir(), 'agentic'),
@@ -16,7 +17,7 @@ export async function createPersona(name, {
   remoteFor = sshRemote,
 } = {}) {
   const repo = personaRepoName(name);
-  const domain = path.join(path.resolve(root), name);
+  const domain = domainDir(path.resolve(root), name);
   const dir = path.join(domain, repo);
   if (fs.existsSync(dir)) throw new Error(`${dir} already exists`);
   const marker = path.join(domain, DOMAIN_MARKER);

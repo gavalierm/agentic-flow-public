@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, readStdin, fail } from '../scripts/util.mjs';
-import { loadContext, loadPolicy } from '../scripts/config.mjs';
+import { loadContext, loadPolicy, foreignProjectCwd } from '../scripts/config.mjs';
 import { pinValue, knownBrains } from '../scripts/update.mjs';
 import { brainWrite, brainSync, unpushedCount, formatWriteResult, conflictText } from '../scripts/brain.mjs';
 
@@ -17,6 +17,9 @@ const [cmd, target] = args._;
 
 try {
   const ctx = loadContext({ project: args.project });
+  // write and remove from another project's dir or brain would land in the session's brain (exported WORKFLOW_PROJECT_DIR).
+  const foreign = (cmd === 'write' || cmd === 'remove') ? foreignProjectCwd(ctx, args.project) : null;
+  if (foreign) fail(foreign);
   if (cmd === 'write') {
     if (!target) fail('usage: brain.mjs write <path> --message "..." --content "..."');
     let content = args.content;

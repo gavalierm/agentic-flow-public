@@ -122,8 +122,8 @@ test('adopt an older project: probe finds it, connect renames and adopts the bra
     await assert.rejects(connect({ project: 'kubo', repo: 'kubo-web', brain: 'old-brain-kubo', ...opts, remoteFor: sb.remoteFor }), /must be named kubo-brain; run again with --rename-brain/);
     const r = await connect({ project: 'kubo', repo: 'kubo-web', brain: 'old-brain-kubo', renameBrain: true, adopt: true, brainBranch: 'dev', ...opts, remoteFor: sb.remoteFor });
     // Project folder: code repository and one brain of the project side by side.
-    const webDir = path.join(sb.root, 'kubo', 'kubo-web');
-    const brainDir = path.join(sb.root, 'kubo', 'kubo-brain');
+    const webDir = path.join(sb.root, 'Kubo', 'kubo-web');
+    const brainDir = path.join(sb.root, 'Kubo', 'kubo-brain');
     assert.ok(r.lines.includes('brain repository renamed: old-brain-kubo -> kubo-brain'), r.lines.join('\n'));
     assert.ok(hub.calls.includes('PATCH /repos/owner1/old-brain-kubo'));
     // History and data stay; the old hook is replaced by the workflow one and committed.
@@ -137,12 +137,12 @@ test('adopt an older project: probe finds it, connect renames and adopts the bra
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(webDir, '.workflow.json'), 'utf8')).brain, '../kubo-brain');
     const p2 = await probe('kubo', opts);
     assert.equal(p2.branch, 'restore');
-    assert.deepEqual(p2.local.map((l) => [l.name, l.kind]), [['kubo/kubo-brain', 'workflow-brain'], ['kubo/kubo-web', 'workflow-project']]);
+    assert.deepEqual(p2.local.map((l) => [l.name, l.kind]), [['Kubo/kubo-brain', 'workflow-brain'], ['Kubo/kubo-web', 'workflow-project']]);
     // A second code repository of the project shares the brain.
     sb.seed('kubo-app', { 'app.js': '1\n' });
     const r2 = await connect({ project: 'kubo', repo: 'kubo-app', ...opts, remoteFor: sb.remoteFor });
     assert.ok(r2.lines.includes('brain: already cloned'), r2.lines.join('\n'));
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(sb.root, 'kubo', 'kubo-app', '.workflow.json'), 'utf8')).brain, '../kubo-brain');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(sb.root, 'Kubo', 'kubo-app', '.workflow.json'), 'utf8')).brain, '../kubo-brain');
 
     // Inventory marks dead absolute paths.
     const inv = inventory(brainDir);
@@ -191,7 +191,7 @@ test('connect refuses an existing directory that is not the clone, and a brain b
     fs.writeFileSync(path.join(work, 'x.md'), 'main only\n'); git(work, 'add', '-A'); git(work, 'commit', '-qm', 'main only');
     git(work, 'push', '-q', sb.remoteFor('o', 'web1-brain'), 'main');
     await assert.rejects(connect({ project: 'web1', brain: 'web1-brain', adopt: true, brainBranch: 'dev', ...opts }), /has content that dev lacks/);
-    assert.ok(!fs.existsSync(path.join(sb.root, 'web1-brain', 'x.md')) || git(path.join(sb.root, 'web1', 'web1-brain'), 'status', '--porcelain') === '', 'a refused merge leaves no half state');
+    assert.ok(!fs.existsSync(path.join(sb.root, 'web1-brain', 'x.md')) || git(path.join(sb.root, 'Web1', 'web1-brain'), 'status', '--porcelain') === '', 'a refused merge leaves no half state');
     // main with only merge commits of dev (older habit): merged, content of dev.
     const w3 = sb.seed('web3-brain', { 'RULES.md': 'a\n' }, { dev: { 'RULES.md': 'b\n', 'img.png': '\x89PNG\r\n\x1a\n\0\0\r\n' } });
     git(w3, 'merge', '--no-ff', '-qm', 'Merge dev', 'dev');
@@ -200,10 +200,11 @@ test('connect refuses an existing directory that is not the clone, and a brain b
     sb.seed('web3', { 'index.html': 'x\n' });
     const r3 = await connect({ project: 'web3', brain: 'web3-brain', adopt: true, brainBranch: 'dev', ...opts });
     assert.ok(r3.lines.includes('brain main merged with dev (main had only merge commits)'), r3.lines.join('\n'));
-    assert.equal(fs.readFileSync(path.join(sb.root, 'web3', 'web3-brain', 'RULES.md'), 'utf8'), 'c\n');
+    assert.equal(fs.readFileSync(path.join(sb.root, 'Web3', 'web3-brain', 'RULES.md'), 'utf8'), 'c\n');
     // The older attributes line (binary files as text) is replaced; images stay byte for byte.
     assert.ok(r3.lines.includes('brain: .gitattributes: binary files kept as they are'), r3.lines.join('\n'));
-    assert.equal(git(path.join(sb.root, 'web3', 'web3-brain'), 'status', '--porcelain'), '');
+    assert.equal(git(path.join(sb.root, 'Web3', 'web3-brain'), 'status', '--porcelain'), '');
+    // An older lower case project folder is reused, not duplicated by a capitalized one.
     fs.mkdirSync(path.join(sb.root, 'web2', 'web2'), { recursive: true });
     sb.seed('web2', { 'a.txt': 'a\n' });
     await assert.rejects(connect({ project: 'web2', ...opts }), /exists and is not a clone/);
@@ -225,9 +226,9 @@ test('create: private project and brain repositories, purpose in the README, set
     assert.ok(r.lines.includes('repository created: owner1/novy-brain (private)'));
     assert.ok(r.lines.includes('project: pushed'), r.lines.join('\n'));
     assert.match(git(sb.remoteFor('o', 'novy-web'), 'show', 'main:README.md'), /Web pre klienta\./);
-    assert.ok(fs.existsSync(path.join(sb.root, 'novy', 'novy-brain', 'topics')));
-    assert.ok(fs.existsSync(path.join(sb.root, 'novy', 'novy-web', '.claude', 'settings.json')));
-    assert.equal(JSON.parse(fs.readFileSync(path.join(sb.root, 'novy', 'novy-web', '.workflow.json'), 'utf8')).brain, '../novy-brain');
+    assert.ok(fs.existsSync(path.join(sb.root, 'Novy', 'novy-brain', 'topics')));
+    assert.ok(fs.existsSync(path.join(sb.root, 'Novy', 'novy-web', '.claude', 'settings.json')));
+    assert.equal(JSON.parse(fs.readFileSync(path.join(sb.root, 'Novy', 'novy-web', '.workflow.json'), 'utf8')).brain, '../novy-brain');
     await assert.rejects(create({ name: 'novy', purpose: 'x', ...opts }), /already exists/);
     assert.throws(() => restore('Novy', { root: sb.root }), /lowercase/);
   } finally { await hub.close(); sb.cleanup(); }
@@ -240,6 +241,7 @@ test('project roots: names match across case, spaces and dashes; a root next to 
   assert.equal(sessionRoot('/d/Claude projekty/flow/flow-rozvoj', '/d/Claude projekty/flow/flow-brain'), path.resolve('/d/Claude projekty'));
   assert.equal(sessionRoot('/r/shop', '/r/shop-brain'), path.resolve('/r'));
   assert.equal(sessionRoot('/r/alice/agent-alice', '/r/alice/agent-alice'), path.resolve('/r/alice'));
+  assert.equal(sessionRoot('/r/Shop/shop-web', '/r/Shop/shop-brain'), path.resolve('/r'), 'a capitalized project folder');
   assert.deepEqual(projectRoots({ explicit: ['/x'], env: {}, projectDir: '/r/shop', brainDir: '/r/shop-brain', home: '/nonexistent-home' }), [path.resolve('/x'), path.resolve('/r')]);
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-roots-'));
   try {
@@ -251,4 +253,18 @@ test('project roots: names match across case, spaces and dashes; a root next to 
     assert.deepEqual(p.local.map((l) => l.name).sort(), ['Home assistant', 'home-assistant']);
     assert.equal(p.branch, 'adopt', 'the older setup on disk decides without GitHub');
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('domain folder: upper case first letter for new domains, an older lower case one is reused (operator 2026-11-07)', async () => {
+  const { domainDirName, domainDir } = await import('../scripts/config.mjs');
+  assert.equal(domainDirName('bob'), 'Bob');
+  assert.equal(domainDirName('web-shop'), 'Web-shop');
+  assert.equal(domainDirName('3d'), '3d');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-domdir-'));
+  try {
+    assert.equal(domainDir(path.join(root, 'missing'), 'kubo'), path.join(root, 'missing', 'Kubo'));
+    assert.equal(domainDir(root, 'kubo'), path.join(root, 'Kubo'));
+    fs.mkdirSync(path.join(root, 'alice'));
+    assert.equal(domainDir(root, 'alice'), path.join(root, 'alice'), 'no second Alice next to alice');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

@@ -64,9 +64,34 @@ export function relPosix(from, to) {
   return toPosix(path.relative(from, to));
 }
 
-export function isInside(parent, child) {
-  const rel = path.relative(path.resolve(parent), path.resolve(child));
+function lexicallyInside(parent, child) {
+  const rel = path.relative(parent, child);
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/** Real path of p: realpath of its nearest existing ancestor plus the missing tail (a file about to be written). */
+export function realPathLoose(p) {
+  let cur = path.resolve(p);
+  const tail = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync(cur), ...tail); } catch { /* missing: go up */ }
+    const up = path.dirname(cur);
+    if (up === cur) return path.resolve(p);
+    tail.unshift(path.basename(cur));
+    cur = up;
+  }
+}
+
+/**
+ * True when child lies in parent. Lexically first; on a miss, compared by real paths, so a symlinked folder
+ * (~/agentic/alice -> Alice after the domain rename) and its target are the same place: a session started on the old
+ * path had a write to <Alice>/agent-alice/scratch denied as a brain write (brain matched, scratch on the old path did not).
+ */
+export function isInside(parent, child) {
+  const p = path.resolve(parent);
+  const c = path.resolve(child);
+  if (lexicallyInside(p, c)) return true;
+  return lexicallyInside(realPathLoose(p), realPathLoose(c));
 }
 
 export function today() {

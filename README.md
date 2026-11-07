@@ -103,12 +103,12 @@ Overenie: v ľubovoľnom projekte spusti `claude` a napíš `/plugins`. V zoznam
 | repo projektu | git repo s kódom; jeho priečinok je projekt v T3 / Claude Code a jeho názov je **meno projektu v pošte** (adresa `<repo>/<téma>`, `--sender`) | `<koreň>/pilot/pilot-app/` |
 | brain projektu | git repo s dátami workflow (pamäť, rozhodnutia, témy, skilly projektu); voliteľný (P-024) | `<koreň>/pilot/pilot-brain/` |
 | persona | agent s menom; jeho repo `agent-<meno>` je zároveň brain | `agent-bob` |
-| doména | priečinok persony so značkou `.agentic-domain`: hranica zápisu agentov (P-052), brain domény je brain persony | `~/agentic/bob/` |
+| doména | priečinok persony so značkou `.agentic-domain`: hranica zápisu agentov (P-052), brain domény je brain persony | `~/agentic/Bob/` |
 
 - Projekt s vlastným brainom bez `.agentic-domain` nie je doména: agent v ňom zapisuje do priečinka projektu, kópií jeho tém a do ciest v `domain.allow_outside` v `policy.json` brainu.
-- Pomenovanie: obal `<meno>`, repo `<meno>-<časť>` (`-app`, `-web`), brain `<meno>-brain`. Repo nepomenuj rovnako ako obal (`pilot/pilot` je nečitateľné). Názov priečinka repa je meno v pošte, takže neskoršie premenovanie znamená nový kľúč pošty (pozri „Premenovanie projektu“).
-- Odporúčaný spôsob: povedz agentovi „založ projekt `<meno>`“ (skill `workflow:project`, skript `bin/project.mjs`). Sprievodca založí `<koreň>/<meno>/<meno>-<časť>` a `<koreň>/<meno>/<meno>-brain`, súkromné repá na GitHube operátora, nastavenia projektu a projekt v T3; koreň je predvolene `~/agentic`, iný `--root <dir>`. Ten istý skript obnoví projekt na novom stroji (`restore`) a pripojí existujúce repá (`connect`). Ručný postup je nižšie.
-- Persona: `persona-create.mjs <meno> [--root <dir>]` (predvolene doména `~/agentic/<meno>`).
+- Pomenovanie: obal `<Meno>` (doména, prvé písmeno vždy veľké; skripty ho tak založia, staršiu doménu s malým písmenom použijú, nevytvoria druhú), repo `<meno>-<časť>` (`-app`, `-web`), brain `<meno>-brain`. Repo nepomenuj rovnako ako obal (`pilot/pilot` je nečitateľné). Názov priečinka repa je meno v pošte, takže neskoršie premenovanie znamená nový kľúč pošty (pozri „Premenovanie projektu“).
+- Odporúčaný spôsob: povedz agentovi „založ projekt `<meno>`“ (skill `workflow:project`, skript `bin/project.mjs`). Sprievodca založí `<koreň>/<Meno>/<meno>-<časť>` a `<koreň>/<Meno>/<meno>-brain`, súkromné repá na GitHube operátora, nastavenia projektu a projekt v T3; koreň je predvolene `~/agentic`, iný `--root <dir>`. Ten istý skript obnoví projekt na novom stroji (`restore`) a pripojí existujúce repá (`connect`). Ručný postup je nižšie.
+- Persona: `persona-create.mjs <meno> [--root <dir>]` (predvolene doména `~/agentic/<Meno>`).
 
 ### Ručne
 
@@ -138,7 +138,7 @@ Oba súbory generuje adaptér: `node ~/.claude/skills/workflow/bin/adapter.mjs c
 
 Persona je projekt, ktorého repo je zároveň brain (P-024): `.workflow.json` má `"brain": "."`. Persona nemá vlastné dáta projektu; dokumenty a výstupy idú do spravovaných projektov.
 
-1. Nová persona: `node ~/.claude/skills/workflow/bin/persona-create.mjs <meno>` (krátke meno, napr. `bob`); skript sám odvodí repo `agent-<meno>`, overí, že neexistuje (ak existuje, skončí chybou, náhradné meno nepoužije), založí súkromné repo a brain v doméne `~/agentic/<meno>/agent-<meno>` so značkou `.agentic-domain` (brain `agent-<meno>`). Nie ručné `brain-init` ani ručné založenie repa, lebo prefix `agent-` by sa dal obísť. Existujúce repo persony: `brain-init.mjs . --attach`.
+1. Nová persona: `node ~/.claude/skills/workflow/bin/persona-create.mjs <meno>` (krátke meno, napr. `bob`); skript sám odvodí repo `agent-<meno>`, overí, že neexistuje (ak existuje, skončí chybou, náhradné meno nepoužije), založí súkromné repo a brain v doméne `~/agentic/<Meno>/agent-<meno>` so značkou `.agentic-domain` (brain `agent-<meno>`). Nie ručné `brain-init` ani ručné založenie repa, lebo prefix `agent-` by sa dal obísť. Existujúce repo persony: `brain-init.mjs . --attach`.
 2. V repe persony: `node ~/.claude/skills/workflow/bin/adapter.mjs claude-code --brain .`. Adaptér vygenerované súbory (`.workflow.json`, `.claude/settings.json`, `.gitignore`) sám commitne cez skript brain a pushne.
 3. Agent v persone priamo zapisuje iba do `scratch/` a `local/`; všetko ostatné ide cez `save`, `topic`, `done`. Worktree persony používa brain hlavného checkoutu.
 
@@ -147,7 +147,7 @@ Persona je projekt, ktorého repo je zároveň brain (P-024): `.workflow.json` m
 Doména je priečinok, v ktorom agenti smú zapisovať (P-052): persona a repá, ktoré spravuje, ležia spolu; názvy priečinkov sú názvy git repozitárov.
 
 ```
-~/agentic/<doména>/
+~/agentic/<Doména>/        prvé písmeno veľké (Bob, Kubo); repá v nej malými písmenami
   .agentic-domain          {"brain": "agent-<meno>"}  (relatívne ku koreňu domény)
   agent-<meno>/            brain persony (.workflow.json "brain": ".")
   <repo>/                  spravované repo; vedomosť repa v <repo>/agentic/ (HANDOVER.md, decisions/, runbooks/, memory/, skills/)

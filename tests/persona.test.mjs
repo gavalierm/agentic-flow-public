@@ -214,3 +214,27 @@ test('persona: lasting documents go to docs/ (written directly, committed by sav
     assert.match(p.run('save.mjs', ['docs']).out, /nothing to commit/);
   } finally { p.cleanup(); }
 });
+
+test('persona: session on a symlinked domain path writes scratch/ via the real path (domain rename, 2026-11-07)', () => {
+  const p = persona();
+  try {
+    assert.equal(p.run('adapter.mjs', ['claude-code', '--brain', '.']).status, 0);
+    // ~/agentic/alice -> Alice: the session keeps the old path, the agent writes via the new one (or back).
+    const link = path.join(p.root, 'link');
+    fs.symlinkSync(p.dir, link);
+    const env = cleanEnv({ WORKFLOW_THREAD_ID: 'p1', CLAUDE_PROJECT_DIR: link });
+    const hook = (input) => {
+      const res = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'hooks', 'pre-tool-use.mjs')], { cwd: link, env, encoding: 'utf8', input: JSON.stringify({ session_id: 's1', cwd: link, ...input }) });
+      return JSON.parse(res.stdout.trim() || '{}');
+    };
+    const real = fs.realpathSync(p.dir);
+    let out = hook({ tool_name: 'Write', tool_input: { file_path: path.join(real, 'scratch', 'x.sh'), content: 'x' } });
+    assert.deepEqual(out, {}, JSON.stringify(out));
+    out = hook({ tool_name: 'Write', tool_input: { file_path: path.join(link, 'scratch', 'y.sh'), content: 'x' } });
+    assert.deepEqual(out, {}, JSON.stringify(out));
+    out = hook({ tool_name: 'Write', tool_input: { file_path: path.join(real, 'memory', 'x.md'), content: 'x' } });
+    assert.equal(out.hookSpecificOutput?.permissionDecision, 'deny', 'brain data stays denied on both paths');
+    out = hook({ tool_name: 'Write', tool_input: { file_path: path.join(link, 'memory', 'x.md'), content: 'x' } });
+    assert.equal(out.hookSpecificOutput?.permissionDecision, 'deny');
+  } finally { p.cleanup(); }
+});
