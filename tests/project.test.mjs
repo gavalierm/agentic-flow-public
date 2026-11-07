@@ -9,6 +9,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PLUGIN_ROOT, cleanEnv } from './helpers.mjs';
 import { classifyNames, decide, probe, restore, connect, create, inventory } from '../scripts/project.mjs';
+import { resolveDomain } from '../scripts/config.mjs';
 
 // The scripts run in this process: same clean environment as the spawned ones.
 const clean = cleanEnv();
@@ -135,6 +136,10 @@ test('adopt an older project: probe finds it, connect renames and adopts the bra
     assert.equal(git(brainDir, 'rev-parse', 'HEAD'), git(sb.remoteFor('o', 'kubo-brain'), 'rev-parse', 'main'));
     assert.equal(git(brainDir, 'rev-parse', '--abbrev-ref', '@{u}'), 'origin/main');
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(webDir, '.workflow.json'), 'utf8')).brain, '../kubo-brain');
+    // The project folder is a domain (D-0002): without the marker a code topic went to ../kubo-web-topics/ next to
+    // the project instead of Kubo/.worktrees/ (home-assistant adopted on Windows, 2026-11-07).
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(sb.root, 'Kubo', '.agentic-domain'), 'utf8')), { brain: 'kubo-brain' });
+    assert.equal(resolveDomain(webDir)?.root, path.join(sb.root, 'Kubo'));
     const p2 = await probe('kubo', opts);
     assert.equal(p2.branch, 'restore');
     assert.deepEqual(p2.local.map((l) => [l.name, l.kind]), [['Kubo/kubo-brain', 'workflow-brain'], ['Kubo/kubo-web', 'workflow-project']]);
@@ -172,7 +177,11 @@ test('adopt an older project: probe finds it, connect renames and adopts the bra
     const t2 = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'project.mjs'), 'tidy', '--project', webDir, '--plan', noReason], { cwd: webDir, encoding: 'utf8', env: cleanEnv() });
     assert.equal(t2.status, 1); assert.match(t2.stderr, /needs "reason"/);
 
+    // A project folder adopted before the marker existed gets it on restore.
+    fs.rmSync(path.join(sb.root, 'Kubo', '.agentic-domain'));
     const rs = restore('kubo', { root: sb.root });
+    assert.ok(rs.lines.includes('domain marker written: Kubo/.agentic-domain (brain kubo-brain)'), rs.lines.join('\n'));
+    assert.equal(resolveDomain(webDir)?.root, path.join(sb.root, 'Kubo'));
     assert.ok(rs.lines.includes('kubo-web: settings regenerated') && rs.lines.includes('kubo-app: settings regenerated'), rs.lines.join('\n'));
     assert.equal(rs.lines.filter((l) => /^kubo-brain: (up to date|updated)$/.test(l)).length, 1, rs.lines.join('\n'));
     assert.ok(rs.lines.some((l) => /^kubo-web: (uncommitted changes, not pulled|up to date|updated)/.test(l)), rs.lines.join('\n'));
@@ -270,6 +279,7 @@ test('create: private project and brain repositories, purpose in the README, set
     assert.ok(fs.existsSync(path.join(sb.root, 'Novy', 'novy-brain', 'topics')));
     assert.ok(fs.existsSync(path.join(sb.root, 'Novy', 'novy-web', '.claude', 'settings.json')));
     assert.equal(JSON.parse(fs.readFileSync(path.join(sb.root, 'Novy', 'novy-web', '.workflow.json'), 'utf8')).brain, '../novy-brain');
+    assert.equal(resolveDomain(path.join(sb.root, 'Novy', 'novy-web'))?.brain, path.join(sb.root, 'Novy', 'novy-brain'));
     await assert.rejects(create({ name: 'novy', purpose: 'x', ...opts }), /already exists/);
     assert.throws(() => restore('Novy', { root: sb.root }), /lowercase/);
   } finally { await hub.close(); sb.cleanup(); }

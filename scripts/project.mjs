@@ -134,6 +134,24 @@ function adapter(projectDir, brainRel) {
   return (r.stdout || '').trim();
 }
 
+/**
+ * The domain marker (D-0002, P-052): the project folder holding the code repositories and the brain is the domain.
+ * Without it resolveDomain returns null and a code topic falls back to the legacy clone ../<repo>-topics/ next to the
+ * project instead of a worktree in <domain>/.worktrees/ (home-assistant adopted on Windows, 2026-11-07). Written when
+ * missing; a marker naming another brain is refused (a domain has one brain).
+ */
+export function ensureDomainMarker(base, brainName) {
+  const marker = path.join(base, DOMAIN_MARKER);
+  if (exists(marker)) {
+    const named = readJson(marker, {})?.brain;
+    if (named && named !== brainName) throw new Error(`${marker} names brain ${named}, not ${brainName}; a domain has one brain`);
+    return null;
+  }
+  fs.mkdirSync(base, { recursive: true });
+  fs.writeFileSync(marker, JSON.stringify({ brain: brainName }, null, 2) + '\n');
+  return `domain marker written: ${path.basename(base)}/${DOMAIN_MARKER} (brain ${brainName})`;
+}
+
 function pullIfClean(dir, label) {
   if (!exists(path.join(dir, '.git'))) return `${label}: not a git repository`;
   const dirty = git(['status', '--porcelain'], { cwd: dir }).stdout;
@@ -161,7 +179,12 @@ export function restore(name, { root = DEFAULT_ROOT, domain = null } = {}) {
     lines.push(pullIfClean(projectDir, label));
     const brainRel = readJson(path.join(projectDir, WORKFLOW_CONFIG), {})?.brain ?? null;
     const brainDir = brainRel && brainRel !== '.' ? path.resolve(projectDir, brainRel) : null;
-    if (brainDir && !brains.has(brainDir)) { brains.add(brainDir); lines.push(pullIfClean(brainDir, path.basename(brainDir))); }
+    if (brainDir && !brains.has(brainDir)) {
+      brains.add(brainDir);
+      lines.push(pullIfClean(brainDir, path.basename(brainDir)));
+      // A project folder adopted before the marker existed becomes a domain on restore (D-0002).
+      if (base !== projectDir && path.dirname(brainDir) === base) { const m = ensureDomainMarker(base, path.basename(brainDir)); if (m) lines.push(m); }
+    }
     adapter(projectDir, brainRel);
     lines.push(`${label}: settings regenerated`);
   }
@@ -283,6 +306,8 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
     const res = brainInit(brainDir, { remote: remoteFor(owner, brainName) });
     lines.push(...res.created.map((c) => `brain: ${c}`));
   }
+  const marker = ensureDomainMarker(base, brainName);
+  if (marker) lines.push(marker);
   adapter(projectDir, `../${brainName}`);
   lines.push('settings generated');
   return { owner, projectDir, brainDir, lines };
@@ -319,6 +344,7 @@ export async function create({ name, repo = null, purpose, domain = null, root =
   lines.push(push.ok ? 'project: pushed' : `project: push failed: ${push.stderr.split('\n')[0]}`);
   const res = brainInit(brainDir, { remote: remoteFor(owner, `${name}-brain`) });
   lines.push(...res.created.map((c) => `brain: ${c}`));
+  lines.push(ensureDomainMarker(base, `${name}-brain`));
   adapter(projectDir, `../${name}-brain`);
   lines.push('settings generated');
   return { owner, projectDir, brainDir, lines };
