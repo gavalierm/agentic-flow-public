@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PLUGIN_ROOT, git, gitRemote, exists, readJson, toPosix } from './util.mjs';
-import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir } from './config.mjs';
+import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDirName, DOMAIN_MARKER } from './config.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
 import { gh, ghOwner, ghOwnedRepos, ghRootNames, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
 
@@ -182,18 +182,56 @@ function cloneInto(remote, dir, label) {
  * <project>-brain (rename an older brain repository to it with renameBrain, or create it), adopt an older brain,
  * generate the settings. brainBranch: the older brain keeps its current content on another branch.
  */
-export async function connect({ project, repo = null, brain = null, renameBrain = false, adopt = false, brainBranch = null, root = DEFAULT_ROOT, apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE, remoteFor = sshRemote }) {
+/**
+ * --set-aside <a,b>: older folders of the setup being adopted (e.g. "Home assistant") renamed to <x>.pre-adopt in
+ * the projects root. The project skill does this, not the agent: the folders are outside its domain (P-052, issue #8).
+ * All names are checked before anything is renamed; a workflow domain is never set aside.
+ */
+function isWorkflowDomain(dir) {
+  if (exists(path.join(dir, DOMAIN_MARKER)) || exists(path.join(dir, WORKFLOW_CONFIG))) return true;
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return false; }
+  return entries.some((e) => e.isDirectory() && exists(path.join(dir, e.name, WORKFLOW_CONFIG)));
+}
+
+function setAsideNamed(root, setAside) {
+  if (typeof setAside !== 'string') return [];
+  const names = setAside.split(',').map((s) => s.trim()).filter(Boolean);
+  const plan = names.map((n) => {
+    if (n !== path.basename(n) || n === '.' || n === '..') throw new Error(`--set-aside takes folder names in ${root}, got "${n}"`);
+    const from = path.join(root, n);
+    const to = `${from}.pre-adopt`;
+    if (!exists(from)) throw new Error(`${from} does not exist`);
+    if (isWorkflowDomain(from)) throw new Error(`${from} is a workflow domain; it is not set aside`);
+    if (exists(to)) throw new Error(`${to} already exists; resolve it first`);
+    return { n, from, to };
+  });
+  return plan.map(({ n, from, to }) => { fs.renameSync(from, to); return `set aside: ${n} -> ${path.basename(to)}`; });
+}
+
+export async function connect({ project, repo = null, brain = null, renameBrain = false, adopt = false, brainBranch = null, setAside = false, root = DEFAULT_ROOT, apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE, remoteFor = sshRemote }) {
   const token = readToken(tokenFile);
   const owner = await ghOwner(apiUrl, token);
   const name = checkName(project);
   const repoName = checkName(repo || name);
   const brainName = `${name}-brain`;
-  const base = domainDir(root, name);
-  if (exists(base) && exists(path.join(base, '.git'))) throw new Error(`${base} is a repository, not a project folder; nothing is overwritten (P-018)`);
+  const setAsideLines = setAsideNamed(root, setAside);
+  let base = domainDir(root, name);
+  // An older flat clone at <root>/<name> takes the domain's name (on Windows and macOS also <Name>: case-insensitive).
+  // The agent may not rename it (outside its domain, P-052, public issue #8), so connect does it on --set-aside,
+  // which the operator approves in the adoption summary. Nothing is deleted.
+  if (exists(base) && exists(path.join(base, '.git'))) {
+    const aside = `${base}.pre-adopt`;
+    if (!setAside) throw new Error(`${base} is a repository, not a project folder; nothing is overwritten (P-018). Run again with --set-aside to rename it to ${path.basename(aside)} (nothing is deleted)`);
+    if (exists(aside)) throw new Error(`${aside} already exists; resolve it first`);
+    fs.renameSync(base, aside);
+    setAsideLines.push(`set aside: ${path.basename(base)} -> ${path.basename(aside)}`);
+    base = path.join(root, domainDirName(name));
+  }
   fs.mkdirSync(base, { recursive: true });
   const projectDir = path.join(base, repoName);
   const brainDir = path.join(base, brainName);
-  const lines = [cloneInto(remoteFor(owner, repoName), projectDir, repoName)];
+  const lines = [...setAsideLines, cloneInto(remoteFor(owner, repoName), projectDir, repoName)];
 
   if (brain && brain !== brainName) {
     if (!renameBrain) throw new Error(`brain repository ${owner}/${brain} must be named ${brainName}; run again with --rename-brain (renames it on GitHub, the old name redirects)`);

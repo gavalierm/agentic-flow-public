@@ -1,7 +1,7 @@
 ---
 name: project
 description: Použi, keď operátor povie „spusti nový projekt“, „založ projekt“, „prevezmi projekt“ alebo „obnov projekt“, aj keď chce starý projekt (vlastná štruktúra, iný brain) previesť do T3 a do workflow.
-argument-hint: "probe <meno> | restore <meno> | connect <meno> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] | create <meno> [--repo <repo>] --purpose \"...\" | inventory <dir> | tidy --project <dir> --plan <file>"
+argument-hint: "probe <meno> | restore <meno> | connect <meno> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside [<priečinok>,...]] | create <meno> [--repo <repo>] --purpose \"...\" | inventory <dir> | tidy --project <dir> --plan <file>"
 ---
 
 # project – spustenie, obnova a prevzatie projektu (P-024, P-018, P-002)
@@ -31,7 +31,9 @@ Fázy 1–6 robíš sám a ich výsledok je časť jedného návrhu; operátor r
 5. **Spojenie:** brain repo sa pripojí v tom istom repe (história ostane), premenuje sa na `<projekt>-brain` (`--rename-brain`, staré meno presmeruje GitHub); vetvu s aktuálnym obsahom brainu daj `--brain-branch` (main sa na ňu posunie, alebo sa s ňou zlúči, ak main má iba zlučovacie commity; ak má main vlastný obsah, skript skončí a rozhodne operátor).
 6. **Stopy u iných agentov:** témy a handovery iných agentov k projektu: navrhni zatvoriť alebo presunúť; pošli to danému agentovi poštou (`workflow:comms`).
 7. **Súhrn a jedno potvrdenie:** súhrn textom v odpovedi (čo sa prenesie, čo sa pretvorí, čo pôjde preč, čo sa premenuje, poistný commit, predpoklady, krok navonok a prístup na GitHub, ak chýba), potom jedna otázka dialógom na súhlas s celým návrhom (zmenu operátor napíše).
-8. **Vykonanie:** `connect <projekt> --repo <repo> --brain <repo> --rename-brain --adopt [--brain-branch <b>]`, potom záznamy cez `save` s `--project <projekt-dir>`, potom `tidy --project <projekt-dir> --plan scratch/adopt-<projekt>.json` (odstránenia, presuny a `write`: starý záznam prepísaný na mieste vo formáte workflow, napr. rozhodnutie, ktoré sa nemaže; `reason`). Staré súbory v repe projektu (napr. vlastný brain, `CLAUDE.md`) uprac v kódovej téme projektu (`workflow:topic`). Potom T3 projekt a dôvera.
+8. **Vykonanie:** `connect <projekt> --repo <repo> --brain <repo> --rename-brain --adopt [--brain-branch <b>] [--set-aside [<priečinok>,...]]`, potom záznamy cez `save` s `--project <projekt-dir>`, potom `tidy --project <projekt-dir> --plan scratch/adopt-<projekt>.json` (odstránenia, presuny a `write`: starý záznam prepísaný na mieste vo formáte workflow, napr. rozhodnutie, ktoré sa nemaže; `reason`). Staré súbory v repe projektu (napr. vlastný brain, `CLAUDE.md`) uprac v kódovej téme projektu (`workflow:topic`). Potom T3 projekt a dôvera.
+   Starý klon na mieste domény (`<koreň>/<meno>`, na Windows a macOS aj s iným písmom) odloží `--set-aside` na `<meno>.pre-adopt` (nič nezmaže). Ďalšie staré priečinky prevzatého nastavenia v koreni projektov odloží `--set-aside "Home assistant,<iný>"` (každý na `<priečinok>.pre-adopt`; doménu workflow nikdy). Uveď ich v súhrne kroku 7. Doména sa volá podľa mena projektu (`Home-assistant`), nie podľa starého priečinka.
+   nie premenovať staré priečinky príkazom (`mv`), lebo sú mimo domény a hook zápis zamietne (P-052, issue #8).
 9. **Overenie (P-020):** `find` v novom projekte nájde prenesené záznamy, `rules.mjs --check` prejde, nové vlákno projektu naštartuje so stavovým blokom. Nakoniec `save decision` „prevzatie projektu“: odkiaľ, kedy, čo sa zahodilo a prečo, a `wizard end`.
 
 ## 4. Nový projekt (sprievodca)

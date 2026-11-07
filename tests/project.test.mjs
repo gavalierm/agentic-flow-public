@@ -211,7 +211,23 @@ test('connect refuses an existing directory that is not the clone, and a brain b
     // An older flat project (a repository at ~/agentic/<name>) is not turned into a project folder.
     sb.seed('flat', { 'a.txt': 'a\n' });
     git(sb.root, 'clone', '-q', sb.remoteFor('o', 'flat'), 'flat');
-    await assert.rejects(connect({ project: 'flat', ...opts }), /is a repository, not a project folder/);
+    await assert.rejects(connect({ project: 'flat', ...opts }), /is a repository, not a project folder.*--set-aside/s);
+    // --set-aside renames it (the agent may not, outside its domain: issue #8) and builds the project folder.
+    const ra = await connect({ project: 'flat', setAside: true, ...opts });
+    assert.ok(ra.lines.includes('set aside: flat -> flat.pre-adopt'), ra.lines.join('\n'));
+    assert.ok(fs.existsSync(path.join(sb.root, 'flat.pre-adopt', '.git')), 'old clone kept');
+    assert.ok(fs.existsSync(path.join(sb.root, 'Flat', 'flat', '.git')), 'project cloned into the domain');
+    // Named older folders (a wrapper with a space) are set aside too; all names are checked before any rename.
+    sb.seed('home-assistant', { 'a.txt': 'a\n' });
+    fs.mkdirSync(path.join(sb.root, 'Home assistant', 'old'), { recursive: true });
+    await assert.rejects(connect({ project: 'home-assistant', setAside: 'Home assistant,missing', ...opts }), /missing does not exist/);
+    assert.ok(fs.existsSync(path.join(sb.root, 'Home assistant')), 'nothing renamed when one name is wrong');
+    await assert.rejects(connect({ project: 'home-assistant', setAside: '../x', ...opts }), /takes folder names/);
+    await assert.rejects(connect({ project: 'home-assistant', setAside: 'Web3', ...opts }), /is a workflow domain/);
+    const rh = await connect({ project: 'home-assistant', setAside: 'Home assistant', ...opts });
+    assert.ok(rh.lines.includes('set aside: Home assistant -> Home assistant.pre-adopt'), rh.lines.join('\n'));
+    assert.ok(fs.existsSync(path.join(sb.root, 'Home assistant.pre-adopt', 'old')));
+    assert.ok(fs.existsSync(path.join(sb.root, 'Home-assistant', 'home-assistant', '.git')));
   } finally { await hub.close(); sb.cleanup(); }
 });
 

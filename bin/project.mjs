@@ -2,7 +2,7 @@
 // Project wizard script (skill workflow:project). Repositories live under the operator's GitHub account.
 //   project.mjs probe <stem> [--root <dir> ...] [--no-github] [--json]   find the project on disk and on GitHub (name match ignores case, spaces, dashes)
 //   project.mjs restore <name> [--root <dir>]                        pull the repositories and brain when clean, regenerate settings
-//   project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--root <dir>]
+//   project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside [<folder>,...]] [--root <dir>]
 //   project.mjs create <name> [--repo <repo>] --purpose "<one sentence>" [--root <dir>]
 // Layout: ~/agentic/<Name>/<repo> (code repositories, each a T3 project) and ~/agentic/<Name>/<name>-brain;
 // the project folder (domain) has an upper case first letter, repositories stay lower case.
@@ -61,9 +61,9 @@ try {
     const r = restore(target, { root });
     out(`restored ${r.projectDirs.join(', ')}\n${r.lines.map((l) => `- ${l}`).join('\n')}`);
   } else if (cmd === 'connect') {
-    if (!target) fail('usage: project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>]');
+    if (!target) fail('usage: project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside]');
     guardWrite();
-    const r = await connect({ project: target, repo: args.repo || null, brain: args.brain || null, renameBrain: !!args['rename-brain'], adopt: !!args.adopt, brainBranch: args['brain-branch'] || null, root, ...gh });
+    const r = await connect({ project: target, repo: args.repo || null, brain: args.brain || null, renameBrain: !!args['rename-brain'], adopt: !!args.adopt, brainBranch: args['brain-branch'] || null, setAside: typeof args['set-aside'] === 'string' ? args['set-aside'] : !!args['set-aside'], root, ...gh });
     out(`connected ${r.projectDir} (brain ${r.brainDir})\n${r.lines.map((l) => `- ${l}`).join('\n')}`);
   } else if (cmd === 'create') {
     if (!target) fail('usage: project.mjs create <name> [--repo <repo>] --purpose "<one sentence>"');
