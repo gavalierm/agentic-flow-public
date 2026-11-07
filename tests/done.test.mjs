@@ -75,6 +75,35 @@ test('done --topic merges the code copy into the main branch, archives the topic
   } finally { fx.cleanup(); }
 });
 
+test('done --topic: uncommitted files of the main checkout equal to the topic branch do not block the merge (adopt, Windows instance 2026-11-07)', () => {
+  const fx = setup();
+  try {
+    fs.writeFileSync(path.join(fx.project, 'settings.txt'), 'v1\n');
+    fs.writeFileSync(path.join(fx.project, 'mine.txt'), 'a\n');
+    fx.git(fx.project, 'add', '-A'); fx.git(fx.project, 'commit', '-q', '-m', 'base');
+    assert.equal(fx.run('topic.mjs', ['create', 'tidy', '--subject', 'Tidy', '--kind', 'code']).status, 0);
+    const copy = path.join(fx.root, 'project-topics', 'tidy');
+    fs.writeFileSync(path.join(copy, 'settings.txt'), 'v2\n');
+    fs.writeFileSync(path.join(copy, 'gen.json'), '{}\n');
+    for (const args of [['config', 'user.name', 't'], ['config', 'user.email', 't@t'], ['add', '-A'], ['commit', '-q', '-m', 'tidy']]) spawnSync('git', args, { cwd: copy });
+    // connect generated the same files in the main checkout, uncommitted; one other change is the operator's own
+    fs.writeFileSync(path.join(fx.project, 'settings.txt'), 'v2\n');
+    fs.writeFileSync(path.join(fx.project, 'gen.json'), '{}\n');
+    fs.writeFileSync(path.join(fx.project, 'mine.txt'), 'b\n');
+    let r = fx.run('done.mjs', ['--topic', '--verified', 'x']);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /uncommitted changes; commit or stash them before merging topic\/tidy: mine\.txt$/m);
+    assert.equal(fs.readFileSync(path.join(fx.project, 'mine.txt'), 'utf8'), 'b\n', 'a different change is kept');
+    fx.git(fx.project, 'checkout', '--', 'mine.txt');
+    r = fx.run('done.mjs', ['--topic', '--verified', 'x']);
+    assert.equal(r.status, 0, r.out);
+    assert.equal(fs.readFileSync(path.join(fx.project, 'settings.txt'), 'utf8'), 'v2\n');
+    assert.equal(fs.readFileSync(path.join(fx.project, 'gen.json'), 'utf8'), '{}\n');
+    assert.match(fx.git(fx.project, 'log', '-1', '--format=%s'), /Merge topic\/tidy/);
+    assert.equal(fx.git(fx.project, 'status', '--porcelain'), '');
+  } finally { fx.cleanup(); }
+});
+
 test('done --topic in T3 tells the agent to settle its thread, not archive it (P-036, flow-public#6), outside T3 not', () => {
   const fx = setup();
   try {

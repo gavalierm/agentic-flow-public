@@ -105,6 +105,30 @@ function doneUnit(ctx, id) {
   for (const w of buildIndexes(ctx.brainDir, ctx.policy).warnings) out(`limit: ${w}`);
 }
 
+/**
+ * Uncommitted files of the main checkout that the topic branch brings with the same content: the settings that connect
+ * generated in the checkout and the topic committed (.workflow.json untracked, .gitignore and settings modified) blocked
+ * the merge (Windows instance 2026-11-07, adopt). Same blob as in the branch: set back, the merge writes it again.
+ * Anything else stays and is reported.
+ */
+function setBackSameAsBranch(dir, branch) {
+  if (!git(['rev-parse', '--verify', '--quiet', branch], { cwd: dir }).ok) return [];
+  const inBranch = new Set(git(['diff', '--name-only', 'HEAD', branch], { cwd: dir }).stdout.split('\n').filter(Boolean));
+  const tracked = git(['diff', '--name-only', 'HEAD'], { cwd: dir }).stdout.split('\n').filter(Boolean);
+  const untracked = git(['ls-files', '--others', '--exclude-standard'], { cwd: dir }).stdout.split('\n').filter(Boolean);
+  const done = [];
+  for (const f of [...new Set([...tracked, ...untracked])]) {
+    if (!inBranch.has(f) || !fs.existsSync(path.join(dir, f))) continue;
+    const want = git(['rev-parse', '--verify', '--quiet', `${branch}:${f}`], { cwd: dir });
+    const have = git(['hash-object', '--', f], { cwd: dir });
+    if (!want.ok || !have.ok || want.stdout !== have.stdout) continue;
+    if (git(['cat-file', '-e', `HEAD:${f}`], { cwd: dir }).ok) git(['checkout', 'HEAD', '--', f], { cwd: dir });
+    else { git(['rm', '--cached', '--quiet', '--ignore-unmatch', '--', f], { cwd: dir }); fs.rmSync(path.join(dir, f), { force: true }); }
+    done.push(f);
+  }
+  return done;
+}
+
 function mergeCode(ctx, id, topic) {
   const copy = path.resolve(ctx.projectDir, topic.copy || `../${ctx.projectName}-topics/${id}`);
   const branch = `topic/${id}`;
@@ -112,8 +136,13 @@ function mergeCode(ctx, id, topic) {
   const dirtyCopy = git(['status', '--porcelain', '--untracked-files=no'], { cwd: copy }).stdout;
   if (dirtyCopy) fail(`code copy ${copy} has uncommitted changes; commit or discard them in the copy first`);
   const mainBranch = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ctx.projectDir }).stdout || 'main';
+  // A legacy clone copy: its branch is fetched first, so the comparison sees what the merge brings.
+  const isWorktree = fs.statSync(path.join(copy, '.git')).isFile();
+  const ref = isWorktree ? branch : (git(['fetch', '--quiet', copy, branch], { cwd: ctx.projectDir }).ok ? 'FETCH_HEAD' : null);
+  const setBack = ref ? setBackSameAsBranch(ctx.projectDir, ref) : [];
+  if (setBack.length) out(`project checkout: ${setBack.length} uncommitted file(s) equal to ${branch} set back for the merge: ${setBack.slice(0, 5).join(', ')}${setBack.length > 5 ? ', …' : ''}`);
   const dirtyProject = git(['status', '--porcelain', '--untracked-files=no'], { cwd: ctx.projectDir }).stdout;
-  if (dirtyProject) fail(`project checkout has uncommitted changes; commit or stash them before merging ${branch}`);
+  if (dirtyProject) fail(`project checkout has uncommitted changes; commit or stash them before merging ${branch}: ${git(['diff', '--name-only', 'HEAD'], { cwd: ctx.projectDir }).stdout.split('\n').slice(0, 5).join(', ')}`);
   if (git(['remote', 'get-url', 'origin'], { cwd: ctx.projectDir }).ok) {
     const pull = git(['pull', '--ff-only', '--quiet', 'origin', mainBranch], { cwd: ctx.projectDir });
     if (!pull.ok) out(`note: project pull from origin failed (${pull.stderr.split('\n')[0]}); merging into local ${mainBranch}`);
@@ -143,7 +172,8 @@ function mergeCode(ctx, id, topic) {
     // A worktree (v3) is removed through git, so the repo forgets it; its merged branch goes too. A legacy clone is a dir.
     if (worktree) {
       const rm = git(['worktree', 'remove', '--force', copy], { cwd: ctx.projectDir });
-      if (!rm.ok) fail(`git worktree remove ${copy} failed: ${rm.stderr}`);
+      // Windows: a shell standing in the copy holds it (EPERM, Windows instance 2026-11-07); the merge is done, rerun closes.
+      if (!rm.ok) fail(`git worktree remove ${copy} failed: ${rm.stderr}${/EPERM|EBUSY|Permission denied|being used|Invalid argument/i.test(rm.stderr) ? `; a process has its working directory or a file open in the copy (a shell: cd ${ctx.projectDir}), then rerun done --topic ${id} (the merge is already done)` : ''}`);
       git(['branch', '-d', branch], { cwd: ctx.projectDir });
       try { fs.rmdirSync(path.dirname(copy)); } catch { /* other topics of the repo remain */ }
     } else fs.rmSync(copy, { recursive: true, force: true });
