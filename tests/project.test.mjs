@@ -232,3 +232,23 @@ test('create: private project and brain repositories, purpose in the README, set
     assert.throws(() => restore('Novy', { root: sb.root }), /lowercase/);
   } finally { await hub.close(); sb.cleanup(); }
 });
+
+test('project roots: names match across case, spaces and dashes; a root next to the session project; branch from disk without GitHub', async () => {
+  const { matchKey, sessionRoot, projectRoots } = await import('../scripts/project.mjs');
+  assert.equal(matchKey('Home assistant'), matchKey('home-assistant'));
+  // <root>/<name>/<repo> next to <root>/<name>/<name>-brain: the root is two levels up; a flat or persona project: one.
+  assert.equal(sessionRoot('/d/Claude projekty/flow/flow-rozvoj', '/d/Claude projekty/flow/flow-brain'), path.resolve('/d/Claude projekty'));
+  assert.equal(sessionRoot('/r/shop', '/r/shop-brain'), path.resolve('/r'));
+  assert.equal(sessionRoot('/r/alice/agent-alice', '/r/alice/agent-alice'), path.resolve('/r/alice'));
+  assert.deepEqual(projectRoots({ explicit: ['/x'], env: {}, projectDir: '/r/shop', brainDir: '/r/shop-brain', home: '/nonexistent-home' }), [path.resolve('/x'), path.resolve('/r')]);
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-roots-'));
+  try {
+    const d = path.join(base, 'Claude projekty');
+    fs.mkdirSync(path.join(d, 'home-assistant', 'brain'), { recursive: true });
+    fs.writeFileSync(path.join(d, 'home-assistant', 'AGENTS.md'), 'x\n');
+    fs.mkdirSync(path.join(d, 'Home assistant', 'config'), { recursive: true });
+    const p = await probe('home-assistant', { roots: [path.join(base, 'empty'), d], github: false });
+    assert.deepEqual(p.local.map((l) => l.name).sort(), ['Home assistant', 'home-assistant']);
+    assert.equal(p.branch, 'adopt', 'the older setup on disk decides without GitHub');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});

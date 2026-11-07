@@ -19,7 +19,7 @@ function fixture(state = {}) {
   const fakeGh = path.join(fx.root, 'gh');
   fs.writeFileSync(fakeGh, `#!/usr/bin/env node\nconst fs=require('fs');fs.writeFileSync(${JSON.stringify(ghLog)}, process.argv.slice(2).join(' ')+'\\n'+fs.readFileSync(0,'utf8'));console.log('https://github.com/o/r/issues/42');\n`);
   fs.chmodSync(fakeGh, 0o755);
-  Object.assign(fx.env, { WORKFLOW_COMMS_CLIENT: STUB, STUB_COMMS_STATE: stateFile, WORKFLOW_GITHUB_TOKEN_FILE: path.join(fx.root, 'no-token'), WORKFLOW_GH_CLI: fakeGh });
+  Object.assign(fx.env, { WORKFLOW_COMMS_CLIENT: STUB, STUB_COMMS_STATE: stateFile, STUB_COMMS_LOG: path.join(fx.root, 'stub-log.jsonl'), WORKFLOW_GITHUB_TOKEN_FILE: path.join(fx.root, 'no-token'), WORKFLOW_GH_CLI: fakeGh });
   fx.ghBody = () => (fs.existsSync(ghLog) ? fs.readFileSync(ghLog, 'utf8') : null);
   fx.reports = () => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'error-reports.json'), 'utf8'));
   return fx;
@@ -47,7 +47,8 @@ test('held mail (maintainer topic not on this server) becomes an issue with scru
   const fx = fixture({ send_held: true });
   try {
     const r = fx.run('error.mjs', ['report', '--text', `chyba: ${fx.project}/src/a.js zlyhal pre a@example.test; príčina: ${fx.brain}/x`]);
-    assert.match(r.stdout, /^reported: issue .*maintainer topic maintainer\/workflow-dev not on this mail server \(message held, notice n-1\)/);
+    assert.match(r.stdout, /^reported: issue .*maintainer topic maintainer\/workflow-dev not on this mail server \(message held, notice n-1\)\); held mail copy discarded \(notice n-1\)/);
+    assert.ok(fs.readFileSync(fx.env.STUB_COMMS_LOG, 'utf8').includes('["decide","--notice","n-1","--decision","discard"'), 'the held copy is withdrawn');
     const body = fx.ghBody();
     assert.ok(!body.includes(fx.project) && !body.includes(fx.brain) && !body.includes('a@example.test'), body);
     assert.match(body, /<project>\/src\/a\.js/);

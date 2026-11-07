@@ -67,6 +67,7 @@ switch (cmd) {
     if (opt('state') === 'open') print({ ok: true, turn: { state: 'open', opened_at: state.opened_at || '2026-11-01T10:00:00.000Z' } });
     else print({ ok: true, ...(opt('opened-at') && state.opened_at && opt('opened-at') !== state.opened_at ? { stale: true } : {}) });
     break;
+  case 'decide': print({ notice_id: opt('notice'), decision: opt('decision') }); break;
   case 'message': {
     const m = (state.message || {})[opt('id')];
     if (!m) { process.stderr.write(JSON.stringify({ error: 'správa neexistuje' }) + '\n'); process.exit(1); }

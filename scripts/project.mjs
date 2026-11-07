@@ -42,10 +42,34 @@ function subdirs(dir) {
   try { return fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort(); } catch { return []; }
 }
 
+/** Name for matching: case, spaces, dashes and underscores ignored ("Home assistant" = "home-assistant"). */
+export const matchKey = (s) => String(s || '').toLowerCase().replace(/[\s_-]+/g, '');
+
+/**
+ * Folder holding the projects of the session's machine, from the session project: <root>/<name>/<repo> next to
+ * <root>/<name>/<name>-brain, else the older flat <root>/<repo> (operator 2026-11-07: a Windows instance keeps its
+ * projects in "D:\Claude projekty", probe looked only in ~/agentic and reported nothing).
+ */
+export function sessionRoot(projectDir, brainDir) {
+  if (!projectDir) return null;
+  const proj = path.resolve(projectDir);
+  const parent = path.dirname(proj);
+  const brain = brainDir ? path.resolve(brainDir) : null;
+  const nested = brain && brain !== proj && path.dirname(brain) === parent && path.basename(brain).startsWith(`${path.basename(parent)}-`);
+  return nested ? path.dirname(parent) : parent;
+}
+
+/** Roots to search, the first is where new projects go: --root, WORKFLOW_PROJECTS_ROOT, ~/agentic when it exists, the session's root. */
+export function projectRoots({ explicit = [], env = process.env, projectDir = null, brainDir = null, home = DEFAULT_ROOT } = {}) {
+  const list = [...explicit, env.WORKFLOW_PROJECTS_ROOT, exists(home) ? home : null, sessionRoot(projectDir, brainDir)].filter(Boolean).map((d) => path.resolve(d));
+  const uniq = [...new Set(list)];
+  return uniq.length ? uniq : [home];
+}
+
 /** Repositories on disk whose directory name contains the stem; a project folder lists its repositories. */
 export function probeLocal(root, stem) {
   const names = [];
-  for (const name of subdirs(root).filter((n) => n.includes(stem))) {
+  for (const name of subdirs(root).filter((n) => matchKey(n).includes(matchKey(stem)))) {
     const dir = path.join(root, name);
     if (!exists(path.join(dir, '.git')) && subdirs(dir).some((c) => exists(path.join(dir, c, '.git')))) {
       names.push(...subdirs(dir).map((c) => `${name}/${c}`));
@@ -57,7 +81,7 @@ export function probeLocal(root, stem) {
     const remote = repo ? git(['remote', 'get-url', 'origin'], { cwd: dir }).stdout || null : null;
     const kind = classifyNames(localNames(dir));
     const brain = kind === 'workflow-project' ? readJson(path.join(dir, WORKFLOW_CONFIG), {})?.brain ?? null : null;
-    return { name, dir, repo, remote, kind, brain };
+    return { name, dir, root, repo, remote, kind, brain };
   });
 }
 
@@ -65,7 +89,7 @@ export function probeLocal(root, stem) {
 export async function probeGithub(stem, { apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE } = {}) {
   const token = readToken(tokenFile);
   const owner = await ghOwner(apiUrl, token);
-  const repos = (await ghOwnedRepos(apiUrl, token)).filter((r) => String(r.name).toLowerCase().includes(stem));
+  const repos = (await ghOwnedRepos(apiUrl, token)).filter((r) => matchKey(r.name).includes(matchKey(stem)));
   const out = [];
   for (const r of repos) {
     const names = await ghRootNames(apiUrl, token, owner, r.name);
@@ -86,16 +110,18 @@ export function decide(local, remote) {
   return 'create';
 }
 
-export async function probe(stem, { root = DEFAULT_ROOT, apiUrl, tokenFile, github = true } = {}) {
+export async function probe(stem, { root = DEFAULT_ROOT, roots = null, apiUrl, tokenFile, github = true } = {}) {
   checkName(stem);
-  const local = probeLocal(root, stem);
+  const dirs = roots && roots.length ? roots : [root];
+  const local = dirs.flatMap((r) => probeLocal(r, stem));
   let remote = { owner: null, repos: [] };
   let githubError = null;
   if (github) {
     try { remote = await probeGithub(stem, { apiUrl, tokenFile }); } catch (err) { githubError = err.message; }
   }
-  const branch = githubError && !local.some((l) => l.kind === 'workflow-project') ? null : decide(local, remote.repos);
-  return { stem, root, branch, local, owner: remote.owner, github: remote.repos, githubError };
+  // Without GitHub the disk still decides when it found something; GitHub is needed only to connect or create.
+  const branch = githubError && !local.length ? null : decide(local, remote.repos);
+  return { stem, root: dirs[0], roots: dirs, branch, local, owner: remote.owner, github: remote.repos, githubError };
 }
 
 function adapter(projectDir, brainRel) {

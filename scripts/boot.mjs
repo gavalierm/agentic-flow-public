@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 // Boot sequence (P-021, P-022, P-024, P-026, P-038): items 1, 3-7 composed by the SessionStart hook.
 import fs from 'node:fs';
 import path from 'node:path';
-import { PLUGIN_ROOT, shortSha, git } from './util.mjs';
-import { WORKFLOW_CONFIG, readThreadState, writeThreadState } from './config.mjs';
+import { PLUGIN_ROOT, shortSha, git, toPosix } from './util.mjs';
+import { WORKFLOW_CONFIG, SCRATCH_DIR, readThreadState, writeThreadState } from './config.mjs';
 import { assembleRules } from './rules.mjs';
 import { buildIndexes, topicLine } from './index.mjs';
 import { heldTopics, mailboxTopics } from './topic.mjs';
@@ -116,6 +116,9 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
       ? `brain: none (optional, P-024): project without its own brain; do not propose one, it is created only on the operator's instruction`
       : ctx.brainInfo.error || `brain not found at ${rel}; propose: node <plugin>/bin/brain-init.mjs ${rel} (only after operator approval, P-024)`);
   }
+  // The harness names its own scratchpad in the system temp dir; the write hook refuses it (P-052) and the refusal cost
+  // turns (alice 2026-11-07: a patch script in /tmp was refused, the work waited for the operator).
+  if (harness === 'claude-code') version.push(`work files: ${toPosix(path.join(ctx.projectDir, SCRATCH_DIR))}/ (gitignored); the harness "scratchpad directory" in the system temp dir is not used here, the hook refuses writes outside the project (P-052)`);
   version.push(...notices);
   parts.push(`${BOOT_MARKERS[5]}\n${version.join('\n')}`);
 

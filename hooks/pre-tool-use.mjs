@@ -696,7 +696,13 @@ export function run(input) {
   const out = pathChecks(input, ctx, cwd);
   const decision = out?.hookSpecificOutput?.permissionDecision;
   if (decision === 'deny' && state) {
-    const { paths, write } = analyze(tool, toolInput, cwd, anchors);
+    const found = analyze(tool, toolInput, cwd, anchors);
+    const write = found.write;
+    // A P-052 refusal (write outside the project) is about the outside target only: the way it names, a work file in
+    // scratch/, may touch the other paths of the call (alice 2026-11-07: a patch script in the system temp dir locked
+    // the repo files it was to change for the rest of the turn, and the work stopped until the operator wrote "up").
+    const reasonText = out.hookSpecificOutput.permissionDecisionReason;
+    const paths = / is outside the (project|domain)/.test(reasonText) ? found.paths.filter((p) => !insideProject(ctx, p)) : found.paths;
     if (paths.length) writeThreadState(ctx.brainDir, ctx.thread, withDenial(readThreadState(ctx.brainDir, ctx.thread), { key: callKey(tool, toolInput), tool, paths, write, reason: out.hookSpecificOutput.permissionDecisionReason.slice(0, 160) }));
   }
   return out;

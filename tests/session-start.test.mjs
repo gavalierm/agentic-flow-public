@@ -195,3 +195,11 @@ test('session start fast-forwards the brain to origin; a clone with own changes 
     assert.match(fx.read('.gitattributes'), /# local edit/);
   } finally { fx.cleanup(); }
 });
+
+test('session start names scratch/ as the place for work files, not the harness scratchpad in the temp dir (P-052)', () => {
+  const fx = setup();
+  try {
+    const r = fx.hook('session-start.mjs', { source: 'startup' });
+    assert.match(r.context, new RegExp(`work files: ${path.join(fx.project, 'scratch').replace(/\\/g, '/').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/ .*scratchpad directory" in the system temp dir is not used`));
+  } finally { fx.cleanup(); }
+});

@@ -73,7 +73,7 @@ export function mailReport(ctx, text, maintainer = maintainerOf(ctx.policy)) {
   if (!res.ok) return { ok: false, why: `mail ${res.error || 'failed'}` };
   const d = res.data || {};
   if (d.queued) return { ok: false, why: 'mail unavailable (queued in the outbox)', id: d.id };
-  if (d.state !== 'pending' || !d.id) return { ok: false, why: `maintainer topic ${maintainer.comms} not on this mail server (message ${d.state || '?'}${d.notice_id ? `, notice ${d.notice_id}` : ''})`, id: d.id };
+  if (d.state !== 'pending' || !d.id) return { ok: false, why: `maintainer topic ${maintainer.comms} not on this mail server (message ${d.state || '?'}${d.notice_id ? `, notice ${d.notice_id}` : ''})`, id: d.id, notice: d.state === 'held' ? d.notice_id || null : null };
   return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${addr.project}/${addr.topic}` };
 }
 
@@ -113,6 +113,7 @@ function draft(ctx, title, body, why) {
 export async function report(ctx, { text, title, fromId } = {}, env = process.env) {
   const m = maintainerOf(ctx.policy);
   const why = [];
+  let held = null;
   if (fromId) {
     const rec = readReports(ctx)[fromId];
     if (!rec) return { reported: false, line: `no error report ${fromId} recorded on this machine; send it again: error.mjs report --text "..."` };
@@ -126,11 +127,16 @@ export async function report(ctx, { text, title, fromId } = {}, env = process.en
       return { reported: true, line: `reported: mail ${mail.id} -> ${mail.to}; without pickup by ${mail.expires_at || 'the deadline'} the bell says no reply / undelivered: then error.mjs report --from ${mail.id} (P-003)` };
     }
     why.push(mail.why);
+    held = mail.notice || null;
   }
   const issue = await issueReport(ctx, title, text, m, env);
   if (issue.ok) {
     if (fromId) writeReport(ctx, fromId, { issue: issue.url });
-    return { reported: true, line: `reported: issue ${issue.url} (${why.join('; ')}); tell the operator the link (P-003)` };
+    // The held copy of an issued report only leaves the operator a "new topic?" notice about nothing (operator
+    // 2026-11-07: an instance asked what to do with three such notices); the sender withdraws its own message.
+    let tail = '';
+    if (held) tail = runClient(ctx, ['decide', '--notice', held, '--decision', 'discard']).ok ? `; held mail copy discarded (notice ${held})` : `; held mail copy stays (notice ${held}): the operator may discard it`;
+    return { reported: true, line: `reported: issue ${issue.url} (${why.join('; ')})${tail}; tell the operator the link (P-003)` };
   }
   why.push(issue.why);
   const file = draft(ctx, title, text, why);

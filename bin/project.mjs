@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Project wizard script (skill workflow:project). Repositories live under the operator's GitHub account.
-//   project.mjs probe <stem> [--root <dir>] [--no-github] [--json]   find the project on disk and on GitHub
+//   project.mjs probe <stem> [--root <dir> ...] [--no-github] [--json]   find the project on disk and on GitHub (name match ignores case, spaces, dashes)
 //   project.mjs restore <name> [--root <dir>]                        pull the repositories and brain when clean, regenerate settings
 //   project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--root <dir>]
 //   project.mjs create <name> [--repo <repo>] --purpose "<one sentence>" [--root <dir>]
@@ -14,15 +14,19 @@
 // P-008; an older one without a key may be removed when its rewrite is written).
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseArgs, fail } from '../scripts/util.mjs';
+import { parseArgs, fail, toPosix } from '../scripts/util.mjs';
 import { loadContext, inSubagent, isWakeTurn } from '../scripts/config.mjs';
 import { brainWrite, formatWriteResult } from '../scripts/brain.mjs';
 import { setWizard } from '../scripts/wizard.mjs';
-import { probe, restore, connect, create, inventory, formatInventory, DEFAULT_ROOT } from '../scripts/project.mjs';
+import { probe, restore, connect, create, inventory, formatInventory, projectRoots } from '../scripts/project.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const [cmd, target] = args._;
-const root = args.root ? path.resolve(args.root) : DEFAULT_ROOT;
+// Roots: every --root, WORKFLOW_PROJECTS_ROOT, ~/agentic when it exists, the root of the session project; new projects go to the first.
+const session = (() => { try { const c = loadContext({ requireBrain: false }); return { projectDir: c.projectDir, brainDir: c.brainDir }; } catch { return {}; } })();
+const explicit = process.argv.slice(2).flatMap((a, i, all) => (a === '--root' && all[i + 1] ? [all[i + 1]] : a.startsWith('--root=') ? [a.slice(7)] : []));
+const roots = projectRoots({ explicit, ...session });
+const root = roots[0];
 const gh = { apiUrl: process.env.GITHUB_API_URL || undefined, tokenFile: args['token-file'] || undefined };
 for (const k of Object.keys(gh)) if (gh[k] === undefined) delete gh[k];
 const out = (s) => process.stdout.write(`${s}\n`);
@@ -34,10 +38,10 @@ function guardWrite() {
 }
 
 function formatProbe(p) {
-  const lines = [`branch: ${p.branch ?? 'unknown (GitHub not reachable)'}`];
-  lines.push(`disk (${p.root}):${p.local.length ? '' : ' nothing'}`);
-  for (const l of p.local) lines.push(`- ${l.name}: ${l.kind}${l.brain ? `, brain ${l.brain}` : ''}${l.remote ? `, origin ${l.remote}` : l.repo ? ', no origin' : ', not a repository'}`);
-  if (p.githubError) lines.push(`github: ${p.githubError}`);
+  const lines = [`branch: ${p.branch ?? 'unknown (nothing on disk, GitHub not reachable)'}`];
+  lines.push(`disk (${p.roots.map(toPosix).join(', ')}):${p.local.length ? '' : ' nothing'}`);
+  for (const l of p.local) lines.push(`- ${toPosix(l.dir)}: ${l.kind}${l.brain ? `, brain ${l.brain}` : ''}${l.remote ? `, origin ${l.remote}` : l.repo ? ', no origin' : ', not a repository'}`);
+  if (p.githubError) lines.push(`github: ${p.githubError}${p.local.length ? ' (branch from disk; GitHub access is needed only for connect/create: ask for it then, not now)' : ''}`);
   else {
     lines.push(`github (${p.owner}):${p.github.length ? '' : ' nothing'}`);
     for (const r of p.github) lines.push(`- ${r.full}: ${r.kind}, ${r.private ? 'private' : 'public'}${r.archived ? ', archived' : ''}, default ${r.branch}, last push ${String(r.pushed || '-').slice(0, 10)}${r.description ? `, "${r.description}"` : ''}`);
@@ -48,7 +52,7 @@ function formatProbe(p) {
 try {
   if (cmd === 'probe') {
     if (!target) fail('usage: project.mjs probe <stem>');
-    const p = await probe(target, { root, github: !args['no-github'], ...gh });
+    const p = await probe(target, { roots, github: !args['no-github'], ...gh });
     out(args.json ? JSON.stringify(p, null, 2) : formatProbe(p));
   } else if (cmd === 'restore') {
     if (!target) fail('usage: project.mjs restore <name>');

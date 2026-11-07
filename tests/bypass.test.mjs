@@ -133,3 +133,21 @@ test('hook: settings that enforce the workflow and git past its hooks ask the op
     assert.equal(g.json.hookSpecificOutput?.permissionDecision, 'ask', g.stderr);
   } finally { fx.cleanup(); }
 });
+
+test('hook: a write refused outside the project (P-052) locks only the outside target, not the project files of the call', () => {
+  const fx = setup();
+  try {
+    const src = path.join(fx.project, 'src', 'a.js');
+    fs.mkdirSync(path.dirname(src), { recursive: true });
+    fs.writeFileSync(src, 'x\n');
+    const outside = path.join(os.tmpdir(), `wf-p052-${process.pid}.mjs`);
+    const refused = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `cat > ${outside} <<'X'\nx\nX\nnode ${outside} ${src}` } });
+    assert.equal(refused.json.hookSpecificOutput?.permissionDecision, 'deny', refused.stderr);
+    assert.match(refused.json.hookSpecificOutput.permissionDecisionReason, /outside the project/);
+    const work = path.join(fx.project, 'scratch', 'p.mjs');
+    const next = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `node ${work} ${src}` } });
+    assert.doesNotMatch(JSON.stringify(next.json || {}), /P-054/, 'the way the refusal names (scratch/) may touch the project files');
+    const again = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `node -e "require('fs').writeFileSync(process.argv[1], 'x')" ${outside}` } });
+    assert.match(JSON.stringify(again.json || {}), /P-054|outside the project/, 'the outside target stays refused');
+  } finally { fx.cleanup(); }
+});
