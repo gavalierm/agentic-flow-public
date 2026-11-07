@@ -70,7 +70,7 @@ test('skill: new agentic skill carries origin; second save extends it; operator 
     fs.mkdirSync(path.join(fx.brain, 'skills', 'operator', 'release'), { recursive: true });
     fs.writeFileSync(path.join(fx.brain, 'skills', 'operator', 'release', 'SKILL.md'), '---\nname: release\ndescription: x\n---\nx\n');
     r = fx.run('save.mjs', ['skill', 'release', '--content', 'y', '--origin', 'error']);
-    assert.equal(r.status, 1); assert.match(r.stderr, /belongs to the operator/);
+    assert.equal(r.status, 1); assert.match(r.stderr, /belongs to the operator: this edit changes its meaning/);
     r = fx.run('save.mjs', ['skill', 'save', '--description', 'x', '--content', 'y']);
     assert.equal(r.status, 1); assert.match(r.stderr, /workflow skill name/);
   } finally { fx.cleanup(); }

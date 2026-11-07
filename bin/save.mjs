@@ -26,6 +26,7 @@ import { renderHandover, checkHandover } from '../scripts/brain-checks.mjs';
 import { removeNames } from '../scripts/logs.mjs';
 import { setTopicState, readTopic } from '../scripts/topic.mjs';
 import { workflowSkillNames, PROJECT_SKILLS_DIR } from '../scripts/skills-sync.mjs';
+import { checkSkill, meaningDiff } from '../scripts/skill-check.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const [category, ...rest] = args._;
@@ -303,7 +304,6 @@ function saveSkill(ctx) {
   const ops = [];
   let rel;
   if (hit) {
-    if (hit.owner === 'operator') fail(`skill ${hit.skillName} belongs to the operator (skills/operator); propose the change instead of editing (P-032)`);
     rel = hit.path;
     const parsed = parseFrontmatter(readText(path.join(ctx.brainDir, rel), ''));
     const data = { ...parsed.data, aliases: [...new Set([...asList(parsed.data.aliases), ...asList(args.aliases)])], updated: today() };
@@ -313,7 +313,16 @@ function saveSkill(ctx) {
     if (sed === null && !args.replace && repeatsBody(parsed.body, String(args.content))) fail(`--content repeats the body of skill ${hit.skillName}; pass only the addition, or --replace with the whole corrected body (P-003)`);
     // --sed: in-place edit of the body; description, origin and the rest of the frontmatter are kept.
     const body = sed !== null ? applySed(parsed.body, sed) : args.replace ? `${String(args.content).trim()}\n` : `${parsed.body.trim()}\n\n## Doplnenie ${today()}\n${String(args.content).trim()}\n`;
-    ops.push({ path: rel, content: serializeFrontmatter(data, body) });
+    const next = serializeFrontmatter(data, body);
+    // P-032 (operator 2026-11-07): an operator skill changes without approval only when its meaning stays (cosmetic
+    // edit, refactor); a change of meaning is reported to the operator and saved with --approved after their yes.
+    if (hit.owner === 'operator') {
+      const diff = sed === null && !args.replace ? ['adds a section (an addition is new meaning)'] : meaningDiff(readText(path.join(ctx.brainDir, rel), ''), next);
+      const approved = typeof args.approved === 'string' && args.approved.trim().length >= 2;
+      if (approved && ctx.thread && isWakeTurn(ctx.brainDir, ctx.thread)) fail('--approved: an operator skill cannot change meaning in a turn started by a message (P-047)');
+      if (diff.length && !approved) fail(`skill ${hit.skillName} belongs to the operator: this edit changes its meaning (${diff.slice(0, 8).join('; ')}${diff.length > 8 ? '; …' : ''}). Show the operator the change and why; after their yes save it again with --approved "<their words>" (P-032)`);
+    }
+    ops.push({ path: rel, content: next });
   } else {
     if (sed !== null) fail(`--sed: skill ${name} does not exist`);
     if (!args.description) fail('new skill needs --description "Použi, keď ..." (trigger, P-003)');
@@ -333,6 +342,12 @@ function saveSkill(ctx) {
     ops.push({ path: scriptRel, content: fs.readFileSync(file, 'utf8') });
     scripts.push(scriptRel);
   }
+  // Skill health (skill workflow:skill-check): a broken skill is not saved.
+  const skillDir = path.join(ctx.brainDir, path.dirname(rel));
+  const found = checkSkill({ name: path.basename(path.dirname(rel)), dir: skillDir, text: ops[0].content, owner: rel.split('/')[1], projectDir: ctx.projectDir, limit: ctx.policy?.limits?.skill_description_chars ?? 300, pendingScripts: scripts.map((s) => path.posix.basename(s)) });
+  const errors = found.filter((x) => x.level === 'error');
+  if (errors.length) fail(`skill check: ${errors.map((x) => `${x.line ? `line ${x.line} ` : ''}${x.message}`).join('; ')}; nothing saved (workflow:skill-check)`);
+  for (const w of found.filter((x) => x.level === 'warn')) out(`skill check warn: ${w.line ? `line ${w.line} ` : ''}${w.message}`);
   if (args['from-procedure']) ops.push(removeNames(ctx.brainDir, 'procedures.log', asList(args['from-procedure'])));
   if (args['from-sequence']) ops.push(removeNames(ctx.brainDir, 'sequences.log', asList(args['from-sequence'])));
   const res = brainWrite(ctx, { ops, message: `save skill ${name} (${hit ? (sed !== null ? 'edit' : 'extend') : origin})` });

@@ -38,12 +38,28 @@ export const CHECK_IN_REASON = (q) => `the reply ends with a check-in question: 
 // Words that admit a mistake (sk, cs, en). `\b` is ASCII-only, so letter boundaries use \p{L}.
 const MISTAKE = /(?<!\p{L})(omylom|omylem|nedopatrením|nechtiac|by mistake|accidentally|mistakenly|inadvertently|unintentionally)(?!\p{L})/iu;
 
+// A word next to the hit that makes it a guard or a negation, not an admission (alice 2026-11-07: "či sa skill
+// nespúšťa omylom" in a design was blocked): sk/cs negated verb (ne-), nie, aby, či, not, never, avoid, prevent, without.
+const GUARD = /^(ne\p{L}{2,}|nie|aby|či|zda|nič|nic|not|never|nothing|no|avoid\p{L}*|prevent\p{L}*|without|doesn't|don't|won't|isn't)$/iu;
+const NOT_NEGATION = /^(nedávno|nejak\p{L}*|neskôr|nedeľ\p{L}*|nech|než|nedopatrením|nechtiac)$/iu;
+
+function admits(plain, m) {
+  const words = (s) => s.split(/[^\p{L}']+/u).filter(Boolean);
+  // Only within the clause: "omylom, nie zámerne" is still an admission.
+  const before = plain.slice(Math.max(0, m.index - 40), m.index).split(/[,.;:!?\n]/).pop();
+  const after = plain.slice(m.index + m[0].length, m.index + m[0].length + 40).split(/[,.;:!?\n]/)[0];
+  const near = [...words(before).slice(-2), ...words(after).slice(0, 2)];
+  return !near.some((w) => GUARD.test(w) && !NOT_NEGATION.test(w));
+}
+
 /** The sentence of the reply that admits a mistake, or null. */
 export function mistakeClaim(text) {
   if (typeof text !== 'string') return null;
   // A quoted word is a mention, not an admission (alice 2026-11-03: the reply describing this hook was blocked).
   const plain = text.replace(/„[^“\n]*“|"[^"\n]*"|`[^`\n]*`/g, (q) => ' '.repeat(q.length));
-  const m = MISTAKE.exec(plain);
+  const re = new RegExp(MISTAKE.source, 'giu');
+  let m;
+  while ((m = re.exec(plain)) && !admits(plain, m)) { /* a guarded or negated use: look further */ }
   if (!m) return null;
   const from = Math.max(text.lastIndexOf('\n', m.index), ...['. ', '! ', '? '].map((d) => text.lastIndexOf(d, m.index))) + 1;
   const ends = ['. ', '! ', '? ', '\n'].map((d) => text.indexOf(d, m.index)).filter((i) => i >= 0);

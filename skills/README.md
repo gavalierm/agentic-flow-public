@@ -18,5 +18,6 @@ Popis skillu je trigger (najviac 300 znakov, P-022). Skilly projektu patria do b
 | `shell` | P-003, P-018 |
 | `verify` | P-019, P-003 |
 | `secrets` | P-018, P-003 |
+| `skill-check` | P-003, P-032, P-052 |
 
 Po pilote: `promote`, `user-context`.

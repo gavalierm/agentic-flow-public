@@ -9,9 +9,9 @@ test('mistakeClaim: admitted mistakes are found with their sentence; other words
   // alice 2026-11-03: the pilot test topic was created in the wrong brain and the reply only said so.
   const alice = 'Hotové. Pri teste v pilote vznikla **omylom** téma tt-free v brain alice. Súhlasíš?';
   assert.equal(mistakeClaim(alice), 'Pri teste v pilote vznikla omylom téma tt-free v brain alice.');
-  for (const t of ['Omylom som zmazal súbor.', 'Soubor jsem smazal omylem.', 'I accidentally pushed to main.', 'It was deleted by mistake.', 'nedopatrením prepísané', 'Nechtiac som to spustil.'])
+  for (const t of ['Omylom som zmazal súbor.', 'Soubor jsem smazal omylem.', 'I accidentally pushed to main.', 'It was deleted by mistake.', 'nedopatrením prepísané', 'Nechtiac som to spustil.', 'Nedávno som omylom zmazal súbor.', 'Skill sa spustil omylom, nie zámerne.'])
     assert.ok(mistakeClaim(t), t);
-  for (const t of ['Hotové, vydané.', 'Omylový stav nenastal.', 'Hook na „omylom“: keď odpoveď obsahuje „omylom“ alebo "by mistake", zablokuje ju.', 'Slovo `accidentally` je v zozname.', 'mistake handling is in P-003', '', undefined, 'neomylný'])
+  for (const t of ['Hotové, vydané.', 'Omylový stav nenastal.', 'Hook na „omylom“: keď odpoveď obsahuje „omylom“ alebo "by mistake", zablokuje ju.', 'Slovo `accidentally` je v zozname.', 'mistake handling is in P-003', '', undefined, 'neomylný', 'Over, či je spúšťač jasný a nespúšťa sa omylom.', 'Guard so that nothing is accidentally installed.', 'aby sa omylom nespustil', 'This prevents accidentally pushing to main.'])
     assert.equal(mistakeClaim(t), null, String(t));
 });
 

@@ -21,6 +21,7 @@ Vstupné body skriptov, volané ako `node <plugin>/bin/<name>.mjs` v koreni proj
 | `delegate.mjs prepare|check` | P-027, P-028 | skript skillu `delegate` |
 | `t3-workarounds.mjs list|check [--t3-home] [--t3] [--thread] [--no-upstream] [--json]` | PLAN 35 | register T3 workaroundov (`docs/t3-workarounds.json`) a ich kontrola po každom upgrade T3; `FAIL` → exit 1 |
 | `consolidate.mjs report` | P-010 | skript skillu `consolidate` |
+| `skill-check.mjs [<skill>]`, `skill-check.mjs diff <skill> --file <nový>` | P-003, P-032 | skript skillu `skill-check`; tú istú kontrolu spúšťa `save skill` |
 | `log.mjs flush|failures|names` | P-030 | logy pozorovaní (volá ich hook Stop) |
 | `comms.mjs status|count|list|receive|ack|send|notices|decide|register` | P-041, P-042, P-044, P-047 | skript skillu `comms`: obal nad klientom `agentic-comms` s konfiguráciou projektu; telo správy vypisuje ako dáta |
 | `services.mjs install <repo> [<tag>]` | D-0003 | nainštalované vydanie: `~/services/<repo>/` = checkout tagu repa z domény (klon z origin, ak chýba; lokálne zmeny odmietne); jediná cesta zmeny `~/services` (priamy zápis hook zamietne) |

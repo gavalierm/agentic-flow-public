@@ -11,6 +11,7 @@ import { readMemory, readSkills } from '../scripts/records.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
 import { tokens } from '../scripts/keys.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
+import { checkProject } from '../scripts/skill-check.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const out = (s) => process.stdout.write(s + '\n');
@@ -50,7 +51,8 @@ export function report(ctx) {
   const rulesDir = path.join(ctx.brainDir, 'rules');
   const projectRules = fs.existsSync(rulesDir) ? fs.readdirSync(rulesDir).filter((f) => f.endsWith('.md') && f !== 'README.md').map((f) => ({ name: f.replace(/\.md$/, ''), chars: fs.readFileSync(path.join(rulesDir, f), 'utf8').length })).sort((a, b) => b.chars - a.chars) : [];
   const rules = { chars: assembled.chars, lines: assembled.lines, over: assembled.overLimit, project: projectRules };
-  return { limits: [...idx.warnings, ...assembled.overLimit], counts: idx.counts, stale, duplicates, mergeable, byOrigin, rules };
+  const health = checkProject(ctx).filter((r) => r.findings.length).map((r) => ({ name: r.name, errors: r.findings.filter((f) => f.level === 'error').length, warns: r.findings.filter((f) => f.level === 'warn').length }));
+  return { limits: [...idx.warnings, ...assembled.overLimit], counts: idx.counts, stale, duplicates, mergeable, byOrigin, rules, health };
 }
 
 try {
@@ -65,6 +67,7 @@ try {
     out(`stale derived (fingerprint changed, re-derive or delete): ${r.stale.length ? r.stale.join(', ') : 'none'}`);
     out(`possible duplicate subjects (merge): ${r.duplicates.length ? r.duplicates.map((d) => `${d.token}: ${d.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`agentic skills sharing a tool/work token (merge only same tool): ${r.mergeable.length ? r.mergeable.map((m) => `${m.token}: ${m.paths.join(' + ')}`).join('; ') : 'none'}`);
+    out(`skill health (skill-check.mjs <name> for details, skill workflow:skill-check): ${r.health.length ? r.health.map((h) => `${h.name} ${h.errors}e/${h.warns}w`).join(', ') : 'all ok'}`);
     out(`operator records (never deleted by the agent, only proposed): ${r.byOrigin.operator.length}`);
     out(`observed records (verify cheaply or delete): ${r.byOrigin.observed.length ? r.byOrigin.observed.join(', ') : 'none'}`);
   }
