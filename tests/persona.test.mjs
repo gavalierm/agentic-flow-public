@@ -120,6 +120,19 @@ test('P-052: write outside the project is denied with the scratch route (operato
   } finally { fx.cleanup(); }
 });
 
+test('P-052: temp dir named by a variable or a PowerShell cmdlet is denied (Windows agent, alice 2026-11-07)', () => {
+  const fx = setup();
+  try {
+    for (const [tool, command] of [['Bash', 'echo x > $TMPDIR/a.mjs'], ['PowerShell', 'Set-Content -Path $env:TEMP\\a.ps1 -Value x'], ['Bash', 'f=$(mktemp); echo x > $f']]) {
+      const r = fx.hook('pre-tool-use.mjs', { tool_name: tool, tool_input: { command } });
+      assert.equal(r.json.hookSpecificOutput?.permissionDecision, 'deny', command);
+      assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /outside the project/, command);
+    }
+    const r = fx.hook('pre-tool-use.mjs', { tool_name: 'PowerShell', tool_input: { command: 'Set-Content -Path scratch\\a.ps1 -Value x' } });
+    assert.notEqual(r.json.hookSpecificOutput?.permissionDecision, 'deny', 'scratch in the project passes');
+  } finally { fx.cleanup(); }
+});
+
 test('P-052: a temp-dir target is denied with the scratch path (no operator question); a hand-made worker brief is denied', () => {
   const fx = setup();
   try {

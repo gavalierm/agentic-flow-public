@@ -164,9 +164,21 @@ export function expandAssigned(command) {
   }).join('');
 }
 
+/**
+ * The system temp dir written through a variable or a temp-file helper, as its real path: `$TMPDIR`, `$TEMP`, `$TMP`
+ * (bash), `$env:TEMP`, `[IO.Path]::GetTempPath()` (PowerShell), `%TEMP%` (cmd), `$(mktemp)`. Unexpanded they read as
+ * a file in the session dir and the write passed (alice 2026-11-07: on Windows the temp tendency goes through $env:TEMP).
+ */
+export function expandTemp(command, tmp = os.tmpdir()) {
+  const dir = String(tmp).replace(/ /g, MASK[' ']);
+  return String(command)
+    .replace(/\$(?:\{(?:TMPDIR|TEMP|TMP)\}|(?:TMPDIR|TEMP|TMP)\b)|\$env:(?:TEMP|TMP)\b|%(?:TEMP|TMP)%|\[(?:System\.)?IO\.Path\]::GetTemp(?:Path|FileName)\(\)/gi, dir)
+    .replace(/\$\(\s*mktemp\b(?![^)]*(?:\s-p\b|--tmpdir=))[^)]*\)|`\s*mktemp\b(?![^`]*(?:\s-p\b|--tmpdir=))[^`]*`/g, `${dir}/mktemp`);
+}
+
 /** Heredoc bodies removed, operators and spaces inside quotes masked, so only real shell syntax is parsed. */
 export function maskShell(command) {
-  let cmd = expandAssigned(String(command));
+  let cmd = expandAssigned(expandTemp(String(command)));
   cmd = cmd.replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n\s*\2\s*(?=\n|$)/g, (m) => m.split('\n')[0]);
   return cmd.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, (q) => q.replace(/[>;&| ]/g, (c) => MASK[c]));
 }
@@ -291,6 +303,27 @@ const OUTPUT_OPT = { test: (w) => w === '-o' || OUTPUT_LONG.test(w) };
 // In find and test/[ `-o` is the logical OR, not an output file (alice 2026-11-04: `find . -path ./.git -prune -o -type f`
 // was denied as a write to `-type`).
 const OR_O_PROGS = new Set(['find', 'test', '[', '[[']);
+// PowerShell write cmdlets and their aliases (Windows agent, alice 2026-11-07: `Set-Content -Path $env:TEMP\a.ps1` was no
+// write). The target is -Path/-FilePath/-LiteralPath, for copy/move -Destination, else the first (copy/move: second) positional.
+const PS_WRITE = /^(set-content|add-content|out-file|new-item|export-csv|export-clixml|sc|ac|ni)$/i;
+const PS_COPY = /^(copy-item|move-item|copy|move|cpi|mi|cp|mv)$/i;
+const PS_SWITCH = /^-(force|append|nonewline|noclobber|recurse|passthru|whatif|confirm)$/i;
+export function psWriteTargets(words, prog) {
+  const copy = PS_COPY.test(prog);
+  if (!copy && !PS_WRITE.test(prog)) return [];
+  const named = copy ? /^-destination$/i : /^-(path|filepath|literalpath)$/i;
+  const positional = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (named.test(w)) return words[i + 1] ? [words[i + 1]] : [];
+    if (/^-[A-Za-z]/.test(w)) { if (!PS_SWITCH.test(w) && !/:/.test(w)) i++; continue; }
+    positional.push(w);
+  }
+  const dest = positional[copy ? 1 : 0];
+  return dest ? [dest] : [];
+}
+/** The value of a PowerShell argument in parentheses, `([IO.Path]::GetTempPath())`, is the path inside them. */
+const psValue = (w) => String(w).replace(/^\(+|\)+$/g, '');
 export function shellWrites(command, cwd = process.cwd(), env = process.env) {
   const found = [];
   let base = cwd;
@@ -305,6 +338,9 @@ export function shellWrites(command, cwd = process.cwd(), env = process.env) {
     const args = words.slice(lead + 1).filter((w) => !w.startsWith('-') && !/^['"]?[$<>|(`]/.test(w) && !/^[0-9]*>/.test(w));
     if ((prog === 'cp' || prog === 'mv' || prog === 'ln' || prog === 'install') && args.length > 1) add(args[args.length - 1]);
     if (prog === 'tee' || prog === 'mkdir' || prog === 'touch') args.forEach(add);
+    if (prog && prog !== 'cp' && prog !== 'mv') psWriteTargets(words.slice(lead + 1), prog).forEach((w) => add(psValue(w)));
+    // A bare `mktemp` / `New-TemporaryFile` creates the file in the system temp dir (`$(mktemp)` is expanded by expandTemp).
+    if ((prog === 'mktemp' && !words.some((w) => w === '-p' || w.startsWith('--tmpdir='))) || /^new-temporaryfile$/i.test(prog || '')) found.push(path.join(os.tmpdir(), 'mktemp'));
     for (let i = lead + 1; i < words.length; i++) {
       const w = unmask(words[i]);
       const eq = w.match(/^(--[a-zA-Z-]+)=(.+)$/);

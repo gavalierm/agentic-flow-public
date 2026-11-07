@@ -113,6 +113,19 @@ test('shellWrites: -o of find and test is the logical OR, not an output file; gc
   assert.deepEqual(shellWrites('curl -s -o out.json https://x', '/w'), ['/w/out.json']);
 });
 
+test('shellWrites: temp dir variables, mktemp and PowerShell write cmdlets resolve to their target (alice 2026-11-07)', () => {
+  const t = os.tmpdir();
+  assert.deepEqual(shellWrites('echo x > ${TMPDIR}/a', '/w'), [path.join(t, 'a')]);
+  assert.deepEqual(shellWrites('echo x > %TEMP%/a.bat', '/w'), [path.join(t, 'a.bat')]);
+  assert.deepEqual(shellWrites('mktemp -d', '/w'), [path.join(t, 'mktemp')]);
+  assert.deepEqual(shellWrites('mktemp -p scratch', '/w'), []);
+  assert.deepEqual(shellWrites('"x" | Out-File -FilePath $env:TMP/o.txt -Encoding utf8', '/w'), [path.join(t, 'o.txt')]);
+  assert.deepEqual(shellWrites('Set-Content $env:TEMP/a.ps1 x', '/w'), [path.join(t, 'a.ps1')]);
+  assert.deepEqual(shellWrites('New-Item -ItemType File -Path n.txt -Force', '/w'), ['/w/n.txt']);
+  assert.deepEqual(shellWrites('Copy-Item -Path a.ps1 -Destination ([IO.Path]::GetTempPath())', '/w'), [t]);
+  assert.deepEqual(shellWrites('Get-Content $env:TEMP/a', '/w'), []);
+});
+
 test('code topic in a domain: git worktree <domain>/.worktrees/<repo>/<id> on topic/<id>; done merges it and removes the worktree and branch', async () => {
   const { spawnSync } = await import('node:child_process');
   const fx = setup();
