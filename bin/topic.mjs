@@ -5,7 +5,7 @@
 //           handoff <id> [--task ".." --done ".." --next ".." --files ".." --questions ".."] [--leave-outbox]
 //                        to another machine: flush logs, send outbox, handover, release, push (P-040)
 //           main [--force --operator-approved]   persona main thread (topic main, P-045)
-//           thread <id> [--task ".."] [--mode operator|auto]   new T3 thread for a free topic (P-036)
+//           thread <id> [--task ".."] [--mode operator|auto] [--for-thread <id>]   new T3 thread for a free topic (P-036)
 //           pause <id> [--until <ISO | <n>d | <n>h>] [--reason ".."]   snooze: no bells until resumed or until
 //           resume <id>
 //           list | status | copy <id>
@@ -36,10 +36,10 @@ try {
     if (res.write.unpushed) out(`unpushed: ${res.write.unpushed}`);
     if (res.claim && !res.claim.ok) process.exit(1);
   } else if (cmd === 'thread') {
-    if (!id) fail('usage: topic.mjs thread <id> [--task ".."] [--mode operator|auto]');
-    const res = startThreadForTopic(ctx, id, { task: args.task || null, mode: args.mode });
+    if (!id) fail('usage: topic.mjs thread <id> [--task ".."] [--mode operator|auto] [--for-thread <id started by t3_thread_launch>]');
+    const res = startThreadForTopic(ctx, id, { task: args.task || null, mode: args.mode, forThread: typeof args['for-thread'] === 'string' ? args['for-thread'] : null });
     if (!res.ok) fail(res.reason);
-    out(`thread ${res.thread} started with title ${id}; it holds the topic${res.claim.pushed ? ', pushed' : ''}`);
+    out(`thread ${res.thread} ${args['for-thread'] ? 'assigned' : `started with title ${id}`}; it holds the topic${res.claim.pushed ? ', pushed' : ''}`);
     if (res.claim.comms && !res.claim.comms.ok && !res.claim.comms.skipped) out(`comms: topic not registered (${res.claim.comms.reason})`);
   } else if (cmd === 'claim') {
     if (!id) fail('usage: topic.mjs claim <id> [--force --operator-approved]');

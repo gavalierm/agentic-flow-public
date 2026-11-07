@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
-import { loadContext, allowOutside, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR, isWakeTurn } from '../scripts/config.mjs';
+import { loadContext, allowOutside, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR, isWakeTurn } from '../scripts/config.mjs';
 import { wizardOpen } from '../scripts/wizard.mjs';
 import { git, isInside, toPosix } from '../scripts/util.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
@@ -373,7 +373,23 @@ function outsideReason(ctx, abs) {
   const scratch = toPosix(path.join(ctx.projectDir, SCRATCH_DIR));
   const where = ctx.domain ? `outside the domain ${toPosix(ctx.domain.root)}` : 'outside the project';
   const extra = ctx.domain ? '; a lasting exception is only the domain brain policy domain.allow_outside, changed on the operator\'s instruction' : '';
-  return `${toPosix(abs)} is ${where}${isTempPath(abs) ? ' (system temp dir)' : ''}; the agent writes only inside it: work files and tool output go to ${scratch}/ (gitignored, no confirmation, P-052)${extra}`;
+  return `${toPosix(abs)} is ${where}${isTempPath(abs) ? ' (system temp dir)' : ''}; the agent writes only inside it: work files and tool output go to ${scratch}/ (gitignored, no confirmation, P-052)${extra}${otherProjectHint(abs)}`;
+}
+/**
+ * The target belongs to another workflow project (its folder or a topic copy has .workflow.json): its work runs in a
+ * thread of that project. The adopt step "clean the old files in a code topic" was done from the wizard's thread and
+ * denied with only the scratch hint (Windows instance 2026-11-07, agentic-flow-public#9).
+ */
+function otherProjectHint(abs) {
+  for (let dir = path.dirname(path.resolve(abs)); ; dir = path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, '.workflow.json'))) {
+      let project = dir;
+      try { project = mainCheckout(dir); } catch { /* not a git checkout */ }
+      const p = toPosix(project);
+      return `; it belongs to the workflow project ${p}: that work runs in a thread of that project, not here (topic.mjs create <topic> --kind code --project ${p} --new-thread --task "..." or topic.mjs thread <topic> --project ${p} --task "...")`;
+    }
+    if (path.dirname(dir) === dir) return '';
+  }
 }
 /**
  * Installed releases (D-0003): `~/services/<repo>/` is a checkout of a release tag that the running services use; it

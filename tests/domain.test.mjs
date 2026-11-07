@@ -46,6 +46,14 @@ test('domain: sibling repos inside pass; Write, redirects and tool output dirs o
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(d.outside, 'a.txt'), content: 'x' } });
     assert.equal(decision(r), 'deny');
     assert.match(reason(r), /outside the domain .*scratch\/ \(gitignored, no confirmation, P-052\).*domain\.allow_outside/);
+    assert.doesNotMatch(reason(r), /belongs to the workflow project/);
+    // another workflow project (adopted from this thread): its work goes to a thread of that project (agentic-flow-public#9)
+    const other = path.join(d.outside, 'Home assistant', 'home-assistant');
+    fs.mkdirSync(path.join(other, 'config'), { recursive: true });
+    fs.writeFileSync(path.join(other, '.workflow.json'), '{}\n');
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: `git -C "${other}" rm -q CLAUDE.md; mv x "${other}/config/"` } });
+    assert.equal(decision(r), 'deny');
+    assert.match(reason(r), /belongs to the workflow project .*Home assistant\/home-assistant: that work runs in a thread of that project.*topic\.mjs create <topic> --kind code --project/);
     // alice 2026-11-04: `wrangler deploy --dry-run --outdir /tmp/claude-1007/wr` wrote to the system temp dir
     for (const command of [`npx wrangler deploy --dry-run --outdir ${d.outside}/wr`, `echo x > ${d.outside}/f`, `cp a.txt ${d.outside}/`, `mkdir -p ${d.outside}/n`, `rm -rf ${d.outside}/old`, `tsc --outDir=${d.outside}/o`]) {
       r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } });

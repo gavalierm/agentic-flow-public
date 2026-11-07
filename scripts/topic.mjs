@@ -160,7 +160,7 @@ function createTopicUnlocked(ctx, { id, subject, kind = 'discussion', mode, clai
     // P-036: a new topic gets its own T3 thread titled by the topic; its first message shows what the topic holds, so the
     // operator does not have to prompt it (alice 2026-11-02). Failure keeps the topic free and says why.
     const started = startTopicThread(ctx, topic, undefined, { task });
-    if (!started.ok) { out.claim = { ok: false, reason: `topic ${id} created, but no thread was started (${started.reason}); claim it with topic.mjs claim ${id} or start its thread later with topic.mjs thread ${id}` }; return out; }
+    if (!started.ok) { out.claim = { ok: false, reason: `topic ${id} created, but no thread was started (${started.reason}); ${started.fallback}; or claim it here with topic.mjs claim ${id}` }; return out; }
     out.thread = started.thread;
     forThread = started.thread;
   }
@@ -195,18 +195,53 @@ export function topicThreadMessage(topic, { task = null } = {}) {
   ].join('\n');
 }
 
+/**
+ * Command to spawn on this platform. Windows: spawnSync finds only `<name>.exe` by itself, an npm shim `t3.cmd` gives
+ * ENOENT (Windows instance 2026-11-07, agentic-flow-public#10): the name is resolved over PATH and PATHEXT, a .cmd/.bat runs
+ * through the shell with quoted arguments.
+ */
+export function spawnTarget(name, args, { platform = process.platform, env = process.env, exists = fs.existsSync } = {}) {
+  if (platform !== 'win32' || /[\\/]/.test(name) && path.extname(name)) return { file: name, args, shell: false };
+  const exts = path.extname(name) ? [''] : String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+  const dirs = /[\\/]/.test(name) ? [''] : String(env.PATH || env.Path || '').split(';').filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const full = dir ? path.win32.join(dir, name + ext) : name + ext;
+      if (!exists(full)) continue;
+      if (!/\.(cmd|bat)$/i.test(full)) return { file: full, args, shell: false };
+      const q = (a) => `"${String(a).replace(/"/g, '""')}"`;
+      return { file: [full, ...args].map(q).join(' '), args: [], shell: true };
+    }
+  }
+  return { file: name, args, shell: false };
+}
+
+/** Where the first message of a topic's thread is kept when the CLI could not start it (fallback t3_thread_launch). */
+export function threadMessageFile(ctx, id) {
+  return path.join(ctx.projectDir, 'scratch', `topic-${id}-thread.md`);
+}
+
 /** T3-WORKAROUND(t3-cli-title) Start a T3 thread for the topic via `topics.thread_start_command` (default `t3 thread start --json`); returns its id. */
-export function startTopicThread(ctx, topic, run = spawnSync, { task = null } = {}) {
+export function startTopicThread(ctx, topic, run = spawnSync, { task = null, platform } = {}) {
   const cmd = String(ctx.policy?.topics?.thread_start_command || '').trim().split(/\s+/).filter(Boolean);
-  if (!cmd.length) return { ok: false, reason: 'topics.thread_start_command not set' };
-  const r = run(cmd[0], [...cmd.slice(1), '--title', topic.id, ctx.projectDir, '-'], { encoding: 'utf8', input: topicThreadMessage(topic, { task }), timeout: 30000 });
-  if (r.error || r.status !== 0) return { ok: false, reason: (r.error?.message || r.stderr || `exit ${r.status}`).trim().split('\n')[0] };
+  const input = topicThreadMessage(topic, { task });
+  const failed = (reason) => {
+    // No CLI on this machine (T3 Code without `t3` in PATH): the same thread through the T3 tool, then assigned here.
+    let file = null;
+    try { file = threadMessageFile(ctx, topic.id); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, input + '\n'); } catch { file = null; }
+    const fallback = `start it with the T3 tool t3_thread_launch (project ${ctx.projectDir}, title ${topic.id}, message${file ? ` = content of ${file}` : ': the topic subject and task'}), then: topic.mjs thread ${topic.id} --project ${ctx.projectDir} --for-thread <new thread id>`;
+    return { ok: false, reason, fallback };
+  };
+  if (!cmd.length) return failed('topics.thread_start_command not set');
+  const t = spawnTarget(cmd[0], [...cmd.slice(1), '--title', topic.id, ctx.projectDir, '-'], { platform });
+  const r = run(t.file, t.args, { encoding: 'utf8', input, timeout: 30000, shell: t.shell });
+  if (r.error || r.status !== 0) return failed((r.error?.message || r.stderr || `exit ${r.status}`).trim().split('\n')[0]);
   let thread = null;
   try {
     const d = JSON.parse(r.stdout);
     thread = d?.threadId ?? d?.thread?.threadId ?? d?.thread?.id ?? d?.id ?? null;
   } catch { thread = String(r.stdout || '').trim().split(/\s+/)[0] || null; }
-  if (!thread || !/^[A-Za-z0-9._:-]{1,200}$/.test(thread)) return { ok: false, reason: `no thread id in output of ${cmd.join(' ')}` };
+  if (!thread || !/^[A-Za-z0-9._:-]{1,200}$/.test(thread)) return failed(`no thread id in output of ${cmd.join(' ')}`);
   return { ok: true, thread };
 }
 
@@ -215,14 +250,16 @@ export function startTopicThread(ctx, topic, run = spawnSync, { task = null } = 
  * whose own thread never claimed it; mail has no address without a holder and t3_thread_send is not for other agents'
  * work (Bob 2026-11-03: thread of tracker-remote-verify stood on a question). A held topic is refused (takeover is P-037).
  */
-export function startThreadForTopic(ctx, id, { task = null, mode, run } = {}) {
+export function startThreadForTopic(ctx, id, { task = null, mode, run, forThread = null } = {}) {
   guardThread(ctx, 'thread');
   if (!topicExists(ctx.brainDir, id)) throw new Error(`topic ${id} does not exist (archived or never created)`);
   const holder = readHolder(ctx.brainDir, id);
   if (holder.thread) return { ok: false, reason: `topic ${id} ${heldBy(holder)}; a new thread needs a free topic: write to the holder (comms send --to ${id}) or ask the operator about a takeover (P-037)` };
+  // --for-thread: the thread was started by the T3 tool (fallback of a failed CLI start); it only gets the topic.
+  if (forThread) return { ok: true, thread: String(forThread), claim: assignTopic(ctx, id, String(forThread), { mode }) };
   const topic = readTopic(ctx.brainDir, id);
   const started = startTopicThread(ctx, topic, run, { task });
-  if (!started.ok) return { ok: false, reason: `no thread was started (${started.reason})` };
+  if (!started.ok) return { ok: false, reason: `no thread was started (${started.reason}); ${started.fallback}` };
   const claim = assignTopic(ctx, id, started.thread, { mode });
   return { ok: true, thread: started.thread, claim };
 }

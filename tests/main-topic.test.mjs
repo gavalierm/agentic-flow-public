@@ -140,8 +140,20 @@ test('topic create in T3 starts the topic thread titled by the topic, with its c
     fs.writeFileSync(path.join(fx.brain, 'policy.json'), JSON.stringify({ topics: { thread_start_command: `${process.execPath} -e process.exit(3)` } }));
     const f = fx.run('topic.mjs', ['create', 'broken', '--subject', 'Broken'], t3);
     assert.equal(f.status, 1);
-    assert.match(f.out, /no thread was started.*topic.mjs claim broken/);
+    assert.match(f.out, /no thread was started.*t3_thread_launch .*title broken.*topic.mjs thread broken .*--for-thread <new thread id>.*topic.mjs claim broken/);
     assert.equal(fx.read('topics/broken/holder.json').trim(), '{}');
+    // a machine without the t3 CLI (agentic-flow-public#10): the same thread through t3_thread_launch, then assigned
+    const msgFile = f.out.match(/content of (\S+?)\)/)[1];
+    assert.match(fs.readFileSync(msgFile, 'utf8'), /Téma broken \(discussion\)[\s\S]*Predmet: Broken/);
+    const nf = fx.run('topic.mjs', ['thread', 'broken', '--task', 'x'], t3);
+    assert.equal(nf.status, 1);
+    assert.match(nf.out, /no thread was started.*t3_thread_launch/);
+    const asg = fx.run('topic.mjs', ['thread', 'broken', '--for-thread', 'mcp:launched:9'], t3);
+    assert.equal(asg.status, 0, asg.out);
+    assert.match(asg.out, /thread mcp:launched:9 assigned; it holds the topic/);
+    assert.equal(JSON.parse(fx.read('topics/broken/holder.json')).thread, 'mcp:launched:9');
+    fx.run('topic.mjs', ['release', 'broken'], { env: { T3CODE_THREAD_ID: 'mcp:launched:9', WORKFLOW_THREAD_ID: 'mcp:launched:9' } });
+    assert.equal(fx.read('topics/broken/holder.json').trim(), '{}', 'free again for the next step');
     // topic thread: a free topic gets its own thread later (Bob 2026-11-03: a topic thread that never claimed it had no address)
     fs.writeFileSync(path.join(fx.brain, 'policy.json'), JSON.stringify({ topics: { thread_start_command: `${process.execPath} ${fake}` } }));
     const st = fx.run('topic.mjs', ['thread', 'broken', '--task', 'Over to'], t3);
@@ -153,6 +165,18 @@ test('topic create in T3 starts the topic thread titled by the topic, with its c
     assert.equal(held.status, 1);
     assert.match(held.out, /a new thread needs a free topic/);
   } finally { fx.cleanup(); }
+});
+
+test('thread start command on Windows: an npm shim t3.cmd is found over PATH and PATHEXT and run through the shell (agentic-flow-public#10)', async () => {
+  const { spawnTarget } = await import('../scripts/topic.mjs');
+  const env = { PATH: 'C:\\bin;C:\\npm', PATHEXT: '.EXE;.CMD' };
+  const t = spawnTarget('t3', ['--title', 'x', 'D:\\Claude projekty\\Home assistant\\ha', '-'], { platform: 'win32', env, exists: (f) => f === 'C:\\npm\\t3.CMD' });
+  assert.equal(t.shell, true);
+  assert.equal(t.file, '"C:\\npm\\t3.CMD" "--title" "x" "D:\\Claude projekty\\Home assistant\\ha" "-"');
+  const exe = spawnTarget('t3', ['a'], { platform: 'win32', env, exists: (f) => f === 'C:\\bin\\t3.EXE' });
+  assert.deepEqual(exe, { file: 'C:\\bin\\t3.EXE', args: ['a'], shell: false });
+  assert.deepEqual(spawnTarget('t3', ['a'], { platform: 'linux', env }), { file: 't3', args: ['a'], shell: false });
+  assert.deepEqual(spawnTarget('t3', ['a'], { platform: 'win32', env, exists: () => false }), { file: 't3', args: ['a'], shell: false });
 });
 
 test('topic main in a wake turn: first adoption allowed, taking over a held main refused (P-047)', async () => {

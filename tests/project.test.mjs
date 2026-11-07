@@ -231,6 +231,31 @@ test('connect refuses an existing directory that is not the clone, and a brain b
   } finally { await hub.close(); sb.cleanup(); }
 });
 
+test('domain is the folder name the operator chose: spaces allowed, set aside the old folder of that name first (operator 2026-11-07)', async () => {
+  const { checkDomainName, domainDir } = await import('../scripts/config.mjs');
+  const { sessionRoot } = await import('../scripts/project.mjs');
+  assert.equal(checkDomainName('Home assistant'), 'Home assistant');
+  for (const bad of ['', ' ', 'a/b', 'a\\b', 'x:y', 'trail ', ' lead', 'dot.', '..', 'q?']) assert.throws(() => checkDomainName(bad), /one folder name/, bad);
+  assert.equal(sessionRoot('/d/C p/Home assistant/home-assistant', '/d/C p/Home assistant/home-assistant-brain'), path.resolve('/d/C p'), 'domain with a space');
+  const sb = sandbox();
+  const hub = await fakeGithub(sb);
+  try {
+    const opts = { root: sb.root, apiUrl: hub.apiUrl, tokenFile: sb.tokenFile, remoteFor: sb.remoteFor };
+    assert.equal(domainDir(sb.root, 'home-assistant', 'Home assistant'), path.join(sb.root, 'Home assistant'));
+    sb.seed('home-assistant', { 'a.txt': 'a\n' });
+    fs.mkdirSync(path.join(sb.root, 'Home assistant', 'config'), { recursive: true });
+    await assert.rejects(connect({ project: 'home-assistant', domain: 'Home assistant', ...opts }), /is not a workflow domain.*--set-aside "Home assistant"/s);
+    await assert.rejects(connect({ project: 'home-assistant', domain: 'bad/name', ...opts }), /one folder name/);
+    const r = await connect({ project: 'home-assistant', domain: 'Home assistant', setAside: 'Home assistant', ...opts });
+    assert.ok(r.lines.includes('set aside: Home assistant -> Home assistant.pre-adopt'), r.lines.join('\n'));
+    assert.equal(r.projectDir, path.join(sb.root, 'Home assistant', 'home-assistant'));
+    assert.ok(fs.existsSync(path.join(sb.root, 'Home assistant', 'home-assistant', '.git')));
+    assert.ok(!fs.existsSync(path.join(sb.root, 'Home-assistant')), 'no second domain by the project name');
+    // later calls without --domain find it: same name up to spaces and dashes, a workflow project inside
+    assert.equal(domainDir(sb.root, 'home-assistant'), path.join(sb.root, 'Home assistant'));
+  } finally { await hub.close(); sb.cleanup(); }
+});
+
 test('create: private project and brain repositories, purpose in the README, settings; refuses a taken name', async () => {
   const sb = sandbox();
   const hub = await fakeGithub(sb);

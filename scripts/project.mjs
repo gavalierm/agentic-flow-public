@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PLUGIN_ROOT, git, gitRemote, exists, readJson, toPosix } from './util.mjs';
-import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDirName, DOMAIN_MARKER } from './config.mjs';
+import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDirName, checkDomainName, DOMAIN_MARKER } from './config.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
 import { gh, ghOwner, ghOwnedRepos, ghRootNames, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
 
@@ -55,7 +55,9 @@ export function sessionRoot(projectDir, brainDir) {
   const proj = path.resolve(projectDir);
   const parent = path.dirname(proj);
   const brain = brainDir ? path.resolve(brainDir) : null;
-  const nested = brain && brain !== proj && path.dirname(brain) === parent && path.basename(brain).toLowerCase().startsWith(`${path.basename(parent).toLowerCase()}-`);
+  // The domain may be a chosen folder name with spaces (`Home assistant` holding home-assistant-brain).
+  const nested = brain && brain !== proj && path.dirname(brain) === parent && (path.basename(brain).toLowerCase().startsWith(`${path.basename(parent).toLowerCase()}-`)
+    || matchKey(path.basename(brain).replace(/-brain$/i, '')) === matchKey(path.basename(parent)));
   return nested ? path.dirname(parent) : parent;
 }
 
@@ -147,9 +149,9 @@ function pullIfClean(dir, label) {
  * Restore a project on disk: pull its repositories and brain when clean, regenerate the settings. The name is a
  * project folder (all its workflow repositories) or an older flat workflow project.
  */
-export function restore(name, { root = DEFAULT_ROOT } = {}) {
+export function restore(name, { root = DEFAULT_ROOT, domain = null } = {}) {
   checkName(name);
-  const base = domainDir(root, name);
+  const base = domainDir(root, name, domain);
   const repos = exists(path.join(base, WORKFLOW_CONFIG)) ? [base] : subdirs(base).map((c) => path.join(base, c)).filter((d) => exists(path.join(d, WORKFLOW_CONFIG)));
   if (!repos.length) throw new Error(`${base} holds no workflow project (no ${WORKFLOW_CONFIG}); use connect or adopt`);
   const lines = [];
@@ -209,14 +211,19 @@ function setAsideNamed(root, setAside) {
   return plan.map(({ n, from, to }) => { fs.renameSync(from, to); return `set aside: ${n} -> ${path.basename(to)}`; });
 }
 
-export async function connect({ project, repo = null, brain = null, renameBrain = false, adopt = false, brainBranch = null, setAside = false, root = DEFAULT_ROOT, apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE, remoteFor = sshRemote }) {
+export async function connect({ project, repo = null, brain = null, renameBrain = false, adopt = false, brainBranch = null, setAside = false, domain = null, root = DEFAULT_ROOT, apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE, remoteFor = sshRemote }) {
   const token = readToken(tokenFile);
   const owner = await ghOwner(apiUrl, token);
   const name = checkName(project);
   const repoName = checkName(repo || name);
   const brainName = `${name}-brain`;
+  if (domain) checkDomainName(domain);
   const setAsideLines = setAsideNamed(root, setAside);
-  let base = domainDir(root, name);
+  let base = domainDir(root, name, domain);
+  // A chosen domain name may be the old setup's own folder (`Home assistant`): it is not taken over as the domain.
+  if (domain && exists(base) && !exists(path.join(base, '.git')) && !isWorkflowDomain(base) && subdirs(base).length) {
+    throw new Error(`${base} exists and is not a workflow domain; nothing is overwritten (P-018). Set it aside first (--set-aside "${path.basename(base)}", renamed to ${path.basename(base)}.pre-adopt, nothing is deleted)`);
+  }
   // An older flat clone at <root>/<name> takes the domain's name (on Windows and macOS also <Name>: case-insensitive).
   // The agent may not rename it (outside its domain, P-052, public issue #8), so connect does it on --set-aside,
   // which the operator approves in the adoption summary. Nothing is deleted.
@@ -226,7 +233,7 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
     if (exists(aside)) throw new Error(`${aside} already exists; resolve it first`);
     fs.renameSync(base, aside);
     setAsideLines.push(`set aside: ${path.basename(base)} -> ${path.basename(aside)}`);
-    base = path.join(root, domainDirName(name));
+    base = path.join(root, domain || domainDirName(name));
   }
   fs.mkdirSync(base, { recursive: true });
   const projectDir = path.join(base, repoName);
@@ -291,11 +298,11 @@ async function createRepo(apiUrl, token, owner, repo) {
 }
 
 /** New project: folder, private code and brain repositories, a first commit with the purpose, settings. */
-export async function create({ name, repo = null, purpose, root = DEFAULT_ROOT, apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE, remoteFor = sshRemote }) {
+export async function create({ name, repo = null, purpose, domain = null, root = DEFAULT_ROOT, apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE, remoteFor = sshRemote }) {
   checkName(name);
   const repoName = checkName(repo || name);
   if (!String(purpose || '').trim()) throw new Error('create needs --purpose "<one sentence>"');
-  const base = domainDir(root, name);
+  const base = domainDir(root, name, domain);
   if (exists(base)) throw new Error(`${base} already exists; nothing is overwritten (P-018)`);
   const projectDir = path.join(base, repoName);
   const brainDir = path.join(base, `${name}-brain`);

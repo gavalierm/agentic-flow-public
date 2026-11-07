@@ -254,16 +254,41 @@ export function domainDirName(name) {
   const s = String(name || '');
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
+// Characters no folder name may hold on Windows (and the separators everywhere).
+const BAD_DOMAIN_CHARS = /[<>:"/\\|?*\u0000-\u001f]/;
 /**
- * Domain folder of <name> under root: an existing folder of that name in any case (older lower case domains are
- * reused, not duplicated next to a capitalized one; on Windows and macOS they are the same folder), else the
- * capitalized name.
+ * The domain folder name the operator chose (operator 2026-11-07: "a domain may have spaces, it is a folder name the
+ * user picks"): any one folder name valid on Windows, macOS and Linux; spaces allowed.
  */
-export function domainDir(root, name) {
-  const want = domainDirName(name);
+export function checkDomainName(domain) {
+  const s = String(domain ?? '');
+  if (!s.trim() || s === '.' || s === '..' || BAD_DOMAIN_CHARS.test(s) || /[ .]$/.test(s) || /^ /.test(s) || s.length > 100) {
+    throw new Error(`domain must be one folder name (spaces allowed; not < > : " / \\ | ? *, no leading or trailing space, no trailing dot, at most 100 chars), got "${s}"`);
+  }
+  return s;
+}
+// A folder already used as a domain: its marker or a workflow project inside (not an old setup's own folder).
+function heldDomain(dir) {
+  if (fs.existsSync(path.join(dir, DOMAIN_MARKER))) return true;
+  try { return fs.readdirSync(dir, { withFileTypes: true }).some((e) => e.isDirectory() && fs.existsSync(path.join(dir, e.name, WORKFLOW_CONFIG))); } catch { return false; }
+}
+const domainKey = (s) => String(s || '').toLowerCase().replace(/[\s_-]+/g, '');
+/**
+ * Domain folder of <name> under root. `domain` is the folder name the operator chose (spaces allowed); without it an
+ * existing folder of the name in any case (older lower case domains are reused, not duplicated next to a capitalized
+ * one; on Windows and macOS they are the same folder), then a domain (marker) whose name differs only in spaces and
+ * dashes (`Home assistant` for home-assistant), else the capitalized name.
+ */
+export function domainDir(root, name, domain = null) {
   let entries = [];
   try { entries = fs.readdirSync(root); } catch { /* root does not exist yet */ }
-  const found = entries.includes(want) ? want : entries.find((e) => e.toLowerCase() === want.toLowerCase());
+  if (domain) {
+    const want = checkDomainName(domain);
+    return path.join(root, entries.includes(want) ? want : entries.find((e) => e.toLowerCase() === want.toLowerCase()) || want);
+  }
+  const want = domainDirName(name);
+  const found = entries.includes(want) ? want : entries.find((e) => e.toLowerCase() === want.toLowerCase())
+    || entries.find((e) => domainKey(e) === domainKey(name) && heldDomain(path.join(root, e)));
   return path.join(root, found || want);
 }
 /** Code topic worktrees of a domain: `<domain>/.worktrees/<repo>/<topic>/` (hidden: every visible folder is a repo). */

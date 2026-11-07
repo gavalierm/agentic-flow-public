@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // Project wizard script (skill workflow:project). Repositories live under the operator's GitHub account.
 //   project.mjs probe <stem> [--root <dir> ...] [--no-github] [--json]   find the project on disk and on GitHub (name match ignores case, spaces, dashes)
-//   project.mjs restore <name> [--root <dir>]                        pull the repositories and brain when clean, regenerate settings
-//   project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside [<folder>,...]] [--root <dir>]
-//   project.mjs create <name> [--repo <repo>] --purpose "<one sentence>" [--root <dir>]
+//   project.mjs restore <name> [--domain "<folder>"] [--root <dir>]                       pull the repositories and brain when clean, regenerate settings
+//   project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside [<folder>,...]] [--domain "<folder>"] [--root <dir>]
+//   project.mjs create <name> [--repo <repo>] --purpose "<one sentence>" [--domain "<folder>"] [--root <dir>]
 // Layout: ~/agentic/<Name>/<repo> (code repositories, each a T3 project) and ~/agentic/<Name>/<name>-brain;
-// the project folder (domain) has an upper case first letter, repositories stay lower case.
+// the project folder (domain) is the folder name the operator chose (--domain, spaces allowed), by default the project
+// name with an upper case first letter; repositories stay lower case.
 //   project.mjs inventory <dir> [--json]                             files of a repository by group, with dead paths
 //   project.mjs tidy --project <dir> --plan <file.json>              apply the agreed removals and moves in the brain
 //   project.mjs wizard start <name> | end                           open (2 h) or close the window in which the wizard asks in a dialog
@@ -58,17 +59,17 @@ try {
   } else if (cmd === 'restore') {
     if (!target) fail('usage: project.mjs restore <name>');
     guardWrite();
-    const r = restore(target, { root });
+    const r = restore(target, { root, domain: typeof args.domain === 'string' ? args.domain : null });
     out(`restored ${r.projectDirs.join(', ')}\n${r.lines.map((l) => `- ${l}`).join('\n')}`);
   } else if (cmd === 'connect') {
-    if (!target) fail('usage: project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside]');
+    if (!target) fail('usage: project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside] [--domain "<folder>"]');
     guardWrite();
-    const r = await connect({ project: target, repo: args.repo || null, brain: args.brain || null, renameBrain: !!args['rename-brain'], adopt: !!args.adopt, brainBranch: args['brain-branch'] || null, setAside: typeof args['set-aside'] === 'string' ? args['set-aside'] : !!args['set-aside'], root, ...gh });
+    const r = await connect({ project: target, repo: args.repo || null, brain: args.brain || null, renameBrain: !!args['rename-brain'], adopt: !!args.adopt, brainBranch: args['brain-branch'] || null, setAside: typeof args['set-aside'] === 'string' ? args['set-aside'] : !!args['set-aside'], domain: typeof args.domain === 'string' ? args.domain : null, root, ...gh });
     out(`connected ${r.projectDir} (brain ${r.brainDir})\n${r.lines.map((l) => `- ${l}`).join('\n')}`);
   } else if (cmd === 'create') {
     if (!target) fail('usage: project.mjs create <name> [--repo <repo>] --purpose "<one sentence>"');
     guardWrite();
-    const r = await create({ name: target, repo: args.repo || null, purpose: args.purpose, root, ...gh });
+    const r = await create({ name: target, repo: args.repo || null, purpose: args.purpose, domain: typeof args.domain === 'string' ? args.domain : null, root, ...gh });
     out(`created ${r.projectDir} (brain ${r.brainDir})\n${r.lines.map((l) => `- ${l}`).join('\n')}`);
   } else if (cmd === 'inventory') {
     if (!target) fail('usage: project.mjs inventory <dir>');
