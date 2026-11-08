@@ -40,7 +40,7 @@ Téme, ktorú drží toto vlákno, sa neposiela: správa by zobudila teba, prác
 - Riadok po nástroji „mail waiting: <id> blocker|steer“ oznámi nový blocker alebo steer raz; telo čítaj cez `receive --id <id>`; pri `steer` riadok pripomenie úpravu práce a pokračovanie.
 - Zvonček je iba presný celý prompt (napr. `you have mail in topic alpha`); prompt operátora, ktorý zvonček cituje, je bežný prompt operátora.
 - Ťah „you have mail in topic …“ bez čakajúcej pošty: hook dá riadok „wake: no new mail; end the turn with only your state line“ – ukonči ťah iba riadkom stavu (`Stav: hotovo`, pri ďalšom kroku handoveru ho urob; P-061).
-- Stavový riadok `| wake: off`: budenie tohto stroja nebeží, zvončeky neprídu. Povedz to operátorovi jednou vetou s príkazom `node <klon agentic-comms>/bin/wake.mjs install --instance <meno>`; sám ho nespúšťaj (služba stroja patrí operátorovi).
+- Stavový riadok `| wake: off`: budenie tohto stroja nebeží, zvončeky neprídu. Daj operátorovi položku `- [ ] spusti node <klon agentic-comms>/bin/wake.mjs install --instance <meno>` pod `**Operátor:**` so `Stav: otázka` (P-061); sám ho nespúšťaj (služba stroja patrí operátorovi).
 - Ak hook dá riadok „wake: mail unavailable (comms unavailable)“ alebo stavový riadok ukáže `mail: ?`, pošta nebola overená: nehovor „žiadna nová pošta“. Keď služba beží, spusti `comms.mjs count`, inak ukonči ťah riadkom stavu (P-061).
 - V ťahu spustenom zvončekom (budenie, „no reply“, „undelivered“) smieš čítať, odpovedať a `ack`; prevzatie témy, `done --topic` a zmena pravidiel sú zamknuté (P-047).
 - Ťah „turn interrupted, continue from handover“ (keepalive po reštarte servera, P-043): pokračuj v prerušenej práci podľa kontextu a handoveru; nie je to správa, zámky P-047 neplatia.

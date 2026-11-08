@@ -175,7 +175,7 @@ export function operatorStatus(ctx, info) {
     lines.push(`${ctx.projectName} / bez témy`, '', 'Dostupné témy:');
     const free = freeTopics(ctx);
     lines.push(...(free.length ? free.map((t) => `- ${t.id}${t.subject && t.subject !== t.id ? ` – ${t.subject}` : ''}`) : ['- žiadne']));
-    lines.push('', `**Pre teba:** ${TOPIC_QUESTION}`);
+    lines.push('', `**Operátor:** ${TOPIC_QUESTION}`);
   }
   if (info.mail.count) lines.splice(1, 0, `Pošta: ${info.mail.count}${info.mail.blockers ? ` (${info.mail.blockers} blocker)` : ''}${info.mail.steers ? ` (${info.mail.steers} steer)` : ''}`);
   return lines.join('\n');

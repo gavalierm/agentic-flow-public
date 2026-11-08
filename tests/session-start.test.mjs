@@ -107,7 +107,7 @@ test('P-050: first reply starts with the structured status block; free topics of
     const r = fx.hook('session-start.mjs', { source: 'startup' });
     assert.equal(r.json.systemMessage, undefined);
     assert.match(r.context, /first reply in this session MUST start with exactly the next \d+ lines, verbatim, before anything else \(no tags, no code fence\)/);
-    assert.equal(block(r.context), 'project / bez témy\n\nDostupné témy:\n- žiadne\n\n**Pre teba:** Aká bude téma?');
+    assert.equal(block(r.context), 'project / bez témy\n\nDostupné témy:\n- žiadne\n\n**Operátor:** Aká bude téma?');
     // The question only for an unknown topic: a prompt that names the topic is claimed and answered with `Téma: <id>` (operator 2026-11-02).
     assert.match(r.context, /only for a topic that stays unknown[^\n]*start that reply instead with `project \/ <id>`/);
     assert.equal(fx.run('topic.mjs', ['create', 'work', '--subject', 'Work']).status, 0);
@@ -118,7 +118,7 @@ test('P-050: first reply starts with the structured status block; free topics of
     assert.match(block(other.context), /- žiadne/, 'topic held by another thread is not offered');
     assert.equal(fx.run('topic.mjs', ['release', 'work']).status, 0);
     const freed = fx.hook('session-start.mjs', { source: 'startup' }, { env: { WORKFLOW_THREAD_ID: 'b2' } });
-    assert.equal(block(freed.context), 'project / bez témy\n\nDostupné témy:\n- work – Work\n\n**Pre teba:** Aká bude téma?');
+    assert.equal(block(freed.context), 'project / bez témy\n\nDostupné témy:\n- work – Work\n\n**Operátor:** Aká bude téma?');
     assert.doesNotMatch(fx.hook('user-prompt-submit.mjs', { prompt: 'hi' }).context, /status block/, 'only at start');
   } finally { fx.cleanup(); }
 });
