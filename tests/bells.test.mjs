@@ -66,7 +66,7 @@ test('wake: triage only with new mail, else one line ending the turn; a quoted t
   try {
     assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
     let r = fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
-    assert.equal(r.context.split('\n')[1], 'wake: no new mail; end the turn');
+    assert.equal(r.context.split('\n')[1], 'wake: no new mail; end the turn with only your state line (P-061)');
     assert.equal(fx.state().turn_source, 'wake');
     fx.stub.set({ messages: [{ id: 'm1', level: 'blocker' }] });
     fs.rmSync(path.join(fx.brain, 'local', 'comms'), { recursive: true, force: true });
@@ -198,92 +198,67 @@ test('turn record: a reply that waits for or asks the operator does not hand the
     fx.hook('user-prompt-submit.mjs', { prompt: 'vypíš otázky' });
     fx.stub.reset();
     // Bob's tracker thread was rung 76 s after this reply.
-    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Zostáva len čakanie na teba. Potrebujem od teba, čo z položiek mám urobiť:\n1. a\n2. b' });
+    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Položky: 1. a, 2. b.\n\n**Pre teba:** Ktoré z položiek mám urobiť? Odporúčam obe.\n\nStav: otázka' });
     let closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
     assert.equal(closed.length, 1);
     assert.notEqual(val(closed[0], 'next'), 'spracovať operátorove otázky');
     assert.ok(val(closed[0], 'resume-at'), 'only the timer rings the thread');
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     fx.stub.reset();
-    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Hotové, prvá časť.' });
+    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Hotové, prvá časť.\n\nStav: hotovo' });
     closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
     assert.equal(val(closed[0], 'next'), 'spracovať operátorove otázky');
   } finally { fx.cleanup(); }
 });
 
-test('next step: the same handover step blocks the stop once per thread, not every turn (alice 2026-11-03, ai-news)', () => {
+test('next step: "hotovo" with a handover step blocks; ending anyway hands the step to the continue ring; a schedule passes (P-061)', () => {
   const fx = stubbed({ messages: [] });
   try {
     assert.equal(fx.run('topic.mjs', ['create', 'an', '--subject', 'T', '--here']).status, 0);
     assert.equal(fx.run('save.mjs', ['handover', 'an', '--task', 'T', '--next', 'skontrolovať zajtrajší report']).status, 0);
-    const stop = (prompt) => {
-      fx.hook('user-prompt-submit.mjs', { prompt });
-      const r = fx.hook('stop.mjs', { last_assistant_message: 'Report je hotový.' });
-      return r.json;
-    };
-    const first = stop('ukáž report');
+    fx.hook('user-prompt-submit.mjs', { prompt: 'ukáž report' });
+    const done = 'Report je hotový.\n\nStav: hotovo';
+    const first = fx.hook('stop.mjs', { last_assistant_message: done }).json;
     assert.equal(first.decision, 'block');
-    assert.match(first.reason, /end without a note about it/);
+    assert.match(first.reason, /has a next step: "skontrolovať zajtrajší report"/);
     assert.match(first.reason, /sees only your last message/);
-    assert.notEqual(stop('zúž zdroje').decision, 'block', 'the same step does not block again');
-    assert.equal(fx.run('save.mjs', ['handover', 'an', '--task', 'T', '--next', 'iný krok']).status, 0);
-    assert.equal(stop('ďalej').decision, 'block', 'a new step blocks once');
+    fx.stub.reset();
+    assert.notEqual(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: done }).json.decision, 'block');
+    let closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
+    assert.equal(val(closed[0], 'next'), 'skontrolovať zajtrajší report', 'the continue ring keeps the loop alive');
     // A schedule armed for the step rings the thread itself: no block and no continue bell (2026-11-03, ai-news).
     assert.equal(fx.run('save.mjs', ['handover', 'an', '--task', 'T', '--next', 'po 06:00 skontrolovať report']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'nastav ranný beh' });
     fx.hook('post-tool-use.mjs', { tool_name: 'mcp__t3-code__schedule_task', tool_input: { prompt: 'p', schedule: { type: 'fixed_time', timeOfDay: '06:00' } }, tool_response: '{"scheduledTaskId":"st1"}' });
     fx.stub.reset();
-    assert.notEqual(fx.hook('stop.mjs', { last_assistant_message: 'Ranný beh je nastavený.' }).json.decision, 'block');
-    const closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
+    assert.notEqual(fx.hook('stop.mjs', { last_assistant_message: 'Ranný beh je nastavený.\n\nStav: čakám' }).json.decision, 'block');
+    closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
     assert.ok(closed.length && !val(closed[0], 'next'), 'no continue bell on top of the schedule');
-  } finally { fx.cleanup(); }
-});
-
-test('unrecorded step: a reply that names a next step while the handover has none blocks once (alice 2026-11-05)', () => {
-  const fx = stubbed({ messages: [] });
-  try {
-    assert.equal(fx.run('topic.mjs', ['create', 'an', '--subject', 'T', '--here']).status, 0);
-    assert.equal(fx.run('save.mjs', ['handover', 'an', '--task', 'T']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'pokračuj' });
-    const msg = 'Opravené v teste. Overenie v pilote robím ako ďalší krok.';
-    const first = fx.hook('stop.mjs', { last_assistant_message: msg }).json;
-    assert.equal(first.decision, 'block');
-    assert.match(first.reason, /handover of topic an has no next step.*save handover an/);
-    assert.notEqual(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: msg }).json.decision, 'block');
-    assert.notEqual(fx.hook('stop.mjs', { last_assistant_message: 'Hotové.' }).json.decision, 'block');
-    assert.equal(fx.run('save.mjs', ['handover', 'an', '--task', 'T', '--next', 'overiť v pilote']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    assert.match(fx.hook('stop.mjs', { last_assistant_message: msg }).json.reason || '', /has a next step/, 'with a recorded step the continuation block applies, not this one');
   } finally { fx.cleanup(); }
 });
 
 const tstate = (fx) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), 'utf8'));
 const hoursAhead = (iso) => (Date.parse(iso) - Date.now()) / 3600_000;
 
-test('idle step: a next step that only waits rings in hours, three times, then rests; one offer to close (operator 2026-11-03)', () => {
+test('idle step: a next step that only waits needs no waker; it rings in hours, three times, then rests (operator 2026-11-03)', () => {
   const fx = stubbed({ messages: [] });
   try {
     assert.equal(fx.run('topic.mjs', ['create', 'tk', '--subject', 'T', '--here']).status, 0);
     assert.equal(fx.run('save.mjs', ['handover', 'tk', '--task', 'T', '--next', 'Čakať na hlásenie témy owner-naming a odpovedať operátorovi']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ako to ide?' });
     fx.stub.reset();
-    // The work moved to another thread: one block asks to offer done, pause or a new task.
-    const r = fx.hook('stop.mjs', { last_assistant_message: 'Téma beží vo vlastnom vlákne.' });
-    assert.equal(r.json.decision, 'block');
-    assert.match(r.json.reason, /no own work.*close the topic \(done\), pause it, or give a new task/s);
-    fx.stub.reset();
-    const r2 = fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Práca beží inde. Uzavrieť tému, pozastaviť ju, alebo nová úloha?' });
-    assert.equal(r2.json.decision, undefined);
+    const r = fx.hook('stop.mjs', { last_assistant_message: 'Téma beží vo vlastnom vlákne.\n\nStav: čakám' });
+    assert.equal(r.json.decision, undefined);
     assert.equal(tstate(fx).timer, undefined, 'no auto timer on top of the idle ring');
     const rings = [];
     for (let i = 0; i < 4; i += 1) {
       const closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed').pop();
       rings.push(val(closed, 'resume-at') ? Math.round(hoursAhead(val(closed, 'resume-at'))) : null);
-      // The ring: the prompt says it is an idle check; the turn ends without text.
+      // The ring: the prompt says it is an idle check; the turn ends with only its state line.
       const ctx = fx.hook('user-prompt-submit.mjs', { prompt: 'turn ended with a next step, continue from handover' }).context;
-      if (i === 0) assert.match(ctx, /idle check: the next step of topic tk only waits/);
+      if (i === 0) assert.match(ctx, /idle check: the next step of topic tk only waits.*"Stav: čakám"/);
       fx.stub.reset();
-      assert.equal(fx.hook('stop.mjs', { last_assistant_message: '' }).json.decision, undefined, 'the offer blocks once per step');
+      assert.equal(fx.hook('stop.mjs', { last_assistant_message: 'Stav: čakám' }).json.decision, undefined);
     }
     assert.deepEqual(rings, [4, 12, 24, null]);
   } finally { fx.cleanup(); }
@@ -293,10 +268,10 @@ test('operator wait: a question to the operator arms the auto timer in hours; a 
   const fx = stubbed({ messages: [] });
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
-    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Mám to vydať hneď?' });
+    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: '**Pre teba:** Mám to vydať hneď? Odporúčam áno.\n\nStav: otázka' });
     assert.equal(Math.round(hoursAhead(tstate(fx).timer.at)), 4);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Build beží, čakám na výsledok.' });
+    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Build beží.\n\nStav: čakám' });
     assert.ok(hoursAhead(tstate(fx).timer.at) < 1);
   } finally { fx.cleanup(); }
 });
@@ -317,14 +292,14 @@ test('pause: a paused topic gets no continue ring and no auto timer; its end rin
     const ctx = fx.hook('user-prompt-submit.mjs', { prompt: 'čo nové?' }).context;
     assert.match(ctx, /topic pz is paused until/);
     fx.stub.reset();
-    const r = fx.hook('stop.mjs', { last_assistant_message: 'Téma je pozastavená.' });
+    const r = fx.hook('stop.mjs', { last_assistant_message: 'Téma je pozastavená.\n\nStav: čakám' });
     assert.equal(r.json.decision, undefined, 'no next-step block');
     assert.equal(tstate(fx).timer, undefined, 'no auto timer');
     const closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed').pop();
     assert.match(val(closed, 'next'), /pause of topic pz ended/);
     assert.equal(Math.round(hoursAhead(val(closed, 'resume-at'))), 48);
     // A ring before the end (a clamped resume time) does not start the work.
-    assert.match(fx.hook('user-prompt-submit.mjs', { prompt: 'turn ended with a next step, continue from handover' }).context, /topic pz is still paused until .*end the turn without any text/);
+    assert.match(fx.hook('user-prompt-submit.mjs', { prompt: 'turn ended with a next step, continue from handover' }).context, /topic pz is still paused until .*end the turn with only "Stav: čakám"/);
     assert.equal(fx.run('topic.mjs', ['resume', 'pz']).status, 0);
     const back = JSON.parse(fs.readFileSync(path.join(fx.brain, 'topics', 'pz', 'topic.json'), 'utf8'));
     assert.equal(back.state, 'working');

@@ -1,29 +1,29 @@
-// Work never stops (P-057, operator 2026-11-03): "čakám" or an open question ends a turn only with a real waker; the
-// Stop hook blocks it once and then arms the timer itself; the timer rings through the closed turn; the question tool is
-// denied; the rule texts no longer tell a recipient or a sender to stop.
+// Work never stops (P-061, operator 2026-11-03/08): "Stav: čakám" ends a turn only with a real waker; the Stop hook
+// blocks it once and then arms the timer itself; the timer rings through the closed turn; the question tool is denied;
+// the rule texts no longer tell a recipient or a sender to stop.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { setup } from './helpers.mjs';
-import { waitingClaim, operatorQuestion, parseDelay, wakerFromTool, validWaker, recordWaker, setTimer, activeTimer } from '../scripts/waker.mjs';
+import { waitingClaim, waitOnlyStep, parseDelay, wakerFromTool, validWaker, recordWaker, setTimer, activeTimer } from '../scripts/waker.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 
 const stateOf = (fx) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), 'utf8'));
 
-test('waitingClaim: Slovak and English waiting claims, with and without diacritics; code and quotes are data', () => {
+test('waitingClaim (handover steps): Slovak and English waiting claims, with and without diacritics; code and quotes are data', () => {
   for (const t of ['Poslal som blocker, čakám na odpoveď.', 'Cakam na Carol.', 'Počkám, kým to dobehne.', 'Teraz čakáme na build.', 'Vlákno čaká na operátora.', 'Waiting for the reply.', "I'll wait until it finishes.", 'Zostáva len čakanie na teba, takže tu končím.', 'Potrebujem od teba, čo mám urobiť.', 'Bez tvojho pokynu nič z toho nerobím.', 'Ak to nevyriešiš, čakám na teba.'])
     assert.ok(waitingClaim(t), t);
   for (const t of ['Hotové, vydané.', 'Text `čakám` je v kóde.', 'Hook blokuje slovo „čakám“ bez budíka.', 'Čakanie je zakázané.', 'Tieto frázy sa teraz rátajú ako čakanie na teba.', '- Keď krok čaká na neskoršiu udalosť, hook teraz agentovi káže skončiť.', 'If the step waits for an event, the hook ends the turn.', '```\nčakám\n```', '', undefined])
     assert.equal(waitingClaim(t), null, String(t));
 });
 
-test('operatorQuestion, parseDelay, wakerFromTool', () => {
-  assert.equal(operatorQuestion('Hotové. Vydať teraz?'), 'Vydať teraz?');
-  assert.ok(operatorQuestion('Stav.\n\n**Pre teba:** schváľ port'));
-  assert.equal(operatorQuestion('Hotové.'), null);
+test('waitOnlyStep, parseDelay, wakerFromTool', () => {
+  assert.ok(waitOnlyStep('Čakať na hlásenie témy carol. Potom vydanie.'));
+  assert.ok(waitOnlyStep('Operátor rozhodne o presune.'));
+  assert.equal(waitOnlyStep('Vydať v0.9.29.'), null);
   assert.equal(parseDelay('30m'), 1_800_000); assert.equal(parseDelay('2h'), 7_200_000); assert.equal(parseDelay('90s'), 90_000); assert.equal(parseDelay('15'), 900_000); assert.equal(parseDelay('soon'), null);
   const now = Date.parse('2026-11-03T10:00:00Z');
   assert.equal(wakerFromTool({ tool_name: 'Bash', tool_input: { command: 'npm test', run_in_background: true } }, now).kind, 'background');
@@ -53,13 +53,15 @@ test('waker: a harness schedule stays a waker in later turns until removed; a on
   } finally { fx.cleanup(); }
 });
 
-test('Stop: "čakám" without a waker never blocks; code arms the timer silently; a timer lets it pass', () => {
+test('Stop: "Stav: čakám" without a waker blocks once; ending anyway arms the timer; a timer lets it pass', () => {
   const fx = setup();
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
-    const msg = 'Poslal som otázku Carol, čakám na odpoveď.';
-    // No block: a block made the agent end with a timer note, the only message the operator sees (P-060).
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.decision, undefined);
+    const msg = 'Poslal som otázku Carol.\n\nStav: čakám';
+    assert.match(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.reason, /no waker is armed/);
+    assert.equal(stateOf(fx).timer, undefined, 'a blocked stop arms nothing');
+    // Ending anyway never leaves the thread idle: code arms the timer, silently (P-061).
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: msg }).json.decision, undefined);
     const st = stateOf(fx);
     assert.ok(activeTimer(st), 'the Stop hook armed the timer itself');
     assert.equal(st.timer.auto, true);
@@ -69,11 +71,13 @@ test('Stop: "čakám" without a waker never blocks; code arms the timer silently
     assert.equal(stateOf(fx).timer, undefined, 'an operator prompt clears the timer');
     setTimer(fx.brain, fx.thread, { delayMs: 30 * 60_000, then: 'check the reply' });
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.decision, undefined);
-    // A bell turn is held to it too: a message never stops the work, the timer rings it again.
+    // A bell turn is held to the protocol too: a promise is no state (bob 2026-11-08).
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     const f = path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`);
     fs.writeFileSync(f, JSON.stringify({ ...stateOf(fx), turn_source: 'wake' }));
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Steer prijatý, práca zastavená. Čakám na pokyn.' }).json.decision, undefined);
+    const promise = 'Commitnem a pushnem pri tvojej najbližšej správe.';
+    assert.match(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: promise }).json.reason, /no state line/);
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: promise }).json.decision, undefined);
     assert.ok(activeTimer(stateOf(fx)), 'the bell turn got a timer too');
   } finally { fx.cleanup(); }
 });
@@ -102,7 +106,7 @@ test('PreToolUse: AskUserQuestion is denied (it halts the turn); a subagent is n
   try {
     const r = fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } }).json;
     assert.equal(r.hookSpecificOutput?.permissionDecision, 'deny');
-    assert.match(r.hookSpecificOutput.permissionDecisionReason, /continue with your recommended option.*Pre teba/);
+    assert.match(r.hookSpecificOutput.permissionDecisionReason, /do all work that does not need the answer.*Pre teba.*Stav: otázka/);
     const hooks = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'hooks', 'hooks.json'), 'utf8'));
     assert.match(hooks.hooks.PreToolUse[0].matcher, /AskUserQuestion/);
   } finally { fx.cleanup(); }
@@ -160,23 +164,16 @@ test('UserPromptSubmit: an update with unchanged rules sends the update line wit
   } finally { fx.cleanup(); }
 });
 
-test('operatorQuestion: a P-056 override note (option already taken) is not an open question; a bare blocker is', async () => {
-  const { operatorQuestion } = await import('../scripts/waker.mjs');
-  assert.equal(operatorQuestion('Hotové.\n\n**Pre teba:** repo „open template“ neexistuje, tak som vybral `agent-playbook`. Ak si myslel iné, napíš.'), null);
-  assert.equal(operatorQuestion('Hotové.\n\n**Pre teba:** I took option A; B and C remain.'), null);
-  assert.equal(operatorQuestion('**Pre teba:** chýba heslo k účtu, bez neho sa nedá prihlásiť.'), 'Pre teba');
-});
-
 test('Stop: a thread without a topic asking the operator for one gets no auto timer; with a topic it does (flow-public#1)', () => {
   const fx = setup();
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'spustam' });
-    const ask = 'pilot / bez témy\n\nDostupné témy:\n- žiadne\n\nAká bude téma?';
+    const ask = 'pilot / bez témy\n\nDostupné témy:\n- žiadne\n\n**Pre teba:** Aká bude téma?\n\nStav: otázka';
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: ask }).json.decision, undefined);
     assert.equal(activeTimer(stateOf(fx)), null, 'no timer: nothing to continue, the operator answers the topic question');
     assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Hotová prvá časť. Pokračovať variantom A?' });
-    assert.equal(stateOf(fx).timer?.auto, true, 'a held topic still gets the P-057 timer');
+    fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Hotová prvá časť.\n\n**Pre teba:** Pokračovať variantom A? Odporúčam A.\n\nStav: otázka' });
+    assert.equal(stateOf(fx).timer?.auto, true, 'a held topic still gets the P-061 timer');
   } finally { fx.cleanup(); }
 });

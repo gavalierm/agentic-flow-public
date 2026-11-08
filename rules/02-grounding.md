@@ -3,6 +3,3 @@ Podklad pre rozhodnutie operátora MUSÍ vychádzať z pozorovania v tejto sessi
 
 ### P-020: Overenie práce
 „Hotové“, „funguje“ ani „opravené“ NETVRĎ bez pozorovania výsledku v scenári, ktorý zlyhal (unit test nestačí; správanie vlákien over v pilote); inak „výsledok nebolo možné overiť, pretože …“, nie „opravené, neoverené“. Testy mimo zadania sú prekročenie rozsahu.
-
-### P-060: Stručná odpoveď
-Na áno/nie odpovedz „áno“/„nie“; inak stručne a priamo, bez opisu uvažovania. Prevádzkové údaje (ID, časy behu, časovače, commity) operátorovi nepíš bez pýtania.

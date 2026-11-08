@@ -159,7 +159,7 @@ test('send needs a level (a reply excepted); info is refused with the valid leve
   }
 });
 
-// P-042, P-057: a steer adjusts the work and the thread continues; no message stops the work (operator 2026-11-03:
+// P-042, P-061: a steer adjusts the work and the thread continues; no message stops the work (operator 2026-11-03:
 // a steer stopped a thread and the threads waited for each other).
 test('comms skill: steer adjusts the work and continues, without a question to the operator; no level ends the turn', () => {
   const skill = fs.readFileSync(path.join(import.meta.dirname, '..', 'skills', 'comms', 'SKILL.md'), 'utf8');

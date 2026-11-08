@@ -86,7 +86,7 @@ function header(m) {
  */
 function notePicked(ctx, messages) {
   if (!ctx.brainDir || !ctx.thread || inSubagent()) return;
-  // P-057: the reply the thread timer waited for came: the timer is spent.
+  // P-061: the reply the thread timer waited for came: the timer is spent.
   const timerFor = readThreadState(ctx.brainDir, ctx.thread).timer?.for;
   if (timerFor && messages.some((m) => m.reply_to === timerFor)) clearTimer(ctx.brainDir, ctx.thread);
   // Only mail with a reply path waits for an answer: a server event without a sender thread or source topic cannot be
@@ -196,7 +196,7 @@ function cmdSend(ctx) {
   const replyTo = args['reply-to'] !== undefined && args['reply-to'] !== true ? String(args['reply-to']) : null;
   let level = args.level === true ? undefined : args.level;
   // Level is required, except for a reply: the service keeps the original's level (P-042). `info` is removed (2026-11-02).
-  if (!replyTo && !LEVELS.includes(level)) fail(`${level === 'info' ? 'level info is removed, every message asks for action; use' : '--level is required:'} ${LEVELS.join('|')} (blocker: you need the answer soon; steer: the holder adjusts the work on the topic now; assist: the answer is needed, no rush; no level stops the work, P-042, P-057)`);
+  if (!replyTo && !LEVELS.includes(level)) fail(`${level === 'info' ? 'level info is removed, every message asks for action; use' : '--level is required:'} ${LEVELS.join('|')} (blocker: you need the answer soon; steer: the holder adjusts the work on the topic now; assist: the answer is needed, no rush; no level stops the work, P-042, P-061)`);
   let text = args.text === true ? undefined : args.text;
   if (args.file) text = fs.readFileSync(String(args.file), 'utf8');
   if (text === '-' || (text === undefined && !process.stdin.isTTY)) text = readStdin();
@@ -250,16 +250,16 @@ function cmdSend(ctx) {
   if (replyTo) settlePicked(ctx, replyTo);
   const finalLevel = data.level || level;
   if (finalLevel === 'assist' && !replyTo && data.expires_at) out(`assist sent: continue other work; the reply wakes you; without pickup by ${data.expires_at} the expiry wakes you (P-042)`);
-  // P-057: a picked message may stay unanswered; the thread timer rings the sender after the reply window anyway.
+  // P-061: a picked message may stay unanswered; the thread timer rings the sender after the reply window anyway.
   if (REPLY_WINDOW_MS[finalLevel] && !replyTo && data.id && !data.queued && ctx.brainDir && ctx.thread && !inSubagent()) {
     const now = Date.now();
     const cur = activeTimer(readThreadState(ctx.brainDir, ctx.thread), now);
     if (!cur || Date.parse(cur.at) > now + REPLY_WINDOW_MS[finalLevel]) {
       const t = setTimer(ctx.brainDir, ctx.thread, { delayMs: REPLY_WINDOW_MS[finalLevel], then: `check the reply to ${data.id} (${finalLevel} to ${destination}); without one continue on your own decision or send the question elsewhere`, forId: data.id }, now);
-      out(`timer set: ${t.at} in case ${data.id} gets no reply (P-057)`);
+      out(`timer set: ${t.at} in case ${data.id} gets no reply (P-061)`);
     }
   }
-  if (finalLevel === 'blocker' && !replyTo) out('blocker sent: continue with work that does not need the answer (or your recommended assumption, say it); the reply or the timer wakes you; a message never stops the work (P-057)');
+  if (finalLevel === 'blocker' && !replyTo) out('blocker sent: continue with work that does not need the answer (or your recommended assumption, say it); the reply or the timer wakes you; a message never stops the work (P-061)');
 }
 
 function cmdNotices(ctx) {

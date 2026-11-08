@@ -31,6 +31,33 @@ function tokens(segment) {
   return (segment.match(/"[^"]*"|'[^']*'|[^\s]+/g) || []).map((t) => t.replace(/^["']|["']$/g, '').replace(/^[<>]+|^\d?>+&?\d?/, ''));
 }
 
+/**
+ * Parts of a shell command split at &&, ||, ;, | and newlines outside quotes. A separator inside a quoted argument is
+ * text: a commit message with "; " gave a part whose words read as paths (bob 2026-11-08: "commit iba v agentic/
+ * preskočí testy; …" matched the refused <repo>/agentic and blocked a commit that did not touch it).
+ */
+export function segments(cmd) {
+  const out = [];
+  let cur = '', quote = '';
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (quote) {
+      if (c === '\\' && quote === '"' && i + 1 < cmd.length) { cur += c + cmd[++i]; continue; }
+      if (c === quote) quote = '';
+      cur += c;
+      continue;
+    }
+    if (c === '\\' && i + 1 < cmd.length) { cur += c + cmd[++i]; continue; }
+    if (c === '"' || c === "'") { quote = c; cur += c; continue; }
+    const two = cmd.slice(i, i + 2);
+    if (two === '&&' || two === '||') { out.push(cur); cur = ''; i++; continue; }
+    if (c === ';' || c === '|' || c === '\n') { out.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+
 /** A path too wide to mean one target: a filesystem root, a repo root, or a folder above the session's anchors. */
 function broad(p, anchors) {
   if (p === path.parse(p).root) return true;
@@ -52,7 +79,7 @@ export function analyze(tool, toolInput = {}, cwd = process.cwd(), anchors = [])
     let dir = cwd;
     const cmd = String(toolInput.command);
     if (/(^|[^0-9&>])>{1,2}(?!&)\s*[^\s&]/.test(cmd.replace(/"[^"]*"|'[^']*'/g, '""')) || /<<-?\s*['"]?\w/.test(cmd)) write = true;
-    for (const segment of cmd.split(/&&|\|\||[;|\n]/)) {
+    for (const segment of segments(cmd)) {
       const t = tokens(segment.trim()).filter(Boolean);
       let i = 0;
       while (i < t.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i])) i++;
@@ -163,7 +190,7 @@ export function bypassOf({ tool, toolInput = {}, cwd = process.cwd(), anchors = 
 export function bypassReason(hit, cwd) {
   const rel = toPosix(path.relative(cwd, hit.path)) || '.';
   const why = String(hit.denial.reason || '').replace(/\s+/g, ' ').slice(0, 120);
-  return `this call reaches ${rel}, which a ${hit.denial.tool} call refused earlier in this turn also reached (${why}); reaching it another way is a bypass (P-054): tell the operator the refused command and its message under **Pre teba:**, continue with work that does not need it, and leave this target until the operator's next prompt`;
+  return `this call reaches ${rel}, which a ${hit.denial.tool} call refused earlier in this turn also reached (${why}); reaching it another way is a bypass (P-054): this target stays closed for the rest of this turn. Write the refused command and its message in the result, and do the work that does not need the target. A refusal by the operator or a harness permission is the operator's decision: when the work needs the target, ask whether to allow it under **Pre teba:** (Stav: otázka). A workflow hook refusal names its own way: use that way. When nothing else remains, end with Stav: hotovo and name the step that stayed undone (P-061)`;
 }
 
 /** Files that set what the workflow enforces (hooks, permissions, plugins): a change goes past the operator (P-054). */

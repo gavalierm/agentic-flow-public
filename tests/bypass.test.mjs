@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
-import { analyze, bypassOf, callKey, gitHookBypass, transcriptDenials, withDenial, stateDenials } from '../scripts/bypass.mjs';
+import { analyze, bypassOf, segments, callKey, gitHookBypass, transcriptDenials, withDenial, stateDenials } from '../scripts/bypass.mjs';
 
 function tmp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'wf-bypass-')); }
 
@@ -51,6 +51,22 @@ test('bypassOf: same path another way is caught; a read after a refused write is
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('bypassOf: words of a quoted commit message are not paths, a separator inside quotes does not split the command', () => {
+  const dir = tmp();
+  try {
+    const repo = path.join(dir, 'myserver');
+    fs.mkdirSync(path.join(repo, 'agentic'), { recursive: true });
+    fs.mkdirSync(path.join(repo, '.git'));
+    assert.deepEqual(segments(`git commit -m "a; b && c | d" && echo ok; ls 'x;y'`), ['git commit -m "a; b && c | d" ', ' echo ok', " ls 'x;y'"]);
+    const denied = { tool: 'Bash', key: 'k', paths: [path.join(repo, 'agentic')], write: true, reason: 'myserver/agentic/ is written only by save (P-013)' };
+    // bob 2026-11-08: the commit touched only code; "; " in the message made "agentic/" a path of the refused folder.
+    const commit = `cd ${repo} && git commit -qam "pre-commit: commit iba v agentic/ preskočí testy; .workflow.json knowledge_branch main\n\nCo-Authored-By: X <x@y>" && echo code-commit-ok && git push -q origin main`;
+    assert.equal(bypassOf({ tool: 'Bash', toolInput: { command: commit }, cwd: dir, denials: [denied] }), null);
+    const write = `cd ${repo} && mkdir -p agentic && echo test > agentic/.hooktest; git add agentic/.hooktest`;
+    assert.ok(bypassOf({ tool: 'Bash', toolInput: { command: write }, cwd: dir, denials: [denied] }), 'a real write into the refused folder is still caught');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('transcriptDenials: harness refusals of the current turn only', () => {
   const dir = tmp();
   try {
@@ -74,6 +90,27 @@ test('transcriptDenials: harness refusals of the current turn only', () => {
 test('thread state keeps only the denials of the current turn', () => {
   const s = withDenial({ turn_started_at: '2026-11-07T10:00:00Z', denials: [{ at: '2026-11-07T09:00:00Z', key: 'old' }] }, { key: 'new' });
   assert.deepEqual(stateDenials(s).map((d) => d.key), ['new']);
+});
+
+test('hook: a refused bulk read of docs/principles locks nothing; the refusal text keeps the operator out of the waker role (P-061)', () => {
+  const fx = setup();
+  try {
+    const dir = path.join(fx.project, 'docs', 'principles');
+    fs.mkdirSync(dir, { recursive: true });
+    for (const f of ['P-001.md', 'README.md']) fs.writeFileSync(path.join(dir, f), `# ${f}\n`);
+    const bulk = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `cat ${dir}/*` } });
+    assert.equal(bulk.json.hookSpecificOutput?.permissionDecision, 'deny', bulk.stderr);
+    const edit = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: path.join(dir, 'README.md'), old_string: 'x', new_string: 'y' } });
+    assert.doesNotMatch(JSON.stringify(edit.json || {}), /P-054/, 'one file is the way the guard names');
+    const target = path.join(fx.brain, 'memory', 'note.md');
+    fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: target, content: 'x' } });
+    const around = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `node -e "1" ${target}` } });
+    const reason = around.json.hookSpecificOutput.permissionDecisionReason;
+    assert.match(reason, /bypass \(P-054\).*Stav: otázka.*Stav: hotovo/);
+    const viaSave = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `node /x/workflow/bin/save.mjs memory project note --content "$(sed -n 1p ${target})"` } });
+    assert.doesNotMatch(JSON.stringify(viaSave.json || {}), /P-054/, 'save.mjs is the way the refusal names, not a bypass');
+    assert.doesNotMatch(reason, /until the operator's next prompt/);
+  } finally { fx.cleanup(); }
 });
 
 test('gitHookBypass: --no-verify and a changed core.hooksPath, not a read of it', () => {

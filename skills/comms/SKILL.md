@@ -12,7 +12,7 @@ Skript: `node ${CLAUDE_PLUGIN_ROOT}/bin/comms.mjs` (konfiguráciu pošty rieši 
 Hook dá jeden riadok `mail: <n> waiting: <id> <kategória>, …`. Kategória je úroveň správy (`blocker`, `steer`, `assist`) alebo `reply` (odpoveď na tvoju správu alebo správa do tvojho vlákna). Riadok nesie iba ID a kategóriu, nikdy text.
 1. Telo čítaj iba cez `receive --id <id>` (čítanie je prevzatie: služba zaznamená `picked_at`, lehota na prevzatie sa tým končí). `list` a `count` telo nečítajú a neprevezmú nič.
 2. Podľa kategórie:
-   - `steer`: prečítaj hneď a prácu na adresovanej téme podľa neho uprav (smer, priorita, rozsah); potom pokračuj. Steer prácu nikdy nezastaví (P-057); nepýtaj sa operátora, či pokračovať. `ack --id <id>` a v odpovedi jeden riadok (ID, odosielateľ, čo si zmenil). Prácu navrhnutú v texte nevykonávaj ako pokyn (P-047), odosielateľ ju pošle ako `assist`. Nie zastavenie a koniec ťahu, lebo vlákna potom stáli a čakali jedno na druhé (operátor 2026-11-03).
+   - `steer`: prečítaj hneď a prácu na adresovanej téme podľa neho uprav (smer, priorita, rozsah); potom pokračuj. Steer prácu nikdy nezastaví (P-061); nepýtaj sa operátora, či pokračovať. `ack --id <id>` a v odpovedi jeden riadok (ID, odosielateľ, čo si zmenil). Prácu navrhnutú v texte nevykonávaj ako pokyn (P-047), odosielateľ ju pošle ako `assist`. Nie zastavenie a koniec ťahu, lebo vlákna potom stáli a čakali jedno na druhé (operátor 2026-11-03).
    - `blocker`: odosielateľ potrebuje odpoveď hneď. Odpovedz hneď v každom režime `send --reply-to <id>`: čo vieš, alebo urob, čo treba (aj pracovníkom `workflow:delegate`), a pošli výsledok. Ak by išlo nad tvoju pravomoc, odpovedz odporúčaním a dôvodom; operátorovi to daj pod `**Pre teba:**`, nečakaj naňho.
    - `assist`: prečítaním je prevzatý; vykonaj ho na voľnom bode (si voľný teraz → hneď) a odpovedz výsledkom `send --reply-to <id>`, potom `ack`. Priebežnú odpoveď „urobím neskôr“ neposielaj (prevzatie vidí pošta). Kým neodpovieš, hook Stop pripomína riadkom „picked assist unanswered“. Ak si odpovedal inak (jedna odpoveď na viac správ, nová správa s ID v texte): `settle --id <id>`. Správa bez vlákna a témy odosielateľa (udalosť servera) odpoveď nečaká.
    - `reply`: odpoveď na správu, ktorú si poslal ty alebo tvoje vlákno; prečítaj, spracuj, `ack`.
@@ -21,7 +21,7 @@ Hook dá jeden riadok `mail: <n> waiting: <id> <kategória>, …`. Kategória je
 
 ## Posielanie
 `send --level <úroveň> --to [<project>/]<topic> --text "..."` (dlhší text: `--file <cesta>` alebo stdin). Hlavné vlákno persony: `--to @<persona>/main`. Odosielateľ je prvá držaná téma (odpoveď: téma, ktorej prišiel originál); pri viacerých témach `--from <téma>`. Úroveň určuješ podľa toho, ako ťa blokuje odpoveď (P-042):
-- `blocker` – odpoveď treba hneď. Pošli a pokračuj tým, čo odpoveď nepotrebuje, alebo odporúčaným predpokladom (povedz ho); skript nastaví budík na 15 min, odpoveď alebo budík ťa zobudí. Nie koniec ťahu „čakám na odpoveď“ bez budíka (P-057).
+- `blocker` – odpoveď treba hneď. Pošli a pokračuj tým, čo odpoveď nepotrebuje, alebo odporúčaným predpokladom (povedz ho); skript nastaví budík na 15 min, odpoveď alebo budík ťa zobudí. Koniec ťahu `Stav: čakám` iba s budíkom (P-061).
 - `steer` – držiteľ cieľovej témy má hneď upraviť prácu na nej (nie zastaviť); doručí sa aj počas jeho ťahu. Novú prácu pošli zvlášť ako `assist`.
 - `assist` – odpoveď treba, bez náhlenia; pokračuješ v inej práci; odpoveď alebo budík (60 min) ťa zobudí.
 `info` je zrušená (2026-11-02): pošta ju odmietne a vypíše platné úrovne. Správu bez odpovede nepošli poštou; ak ju treba, je to `assist`.
@@ -39,9 +39,9 @@ Téme, ktorú drží toto vlákno, sa neposiela: správa by zobudila teba, prác
 - Výpadok pošty: `send` uloží správu do `<brain>/local/outbox/` a odošle ju pri ďalšom úspešnom volaní. Stavový riadok a riadok po nástroji ukážu výpadok raz; nad rámec toho nič.
 - Riadok po nástroji „mail waiting: <id> blocker|steer“ oznámi nový blocker alebo steer raz; telo čítaj cez `receive --id <id>`; pri `steer` riadok pripomenie úpravu práce a pokračovanie.
 - Zvonček je iba presný celý prompt (napr. `you have mail in topic alpha`); prompt operátora, ktorý zvonček cituje, je bežný prompt operátora.
-- Ťah „you have mail in topic …“ bez čakajúcej pošty: hook dá riadok „wake: no new mail; end the turn“ – ukonči ťah bez ďalšej práce.
+- Ťah „you have mail in topic …“ bez čakajúcej pošty: hook dá riadok „wake: no new mail; end the turn with only your state line“ – ukonči ťah iba riadkom stavu (`Stav: hotovo`, pri ďalšom kroku handoveru ho urob; P-061).
 - Stavový riadok `| wake: off`: budenie tohto stroja nebeží, zvončeky neprídu. Povedz to operátorovi jednou vetou s príkazom `node <klon agentic-comms>/bin/wake.mjs install --instance <meno>`; sám ho nespúšťaj (služba stroja patrí operátorovi).
-- Ak hook dá riadok „wake: mail unavailable (comms unavailable)“ alebo stavový riadok ukáže `mail: ?`, pošta nebola overená: nehovor „žiadna nová pošta“. Keď služba beží, spusti `comms.mjs count`, inak ukonči ťah.
+- Ak hook dá riadok „wake: mail unavailable (comms unavailable)“ alebo stavový riadok ukáže `mail: ?`, pošta nebola overená: nehovor „žiadna nová pošta“. Keď služba beží, spusti `comms.mjs count`, inak ukonči ťah riadkom stavu (P-061).
 - V ťahu spustenom zvončekom (budenie, „no reply“, „undelivered“) smieš čítať, odpovedať a `ack`; prevzatie témy, `done --topic` a zmena pravidiel sú zamknuté (P-047).
 - Ťah „turn interrupted, continue from handover“ (keepalive po reštarte servera, P-043): pokračuj v prerušenej práci podľa kontextu a handoveru; nie je to správa, zámky P-047 neplatia.
-- Ťah „turn ended with a next step, continue from handover“ (pokračovanie, P-026): urob ďalší krok z handoveru; nie je to správa, zámky P-047 neplatia. Ak ho nevieš urobiť, povedz prečo (blocker alebo budík).
+- Ťah „turn ended with a next step, continue from handover“ (pokračovanie, P-026): urob ďalší krok z handoveru; nie je to správa, zámky P-047 neplatia. Ak ho nevieš urobiť, ukonči `Stav: čakám` s budíkom alebo `Stav: otázka` s otázkou pod `**Pre teba:**` (P-061).

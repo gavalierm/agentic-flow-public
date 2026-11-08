@@ -157,7 +157,7 @@ export function repoKnowledgeLines(ctx) {
   return lines;
 }
 
-/** The start question of a thread without a topic (P-050); Stop arms no auto timer after it. */
+/** The start question of a thread without a topic (P-050, as a P-061 question); Stop arms no auto timer after it. */
 export const TOPIC_QUESTION = 'Aká bude téma?';
 
 /** Status block shown to the operator at start (P-050): topic, free topics and the question when none is held, waiting mail. */
@@ -170,7 +170,7 @@ export function operatorStatus(ctx, info) {
     lines.push(`${ctx.projectName} / bez témy`, '', 'Dostupné témy:');
     const free = freeTopics(ctx);
     lines.push(...(free.length ? free.map((t) => `- ${t.id}${t.subject && t.subject !== t.id ? ` – ${t.subject}` : ''}`) : ['- žiadne']));
-    lines.push('', TOPIC_QUESTION);
+    lines.push('', `**Pre teba:** ${TOPIC_QUESTION}`);
   }
   if (info.mail.count) lines.splice(1, 0, `Pošta: ${info.mail.count}${info.mail.blockers ? ` (${info.mail.blockers} blocker)` : ''}${info.mail.steers ? ` (${info.mail.steers} steer)` : ''}`);
   return lines.join('\n');
@@ -188,7 +188,7 @@ export function statusBlockInstruction(block, unknown = false, project = '<proje
   const n = block.split('\n').length;
   // The question is only for an unknown topic: a prompt that names the topic (claimed before the reply) is not asked again.
   const known = unknown ? `\nThis block is only for a topic that stays unknown. If the operator's prompt names the topic and you claim it (skill workflow:topic) before your first reply, start that reply instead with \`${project} / <id>\` (and the \`Pošta:\` line if shown above), without the list and without \`Aká bude téma?\`; asking for a topic that is known is wrong (P-050).` : '';
-  return `status block (P-050): your first reply in this session MUST start with exactly the next ${n} lines, verbatim, before anything else (no tags, no code fence)${unknown ? ', unless the topic is known (below)' : ''}; later replies MUST NOT repeat them:\n${block}\n(end of status block)${known}`;
+  return `status block (P-050): your first reply in this session MUST start with exactly the next ${n} lines, verbatim, before anything else (no tags, no code fence)${unknown ? ', unless the topic is known (below)' : ''}; later replies MUST NOT repeat them:\n${block}\n(end of status block)${known}${unknown ? '\nA reply that leaves the topic question open ends with the line `Stav: otázka` (P-061).' : ''}`;
 }
 
 /** All open topics, one line each (P-021 item 6); the limit is reported through index warnings. */

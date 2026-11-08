@@ -24,7 +24,7 @@ test('wake template sets the wake flag in the thread state; an operator prompt r
     const r = fx.hook('user-prompt-submit.mjs', { prompt: 'You have mail in topic fix-workflow' });
     assert.equal(JSON.parse(fs.readFileSync(state, 'utf8')).turn_source, 'wake');
     assert.equal(r.context.split('\n').length, 2);
-    assert.equal(r.context.split('\n')[1], 'wake: no new mail; end the turn', 'no new mail: no mail line');
+    assert.equal(r.context.split('\n')[1], 'wake: no new mail; end the turn with only your state line (P-061)', 'no new mail: no mail line');
     fx.hook('user-prompt-submit.mjs', { prompt: 'pokračuj' });
     assert.equal(JSON.parse(fs.readFileSync(state, 'utf8')).turn_source, 'operator');
   } finally { fx.cleanup(); }

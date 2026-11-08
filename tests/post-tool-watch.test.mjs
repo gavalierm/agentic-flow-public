@@ -30,7 +30,7 @@ function stubbed(state) {
 test('watchLine names only new blocker and steer ids; assist is not watched; each id once', () => {
   const items = [{ id: 'm1', level: 'blocker' }, { id: 'm2', level: 'assist' }, { id: 'm3', level: 'steer' }];
   const first = watchLine(items, []);
-  assert.equal(first.line, 'mail waiting: m1 blocker, m3 steer; read with comms receive --id <id>; steer: read it now and adjust the work on the topic to it, then continue working; a message never stops the work (P-042, P-057)');
+  assert.equal(first.line, 'mail waiting: m1 blocker, m3 steer; read with comms receive --id <id>; steer: read it now and adjust the work on the topic to it, then continue working; a message never stops the work (P-042, P-061)');
   assert.deepEqual(first.seen, ['m1', 'm3']);
   assert.equal(watchLine(items, first.seen), null, 'announced once');
   assert.equal(watchLine([{ id: 'm2', level: 'assist' }], []), null, 'assist is not watched');
@@ -59,7 +59,7 @@ test('PostToolUse watch: announced once per message, throttled to 15 s, silent o
     set({ messages: [{ id: 'm1', level: 'blocker' }, { id: 'm4', level: 'steer' }] });
     expired();
     r = fx.hook('post-tool-use.mjs', BASH);
-    assert.equal(r.context, 'mail waiting: m4 steer; read with comms receive --id <id>; steer: read it now and adjust the work on the topic to it, then continue working; a message never stops the work (P-042, P-057)');
+    assert.equal(r.context, 'mail waiting: m4 steer; read with comms receive --id <id>; steer: read it now and adjust the work on the topic to it, then continue working; a message never stops the work (P-042, P-061)');
 
     // Subagents are not watched.
     set({ messages: [{ id: 'm5', level: 'blocker' }] });

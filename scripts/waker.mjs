@@ -1,9 +1,9 @@
-// Work never stops (P-057, operator 2026-11-03): no message, question or event stops the work; it may only be deferred
-// to a set time. A turn that ends waiting ("čakám", a question to the operator) needs a real waker armed by code:
-// the thread timer (bin/timer.mjs, rung by the wake module through the closed turn's resume_at), a background task or
-// agent (the harness re-invokes the thread), a harness scheduler (schedule_task, CronCreate, ScheduleWakeup), or mail
-// sent with a pickup deadline. The Stop hook blocks a waiting end without one and, if the agent ends anyway, arms the
-// timer itself, so no thread is left idle on a promise.
+// Work never stops (P-061, operator 2026-11-03/08): no message, question or event stops the work; it may only be deferred
+// to a set time. A turn that declares "Stav: čakám" needs a real waker armed by code: the thread timer (bin/timer.mjs,
+// rung by the wake module through the closed turn's resume_at), a background task or agent (the harness re-invokes the
+// thread), a harness scheduler (schedule_task, CronCreate, ScheduleWakeup), or mail sent with a pickup deadline. The Stop
+// hook blocks such an end without one and, if the agent ends anyway, arms the timer itself, so no thread is left idle.
+// The reply is never read as prose here (scripts/protocol.mjs reads its state line); only the handover's next step is.
 import path from 'node:path';
 import { readThreadState, writeThreadState } from './config.mjs';
 import { PLUGIN_ROOT } from './util.mjs';
@@ -41,7 +41,7 @@ const WAIT_PATTERNS = [
 
 const CONDITIONAL = new RegExp(`^\\s*([-*•]\\s*)?(\\*\\*)?(keď|ked|ak|kým|kym|pokiaľ|pokial|až|if|when|whenever|once)(?![${L}])`, 'iu');
 
-/** The waiting phrase of the reply ("čakám na …"), or null. Quoted and code text is left out (it is data, not a claim). */
+/** The waiting phrase of a handover step ("čakám na …"), or null. Quoted and code text is left out (it is data, not a claim). */
 export function waitingClaim(text) {
   if (typeof text !== 'string' || !text) return null;
   const quoted = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ').replace(/[„"“][^„"“”\n]*[”"“]/g, ' ');
@@ -58,37 +58,12 @@ export function waitingClaim(text) {
   return null;
 }
 
-/** The reply's wait is on the operator (a question, "Pre teba", or the wait names the operator), not on a job. */
-export function operatorWait(text) {
-  if (operatorQuestion(text)) return true;
-  const w = waitingClaim(text);
-  return !!w && new RegExp(`(^|[^${L}])(oper[áa]tor\\S*|teba|tvoj\\S*|tvoje\\S*|vás|vas|operator|you|your)(?![${L}])`, 'iu').test(w);
-}
-
 /** The next step only waits (for the operator, another topic, a reply): the topic has no own work to continue. */
 export function waitOnlyStep(next) {
   if (typeof next !== 'string' || !next.trim()) return null;
   const head = next.trim().split(/[;.\n]/)[0];
   return waitingClaim(head) || (new RegExp(`^(oper[áa]tor|operator)\\s+(rozhodne|odpovie|potvrd[íi]|schv[áa]li|decides|answers|confirms)(?![${L}])`, 'iu').test(head) ? head.slice(0, 60) : null);
 }
-
-/** True when the reply leaves a question to the operator open: it ends with "?" or carries a "Pre teba" / "Blocker" block. */
-export function operatorQuestion(text) {
-  if (typeof text !== 'string' || !text) return null;
-  const tail = text.replace(/[\s*_`)>\]]+$/, '');
-  if (tail.endsWith('?')) {
-    const body = tail.slice(0, -1);
-    const cut = Math.max(body.lastIndexOf('\n'), body.lastIndexOf('. '), body.lastIndexOf('! '), body.lastIndexOf('? '));
-    return `${body.slice(cut + 1).replace(/^[-*>#_`\s]+/, '').trim()}?`;
-  }
-  const m = /(^|\n)\s*[*_]*(Pre teba|Blocker)[*_:]*/i.exec(text);
-  if (!m) return null;
-  // P-056 override note: the agent already took an option and the operator may change it later; the work is not stopped
-  // (alice 2026-11-03: the AskUserQuestion deny asks for this block, then Stop blocked it as an open question).
-  return TAKEN.test(text.slice(m.index)) ? null : m[2];
-}
-
-const TAKEN = new RegExp(`(^|[^${L}])(vybral|vybrala|zvolil|zvolila|pokra[čc]ujem s|pou[žz]il som|pou[žz]ila som|išiel som|i[šs]la som|took|chose|went with|picked|proceeded with)(?![${L}])`, 'iu');
 
 /** ms of "30m", "2h", "90s", "15" (minutes). Null when invalid. */
 export function parseDelay(s) {
@@ -154,7 +129,7 @@ export function recordWaker(brainDir, thread, waker) {
   writeThreadState(brainDir, thread, { ...state, wakers: waker.remove ? keep : [...keep.filter((w) => !(waker.id && w.id === waker.id)), waker] });
 }
 
-/** Set the thread timer: the wake module rings the thread at `at` with the step `then` (via the closed turn, P-057). */
+/** Set the thread timer: the wake module rings the thread at `at` with the step `then` (via the closed turn, P-061). */
 export function setTimer(brainDir, thread, { delayMs, then, reason = null, auto = false, forId = null }, now = Date.now()) {
   const ms = Math.min(Math.max(delayMs, TIMER_MIN_MS), TIMER_MAX_MS);
   const state = readThreadState(brainDir, thread);
@@ -171,4 +146,4 @@ export function clearTimer(brainDir, thread) {
   return true;
 }
 
-export const WAIT_REASON = (what) => `the reply ${what} but no waker is armed: work must never stop (P-057). Either continue the work now (decide with your recommended option and say it; the operator may override later), or arm a real timer before ending: ${TIMER_CMD} --in <minutes>m --then "<the step to do when it fires>" (or mail with a deadline, a background task, schedule_task). Writing "čakám" without a timer is forbidden`;
+export const WAIT_REASON = (what) => `the reply ${what} but no waker is armed: work must never stop (P-061). Either continue the work now (decide with your recommended option and say it; the operator may override later), or arm a real timer before ending: ${TIMER_CMD} --in <minutes>m --then "<the step to do when it fires>" (or mail with a deadline, a background task, schedule_task). Writing "čakám" without a timer is forbidden`;

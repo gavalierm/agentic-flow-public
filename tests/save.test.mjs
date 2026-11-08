@@ -226,9 +226,9 @@ test('new rule gate (operator 2026-11-03): an overlap is extended in the existin
   try {
     let r = save('waiting', 'Čakať bez budíka NESMIEŠ: na odpoveď operátora, na správu ani na pracovníka.', judge({}));
     assert.equal(r.status, 0, r.out);
-    r = save('no-idle', 'Prázdne čakanie NESMIEŠ.', judge({ overlaps: [{ id: 'waiting', how: 'same subject' }, { id: 'P-057', how: 'alarm' }, { id: 'ghost', how: 'not a rule' }] }));
+    r = save('no-idle', 'Prázdne čakanie NESMIEŠ.', judge({ overlaps: [{ id: 'waiting', how: 'same subject' }, { id: 'P-061', how: 'alarm' }, { id: 'ghost', how: 'not a rule' }] }));
     assert.equal(r.status, 1);
-    assert.match(r.stderr, /rule no-idle overlaps waiting \(same subject\); P-057 \(alarm\): extend or narrow the existing rule instead of a new one \(save\.mjs rule waiting --content "<reworded>"; P-057 is a workflow principle: report it to maintainer\/workflow-dev/);
+    assert.match(r.stderr, /rule no-idle overlaps waiting \(same subject\); P-061 \(alarm\): extend or narrow the existing rule instead of a new one \(save\.mjs rule waiting --content "<reworded>"; P-061 is a workflow principle: report it to maintainer\/workflow-dev/);
     assert.doesNotMatch(r.stderr, /ghost/, 'ids the judge made up are dropped');
     r = save('no-idle', 'Prázdne čakanie NESMIEŠ.', judge({ overlaps: [{ id: 'waiting', how: 'same subject' }] }), ['--distinct', 'waiting: short']);
     assert.equal(r.status, 1, 'a --distinct without a reason does not answer the overlap');

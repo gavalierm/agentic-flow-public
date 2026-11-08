@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// PreToolUse: topic-owned code (P-012), secrets outside local/, brain protection (P-013, persona P-024), dangerous targets (P-018), work files outside the project (P-052), subagent limits incl. mail (P-025), decision binding (P-031), agent-to-agent channel (P-055), foreground waiting (P-057). Output: deny/ask or 1 line (c).
+// PreToolUse: topic-owned code (P-012), secrets outside local/, brain protection (P-013, persona P-024), dangerous targets (P-018), work files outside the project (P-052), subagent limits incl. mail (P-025), decision binding (P-031), agent-to-agent channel (P-055), foreground waiting (P-061). Output: deny/ask or 1 line (c).
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -567,7 +567,7 @@ export function deniedTool(toolName, denied = []) {
 
 const WAIT_UNIT = { '': 1, s: 1, m: 60, h: 3600, d: 86400 };
 /**
- * P-057: a foreground command that waits for an event (sleep > 10 s, a loop that sleeps, watch) keeps the turn open
+ * P-061: a foreground command that waits for an event (sleep > 10 s, a loop that sleeps, watch) keeps the turn open
  * and burns tokens. Quoted data and heredoc bodies are not waits, except strings the shell runs (-c, eval, ssh, watch).
  * Returns the reason or null.
  */
@@ -725,10 +725,10 @@ export function run(input) {
   const policy = ctx.policy;
   const resolve = (p) => path.resolve(cwd, p);
 
-  // P-057, P-056: a question tool halts the turn until the operator answers; work never stops (operator 2026-11-03).
+  // P-061: a question tool halts the turn until the operator answers; work never stops (operator 2026-11-03).
   // Exception (operator 2026-11-04): the project wizard asks in a dialog while its window is open, in an operator turn.
   const wizardDialog = tool === 'AskUserQuestion' && ctx.brainDir && ctx.thread && !isWakeTurn(ctx.brainDir, ctx.thread) && wizardOpen(ctx.brainDir, ctx.thread);
-  if (tool === 'AskUserQuestion' && !input.agent_id && !wizardDialog) return permissionOutput('deny', `AskUserQuestion stops the work until the operator answers, and work never stops (P-057): continue with your recommended option, put the question as text at the end under **Pre teba:** (options, the recommended one first, which one you took), so the operator can override it later (P-056)`);
+  if (tool === 'AskUserQuestion' && !input.agent_id && !wizardDialog) return permissionOutput('deny', `AskUserQuestion stops the work until the operator answers, and work never stops (P-061): do all work that does not need the answer, then put the one question as text under **Pre teba:** (the recommended option first) and end the reply with the line "Stav: otázka" (P-061)`);
 
   // P-055: work for another agent goes through mail, never straight into its thread.
   const denied = deniedTool(tool, policy.harness?.denied_tools || []);
@@ -744,10 +744,10 @@ export function run(input) {
     }
   }
 
-  // P-057: no foreground waiting; the agent arms a waker and ends the turn.
+  // P-061: no foreground waiting; the agent arms a waker and ends the turn.
   if (tool === 'Bash' && !toolInput.run_in_background) {
     const why = foregroundWait(toolInput.command || '');
-    if (why) return permissionOutput('deny', `foreground waiting (${why}) keeps the turn open and burns tokens; arm a waker and end the turn: mail reply/TTL (comms send --level blocker|assist), a scheduled re-check (harness scheduler, e.g. T3 schedule_task), or a background watcher (run_in_background) for an event on this machine; a pause up to 10 s is allowed (P-057)`);
+    if (why) return permissionOutput('deny', `foreground waiting (${why}) keeps the turn open and burns tokens; arm a waker and end the turn: mail reply/TTL (comms send --level blocker|assist), a scheduled re-check (harness scheduler, e.g. T3 schedule_task), or a background watcher (run_in_background) for an event on this machine; a pause up to 10 s is allowed (P-061)`);
   }
 
   // Subagent: no brain scripts, no mail except reading (P-025).
@@ -779,7 +779,11 @@ export function run(input) {
   // P-054: a step refused in this turn (workflow hook, harness permission, operator) is not reached another way.
   const state = ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : null;
   const anchors = [cwd, ctx.projectDir, os.homedir()];
-  const denials = [...(state ? stateDenials(state) : []), ...transcriptDenials(input.transcript_path, state?.turn_started_at || '')];
+  // A refusal that names save.mjs as the way (P-013 single writer) does not lock a call that runs save.mjs: it is the
+  // way, not a bypass (alice 2026-11-08: a refused Edit of a repo record locked the save.mjs call the refusal named).
+  const viaSave = (tool === 'Bash' || tool === 'PowerShell') && executedScripts(String(toolInput.command || '')).some((e) => /(^|[\\/])bin[\\/]save\.mjs$/.test(e.script));
+  const denials = [...(state ? stateDenials(state) : []), ...transcriptDenials(input.transcript_path, state?.turn_started_at || '')]
+    .filter((d) => !(viaSave && /\bsave\b|save\.mjs/.test(String(d.reason || ''))));
   const bypass = denials.length ? bypassOf({ tool, toolInput, cwd, anchors, denials }) : null;
   if (bypass) return permissionOutput('deny', bypassReason(bypass, cwd));
 
@@ -790,7 +794,10 @@ export function run(input) {
 
   const out = pathChecks(input, ctx, cwd);
   const decision = out?.hookSpecificOutput?.permissionDecision;
-  if (decision === 'deny' && state) {
+  // The principles guard refuses only the bulk read; one principle file is its own sanctioned way, so the refusal locks
+  // nothing (alice 2026-11-08: a refused `cat docs/principles/*` locked the README edit, and the agent asked the operator
+  // a fake question to be let on, P-061).
+  if (decision === 'deny' && state && !principlesBulkRead(tool, toolInput, cwd)) {
     const found = analyze(tool, toolInput, cwd, anchors);
     const write = found.write;
     // A P-052 refusal (write outside the project) is about the outside target only: the way it names, a work file in

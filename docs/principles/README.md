@@ -67,11 +67,12 @@ Každý princíp je v samostatnom súbore `P-NNN.md`. Agent číta jeden súbor,
 - [P-053](P-053.md): Lacný model pre pracovníkov (subagent model default)
 - [P-054](P-054.md): Zamietnutý príkaz (denied command)
 - [P-055](P-055.md): Kanál medzi agentmi (no direct thread send)
-- [P-056](P-056.md): Požiadavka na operátora (operator request)
-- [P-057](P-057.md): Práca sa nezastaví, čakanie iba s budíkom (work never stops, self-armed waker)
+- [P-056](P-056.md): Požiadavka na operátora (operator request) – nahradený P-061
+- [P-057](P-057.md): Práca sa nezastaví, čakanie iba s budíkom (work never stops, self-armed waker) – nahradený P-061
 - [P-058](P-058.md): Operátor nie je vykonávateľ (no operator chores)
 - [P-059](P-059.md): Otázka iba ako blocker (no needless check-ins)
-- [P-060](P-060.md): Stručná odpoveď (concise answer)
+- [P-060](P-060.md): Stručná odpoveď (concise answer) – nahradený P-061
+- [P-061](P-061.md): Protokol odpovede (reply protocol)
 
 ## Predvolené hodnoty politiky
 

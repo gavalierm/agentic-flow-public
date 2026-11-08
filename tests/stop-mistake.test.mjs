@@ -27,6 +27,6 @@ test('Stop hook: a mistake blocks once with the P-003 reason, also in a bell tur
     fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
     const bell = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json;
     assert.equal(bell.decision, 'block');
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Hotové.' }).json.decision, undefined);
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Hotové.\n\nStav: hotovo' }).json.decision, undefined);
   } finally { fx.cleanup(); }
 });

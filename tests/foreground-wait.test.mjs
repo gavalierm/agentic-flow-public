@@ -1,4 +1,4 @@
-// P-057: an agent that waits arms a waker; foreground waiting is denied (Bob 2026-11-01 waited on the operator).
+// P-061: an agent that waits arms a waker; foreground waiting is denied (Bob 2026-11-01 waited on the operator).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { foregroundWait } from '../hooks/pre-tool-use.mjs';
@@ -21,7 +21,7 @@ test('pre-tool-use denies a foreground wait, allows it in the background', () =>
     const hook = (tool_input) => fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input }).json;
     const deny = hook({ command: 'until [ -s /tmp/x ]; do sleep 30; done' });
     assert.equal(deny.hookSpecificOutput?.permissionDecision, 'deny');
-    assert.match(deny.hookSpecificOutput.permissionDecisionReason, /P-057/);
+    assert.match(deny.hookSpecificOutput.permissionDecisionReason, /P-061/);
     assert.notEqual(hook({ command: 'until [ -s /tmp/x ]; do sleep 30; done', run_in_background: true }).hookSpecificOutput?.permissionDecision, 'deny');
   } finally { fx.cleanup(); }
 });

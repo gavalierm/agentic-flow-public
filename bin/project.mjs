@@ -99,7 +99,7 @@ try {
       out(`wizard open for ${name} until ${w.until}: questions to the operator go in a dialog (AskUserQuestion)`);
     } else if (target === 'end') {
       setWizard(ctx.brainDir, ctx.thread, null);
-      out('wizard closed: questions go as text under **Pre teba:** again (P-056)');
+      out('wizard closed: questions go as text under **Pre teba:** again (P-061)');
     } else fail('usage: project.mjs wizard start <name> | end');
   } else {
     fail('usage: project.mjs probe|restore|connect|create|inventory|tidy|wizard ... (see the header of bin/project.mjs)');

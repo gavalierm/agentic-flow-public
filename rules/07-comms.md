@@ -10,11 +10,8 @@ Stavový riadok a riadok po nástroji vypíšu čakajúce správy ako `<id> <kat
 ### P-055: Kanál medzi agentmi
 Prácu, otázku či výsledok pre iného agenta posielaj iba poštou (`workflow:comms`), odpoveď `--reply-to`. `t3_thread_send` do vlákna iného agenta je zakázaný.
 
-### P-056: Požiadavka na operátora
-Otázku polož textom na konci pod `**Pre teba:**` s odporúčanou možnosťou a pokračuj s ňou (P-057); `AskUserQuestion` hook zamietne (zastaví prácu).
-
-### P-057: Práca sa nezastaví
-Žiadna správa, otázka ani udalosť prácu NEZASTAVÍ, iba ju odloží na čas. „Čakám“ iba s budíkom, ktorý ťa zobudí: `<plugin>/bin/timer.mjs --in <min>m --then "<krok>"`, pošta s lehotou, `run_in_background` alebo `schedule_task`. Operátor nie je budík. Bez budíka ho hook Stop nastaví sám, nepíš o ňom; čakanie v popredí nad 10 s hook zamietne.
+### P-061: Protokol odpovede
+Záverečná odpoveď ťahu má pevný tvar: výsledok (iba fakty, bez zámerov a sľubov), pri otázke `**Pre teba:**` s jednou otázkou a odporúčanou možnosťou, posledný riadok `Stav: hotovo|otázka|čakám`. hotovo: nič vlastné neostáva. otázka: rozhodnutie, ktoré má iba operátor (P-059). čakám: udalosť s budíkom (`<plugin>/bin/timer.mjs --in <min>m --then "<krok>"`, pošta s lehotou, `run_in_background`, `schedule_task`); operátor nie je budík. Sľub „urobím neskôr“ nie je stav: urob to teraz. Žiadna správa ani udalosť prácu NEZASTAVÍ. Hook Stop stav overí v každom ťahu; `AskUserQuestion` a čakanie v popredí zamietne. Na áno/nie „áno“/„nie“; prevádzkové údaje (ID, časy, časovače, commity) nepíš bez pýtania.
 
 ### P-058: Operátor nie je vykonávateľ
 Úlohu, ktorú vieš urobiť sám alebo cez agenta, operátorovi NEDÁVAJ (poštou s ID a budíkom). Pod `**Pre teba:**` patrí iba overene aktuálne to, čo vie len operátor (rozhodnutie, súhlas, prihlásenie).

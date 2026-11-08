@@ -14,7 +14,7 @@ import { bashTargets, bashEdits } from './pre-tool-use.mjs';
 import { wakerFromTool, recordWaker } from '../scripts/waker.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 
-export const HOOK_META = { event: 'PostToolUse|PostToolUseFailure', class: 'log+c', limit: '1 line (once per waiting message)', principles: ['P-018', 'P-030', 'P-028', 'P-003', 'P-041', 'P-042', 'P-057', 'P-021'] };
+export const HOOK_META = { event: 'PostToolUse|PostToolUseFailure', class: 'log+c', limit: '1 line (once per waiting message)', principles: ['P-018', 'P-030', 'P-028', 'P-003', 'P-041', 'P-042', 'P-061', 'P-021'] };
 
 export const WATCH_INTERVAL_MS = 15_000;
 export const WATCHED_LEVELS = ['blocker', 'steer'];
@@ -44,7 +44,7 @@ export function watchLine(items = [], seen = []) {
   const steer = fresh.some((it) => it.level === 'steer')
     ? '; steer: read it now and adjust the work on the topic to it, then continue working; a message never stops the work'
     : '';
-  const line = `mail waiting: ${fresh.map((it) => `${it.id} ${it.level}`).join(', ')}; read with comms receive --id <id>${steer} (P-042${steer ? ', P-057' : ''})`;
+  const line = `mail waiting: ${fresh.map((it) => `${it.id} ${it.level}`).join(', ')}; read with comms receive --id <id>${steer} (P-042${steer ? ', P-061' : ''})`;
   return { line, seen: [...seen, ...fresh.map((it) => it.id)].slice(-200) };
 }
 
@@ -82,7 +82,7 @@ export function run(input, now = Date.now()) {
   if (input.tool_name === 'Bash' || input.tool_name === 'PowerShell') settleShell(ctx, input.tool_use_id);
   const entry = toEntry(input, ctx.policy);
   if (entry) bufferAppend(ctx.brainDir, input.session_id, entry);
-  // P-057: a waker armed by this call (background task or agent, scheduler, mail) lets the turn end waiting.
+  // P-061: a waker armed by this call (background task or agent, scheduler, mail) lets the turn end waiting.
   if (!input.agent_id && ctx.thread) recordWaker(ctx.brainDir, ctx.thread, wakerFromTool(input, now));
   const line = watch(ctx, input, now);
   return line ? contextOutput('PostToolUse', line) : {};

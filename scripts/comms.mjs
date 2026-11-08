@@ -252,7 +252,7 @@ export function recordTurn(ctx, state, held = [], { openedAt = null, next = null
     const timeoutMs = Math.min(s.waitMs, 1000);
     // P-026: the next step of the held work topic goes with `closed`; wake rings the thread to continue it.
     if (state === 'closed' && next) args.push('--next', String(next).slice(0, 300));
-    // P-057: the thread timer; wake rings the thread at resume_at with the next step.
+    // P-061: the thread timer; wake rings the thread at resume_at with the next step.
     if (state === 'closed' && next && resumeAt) args.push('--resume-at', String(resumeAt));
     const withOpened = state === 'closed' && openedAt ? [...args, '--opened-at', String(openedAt)] : args;
     let res = runClient(ctx, withOpened, { timeoutMs });

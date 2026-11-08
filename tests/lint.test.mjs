@@ -83,7 +83,7 @@ test('P-049: frontmatter fields of skills and agents are english lowercase; desc
   }
 });
 
-test('P-056: no skill tells the agent to ask with AskUserQuestion (the hook denies it)', () => {
+test('P-061: no skill tells the agent to ask with AskUserQuestion (the hook denies it)', () => {
   for (const s of fs.readdirSync(path.join(PLUGIN_ROOT, 'skills'))) {
     const f = path.join(PLUGIN_ROOT, 'skills', s, 'SKILL.md');
     if (!fs.existsSync(f)) continue;
