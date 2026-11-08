@@ -17,3 +17,10 @@ export function setWizard(brainDir, thread, name, now = Date.now()) {
   writeThreadState(brainDir, thread, state);
   return state.wizard || null;
 }
+
+/** Steps left for the T3 tools, kept in the thread state until `project.mjs t3 <dir> --registered`; the Stop hook names them. */
+export function pendingT3Line(pending) {
+  const items = Object.entries(pending || {}).filter(([, steps]) => steps?.length);
+  if (!items.length) return null;
+  return `T3 setup not finished (project skill): ${items.map(([dir, steps]) => `${dir}: ${steps.join('; ')}`).join(' | ')}. Do these steps with the T3 tools now, then run project.mjs t3 "<dir>" --registered for each folder`;
+}

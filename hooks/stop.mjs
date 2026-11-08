@@ -12,6 +12,7 @@
 // error; the stop is blocked once, also in bell turns: handle it with workflow:error (fix, skill or rule, report).
 import { readHookInput, emit, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
+import { pendingT3Line } from '../scripts/wizard.mjs';
 import { flushBuffer, proposalKey } from '../scripts/logs.mjs';
 import { unpushedCount, brainSync } from '../scripts/brain.mjs';
 import { recordTurn, isMainTopic } from '../scripts/comms.mjs';
@@ -162,7 +163,9 @@ export function run(input) {
     else if (reply.state === 'otázka' && !reply.question) violation = NO_QUESTION_REASON;
     else if (reply.state === 'čakám' && !waker && !idleWait && !paused) violation = NO_WAKER_REASON;
     else if (reply.state === 'hotovo' && work && !idleWait && !waker) violation = NEXT_STEP_REASON(work.id, work.next);
-    const reasons = [mistake && MISTAKE_REASON(mistake), !input.stop_hook_active && violation].filter(Boolean);
+    // Trust, T3 project and welcome thread that project.mjs could not do without the `t3` CLI (skipped by hand, 2026-11-08).
+    const t3Left = input.stop_hook_active ? null : pendingT3Line(readThreadState(ctx.brainDir, ctx.thread).t3_pending);
+    const reasons = [mistake && MISTAKE_REASON(mistake), !input.stop_hook_active && violation, t3Left].filter(Boolean);
     if (reasons.length) return end({ decision: 'block', reason: reasons.join('\n') });
     // Ending without a true state keeps the loop alive: code arms the thread timer, no note about it (P-061). The start
     // question of a thread without a topic (which topic?) gets none: a timer turn told to "decide with your recommended option"

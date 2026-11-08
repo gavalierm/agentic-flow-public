@@ -148,6 +148,9 @@
   "thread_title": {
     "command": "t3 thread show --json"
   },
+  "project": {
+    "t3_project_add_command": "t3 project add"
+  },
   "prompt": {
     "error_phrases": [
       "nefunguje",
