@@ -43,7 +43,9 @@ export function renderHandover({ task, done, next, files, questions }) {
 export function checkHandover(text, limitLines = 15) {
   const errors = [];
   const lines = String(text).replace(/\r\n/g, '\n').replace(/\n+$/, '').split('\n');
-  if (lines.length > limitLines) errors.push(`handover has ${lines.length} lines, limit ${limitLines} (P-011)`);
+  // The budget in the refusal: a handover rewritten without it was refused again (flow-public#12).
+  const fixed = HANDOVER_SECTIONS.length + 2;
+  if (lines.length > limitLines) errors.push(`handover has ${lines.length} lines, limit ${limitLines} (P-011): the ${HANDOVER_SECTIONS.length} headings, --task and --next take ${fixed}, so --done, --files and --questions together hold at most ${limitLines - fixed} items (each "; " item is one line, an empty list one "-"); cut ${lines.length - limitLines}: merge items, keep only what the next session needs, durable knowledge goes through save (P-007)`);
   for (const section of HANDOVER_SECTIONS) {
     if (!lines.some((l) => l.trim() === section)) errors.push(`handover missing section "${section}" (P-011)`);
   }

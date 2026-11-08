@@ -42,17 +42,14 @@ export function pullBrain(ctx) {
 }
 
 /**
- * Brain policy `workflow_version` (P-040): this machine runs the release the brain is pinned to. Only a clean release
- * install is switched; this session's hooks were already loaded, so the switch takes full effect in the next session.
+ * Brain policy `workflow_version` (P-040): this machine runs the release the brain is pinned to; without the key it follows
+ * the newest release ("latest"; a fixed release is the fallback, operator 2026-11-08). Only a clean release install is
+ * switched; this session's hooks were already loaded, so the switch takes full effect in the next session.
  */
 export function pinWorkflow(ctx, root = PLUGIN_ROOT, env = process.env) {
-  const want = ctx.policy?.workflow_version;
-  if (!want) {
-    // Brain without a pin: still listed, so `brain.mjs pin --all` reaches it and a pin added later counts as changed.
-    if (ctx.brainDir && readPins(env).brains?.[brainKey(ctx)] === undefined) recordPin(ctx, null, env, false);
-    return null;
-  }
-  const conflict = pinConflict(ctx, String(want), env);
+  const want = ctx.policy?.workflow_version || 'latest';
+  const src = ctx.policy?.workflow_version ? 'brain policy workflow_version' : 'default workflow_version latest (no pin in the brain policy)';
+  const conflict = pinConflict(ctx, String(want), env, src);
   if (conflict) return conflict;
   let r;
   try { r = pinClone(root, want); } catch (err) { r = { status: 'failed', reason: err.message }; }
@@ -60,8 +57,8 @@ export function pinWorkflow(ctx, root = PLUGIN_ROOT, env = process.env) {
   let held = null;
   if (r.status === 'updated' || r.status === 'current') { try { held = newerThanPin(root, want); } catch { /* offline or no clone */ } }
   const heldNote = held ? `workflow pinned to ${r.to} by brain policy workflow_version, newest release ${held}: the pin holds this machine back (tell the operator once; every release: brain.mjs pin latest) (P-040)` : null;
-  if (r.status === 'updated') return [`workflow switched ${r.from} -> ${r.to} per brain policy workflow_version; this session started on ${r.from}: hooks and skills load fully in the next session (tell the operator) (P-040)`, heldNote].filter(Boolean).join('\n');
-  if (r.status === 'failed' || (r.status === 'skipped' && !r.dev)) return `workflow not switched to ${r.to || want} (brain policy workflow_version): ${r.reason}`;
+  if (r.status === 'updated') return [`workflow switched ${r.from} -> ${r.to} per ${src}; this session started on ${r.from}: hooks and skills load fully in the next session (tell the operator) (P-040)`, heldNote].filter(Boolean).join('\n');
+  if (r.status === 'failed' || (r.status === 'skipped' && !r.dev)) return `workflow not switched to ${r.to || want} (${src}): ${r.reason}`;
   return heldNote;
 }
 
@@ -74,15 +71,17 @@ function brainKey(ctx) {
   try { return fs.realpathSync(ctx.brainDir); } catch { return ctx.brainDir; }
 }
 
-export function pinConflict(ctx, want, env = process.env) {
+export function pinConflict(ctx, want, env = process.env, src = 'brain policy workflow_version') {
   if (!ctx.brainDir) return null;
   const pins = readPins(env);
   const brain = brainKey(ctx);
   const owner = pins.clone?.brain;
-  const changed = pins.brains?.[brain] !== undefined && pins.brains[brain] !== want;
+  // A brain recorded without a pin (null, before the default became "latest") follows the newest release.
+  const prev = pins.brains?.[brain] === null ? 'latest' : pins.brains?.[brain];
+  const changed = prev !== undefined && prev !== want;
   if (!owner || owner === brain || changed || pins.clone.version === want || !fs.existsSync(owner)) return null;
   recordPin(ctx, want, env, false);
-  return `workflow not switched to ${want} (brain policy workflow_version): brain ${owner} pins ${pins.clone.version} and this machine has one install for all projects; set the same workflow_version in every brain on this machine: brain.mjs pin <version> --all (tell the operator) (P-040)`;
+  return `workflow not switched to ${want} (${src}): brain ${owner} pins ${pins.clone.version} and this machine has one install for all projects; set the same workflow_version in every brain on this machine: brain.mjs pin <version> --all (tell the operator) (P-040)`;
 }
 
 function recordPin(ctx, want, env, setClone) {

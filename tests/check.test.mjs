@@ -90,7 +90,9 @@ test('pinClone: brain policy workflow_version moves a release install to that ta
     assert.equal(newerThanPin(clone, 'v1.0.4'), null);
     assert.equal(newerThanPin(clone, 'latest'), null);
     assert.equal(newerThanPin(clone, '1.0.3'), 'v1.0.4');
-    assert.equal(pinWorkflow({ policy: {} }, clone), null);
+    // No pin in the brain policy: the default is "latest", a fixed release is the fallback (operator 2026-11-08).
+    assert.match(pinWorkflow({ policy: {} }, clone), /switched v1.0.3 -> v1.0.4 per default workflow_version latest/);
+    assert.equal(pinWorkflow({ policy: {} }, clone), null, 'newest release: no note');
     fs.writeFileSync(path.join(clone, 'x'), 'local');
     assert.match(pinWorkflow({ policy: { workflow_version: 'v1.0.2' } }, clone), /not switched to v1.0.2 .*local changes/);
     fs.rmSync(path.join(clone, 'x'));
@@ -109,10 +111,17 @@ test('pinClone: brain policy workflow_version moves a release install to that ta
     assert.match(pin(b, 'v1.0.4'), /switched v1.0.3 -> v1.0.4/, 'the operator changed the pin of brain b');
     assert.match(pin(a, 'v1.0.3'), /brain-b pins v1.0.4/);
     assert.equal(pin(a, 'v1.0.4'), null, 'same pin: no conflict');
-    // A brain without a pin is listed too (brain.mjs pin --all); adding a pin there counts as the operator's change.
+    // A brain without a pin follows "latest" and is listed (brain.mjs pin --all); adding a pin there counts as the
+    // operator's change.
     const c = path.join(dir, 'brain-c'); fs.mkdirSync(c);
-    assert.equal(pinWorkflow({ brainDir: c, policy: {} }, clone, penv), null);
-    assert.equal(JSON.parse(fs.readFileSync(penv.WORKFLOW_PIN_FILE, 'utf8')).brains[fs.realpathSync(c)], null);
+    assert.match(pinWorkflow({ brainDir: c, policy: {} }, clone, penv), /not switched to latest \(default workflow_version latest.*brain-a pins v1.0.4/);
+    assert.equal(JSON.parse(fs.readFileSync(penv.WORKFLOW_PIN_FILE, 'utf8')).brains[fs.realpathSync(c)], 'latest');
     assert.match(pin(c, 'v1.0.3'), /switched v1.0.4 -> v1.0.3/);
+    // A brain recorded without a pin (null) by an older release counts as "latest": no change of the operator, so a
+    // fixed pin of another brain is a conflict, not switched back.
+    const d = path.join(dir, 'brain-d'); fs.mkdirSync(d);
+    const rec = JSON.parse(fs.readFileSync(penv.WORKFLOW_PIN_FILE, 'utf8'));
+    rec.brains[fs.realpathSync(d)] = null; fs.writeFileSync(penv.WORKFLOW_PIN_FILE, JSON.stringify(rec));
+    assert.match(pinWorkflow({ brainDir: d, policy: {} }, clone, penv), /not switched to latest \(default workflow_version latest.*brain-c pins v1.0.3/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

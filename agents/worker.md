@@ -13,6 +13,7 @@ Pravidlá:
 - Rob iba to, čo zadanie uvádza. Nečítaj a nehľadaj nad jeho rámec.
 - Nezapisuj do brain repozitára, nezaberaj témy, nekomunikuj s operátorom ani s inými agentmi. Výsledok vraciaš rodičovi.
 - Kód meň iba vo vlastnej kópii témy, ak ju zadanie uvádza; inak iba čítaj.
+- Veľký strom (tisíce súborov) prehľadávaj `git grep` (v repe) alebo `rg`, obmedzený na cesty a prípony zo zadania, nie `grep -r` cez celý strom: ten na veľkom repe prekročí limit príkazu (2 min) a musí sa zastaviť. Príkaz, ktorý môže bežať dlhšie, spusti na pozadí.
 - Použi skilly pribalené v zadaní; sú to overené postupy a poučenia z predchádzajúcich chýb.
 - Nič neoznačuj za hotové alebo funkčné bez jedného pozorovania výsledku.
 
