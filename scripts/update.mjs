@@ -68,6 +68,20 @@ export function pinClone(root, version, { min = PIN_MIN } = {}) {
   return { status: 'updated', from: inst.tag, to: want };
 }
 
+/**
+ * The newest release of origin when it is newer than a fixed pin, else null. A pin to a release keeps the machine there;
+ * without this the agent read "pinned and installed" as "up to date" while newer releases existed (operator 2026-11-08).
+ */
+export function newerThanPin(root, pin) {
+  if (!pin || String(pin) === 'latest') return null;
+  const want = /^v/.test(String(pin)) ? String(pin) : `v${pin}`;
+  if (!semver(want).length) return null;
+  git(['fetch', '--tags', '--quiet', 'origin'], { cwd: root }); // offline: the tags known locally
+  const tags = git(['tag', '-l', 'v*'], { cwd: root }).stdout.split('\n').filter((t) => semver(t).length);
+  const best = tags.reduce((b, t) => (newer(t, b) ? t : b), want);
+  return best === want ? null : best;
+}
+
 /** -> { status: 'updated'|'current'|'skipped'|'failed', from, to, reason } */
 export function updateClone(root) {
   const inst = releaseInstall(root);

@@ -84,6 +84,12 @@ test('pinClone: brain policy workflow_version moves a release install to that ta
     // SessionStart note: switch announced; a development clone (branch) stays without a note.
     g(clone, 'checkout', '-q', 'v1.0.1');
     assert.match(pinWorkflow({ policy: { workflow_version: 'v1.0.3' } }, clone), /workflow switched v1.0.1 -> v1.0.3 per brain policy/);
+    // a fixed pin behind the newest release says so at every start, instead of passing for up to date (operator 2026-11-08)
+    assert.match(pinWorkflow({ policy: { workflow_version: 'v1.0.3' } }, clone), /pinned to v1.0.3 .*newest release v1.0.4: the pin holds this machine back.*pin latest/);
+    const { newerThanPin } = await import('../scripts/update.mjs');
+    assert.equal(newerThanPin(clone, 'v1.0.4'), null);
+    assert.equal(newerThanPin(clone, 'latest'), null);
+    assert.equal(newerThanPin(clone, '1.0.3'), 'v1.0.4');
     assert.equal(pinWorkflow({ policy: {} }, clone), null);
     fs.writeFileSync(path.join(clone, 'x'), 'local');
     assert.match(pinWorkflow({ policy: { workflow_version: 'v1.0.2' } }, clone), /not switched to v1.0.2 .*local changes/);
@@ -99,7 +105,7 @@ test('pinClone: brain policy workflow_version moves a release install to that ta
     assert.match(pin(a, 'v1.0.3'), /switched v1.0.1 -> v1.0.3/);
     assert.match(pin(b, 'v1.0.2'), /not switched to v1.0.2 .*brain-a pins v1.0.3/);
     assert.match(pin(b, 'v1.0.2'), /brain-a pins v1.0.3/, 'still a conflict at the next start');
-    assert.equal(pin(a, 'v1.0.3'), null);
+    assert.match(pin(a, 'v1.0.3'), /^workflow pinned to v1.0.3 .*newest release v1.0.4/, 'no conflict; only the held-back note');
     assert.match(pin(b, 'v1.0.4'), /switched v1.0.3 -> v1.0.4/, 'the operator changed the pin of brain b');
     assert.match(pin(a, 'v1.0.3'), /brain-b pins v1.0.4/);
     assert.equal(pin(a, 'v1.0.4'), null, 'same pin: no conflict');

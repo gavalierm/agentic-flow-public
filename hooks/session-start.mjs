@@ -9,7 +9,7 @@ import { readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { installedWorkflow } from '../scripts/update-notice.mjs';
 import { handleT3Session } from '../scripts/t3-clear.mjs';
 import { brainPull, brainPullNote } from '../scripts/brain.mjs';
-import { pinClone, pinFile, readPins } from '../scripts/update.mjs';
+import { pinClone, pinFile, readPins, newerThanPin } from '../scripts/update.mjs';
 import { PLUGIN_ROOT } from '../scripts/util.mjs';
 
 export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '15000 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038', 'P-050'] };
@@ -57,9 +57,12 @@ export function pinWorkflow(ctx, root = PLUGIN_ROOT, env = process.env) {
   let r;
   try { r = pinClone(root, want); } catch (err) { r = { status: 'failed', reason: err.message }; }
   if (r.status === 'updated' || r.status === 'current') recordPin(ctx, String(want), env, true);
-  if (r.status === 'updated') return `workflow switched ${r.from} -> ${r.to} per brain policy workflow_version; this session started on ${r.from}: hooks and skills load fully in the next session (tell the operator) (P-040)`;
+  let held = null;
+  if (r.status === 'updated' || r.status === 'current') { try { held = newerThanPin(root, want); } catch { /* offline or no clone */ } }
+  const heldNote = held ? `workflow pinned to ${r.to} by brain policy workflow_version, newest release ${held}: the pin holds this machine back (tell the operator once; every release: brain.mjs pin latest) (P-040)` : null;
+  if (r.status === 'updated') return [`workflow switched ${r.from} -> ${r.to} per brain policy workflow_version; this session started on ${r.from}: hooks and skills load fully in the next session (tell the operator) (P-040)`, heldNote].filter(Boolean).join('\n');
   if (r.status === 'failed' || (r.status === 'skipped' && !r.dev)) return `workflow not switched to ${r.to || want} (brain policy workflow_version): ${r.reason}`;
-  return null;
+  return heldNote;
 }
 
 /**
