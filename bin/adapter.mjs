@@ -22,7 +22,9 @@ export function claudeSettings(policy, brainRel, channel = 'stable') {
     // (assist 2026-11-08). `/` anchors them at the project root, which is the persona's brain.
     for (const e of expandBrainPath(p, brainRel)) deny.push(`Edit(${brainRel === PERSONA_BRAIN && !/^[/~.]/.test(e) ? '/' : ''}${e})`);
   }
-  deny.push('Edit(.claude/skills/**)');
+  // Two segments already anchor at the current directory (permissions docs, 2026-11-08); `/` anchors at the project
+  // root also when the session works in a subfolder, like the brain rules above.
+  deny.push('Edit(/.claude/skills/**)');
   // Native ask: the whole command or the command followed by arguments (`git checkout --orphan` is not
   // `git checkout --`). Commands with safe forms (ask_commands_except) are left to the PreToolUse hook,
   // a native ask rule cannot express the exception (P-018, P-015). Restores are also left to the hook: it passes a

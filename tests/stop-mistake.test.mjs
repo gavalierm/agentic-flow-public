@@ -1,5 +1,5 @@
 // P-003 (operator 2026-11-03): a reply that says something happened "omylom" / "by mistake" names an error; the Stop hook
-// blocks once, also in a bell turn, with the workflow:error reason; the second stop passes.
+// queues the workflow:error line for the next prompt (a block until 2026-11-08: the word list also hit quoted mistakes).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setup } from './helpers.mjs';
@@ -15,18 +15,16 @@ test('mistakeClaim: admitted mistakes are found with their sentence; other words
     assert.equal(mistakeClaim(t), null, String(t));
 });
 
-test('Stop hook: a mistake blocks once with the P-003 reason, also in a bell turn; the second stop passes', () => {
+test('Stop hook: a named mistake does not block; it is queued once as a signal for the next prompt (2026-11-08)', () => {
   const fx = setup();
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
-    const msg = 'Téma vznikla omylom v brain alice.';
-    const first = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json;
-    assert.equal(first.decision, 'block');
-    assert.match(first.reason, /by mistake: "Téma vznikla omylom v brain alice\.".*P-003.*workflow:error/);
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: msg }).json.decision, undefined);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
-    const bell = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json;
-    assert.equal(bell.decision, 'block');
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Hotové.\n\nStav: hotovo' }).json.decision, undefined);
+    const msg = 'Téma vznikla omylom v brain alice.\n\nStav: hotovo';
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.decision, undefined);
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.decision, undefined);
+    const next = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' }).context;
+    assert.match(next, /mistake named in the last reply: "Téma vznikla omylom v brain alice\.".*workflow:error.*P-003/);
+    assert.equal(next.match(/mistake named/g).length, 1, 'the same sentence is queued once');
+    assert.doesNotMatch(fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' }).context || '', /mistake named/);
   } finally { fx.cleanup(); }
 });

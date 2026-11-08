@@ -15,6 +15,7 @@
 import { readHookInput, emit, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { pendingT3Line } from '../scripts/wizard.mjs';
+import { logDecision } from '../scripts/denials.mjs';
 import { flushBuffer, proposalKey } from '../scripts/logs.mjs';
 import { unpushedCount, brainSync } from '../scripts/brain.mjs';
 import { recordTurn, isMainTopic } from '../scripts/comms.mjs';
@@ -75,7 +76,9 @@ export function mistakeClaim(text) {
   return text.slice(from, to).replace(/[*_`]/g, '').trim().slice(0, 160);
 }
 
-export const MISTAKE_REASON = (sentence) => `the reply says something happened by mistake: "${sentence}". A mistake is an error (P-003): handle it now with skill workflow:error (fix the result, clean up what it left, save a skill or rule so it does not repeat, report it to the workflow maintainer); then say what you saved. Do not ask the operator whether to do it (P-059)`;
+// A queued signal for the next turn, not a block: the word list cannot tell an admitted mistake from a quoted or
+// hypothetical one, and a wrong block cost a whole extra turn (operator 2026-11-08, hooks review).
+export const MISTAKE_REASON = (sentence) => `mistake named in the last reply: "${sentence.slice(0, 120)}"; if it was one, handle it with skill workflow:error (fix, clean up, save a skill or rule, report it) and say what you saved (P-003)`;
 
 export const PICKED_ASSIST_LINE = (list) => `picked assist unanswered: ${list.map((w) => w.id).join(', ')}; answer each with comms send --reply-to <id>; answered another way (one reply for several, a new message): comms settle --id <id>; else say why it waits (P-042)`;
 
@@ -162,6 +165,12 @@ export function run(input) {
     // P-061: the declared state against the facts, in every turn (a message never ends the loop of work).
     const msg = input.last_assistant_message;
     const mistake = input.stop_hook_active ? null : mistakeClaim(msg);
+    if (mistake) {
+      const st = readThreadState(ctx.brainDir, ctx.thread);
+      const line = MISTAKE_REASON(mistake);
+      const queued = st.pending_signals || [];
+      if (!queued.includes(line)) writeThreadState(ctx.brainDir, ctx.thread, { ...st, pending_signals: [...queued, line].slice(-(ctx.policy.limits?.hook_signal_lines ?? 2)) });
+    }
     const waker = validWaker(readThreadState(ctx.brainDir, ctx.thread));
     const paused = held.some((t) => t.state === 'paused') && !work;
     // A dialog asked in this turn (PreToolUse keeps the time) that failed or was declined leaves the text question as fallback.
@@ -183,7 +192,7 @@ export function run(input) {
     else if (reply.state === 'hotovo' && work && !idleWait && !waker) violation = NEXT_STEP_REASON(work.id, work.next);
     // Trust, T3 project and welcome thread that project.mjs could not do without the `t3` CLI (skipped by hand, 2026-11-08).
     const t3Left = input.stop_hook_active ? null : pendingT3Line(readThreadState(ctx.brainDir, ctx.thread).t3_pending);
-    const reasons = [mistake && MISTAKE_REASON(mistake), !input.stop_hook_active && violation, t3Left].filter(Boolean);
+    const reasons = [!input.stop_hook_active && violation, t3Left].filter(Boolean);
     if (reasons.length) return end({ decision: 'block', reason: reasons.join('\n') });
     // Ending without a true state keeps the loop alive: code arms the thread timer, no note about it (P-061). The start
     // question of a thread without a topic (which topic?) gets none: a timer turn told to "decide with your recommended option"
@@ -203,7 +212,14 @@ export function run(input) {
 if (isMain(import.meta.url)) {
   let out = {};
   try {
-    out = run(readHookInput()) || {};
+    const input = readHookInput();
+    out = run(input) || {};
+    if (out.decision === 'block') {
+      try {
+        const ctx = loadContext({ requireBrain: false });
+        logDecision(ctx.brainDir, { event: 'Stop', out, thread: ctx.thread });
+      } catch { /* the log never changes the decision */ }
+    }
   } catch (err) {
     process.stderr.write(`stop: ${err.message}\n`);
   }

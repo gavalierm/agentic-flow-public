@@ -17,6 +17,12 @@ test('PreToolUse: writing CLAUDE.md in a workflow project is denied; deleting it
     assert.equal(r.hookSpecificOutput?.permissionDecision, 'deny');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'git rm CLAUDE.md' } }).json;
     assert.notEqual(r.hookSpecificOutput?.permissionDecision, 'deny');
+    // A clone of a foreign repo in scratch/ keeps its own CLAUDE.md: no workflow session loads it (2026-11-08).
+    const clone = path.join(fx.project, 'scratch', 'lib', 'CLAUDE.md');
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: clone, content: '# lib\n' } }).json;
+    assert.notEqual(r.hookSpecificOutput?.permissionDecision, 'deny');
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.project, 'web', 'CLAUDE.md'), content: '# x\n' } }).json;
+    assert.equal(r.hookSpecificOutput?.permissionDecision, 'deny', 'a nested CLAUDE.md in the project is loaded too');
   } finally { fx.cleanup(); }
 });
 

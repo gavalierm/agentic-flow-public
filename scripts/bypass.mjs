@@ -184,13 +184,18 @@ export function transcriptDenials(transcriptPath, since = '') {
     for (const r of results) {
       const use = uses.get(r.tool_use_id);
       const msg = resultText(r);
-      if (use && r.is_error && HARNESS_DENIAL.test(msg)) out.push({ ...use, key: callKey(use.tool, use.input), reason: msg.split('\n')[0].slice(0, 160) });
+      if (use && r.is_error && HARNESS_DENIAL.test(msg)) out.push({ ...use, key: callKey(use.tool, use.input), reason: msg.split('\n')[0].slice(0, 160), harness: true });
     }
   }
   return out;
 }
 
-/** The earlier denial this call reaches again by another way, or null. A denied write blocks only writes to the same path. */
+/**
+ * The earlier denial this call reaches again by another way, or null. After a workflow hook refusal only a write after
+ * a refused write to the same path locks: a read finds the cause, and a refused read locked every later read of the
+ * folder, so one false positive of a heuristic check stopped the turn (operator 2026-11-08, hooks review). A harness
+ * refusal (permission rule, operator) also locks reads after a refused read.
+ */
 export function bypassOf({ tool, toolInput = {}, cwd = process.cwd(), anchors = [], denials = [] }) {
   const key = callKey(tool, toolInput);
   const cur = analyze(tool, toolInput, cwd, anchors);
@@ -198,7 +203,8 @@ export function bypassOf({ tool, toolInput = {}, cwd = process.cwd(), anchors = 
   for (const d of denials) {
     if (d.key === key) continue;
     const prev = d.paths ? { paths: d.paths, write: d.write } : analyze(d.tool, d.input, cwd, anchors);
-    if (prev.write && !cur.write) continue;
+    // A harness refusal (permission rule, the operator in the dialog) is the operator's decision: it locks reads too.
+    if (d.harness ? prev.write && !cur.write : !prev.write || !cur.write) continue;
     // A folder above the refused path counts only when it exists (git grep -- docs after docs/principles was refused).
     const hit = cur.paths.find((p) => prev.paths.some((q) => isInside(q, p) || (isInside(p, q) && fs.existsSync(p))));
     if (hit) return { denial: d, path: hit };

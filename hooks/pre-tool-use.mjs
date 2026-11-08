@@ -15,6 +15,7 @@ import { findSecret } from '../scripts/secrets.mjs';
 import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell } from '../scripts/own-files.mjs';
 import { catalogPreTool } from '../scripts/catalog/pretool.mjs';
 import { bigWriteDeny } from '../scripts/materialy.mjs';
+import { logDecision } from '../scripts/denials.mjs';
 import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, segments, stateDenials, transcriptDenials, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-052', 'P-054', 'P-055'] };
@@ -442,7 +443,7 @@ export function principlesBulkRead(tool, toolInput = {}, cwd = process.cwd()) {
     const ref = m[1].startsWith('~/') ? path.join(home, m[1].slice(2)) : m[1];
     return fs.existsSync(path.join(path.resolve(cwd, ref), 'principles', 'P-001.md'));
   }));
-  return real || viaDocs ? 'docs/principles/ is read one principle at a time: the rule in rules/ is the working text, and only when you are unsure why a rule exists you open docs/principles/P-NNN.md for that one rule (P-001); searching or listing the whole directory is not allowed' : null;
+  return real || viaDocs ? 'docs/principles/ is read one principle at a time: the rule in rules/ is the working text, and only when you are unsure why a rule exists you open docs/principles/P-NNN.md for that one rule (P-001); if this call searches or lists the whole directory, use its output only for the rule you asked about' : null;
 }
 /** The domain marker decides the boundary: no agent changes it (it would widen its own domain). */
 function domainMarkerWrite(ctx, absPaths) {
@@ -701,9 +702,14 @@ export function forcedAddIgnored(command, cwd = process.cwd()) {
 
 /** CLAUDE.md is loaded into every session unchecked and goes stale; project knowledge lives in brain (P-007, operator 2026-11-03). */
 export const CLAUDE_MD_REASON = (rel) => `${rel}: CLAUDE.md is loaded into every session unchecked and goes stale (an agent took an outdated address from it); project knowledge goes to brain through workflow:save (memory, decision, rule, skill), the workflow rules come from its SessionStart hook (P-007, P-013). Move a still valid fact into brain; only deleting CLAUDE.md is allowed`;
+// Only a CLAUDE.md a workflow session loads: in the project, its brain or a topic code copy, not in scratch/ (a clone
+// of a foreign repo there keeps its own CLAUDE.md) and not in an unrelated repo (operator 2026-11-08, hooks review).
 function claudeMdWrite(ctx, absPaths) {
   if (!ctx.brainInfo || ctx.brainInfo.error) return null;
-  const hit = absPaths.find((p) => /^CLAUDE(\.local)?\.md$/i.test(path.basename(p)));
+  const copies = ctx.domain ? path.join(ctx.domain.root, WORKTREES_DIR, path.basename(mainCheckout(ctx.projectDir))) : path.resolve(ctx.projectDir, '..', `${ctx.projectName}-topics`);
+  const roots = [ctx.projectDir, ctx.brainDir, copies].filter(Boolean);
+  const loaded = (p) => roots.some((r) => isInside(r, p)) && !p.split(path.sep).includes(SCRATCH_DIR);
+  const hit = absPaths.find((p) => /^CLAUDE(\.local)?\.md$/i.test(path.basename(p)) && loaded(path.resolve(p)));
   return hit ? CLAUDE_MD_REASON(toPosix(path.relative(ctx.projectDir, hit) || hit)) : null;
 }
 
@@ -843,11 +849,16 @@ export function run(input) {
 
   const out = pathChecks(input, ctx, cwd);
   const decision = out?.hookSpecificOutput?.permissionDecision;
-  // The principles guard refuses only the bulk read; one principle file is its own sanctioned way, so the refusal locks
-  // nothing (alice 2026-11-08: a refused `cat docs/principles/*` locked the README edit, and the agent asked the operator
-  // a fake question to be let on, P-061).
-  // A refused forced add names its own way (git add without -f, a named file) on the same paths: it locks nothing either.
-  if (decision === 'deny' && state && !principlesBulkRead(tool, toolInput, cwd) && !/ adds ignored files too /.test(out.hookSpecificOutput.permissionDecisionReason || '')) {
+  // P-001 bulk read of docs/principles/ is a hint, not a deny: the check reads the command text and cannot tell a
+  // search over the directory from a mention of it, and a wrong deny stopped the work (operator 2026-11-08, hooks
+  // review: heuristic checks hint, only structural ones deny). The hint rides on an allow, never on a deny or ask.
+  const bulk = principlesBulkRead(tool, toolInput, cwd);
+  if (bulk && decision !== 'deny' && decision !== 'ask') {
+    const prev = out?.hookSpecificOutput?.additionalContext;
+    return { ...out, hookSpecificOutput: { ...(out?.hookSpecificOutput || {}), hookEventName: 'PreToolUse', additionalContext: prev ? `${bulk}\n${prev}` : bulk } };
+  }
+  // A refused forced add names its own way (git add without -f, a named file) on the same paths: it locks nothing.
+  if (decision === 'deny' && state && !/ adds ignored files too /.test(out.hookSpecificOutput.permissionDecisionReason || '')) {
     const found = analyze(tool, toolInput, cwd, anchors);
     const write = found.write;
     // A P-052 refusal (write outside the project) is about the outside target only: the way it names, a work file in
@@ -882,9 +893,6 @@ function pathChecks(input, ctx, cwd) {
   const toolInput = input.tool_input || {};
   const policy = ctx.policy;
   const resolve = (p) => path.resolve(cwd, p);
-
-  const bulk = principlesBulkRead(tool, toolInput, cwd);
-  if (bulk) return permissionOutput('deny', bulk);
 
   const target = targetOf(tool, toolInput);
   if (target) {
@@ -1025,7 +1033,16 @@ function pathChecks(input, ctx, cwd) {
 
 if (isMain(import.meta.url)) {
   try {
-    emit(run(readHookInput()));
+    const input = readHookInput();
+    const out = run(input);
+    // Every deny/ask goes to <brain>/local/denials.jsonl, so false positives are counted, not only felt (bin/denials.mjs).
+    if (['deny', 'ask'].includes(out?.hookSpecificOutput?.permissionDecision)) {
+      try {
+        const ctx = loadContext({ requireBrain: false });
+        logDecision(ctx.brainDir, { event: 'PreToolUse', tool: input.tool_name, toolInput: input.tool_input, out, thread: ctx.thread, agentType: input.agent_type });
+      } catch { /* the log never changes the decision */ }
+    }
+    emit(out);
   } catch (err) {
     process.stderr.write(`pre-tool-use: ${err.message}\n`);
     emit({});

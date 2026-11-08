@@ -15,6 +15,9 @@ test('missing Failures blocks the subagent; present section, exempt agents and s
   assert.deepEqual(run({ agent_type: 'workflow:worker', last_assistant_message: 'Done.\n\n## Failures\n- curl without header -> 401; works with header', stop_hook_active: false }, policy), {});
   assert.deepEqual(run({ agent_type: 'workflow:worker', last_assistant_message: '**Failures:** none' }, policy), {});
   assert.deepEqual(run({ agent_type: 'Explore', last_assistant_message: 'found it' }, policy), {});
+  assert.deepEqual(run({ agent_type: 'general-purpose', last_assistant_message: 'found it' }, policy), {}, 'only the workflow worker has the result rules');
+  assert.deepEqual(run({ agent_type: 'claude-code-guide', last_assistant_message: 'x' }, policy), {});
+  assert.equal(run({ agent_type: 'worker', last_assistant_message: 'x' }, policy).decision, 'block');
   assert.deepEqual(run({ agent_type: 'workflow:worker', last_assistant_message: 'x', stop_hook_active: true }, policy), {});
   assert.equal(hasFailuresSection('no failures were seen'), false, 'word inside a sentence is not a section');
 });

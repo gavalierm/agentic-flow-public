@@ -35,7 +35,7 @@ test('analyze: paths a call reaches and whether it may write them', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('bypassOf: same path another way is caught; a read after a refused write is not', () => {
+test('bypassOf: a write to the same path another way is caught; reads and refused reads lock nothing', () => {
   const dir = tmp();
   try {
     const f = path.join(dir, 'a.md');
@@ -48,11 +48,14 @@ test('bypassOf: same path another way is caught; a read after a refused write is
     assert.equal(bypassOf({ tool: 'Edit', toolInput: { file_path: f, old_string: 'x', new_string: 'y' }, cwd: dir, denials: [deniedWrite] })?.path, f);
     assert.equal(bypassOf({ tool: 'Read', toolInput: { file_path: f }, cwd: dir, denials: [deniedWrite] }), null, 'reading a file whose write was refused is finding the cause');
     assert.equal(bypassOf({ tool: deniedWrite.tool, toolInput: deniedWrite.input, cwd: dir, denials: [deniedWrite] }), null, 'the same call again is decided by the same check');
+    // A refused read locks nothing: one false positive of a read check locked the folder for the turn (2026-11-08).
     const deniedRead = { tool: 'Bash', input: { command: `cat ${f}` } };
-    assert.equal(bypassOf({ tool: 'Read', toolInput: { file_path: f }, cwd: dir, denials: [deniedRead] })?.path, f);
+    assert.equal(bypassOf({ tool: 'Read', toolInput: { file_path: f }, cwd: dir, denials: [deniedRead] }), null);
+    assert.equal(bypassOf({ tool: 'Write', toolInput: { file_path: f, content: 'y' }, cwd: dir, denials: [deniedRead] }), null);
     const deniedDocs = { tool: 'Grep', input: { pattern: 'x', path: path.join(dir, 'docs', 'principles') } };
-    assert.ok(bypassOf({ tool: 'Bash', toolInput: { command: 'git grep x -- docs' }, cwd: dir, denials: [deniedDocs] }), 'the parent folder holds the refused one');
-    assert.equal(bypassOf({ tool: 'Read', toolInput: { file_path: path.join(dir, 'other.md') }, cwd: dir, denials: [deniedRead] }), null);
+    assert.equal(bypassOf({ tool: 'Bash', toolInput: { command: 'git grep x -- docs' }, cwd: dir, denials: [deniedDocs] }), null);
+    const deniedRm = { tool: 'Bash', input: { command: 'rm -r docs/principles' } };
+    assert.ok(bypassOf({ tool: 'Bash', toolInput: { command: 'rm -r docs' }, cwd: dir, denials: [deniedRm] }), 'the parent folder holds the refused one');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -97,14 +100,15 @@ test('thread state keeps only the denials of the current turn', () => {
   assert.deepEqual(stateDenials(s).map((d) => d.key), ['new']);
 });
 
-test('hook: a refused bulk read of docs/principles locks nothing; the refusal text keeps the operator out of the waker role (P-061)', () => {
+test('hook: a bulk read of docs/principles is a hint and locks nothing; the refusal text keeps the operator out of the waker role (P-061)', () => {
   const fx = setup();
   try {
     const dir = path.join(fx.project, 'docs', 'principles');
     fs.mkdirSync(dir, { recursive: true });
     for (const f of ['P-001.md', 'README.md']) fs.writeFileSync(path.join(dir, f), `# ${f}\n`);
     const bulk = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `cat ${dir}/*` } });
-    assert.equal(bulk.json.hookSpecificOutput?.permissionDecision, 'deny', bulk.stderr);
+    assert.equal(bulk.json.hookSpecificOutput?.permissionDecision, undefined, bulk.stderr);
+    assert.match(bulk.json.hookSpecificOutput?.additionalContext || '', /one principle at a time/, 'the bulk read is a hint, not a deny (2026-11-08)');
     const edit = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: path.join(dir, 'README.md'), old_string: 'x', new_string: 'y' } });
     assert.doesNotMatch(JSON.stringify(edit.json || {}), /P-054/, 'one file is the way the guard names');
     const target = path.join(fx.brain, 'memory', 'note.md');
