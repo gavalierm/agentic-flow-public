@@ -191,10 +191,22 @@ export function restore(name, { root = DEFAULT_ROOT, domain = null } = {}) {
   return { projectDir: repos[0], projectDirs: repos, lines };
 }
 
+/**
+ * One repository in any spelling: git@host:o/r.git, ssh://git@host/o/r, https://host/o/r -> host/o/r. `git remote get-url`
+ * returns the address after url.<base>.insteadOf (ssh rewritten to https), so an exact match refused an existing clone
+ * of the same repository (flow-public#13).
+ */
+export function remoteKey(url) {
+  const u = String(url || '').trim().replace(/\/+$/, '').replace(/\.git$/i, '');
+  const m = /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?([^/:]+)(?::\d+)?[:/](.+)$/i.exec(u);
+  return m ? `${m[1].toLowerCase()}/${m[2].replace(/^\/+/, '').toLowerCase()}` : u.toLowerCase();
+}
+
 function cloneInto(remote, dir, label) {
   if (exists(dir)) {
-    const url = git(['remote', 'get-url', 'origin'], { cwd: dir }).stdout;
-    if (url !== remote) throw new Error(`${dir} exists and is not a clone of ${remote}; nothing is overwritten (P-018)`);
+    // The configured address and the rewritten one: either names the repository.
+    const urls = [git(['config', '--get', 'remote.origin.url'], { cwd: dir }).stdout, git(['remote', 'get-url', 'origin'], { cwd: dir }).stdout];
+    if (!urls.some((u) => u && remoteKey(u) === remoteKey(remote))) throw new Error(`${dir} exists and is not a clone of ${remote} (origin ${urls[1] || urls[0] || 'none'}); nothing is overwritten (P-018)`);
     return `${label}: already cloned`;
   }
   const r = gitRemote(['clone', '--quiet', remote, dir], { cwd: path.dirname(dir) });

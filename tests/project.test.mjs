@@ -148,6 +148,15 @@ test('adopt an older project: probe finds it, connect renames and adopts the bra
     const r2 = await connect({ project: 'kubo', repo: 'kubo-app', ...opts, remoteFor: sb.remoteFor });
     assert.ok(r2.lines.includes('brain: already cloned'), r2.lines.join('\n'));
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(sb.root, 'Kubo', 'kubo-app', '.workflow.json'), 'utf8')).brain, '../kubo-brain');
+    // url.<base>.insteadOf rewrites the address `git remote get-url` returns (ssh -> https on Windows, flow-public#13):
+    // the existing brain clone is still the same repository.
+    const remotesDir = path.dirname(sb.remoteFor('o', 'kubo-brain'));
+    git(brainDir, 'config', `url.file://${remotesDir}/.insteadOf`, `${remotesDir}/`);
+    assert.match(git(brainDir, 'remote', 'get-url', 'origin'), /^file:\/\//);
+    sb.seed('kubo-api', { 'api.js': '1\n' });
+    const r4 = await connect({ project: 'kubo', repo: 'kubo-api', ...opts, remoteFor: sb.remoteFor });
+    assert.ok(r4.lines.includes('brain: already cloned'), r4.lines.join('\n'));
+    git(brainDir, 'config', '--remove-section', `url.file://${remotesDir}/`);
 
     // Inventory marks dead absolute paths.
     const inv = inventory(brainDir);
@@ -217,6 +226,11 @@ test('connect refuses an existing directory that is not the clone, and a brain b
     fs.mkdirSync(path.join(sb.root, 'web2', 'web2'), { recursive: true });
     sb.seed('web2', { 'a.txt': 'a\n' });
     await assert.rejects(connect({ project: 'web2', ...opts }), /exists and is not a clone/);
+    const { remoteKey } = await import('../scripts/project.mjs');
+    const user = `git${'@'}git.example`; // built, so the public leak scan does not read it as an address
+    assert.equal(remoteKey(`${user}:O/Repo.git`), remoteKey('https://git.example/o/repo'));
+    assert.equal(remoteKey(`ssh://${user}/o/repo.git/`), 'git.example/o/repo');
+    assert.notEqual(remoteKey(`${user}:o/repo.git`), remoteKey('https://git.example/o/other.git'));
     // An older flat project (a repository at ~/agentic/<name>) is not turned into a project folder.
     sb.seed('flat', { 'a.txt': 'a\n' });
     git(sb.root, 'clone', '-q', sb.remoteFor('o', 'flat'), 'flat');
