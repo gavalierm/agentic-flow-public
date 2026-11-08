@@ -62,6 +62,24 @@ function writeReport(ctx, id, rec) {
   try { fs.mkdirSync(path.dirname(reportsFile(ctx)), { recursive: true }); fs.writeFileSync(reportsFile(ctx), `${JSON.stringify(all, null, 2)}\n`); } catch { /* the record only helps the late fallback */ }
 }
 
+// A maintainer topic this mail server held once is remembered per brain and mail is skipped for a week: every report
+// otherwise left the operator another "new topic? / redirect" notice first (agentic-flow-public#20, 12 notices).
+export const UNREACHABLE_DAYS = 7;
+export function unreachableFile(ctx) {
+  return path.join(ctx.brainDir || ctx.projectDir, 'local', 'maintainer-unreachable.json');
+}
+function serverKey(s, addr) {
+  return `${s.instance || toPosix(s.configFile || '') || 'default'}|${addr.project}/${addr.topic}`;
+}
+function readUnreachable(ctx) {
+  try { return JSON.parse(fs.readFileSync(unreachableFile(ctx), 'utf8')) || {}; } catch { return {}; }
+}
+function rememberUnreachable(ctx, key) {
+  const all = readUnreachable(ctx);
+  all[key] = new Date().toISOString();
+  try { fs.mkdirSync(path.dirname(unreachableFile(ctx)), { recursive: true }); fs.writeFileSync(unreachableFile(ctx), `${JSON.stringify(all, null, 2)}\n`); } catch { /* only saves a notice */ }
+}
+
 /** Mail to the maintainer topic; delivered = accepted pending in a registered topic (not held, not queued in the outbox). */
 export function mailReport(ctx, text, maintainer = maintainerOf(ctx.policy)) {
   if (!maintainer.comms) return { ok: false, why: 'no maintainer topic configured' };
@@ -69,10 +87,14 @@ export function mailReport(ctx, text, maintainer = maintainerOf(ctx.policy)) {
   if (!s.enabled) return { ok: false, why: `mail not configured (${s.reason || 'off'})` };
   const addr = parseAddress(maintainer.comms, s.project);
   if (!addr || addr.persona) return { ok: false, why: `bad maintainer address ${maintainer.comms}` };
+  const key = serverKey(s, addr);
+  const seen = readUnreachable(ctx)[key];
+  if (seen && Date.now() - Date.parse(seen) < UNREACHABLE_DAYS * 86400000) return { ok: false, why: `maintainer topic ${maintainer.comms} not on this mail server (held ${seen.slice(0, 10)}; mail skipped)` };
   const res = runClient(ctx, ['send', '--text', '-', '--level', 'assist', '--project', addr.project, '--topic', addr.topic], { input: text });
   if (!res.ok) return { ok: false, why: `mail ${res.error || 'failed'}` };
   const d = res.data || {};
   if (d.queued) return { ok: false, why: 'mail unavailable (queued in the outbox)', id: d.id };
+  if (d.state === 'held') rememberUnreachable(ctx, key);
   if (d.state !== 'pending' || !d.id) return { ok: false, why: `maintainer topic ${maintainer.comms} not on this mail server (message ${d.state || '?'}${d.notice_id ? `, notice ${d.notice_id}` : ''})`, id: d.id, notice: d.state === 'held' ? d.notice_id || null : null };
   return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${addr.project}/${addr.topic}` };
 }
@@ -130,15 +152,15 @@ export async function report(ctx, { text, title, fromId } = {}, env = process.en
     held = mail.notice || null;
   }
   const issue = await issueReport(ctx, title, text, m, env);
+  // The held copy only leaves the operator a "new topic?" notice about nothing (operator 2026-11-07: an instance asked
+  // what to do with three such notices); the sender withdraws its own message, also when the report ends as a draft.
+  let tail = '';
+  if (held) tail = runClient(ctx, ['decide', '--notice', held, '--decision', 'discard']).ok ? `; held mail copy discarded (notice ${held})` : `; held mail copy stays (notice ${held}): the operator may discard it`;
   if (issue.ok) {
     if (fromId) writeReport(ctx, fromId, { issue: issue.url });
-    // The held copy of an issued report only leaves the operator a "new topic?" notice about nothing (operator
-    // 2026-11-07: an instance asked what to do with three such notices); the sender withdraws its own message.
-    let tail = '';
-    if (held) tail = runClient(ctx, ['decide', '--notice', held, '--decision', 'discard']).ok ? `; held mail copy discarded (notice ${held})` : `; held mail copy stays (notice ${held}): the operator may discard it`;
     return { reported: true, line: `reported: issue ${issue.url} (${why.join('; ')})${tail}; tell the operator the link (P-003)` };
   }
   why.push(issue.why);
   const file = draft(ctx, title, text, why);
-  return { reported: false, line: `NOT reported: ${why.join('; ')}. Tell the operator it was not reported and give them ${toPosix(file)} (do not write "reported", P-019)` };
+  return { reported: false, line: `NOT reported: ${why.join('; ')}${tail}. Tell the operator it was not reported and give them ${toPosix(file)} (do not write "reported", P-019)` };
 }

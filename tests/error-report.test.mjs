@@ -56,6 +56,26 @@ test('held mail (maintainer topic not on this server) becomes an issue with scru
   } finally { fx.cleanup(); }
 });
 
+test('a held maintainer topic is remembered: the next report skips mail and leaves no notice (#20)', () => {
+  const fx = fixture({ send_held: true });
+  try {
+    let r = fx.run('error.mjs', ['report', '--text', 'chyba: a']);
+    assert.match(r.stdout, /^reported: issue .*held mail copy discarded \(notice n-1\)/);
+    r = fx.run('error.mjs', ['report', '--text', 'chyba: b']);
+    assert.match(r.stdout, /^reported: issue .*not on this mail server \(held \d{4}-\d\d-\d\d; mail skipped\)/);
+    const sends = fs.readFileSync(fx.env.STUB_COMMS_LOG, 'utf8').split('\n').filter((l) => l.includes('"send"'));
+    assert.equal(sends.length, 1, 'only the first report was mailed');
+  } finally { fx.cleanup(); }
+});
+
+test('held mail and no GitHub: the held copy is discarded too, the draft keeps the text (#20)', () => {
+  const fx = fixture({ send_held: true });
+  try {
+    const r = fx.run('error.mjs', ['report', '--text', 'chyba: c'], { env: { WORKFLOW_GH_CLI: path.join(fx.root, 'missing-gh') } });
+    assert.match(r.stdout, /^NOT reported: .*held mail copy discarded \(notice n-1\)\. Tell the operator/);
+  } finally { fx.cleanup(); }
+});
+
 test('no mail and no GitHub: NOT reported, draft for the operator', () => {
   const fx = fixture({ down: true });
   try {

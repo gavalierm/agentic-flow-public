@@ -215,3 +215,23 @@ test('pin: workflow_version through the brain writer, --all pins every brain the
     assert.doesNotMatch(all.stdout, /gone/, 'a brain that no longer exists is skipped');
   } finally { a.cleanup(); b.cleanup(); }
 });
+
+test('maintainer: policy.maintainer through the brain writer; none turns mail off so a report goes straight to an issue (flow-public#21)', () => {
+  const fx = setup();
+  try {
+    assert.match(fx.run('brain.mjs', ['maintainer']).stdout, /^maintainer comms maintainer\/workflow-dev; repo https:\/\/github\.com\//);
+    let r = fx.run('brain.mjs', ['maintainer', '--comms', 'none']);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.stdout, /maintainer comms none; repo https:/);
+    const policy = JSON.parse(fx.read('policy.json'));
+    assert.equal(policy.maintainer.comms, null);
+    assert.equal(String(fx.git(fx.brain, 'status', '--porcelain', '--', 'policy.json')).trim(), '', 'committed');
+    r = fx.run('error.mjs', ['report', '--text', 'chyba: x'], { env: { WORKFLOW_GH_CLI: path.join(fx.root, 'missing-gh'), WORKFLOW_GITHUB_TOKEN_FILE: path.join(fx.root, 'no-token') } });
+    assert.match(r.stdout, /NOT reported: no maintainer topic configured; no GitHub access/);
+    assert.notEqual(fx.run('brain.mjs', ['maintainer', '--comms', 'bad topic']).status, 0);
+    assert.notEqual(fx.run('brain.mjs', ['maintainer', '--repo', 'https://example.test/x']).status, 0);
+    r = fx.run('brain.mjs', ['maintainer', '--comms', 'me/dev', '--repo', 'https://github.com/o/r']);
+    assert.equal(r.status, 0, r.out);
+    assert.deepEqual(JSON.parse(fx.read('policy.json')).maintainer, { comms: 'me/dev', repo: 'https://github.com/o/r' });
+  } finally { fx.cleanup(); }
+});

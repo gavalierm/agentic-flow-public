@@ -4,11 +4,13 @@
 //   brain.mjs remove <path> --message "..."
 //   brain.mjs sync | status
 //   brain.mjs pin <vX.Y.Z|latest> [--all]   set policy workflow_version (one install per machine: --all pins every brain it knows)
+//   brain.mjs maintainer [--comms <project>/<topic>|none] [--repo <github url>|none]   where error reports go (policy maintainer)
 //   brain.mjs resolve <file> --keep local|remote   settle a disagreement on one file (this machine's version or origin's)
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, readStdin, fail } from '../scripts/util.mjs';
-import { loadContext, loadPolicy, foreignProjectCwd } from '../scripts/config.mjs';
+import { loadContext, loadPolicy, foreignProjectCwd, isWakeTurn } from '../scripts/config.mjs';
+import { maintainerOf, repoSlug } from '../scripts/report.mjs';
 import { pinValue, knownBrains } from '../scripts/update.mjs';
 import { brainWrite, brainSync, unpushedCount, formatWriteResult, conflictText } from '../scripts/brain.mjs';
 
@@ -74,10 +76,35 @@ try {
     }
     process.stdout.write(`workflow_version ${want}: the install switches at the next session start (or /clear)${args.all ? '' : '; other brains on this machine: brain.mjs pin --all'}\n`);
     if (failed) process.exit(1);
+  } else if (cmd === 'maintainer') {
+    // flow-public#21: policy.maintainer (where error.mjs report goes) had no writer; a hand edit of policy.json is refused
+    // (P-013, P-040). `none` turns a channel off (comms none: reports go straight to an issue).
+    const file = path.join(ctx.brainDir || '', 'policy.json');
+    if (!ctx.brainDir) fail('brain unavailable');
+    let policy = {};
+    try { if (fs.existsSync(file)) policy = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (err) { fail(`policy.json is not valid JSON (${err.message}); fix it first`); }
+    const show = (m) => `maintainer comms ${m.comms ?? 'none'}; repo ${m.repo ?? 'none'}`;
+    if (args.comms === undefined && args.repo === undefined) { process.stdout.write(`${show(maintainerOf(policy))}\n`); process.exit(0); }
+    if (ctx.thread && isWakeTurn(ctx.brainDir, ctx.thread)) fail('the maintainer setting cannot change in a turn started by a message (P-047)');
+    const next = { ...(typeof policy.maintainer === 'object' && policy.maintainer ? policy.maintainer : {}) };
+    for (const key of ['comms', 'repo']) {
+      const v = args[key];
+      if (v === undefined) continue;
+      if (v === true || v === '') fail(`usage: brain.mjs maintainer [--comms <project>/<topic>|none] [--repo <github url>|none]`);
+      if (v === 'none') next[key] = null;
+      else if (key === 'comms' && !/^[\w.-]+\/[\w.-]+$/.test(v)) fail(`--comms ${v}: expected <project>/<topic> of the maintainer's mail topic, or none`);
+      else if (key === 'repo' && !repoSlug(v)) fail(`--repo ${v}: expected a github.com repository URL, or none`);
+      else next[key] = v;
+    }
+    const res = brainWrite({ brainDir: ctx.brainDir, thread: ctx.thread, policy: loadPolicy(ctx.brainDir) }, {
+      ops: [{ path: 'policy.json', content: `${JSON.stringify({ ...policy, maintainer: next }, null, 2)}\n` }],
+      message: `maintainer: ${show(maintainerOf({ maintainer: next }))}`,
+    });
+    process.stdout.write(`${formatWriteResult(res, ['policy.json'])}\n${show(maintainerOf({ maintainer: next }))}\n`);
   } else if (cmd === 'status') {
     process.stdout.write(`brain ${ctx.brainDir}\nunpushed: ${unpushedCount(ctx.brainDir)}\n`);
   } else {
-    fail('usage: brain.mjs write|remove|sync|resolve|pin|status');
+    fail('usage: brain.mjs write|remove|sync|resolve|pin|maintainer|status');
   }
 } catch (err) {
   fail(err.message);
