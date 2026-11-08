@@ -10,6 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { PLUGIN_ROOT, git, gitRemote, exists, readJson, toPosix } from './util.mjs';
 import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDirName, checkDomainName, DOMAIN_MARKER } from './config.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
+import { ensureLineEndings, EOL_RULE } from './eol.mjs';
 import { gh, ghOwner, ghOwnedRepos, ghRootNames, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
 
 export const DEFAULT_ROOT = path.join(os.homedir(), 'agentic');
@@ -177,6 +178,8 @@ export function restore(name, { root = DEFAULT_ROOT, domain = null } = {}) {
   for (const projectDir of repos) {
     const label = path.basename(projectDir);
     lines.push(pullIfClean(projectDir, label));
+    const eol = ensureLineEndings(projectDir, { label });
+    if (eol) lines.push(eol);
     const brainRel = readJson(path.join(projectDir, WORKFLOW_CONFIG), {})?.brain ?? null;
     const brainDir = brainRel && brainRel !== '.' ? path.resolve(projectDir, brainRel) : null;
     if (brainDir && !brains.has(brainDir)) {
@@ -274,6 +277,8 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
   const projectDir = path.join(base, repoName);
   const brainDir = path.join(base, brainName);
   const lines = [...setAsideLines, cloneInto(remoteFor(owner, repoName), projectDir, repoName)];
+  const eol = ensureLineEndings(projectDir, { label: repoName });
+  if (eol) lines.push(eol);
 
   if (brain && brain !== brainName) {
     if (!renameBrain) throw new Error(`brain repository ${owner}/${brain} must be named ${brainName}; run again with --rename-brain (renames it on GitHub, the old name redirects)`);
@@ -348,7 +353,8 @@ export async function create({ name, repo = null, purpose, domain = null, root =
   const lines = [...(await createRepo(apiUrl, token, owner, repoName)), ...(await createRepo(apiUrl, token, owner, `${name}-brain`))];
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'README.md'), `# ${repoName}\n\n${String(purpose).trim()}\n`);
-  for (const args of [['init', '--quiet', '-b', 'main'], ['add', 'README.md'], ['commit', '--quiet', '-m', `Start ${repoName}`], ['remote', 'add', 'origin', remoteFor(owner, repoName)]]) {
+  fs.writeFileSync(path.join(projectDir, '.gitattributes'), `${EOL_RULE}\n`);
+  for (const args of [['init', '--quiet', '-b', 'main'], ['add', 'README.md', '.gitattributes'], ['commit', '--quiet', '-m', `Start ${repoName}`], ['remote', 'add', 'origin', remoteFor(owner, repoName)]]) {
     const r = git(args, { cwd: projectDir });
     if (!r.ok) throw new Error(`git ${args[0]} failed: ${r.stderr}`);
   }

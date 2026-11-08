@@ -11,6 +11,8 @@ import { handleT3Session } from '../scripts/t3-clear.mjs';
 import { brainPull, brainPullNote } from '../scripts/brain.mjs';
 import { pinClone, pinFile, readPins, newerThanPin } from '../scripts/update.mjs';
 import { PLUGIN_ROOT } from '../scripts/util.mjs';
+import { ensureLineEndings } from '../scripts/eol.mjs';
+import { catalogBoot } from '../scripts/catalog/hooks.mjs';
 
 export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '15000 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038', 'P-050'] };
 
@@ -27,13 +29,25 @@ export function run(input) {
   if (pull?.pulled) {
     try { ctx = loadContext({ project: ctx.projectDir, requireBrain: false }); } catch { /* keep the context loaded before the pull */ }
   }
-  const notes = [brainPullNote(pull), pinWorkflow(ctx), t3Session(ctx, input)].filter(Boolean);
-  const boot = buildBootContext(ctx, { source: input.source || 'startup', t3Note: notes.length ? notes.join('\n') : null });
+  const notes = [brainPullNote(pull), pinWorkflow(ctx), projectLineEndings(ctx), t3Session(ctx, input)].filter(Boolean);
+  // Catalog of project data: scan within its budget before the boot text; it never fails the boot and does nothing without a source.
+  const catalog = catalogBoot(ctx, { source: input.source || 'startup', state: ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : null });
+  const boot = buildBootContext(ctx, { source: input.source || 'startup', t3Note: notes.length ? notes.join('\n') : null, catalogLines: catalog.lines });
   // P-021: the revision this session loaded; the prompt and tool hooks announce a later update once.
   if (ctx.brainDir && ctx.thread) {
-    try { const w = installedWorkflow(); writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), plugin_sha: w.sha, plugin_version: w.version }); } catch { /* state is best effort */ }
+    try { const w = installedWorkflow(); writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), plugin_sha: w.sha, plugin_version: w.version, ...(catalog.stateHash ? { catalog_boot_hash: catalog.stateHash } : {}) }); } catch { /* state is best effort */ }
   }
   return contextOutput('SessionStart', boot.text);
+}
+
+/**
+ * The project repository gets `.gitattributes` with `* text=auto eol=lf` and is normalized once (scripts/eol.mjs,
+ * operator 2026-11-08): without the rule a Windows git (core.autocrlf=true) or editor and a Linux agent on one checkout
+ * see every line changed. The brain has its rule from brain-init (P-024); a clean main checkout only.
+ */
+export function projectLineEndings(ctx) {
+  if (!ctx.projectDir || (ctx.brainDir && path.resolve(ctx.brainDir) === path.resolve(ctx.projectDir))) return null;
+  try { return ensureLineEndings(ctx.projectDir); } catch (err) { return `${path.basename(ctx.projectDir)}: line endings not normalized (${err.message})`; }
 }
 
 export function pullBrain(ctx) {

@@ -111,7 +111,7 @@ test('hook: a refused bulk read of docs/principles locks nothing; the refusal te
     fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: target, content: 'x' } });
     const around = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `node -e "1" ${target}` } });
     const reason = around.json.hookSpecificOutput.permissionDecisionReason;
-    assert.match(reason, /bypass \(P-054\).*Stav: otázka.*Stav: hotovo/);
+    assert.match(reason, /bypass \(P-054\).*with AskUserQuestion.*Stav: hotovo/);
     const viaSave = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `node /x/workflow/bin/save.mjs memory project note --content "$(sed -n 1p ${target})"` } });
     assert.doesNotMatch(JSON.stringify(viaSave.json || {}), /P-054/, 'save.mjs is the way the refusal names, not a bypass');
     assert.doesNotMatch(reason, /until the operator's next prompt/);

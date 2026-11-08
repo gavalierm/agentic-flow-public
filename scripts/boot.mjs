@@ -56,7 +56,7 @@ export function rulesHash(text) {
   return createHash('sha1').update(String(text || '')).digest('hex').slice(0, 16);
 }
 
-export function buildBootContext(ctx, { source = 'startup', harness = 'claude-code', includeRules = true, t3Note = null } = {}) {
+export function buildBootContext(ctx, { source = 'startup', harness = 'claude-code', includeRules = true, t3Note = null, catalogLines = [] } = {}) {
   const limits = ctx.policy?.limits || {};
   const notices = [];
   const parts = [];
@@ -83,6 +83,8 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   }
   // repo knowledge of the session repo and held code topics (D-0002): one line each, the HANDOVER of a topic's repo in full.
   for (const line of repoKnowledgeLines(ctx)) status += `\n${line}`;
+  // catalog of project data (scripts/catalog/hooks.mjs): 1 line per source, computed by session-start after its scan.
+  for (const line of catalogLines) status += `\n${line}`;
   // T3-WORKAROUND(t3-clear-cursor) T3 (claudeAgent) keeps resuming the session id it opened with (t3code#24152); session-start redirects it (t3-clear.mjs).
   if (t3Note) status += `\n${t3Note}`;
   parts.push(`${BOOT_MARKERS[1]}\n${status}`);
@@ -187,7 +189,7 @@ function freeTopics(ctx) {
 export function statusBlockInstruction(block, unknown = false, project = '<project>') {
   const n = block.split('\n').length;
   // The question is only for an unknown topic: a prompt that names the topic (claimed before the reply) is not asked again.
-  const known = unknown ? `\nThis block is only for a topic that stays unknown. If the operator's prompt names the topic and you claim it (skill workflow:topic) before your first reply, start that reply instead with \`${project} / <id>\` (and the \`Pošta:\` line if shown above), without the list and without \`Aká bude téma?\`; asking for a topic that is known is wrong (P-050).` : '';
+  const known = unknown ? `\nThis block is only for a topic that stays unknown. If the operator's prompt names the topic or starts new work, claim that topic or create it (\`topic.mjs create <id> --subject "<subject>"\` claims it, skill workflow:topic) before your first reply, and start that reply instead with \`${project} / <id>\` (and the \`Pošta:\` line if shown above), without the list and without \`Aká bude téma?\`; asking for a topic that is known is wrong (P-050).` : '';
   return `status block (P-050): your first reply in this session MUST start with exactly the next ${n} lines, verbatim, before anything else (no tags, no code fence)${unknown ? ', unless the topic is known (below)' : ''}; later replies MUST NOT repeat them:\n${block}\n(end of status block)${known}${unknown ? '\nA reply that leaves the topic question open ends with the line `Stav: otázka` (P-061).' : ''}`;
 }
 

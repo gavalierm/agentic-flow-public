@@ -24,7 +24,7 @@ try {
     if (!commsSettings(ctx).enabled) fail('comms off: no wake module can ring this thread; continue the work now instead of waiting (P-061)');
     const t = setTimer(ctx.brainDir, ctx.thread, { delayMs: ms, then });
     const clamped = ms < TIMER_MIN_MS || ms > TIMER_MAX_MS ? ` (clamped to ${TIMER_MIN_MS / 60_000}m..${TIMER_MAX_MS / 3600_000}h)` : '';
-    out(`timer set: ${t.at}${clamped}; then: ${t.then}. The wake module rings this thread then; end the turn with "Stav: čakám" (P-061)`);
+    out(`timer set: ${t.at}${clamped}; then: ${t.then}. The wake module rings this thread then; end the turn with "Stav: čakám (na <what>)" (P-061)`);
   } else if (cmd === 'show') {
     const t = activeTimer(readThreadState(ctx.brainDir, ctx.thread));
     out(t ? `timer: ${t.at}; then: ${t.then}${t.auto ? ' (armed by the Stop hook)' : ''}` : 'no timer');

@@ -13,7 +13,11 @@
     "handover_lines": 15,
     "repo_handover_lines": 150,
     "hook_signal_lines": 2,
-    "worker_result_chars": 2000
+    "worker_result_chars": 2000,
+    "catalog_boot_lines": 2,
+    "catalog_find_lines": 20,
+    "catalog_line_chars": 220,
+    "materialy_max_mb": 50
   },
   "destructive": {
     "removed_lines_threshold": 50,

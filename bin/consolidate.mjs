@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { lfBytes } from '../scripts/eol.mjs';
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
 import { readMemory, readSkills, projectRecords } from '../scripts/records.mjs';
@@ -22,7 +23,7 @@ function fingerprint(projectDir, sources) {
   for (const s of sources) {
     const file = path.resolve(projectDir, s);
     h.update(s + '\n');
-    h.update(fs.existsSync(file) ? fs.readFileSync(file) : Buffer.from('missing'));
+    h.update(fs.existsSync(file) ? lfBytes(fs.readFileSync(file)) : Buffer.from('missing'));
   }
   return h.digest('hex').slice(0, 12);
 }

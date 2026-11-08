@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { lfBytes } from './eol.mjs';
 import { readThreadState, writeThreadState, SCRATCH_DIR } from './config.mjs';
 import { git } from './util.mjs';
 
@@ -27,7 +28,7 @@ export function inWorkScratch(abs) {
 export function fileHash(abs) {
   try {
     if (!fs.statSync(abs).isFile()) return null;
-    return createHash('sha1').update(fs.readFileSync(abs)).digest('hex');
+    return createHash('sha1').update(lfBytes(fs.readFileSync(abs))).digest('hex');
   } catch {
     return null;
   }

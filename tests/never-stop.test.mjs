@@ -57,7 +57,7 @@ test('Stop: "Stav: čakám" without a waker blocks once; ending anyway arms the 
   const fx = setup();
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
-    const msg = 'Poslal som otázku Carol.\n\nStav: čakám';
+    const msg = 'Poslal som otázku Carol.\n\nStav: čakám (na odpoveď Carol)';
     assert.match(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.reason, /no waker is armed/);
     assert.equal(stateOf(fx).timer, undefined, 'a blocked stop arms nothing');
     // Ending anyway never leaves the thread idle: code arms the timer, silently (P-061).
@@ -101,35 +101,38 @@ test('UserPromptSubmit: a fired timer names its step; the update notice re-injec
   assert.match(updateNotice({ plugin_sha: 'aaa' }, { sha: 'bbb' }, () => null).line, /changed skills: all/);
 });
 
-test('PreToolUse: AskUserQuestion is denied (it halts the turn); a subagent is not affected', () => {
+test('PreToolUse: AskUserQuestion passes in every turn, so T3 shows "Awaiting Input"; the dialog time is kept (operator 2026-11-08)', () => {
   const fx = setup();
   try {
-    const r = fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } }).json;
-    assert.equal(r.hookSpecificOutput?.permissionDecision, 'deny');
-    assert.match(r.hookSpecificOutput.permissionDecisionReason, /do all work that does not need the answer.*Pre teba.*Stav: otázka/);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+    const ask = () => fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } }).json?.hookSpecificOutput?.permissionDecision;
+    assert.notEqual(ask(), 'deny');
+    assert.ok(stateOf(fx).dialog_at >= stateOf(fx).turn_started_at, 'dialog of this turn recorded');
+    const f = path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`);
+    fs.writeFileSync(f, JSON.stringify({ ...stateOf(fx), turn_source: 'wake' }));
+    assert.notEqual(ask(), 'deny', 'a bell turn asks in the dialog too');
     const hooks = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'hooks', 'hooks.json'), 'utf8'));
     assert.match(hooks.hooks.PreToolUse[0].matcher, /AskUserQuestion/);
   } finally { fx.cleanup(); }
 });
 
-test('PreToolUse: the project wizard asks in a dialog while its window is open, only in an operator turn (operator 2026-11-04)', () => {
+test('Stop: a question to the operator only in text blocks once with the dialog; after a dialog in the turn the text passes', () => {
   const fx = setup();
   try {
-    const ask = () => fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } }).json?.hookSpecificOutput?.permissionDecision;
-    const project = (...a) => spawnSync(process.execPath, [path.join(import.meta.dirname, '..', 'bin', 'project.mjs'), ...a], { cwd: fx.project, encoding: 'utf8', env: fx.env });
-    const r = project('wizard', 'start', 'novy');
-    assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /wizard open for novy/);
-    assert.notEqual(ask(), 'deny');
-    const state = stateOf(fx);
-    fs.writeFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), JSON.stringify({ ...state, turn_source: 'wake' }));
-    assert.equal(ask(), 'deny', 'a turn started by a message does not open a dialog');
-    fs.writeFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), JSON.stringify({ ...state, wizard: { name: 'novy', until: '2026-01-01T00:00:00Z' } }));
-    assert.equal(ask(), 'deny', 'an expired window');
-    fs.writeFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), JSON.stringify(state));
-    assert.equal(project('wizard', 'end').status, 0);
-    assert.equal(ask(), 'deny');
-    assert.equal(stateOf(fx).wizard, undefined);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+    const text = 'Návrh je hotový.\n\n**Pre teba:** Vydať teraz? Odporúčam áno.\n\nStav: otázka';
+    const r = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: text }).json;
+    assert.equal(r.decision, 'block');
+    assert.match(r.reason, /with AskUserQuestion now.*Awaiting Input/);
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: text }).json.decision, undefined, 'blocks once');
+    fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+    fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: text }).json.decision, undefined, 'the dialog failed: text fallback');
+    // A dialog of an earlier turn does not count for this one.
+    const f = path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`);
+    fs.writeFileSync(f, JSON.stringify({ ...stateOf(fx), dialog_at: '2020-01-01T00:00:00.000Z' }));
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: text }).json.decision, 'block');
   } finally { fx.cleanup(); }
 });
 
@@ -164,6 +167,30 @@ test('UserPromptSubmit: an update with unchanged rules sends the update line wit
   } finally { fx.cleanup(); }
 });
 
+test('Stop: "<project> / bez témy" in a reply blocks once unless it ends with the topic question (P-050, operator 2026-11-08)', () => {
+  const fx = setup();
+  try {
+    const project = path.basename(fx.project);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'Chcem riešiť tému predaja pneumatík' });
+    const block = `${project} / bez témy\n\nDostupné témy:\n- žiadne\n\n`;
+    // Work without a topic under the status block of a thread without a topic.
+    const work = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: `${block}Návrhy sú v scratch/kampan.md.\n\nStav: hotovo` }).json;
+    assert.equal(work.decision, 'block');
+    assert.match(work.reason, /goes on without a topic: .*topic\.mjs create/);
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: `${block}Hotovo.\n\nStav: hotovo` }).json.decision, undefined, 'blocks once');
+    // The unknown topic asked with the block passes.
+    fx.hook('user-prompt-submit.mjs', { prompt: 'ahoj' });
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: `${block}**Pre teba:** Aká bude téma?\n\nStav: otázka` }).json.decision, undefined);
+    // A topic created in the turn: the block must name it.
+    assert.equal(fx.run('topic.mjs', ['create', 'predaj-pneumatik', '--subject', 'Predaj pneumatík']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+    const stale = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: `${block}Návrhy sú hotové.\n\nStav: hotovo` }).json;
+    assert.equal(stale.decision, 'block');
+    assert.match(stale.reason, new RegExp(`holds topic predaj-pneumatik: start the reply with "${project} / predaj-pneumatik"`));
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: `${project} / predaj-pneumatik\n\nNávrhy sú hotové.\n\nStav: hotovo` }).json.decision, undefined);
+  } finally { fx.cleanup(); }
+});
+
 test('Stop: a thread without a topic asking the operator for one gets no auto timer; with a topic it does (flow-public#1)', () => {
   const fx = setup();
   try {
@@ -173,7 +200,7 @@ test('Stop: a thread without a topic asking the operator for one gets no auto ti
     assert.equal(activeTimer(stateOf(fx)), null, 'no timer: nothing to continue, the operator answers the topic question');
     assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Hotová prvá časť.\n\n**Pre teba:** Pokračovať variantom A? Odporúčam A.\n\nStav: otázka' });
+    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Hotová prvá časť.\n\n**Pre teba:** Pokračovať variantom A? Odporúčam A.\n\nStav: otázka' });
     assert.equal(stateOf(fx).timer?.auto, true, 'a held topic still gets the P-061 timer');
   } finally { fx.cleanup(); }
 });

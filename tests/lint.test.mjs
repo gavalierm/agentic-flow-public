@@ -83,12 +83,12 @@ test('P-049: frontmatter fields of skills and agents are english lowercase; desc
   }
 });
 
-test('P-061: no skill tells the agent to ask with AskUserQuestion (the hook denies it)', () => {
+test('P-061: no skill says the hook denies AskUserQuestion (a question to the operator goes in the dialog, operator 2026-11-08)', () => {
   for (const s of fs.readdirSync(path.join(PLUGIN_ROOT, 'skills'))) {
     const f = path.join(PLUGIN_ROOT, 'skills', s, 'SKILL.md');
     if (!fs.existsSync(f)) continue;
     for (const line of fs.readFileSync(f, 'utf8').split('\n')) {
-      if (line.includes('AskUserQuestion')) assert.match(line, /zamietne|wizard start/, `skills/${s}/SKILL.md: ${line.slice(0, 120)}`);
+      if (line.includes('AskUserQuestion')) assert.doesNotMatch(line, /zamietne|zakázan/, `skills/${s}/SKILL.md: ${line.slice(0, 120)}`);
     }
   }
 });

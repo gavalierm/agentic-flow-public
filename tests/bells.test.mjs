@@ -231,7 +231,7 @@ test('next step: "hotovo" with a handover step blocks; ending anyway hands the s
     fx.hook('user-prompt-submit.mjs', { prompt: 'nastav ranný beh' });
     fx.hook('post-tool-use.mjs', { tool_name: 'mcp__t3-code__schedule_task', tool_input: { prompt: 'p', schedule: { type: 'fixed_time', timeOfDay: '06:00' } }, tool_response: '{"scheduledTaskId":"st1"}' });
     fx.stub.reset();
-    assert.notEqual(fx.hook('stop.mjs', { last_assistant_message: 'Ranný beh je nastavený.\n\nStav: čakám' }).json.decision, 'block');
+    assert.notEqual(fx.hook('stop.mjs', { last_assistant_message: 'Ranný beh je nastavený.\n\nStav: čakám (na ranný beh)' }).json.decision, 'block');
     closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
     assert.ok(closed.length && !val(closed[0], 'next'), 'no continue bell on top of the schedule');
   } finally { fx.cleanup(); }
@@ -247,7 +247,7 @@ test('idle step: a next step that only waits needs no waker; it rings in hours, 
     assert.equal(fx.run('save.mjs', ['handover', 'tk', '--task', 'T', '--next', 'Čakať na hlásenie témy owner-naming a odpovedať operátorovi']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ako to ide?' });
     fx.stub.reset();
-    const r = fx.hook('stop.mjs', { last_assistant_message: 'Téma beží vo vlastnom vlákne.\n\nStav: čakám' });
+    const r = fx.hook('stop.mjs', { last_assistant_message: 'Téma beží vo vlastnom vlákne.\n\nStav: čakám (na vlákno témy)' });
     assert.equal(r.json.decision, undefined);
     assert.equal(tstate(fx).timer, undefined, 'no auto timer on top of the idle ring');
     const rings = [];
@@ -256,9 +256,9 @@ test('idle step: a next step that only waits needs no waker; it rings in hours, 
       rings.push(val(closed, 'resume-at') ? Math.round(hoursAhead(val(closed, 'resume-at'))) : null);
       // The ring: the prompt says it is an idle check; the turn ends with only its state line.
       const ctx = fx.hook('user-prompt-submit.mjs', { prompt: 'turn ended with a next step, continue from handover' }).context;
-      if (i === 0) assert.match(ctx, /idle check: the next step of topic tk only waits.*"Stav: čakám"/);
+      if (i === 0) assert.match(ctx, /idle check: the next step of topic tk only waits.*"Stav: čakám \(na /);
       fx.stub.reset();
-      assert.equal(fx.hook('stop.mjs', { last_assistant_message: 'Stav: čakám' }).json.decision, undefined);
+      assert.equal(fx.hook('stop.mjs', { last_assistant_message: 'Stav: čakám (na odpoveď)' }).json.decision, undefined);
     }
     assert.deepEqual(rings, [4, 12, 24, null]);
   } finally { fx.cleanup(); }
@@ -271,7 +271,7 @@ test('operator wait: a question to the operator arms the auto timer in hours; a 
     fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: '**Pre teba:** Mám to vydať hneď? Odporúčam áno.\n\nStav: otázka' });
     assert.equal(Math.round(hoursAhead(tstate(fx).timer.at)), 4);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Build beží.\n\nStav: čakám' });
+    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Build beží.\n\nStav: čakám (na build)' });
     assert.ok(hoursAhead(tstate(fx).timer.at) < 1);
   } finally { fx.cleanup(); }
 });
@@ -292,14 +292,14 @@ test('pause: a paused topic gets no continue ring and no auto timer; its end rin
     const ctx = fx.hook('user-prompt-submit.mjs', { prompt: 'čo nové?' }).context;
     assert.match(ctx, /topic pz is paused until/);
     fx.stub.reset();
-    const r = fx.hook('stop.mjs', { last_assistant_message: 'Téma je pozastavená.\n\nStav: čakám' });
+    const r = fx.hook('stop.mjs', { last_assistant_message: 'Téma je pozastavená.\n\nStav: čakám (na koniec pauzy)' });
     assert.equal(r.json.decision, undefined, 'no next-step block');
     assert.equal(tstate(fx).timer, undefined, 'no auto timer');
     const closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed').pop();
     assert.match(val(closed, 'next'), /pause of topic pz ended/);
     assert.equal(Math.round(hoursAhead(val(closed, 'resume-at'))), 48);
     // A ring before the end (a clamped resume time) does not start the work.
-    assert.match(fx.hook('user-prompt-submit.mjs', { prompt: 'turn ended with a next step, continue from handover' }).context, /topic pz is still paused until .*end the turn with only "Stav: čakám"/);
+    assert.match(fx.hook('user-prompt-submit.mjs', { prompt: 'turn ended with a next step, continue from handover' }).context, /topic pz is still paused until .*end the turn with only "Stav: čakám \(na koniec pauzy témy pz\)"/);
     assert.equal(fx.run('topic.mjs', ['resume', 'pz']).status, 0);
     const back = JSON.parse(fs.readFileSync(path.join(fx.brain, 'topics', 'pz', 'topic.json'), 'utf8'));
     assert.equal(back.state, 'working');

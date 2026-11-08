@@ -9,7 +9,7 @@
 // name with an upper case first letter; repositories stay lower case.
 //   project.mjs inventory <dir> [--json]                             files of a repository by group, with dead paths
 //   project.mjs tidy --project <dir> --plan <file.json>              apply the agreed removals and moves in the brain
-//   project.mjs wizard start <name> | end                           open (2 h) or close the window in which the wizard asks in a dialog
+//   project.mjs wizard start <name> | end                           open (2 h) or close the window of the wizard (T3 setup left is named at the end)
 //   project.mjs t3 <dir> [--name <project>] [--no-welcome] | t3 <dir> --registered   trust, T3 project and welcome thread of a
 //     repository folder (restore, connect and create do it themselves; --no-t3 skips it); --registered: the steps left
 //     for the T3 tools (no `t3` CLI) were done
@@ -138,12 +138,12 @@ try {
       const name = args._[2];
       if (!name) fail('usage: project.mjs wizard start <name>');
       const w = setWizard(ctx.brainDir, ctx.thread, name);
-      out(`wizard open for ${name} until ${w.until}: questions to the operator go in a dialog (AskUserQuestion)`);
+      out(`wizard open for ${name} until ${w.until}`);
     } else if (target === 'end') {
       const left = pendingT3Line(readThreadState(ctx.brainDir, ctx.thread).t3_pending);
       if (left) fail(`wizard not closed: ${left}`);
       setWizard(ctx.brainDir, ctx.thread, null);
-      out('wizard closed: questions go as text under **Pre teba:** again (P-061)');
+      out('wizard closed');
     } else fail('usage: project.mjs wizard start <name> | end');
   } else {
     fail('usage: project.mjs probe|restore|connect|create|t3|inventory|tidy|wizard ... (see the header of bin/project.mjs)');

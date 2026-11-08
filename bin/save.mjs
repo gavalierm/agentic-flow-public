@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { lfBytes } from '../scripts/eol.mjs';
 import { spawnSync } from 'node:child_process';
 import { parseArgs, fail, today, readText } from '../scripts/util.mjs';
 import { loadContext, isWakeTurn, machineName, foreignProjectCwd } from '../scripts/config.mjs';
@@ -42,7 +43,7 @@ function fingerprint(projectDir, sources) {
   for (const s of sources) {
     const file = path.resolve(projectDir, s);
     h.update(s + '\n');
-    h.update(fs.existsSync(file) ? fs.readFileSync(file) : Buffer.from('missing'));
+    h.update(fs.existsSync(file) ? lfBytes(fs.readFileSync(file)) : Buffer.from('missing'));
   }
   return h.digest('hex').slice(0, 12);
 }

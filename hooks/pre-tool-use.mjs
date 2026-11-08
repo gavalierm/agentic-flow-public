@@ -5,8 +5,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
-import { loadContext, allowOutside, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR, isWakeTurn } from '../scripts/config.mjs';
-import { wizardOpen } from '../scripts/wizard.mjs';
+import { loadContext, allowOutside, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR } from '../scripts/config.mjs';
 import { git, isInside, toPosix } from '../scripts/util.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
 import { SUBAGENT_ALLOWED } from '../scripts/comms.mjs';
@@ -14,6 +13,8 @@ import { readTopics } from '../scripts/records.mjs';
 import { knowledgeDirOf, PROJECT_KNOWLEDGE } from '../scripts/repo-knowledge.mjs';
 import { findSecret } from '../scripts/secrets.mjs';
 import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell } from '../scripts/own-files.mjs';
+import { catalogPreTool } from '../scripts/catalog/pretool.mjs';
+import { bigWriteDeny } from '../scripts/materialy.mjs';
 import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, stateDenials, transcriptDenials, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-052', 'P-054', 'P-055'] };
@@ -174,7 +175,7 @@ export function maskShell(command) {
   cmd = cmd.replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n\s*\2\s*(?=\n|$)/g, (m) => m.split('\n')[0]);
   return cmd.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, (q) => q.replace(/[>;&| ]/g, (c) => MASK[c]));
 }
-const unmask = (s) => s.replace(/[\u0001-\u0005]/g, (c) => UNMASK[c]).replace(/^['"]|['"]$/g, '');
+export const unmask = (s) => s.replace(/[\u0001-\u0005]/g, (c) => UNMASK[c]).replace(/^['"]|['"]$/g, '');
 
 /**
  * Absolute filesystem targets a shell command writes or deletes (P-018, P-013). `cd <dir>` changes the base of
@@ -291,7 +292,7 @@ export function bashTargets(command, cwd = process.cwd()) {
  */
 // The program of a segment comes after sudo and shell keywords: `for f in a; do grep -o x "$f"; done` runs grep, not `do`.
 const LEAD_WORDS = new Set(['sudo', 'do', 'then', 'else', 'elif', 'if', 'while', 'until', 'time', 'nohup', 'command', 'exec', '!', '{']);
-function leadOf(words) {
+export function leadOf(words) {
   let i = 0;
   while (i < words.length - 1 && LEAD_WORDS.has(words[i])) i++;
   return i;
@@ -724,10 +725,11 @@ export function run(input) {
   const policy = ctx.policy;
   const resolve = (p) => path.resolve(cwd, p);
 
-  // P-061: a question tool halts the turn until the operator answers; work never stops (operator 2026-11-03).
-  // Exception (operator 2026-11-04): the project wizard asks in a dialog while its window is open, in an operator turn.
-  const wizardDialog = tool === 'AskUserQuestion' && ctx.brainDir && ctx.thread && !isWakeTurn(ctx.brainDir, ctx.thread) && wizardOpen(ctx.brainDir, ctx.thread);
-  if (tool === 'AskUserQuestion' && !input.agent_id && !wizardDialog) return permissionOutput('deny', `AskUserQuestion stops the work until the operator answers, and work never stops (P-061): do all work that does not need the answer, then put the one question as text under **Pre teba:** (the recommended option first) and end the reply with the line "Stav: otázka" (P-061)`);
+  // P-061 (operator 2026-11-08): a question to the operator is asked in the dialog, so T3 shows the thread as "Awaiting Input";
+  // a text question was lost in the thread among the mail turns. The time is kept for the Stop hook (question asked this turn).
+  if (tool === 'AskUserQuestion' && !input.agent_id && ctx.brainDir && ctx.thread) {
+    writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), dialog_at: new Date().toISOString() });
+  }
 
   // P-055: work for another agent goes through mail, never straight into its thread.
   const denied = deniedTool(tool, policy.harness?.denied_tools || []);
@@ -809,6 +811,15 @@ export function run(input) {
   return out;
 }
 
+/** Catalog of project data (scripts/catalog/pretool.mjs): deny of a write into a read-only source, one reminder per session. Never throws. */
+function catalogCheck(input, ctx, cwd) {
+  try {
+    return catalogPreTool(input, ctx, cwd, { bashTargets, bashEdits, shellWrites, maskShell, unmask, leadOf, readThreadState, writeThreadState });
+  } catch {
+    return null;
+  }
+}
+
 function pathChecks(input, ctx, cwd) {
   const tool = input.tool_name;
   const toolInput = input.tool_input || {};
@@ -821,6 +832,12 @@ function pathChecks(input, ctx, cwd) {
   const target = targetOf(tool, toolInput);
   if (target) {
     const abs = resolve(target);
+    const cat = catalogCheck(input, ctx, cwd);
+    if (cat?.deny) return permissionOutput('deny', cat.deny);
+    if (tool === 'Write' && typeof toolInput.content === 'string') {
+      const big = bigWriteDeny(ctx.projectDir, policy, abs, Buffer.byteLength(toolInput.content));
+      if (big) return permissionOutput('deny', big);
+    }
     const knowledge = repoKnowledgeWrite(ctx, [abs]);
     if (knowledge) return permissionOutput('deny', knowledge);
     const owned = topicOwnedCheck(ctx, [abs]);
@@ -885,6 +902,8 @@ function pathChecks(input, ctx, cwd) {
   if (tool === 'Bash' || tool === 'PowerShell') {
     const cmd = String(toolInput.command || '');
     snapshotShell(ctx, input.tool_use_id, shellDirs(cmd, cwd));
+    const cat = catalogCheck(input, ctx, cwd);
+    if (cat?.deny) return permissionOutput('deny', cat.deny);
     const targets = bashTargets(cmd, cwd);
     const edits = bashEdits(cmd, cwd);
     const strayFile = (t) => fs.existsSync(t) && !fs.statSync(t).isDirectory() && ['untracked', 'ignored by git'].includes(classifyTarget(t).reason);
@@ -940,6 +959,7 @@ function pathChecks(input, ctx, cwd) {
     claimOwn(ctx, [...targets, ...edits].filter((t) => fs.existsSync(t) && !ownWork(ctx, t) && classifyTarget(t).reason === 'tracked and clean'));
     const grepHint = grepNoFilename(cmd);
     if (grepHint) return contextOutput('PreToolUse', grepHint);
+    if (cat?.remind) return contextOutput('PreToolUse', cat.remind);
   }
   return {};
 }

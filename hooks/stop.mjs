@@ -5,7 +5,9 @@
 // is one queued line at the stop, not a block: the answer is due, the turn may still end.
 // Reply protocol (P-061, operator 2026-11-08): the final reply declares its state on the last line, `Stav: hotovo|otázka|čakám`;
 // the hook reads only that line and checks it against facts, in every turn (bell turns too), never the wording of the reply:
-// no state, `otázka` without a question under **Pre teba:**, `čakám` without a waker armed by code, or `hotovo` while the
+// no state, `otázka` without a question or asked as text and not in the dialog (AskUserQuestion, so T3 shows "Awaiting Input",
+// operator 2026-11-08), `čakám` without what it waits for (`Stav: čakám (na <čo>)`,
+// operator 2026-11-08) or without a waker armed by code, or `hotovo` while the
 // held work topic's handover has a next step blocks the stop once. Ending anyway keeps the loop alive: `otázka` and `čakám`
 // get the thread timer (operator wait in hours, a job in minutes), an unfinished step the continue ring (P-026).
 // Mistake (P-003, operator 2026-11-03): a reply that says something happened by mistake ("omylom", "by mistake") names an
@@ -29,11 +31,17 @@ export const AUTO_TIMER_THEN = 'the last turn ended waiting without a timer: con
 // after a block hid the answer (operator 2026-11-03: "the payload I want is hidden, I get the operational message").
 export const FINAL_REPLY = 'The operator sees only your last message of this turn (earlier ones are folded away): if your answer still stands, end with only its state line; if it changed, end with the complete corrected answer and its state line. Never write about this hook, a timer, a waker or IDs (P-061)';
 
-const STATES_HELP = 'hotovo = nothing of yours is left (the handover has no next step); otázka = a decision only the operator has, one question under **Pre teba:** with your recommended option; čakám = an event with a waker armed by code (<plugin>/bin/timer.mjs --in <min>m --then "<step>", mail with a deadline, run_in_background, schedule_task). A promise ("I will do it later", "at your next message") is no state: do the work now';
-export const NO_STATE_REASON = `the final reply has no state line: end it with exactly one line "Stav: hotovo", "Stav: otázka" or "Stav: čakám" (P-061). ${STATES_HELP}`;
+const STATES_HELP = 'hotovo = nothing of yours is left (the handover has no next step); otázka = a decision only the operator has, asked with AskUserQuestion (your recommended option first) so T3 shows it; text under **Pre teba:** only when the dialog fails; čakám = an event with a waker armed by code, written "Stav: čakám (na <what>)" (<plugin>/bin/timer.mjs --in <min>m --then "<step>", mail with a deadline, run_in_background, schedule_task). A promise ("I will do it later", "at your next message") is no state: do the work now';
+export const NO_STATE_REASON = `the final reply has no state line: end it with exactly one line "Stav: hotovo", "Stav: otázka" or "Stav: čakám (na <what>)" (P-061). ${STATES_HELP}`;
 export const NO_QUESTION_REASON = `the reply declares "Stav: otázka" but has no question under **Pre teba:**: put the one decision only the operator has there, as a question with your recommended option, or declare the state that is true (P-061). ${STATES_HELP}`;
+export const DIALOG_REASON = `the reply asks the operator in text, which is lost in the thread among other turns: ask the one decision only the operator has with AskUserQuestion now (your recommended option first), so T3 shows the thread as "Awaiting Input"; after the answer continue the work. Text under **Pre teba:** stays only when the dialog fails (P-061, operator 2026-11-08). ${STATES_HELP}`;
+// P-050 (operator 2026-11-08): "Chcem riešiť tému predaja pneumatík" got "<project> / bez témy" as the first reply and the work
+// went on without a topic; the status block of a thread without a topic is only for a topic that stays unknown.
+export const STALE_STATUS_REASON = (project, id) => `the reply shows "${project} / bez témy", but this thread holds topic ${id}: start the reply with "${project} / ${id}", without the list of topics and without the topic question (P-050)`;
+export const NO_TOPIC_REASON = (project) => `the reply shows "${project} / bez témy" and goes on without a topic: if the operator's prompt names the topic or starts work, claim it or create it now (topic.mjs create <id> --subject "<subject>" claims it, skill workflow:topic) and start the reply with "${project} / <id>"; if the topic is unknown, end with the topic question and "Stav: otázka" (P-050)`;
+export const NO_WAIT_TARGET_REASON = `the reply declares "Stav: čakám" but not what it waits for: write the state line as "Stav: čakám (na <what>)", e.g. "Stav: čakám (na výsledok pracovníka)" (P-061, operator 2026-11-08)`;
 export const NO_WAKER_REASON = `the reply declares "Stav: čakám" but no waker is armed: arm one now (<plugin>/bin/timer.mjs --in <min>m --then "<step>", mail with a deadline, run_in_background, schedule_task) or do the work. The operator is no waker: a decision of theirs is "Stav: otázka" (P-061)`;
-export const NEXT_STEP_REASON = (topic, next) => `the reply declares "Stav: hotovo", but the handover of topic ${topic} has a next step: "${next}". Do it now in this turn. If it waits for an event, arm a waker and declare "Stav: čakám"; if it needs the operator, ask under **Pre teba:** and declare "Stav: otázka"; if it is done, save the handover without it (P-061, P-026)`;
+export const NEXT_STEP_REASON = (topic, next) => `the reply declares "Stav: hotovo", but the handover of topic ${topic} has a next step: "${next}". Do it now in this turn. If it waits for an event, arm a waker and declare "Stav: čakám (na <what>)"; if it needs the operator, ask with AskUserQuestion; if it is done, save the handover without it (P-061, P-026)`;
 
 // Words that admit a mistake (sk, cs, en). `\b` is ASCII-only, so letter boundaries use \p{L}.
 const MISTAKE = /(?<!\p{L})(omylom|omylem|nedopatrením|nechtiac|by mistake|accidentally|mistakenly|inadvertently|unintentionally)(?!\p{L})/iu;
@@ -156,11 +164,21 @@ export function run(input) {
     const mistake = input.stop_hook_active ? null : mistakeClaim(msg);
     const waker = validWaker(readThreadState(ctx.brainDir, ctx.thread));
     const paused = held.some((t) => t.state === 'paused') && !work;
+    // A dialog asked in this turn (PreToolUse keeps the time) that failed or was declined leaves the text question as fallback.
+    const turnState = readThreadState(ctx.brainDir, ctx.thread);
+    const dialog = !!turnState.dialog_at && (!turnState.turn_started_at || turnState.dialog_at >= turnState.turn_started_at);
+    // The start question of a thread without a topic comes from the status block of the session start (boot.mjs).
+    const topicStart = !held.length && toOperator && reply.question === TOPIC_QUESTION;
+    const noTopicBlock = typeof msg === 'string' && ctx.projectName && msg.split('\n').some((l) => l.replace(/[*_`]/g, '').trim() === `${ctx.projectName} / bez témy`);
     let violation = null;
     // A harness that sends no reply text (field missing) cannot be checked; an empty reply is no state.
     if (typeof msg !== 'string') violation = null;
+    else if (noTopicBlock && held.length) violation = STALE_STATUS_REASON(ctx.projectName, held[0].id);
+    else if (noTopicBlock && !topicStart) violation = NO_TOPIC_REASON(ctx.projectName);
     else if (!reply.state) violation = NO_STATE_REASON;
+    else if (reply.state === 'otázka' && !dialog && !topicStart) violation = DIALOG_REASON;
     else if (reply.state === 'otázka' && !reply.question) violation = NO_QUESTION_REASON;
+    else if (reply.state === 'čakám' && !reply.waitFor) violation = NO_WAIT_TARGET_REASON;
     else if (reply.state === 'čakám' && !waker && !idleWait && !paused) violation = NO_WAKER_REASON;
     else if (reply.state === 'hotovo' && work && !idleWait && !waker) violation = NEXT_STEP_REASON(work.id, work.next);
     // Trust, T3 project and welcome thread that project.mjs could not do without the `t3` CLI (skipped by hand, 2026-11-08).
@@ -170,8 +188,7 @@ export function run(input) {
     // Ending without a true state keeps the loop alive: code arms the thread timer, no note about it (P-061). The start
     // question of a thread without a topic (which topic?) gets none: a timer turn told to "decide with your recommended option"
     // would pick the topic itself (flow-public#1). An unfinished step under "hotovo" gets the continue ring in closeTurn.
-    const topicQuestion = !held.length && toOperator && reply.question === TOPIC_QUESTION;
-    if (!topicQuestion && !waker && !paused && !idleWait && reply.state !== 'hotovo') {
+    if (!topicStart && !waker && !paused && !idleWait && reply.state !== 'hotovo') {
       const st = readThreadState(ctx.brainDir, ctx.thread);
       const n = Number(st.auto_timer_n || 0);
       // Waiting on the operator rings in hours (operator 2026-11-03), waiting on a job in minutes.

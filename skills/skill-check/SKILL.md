@@ -12,7 +12,7 @@ Rozsah: iba skilly tohto projektu (brain `skills/operator`, `skills/agentic` a r
 2. Posúď sám aj to, čo skript nevie: spúšťač (popis) menuje situáciu presne a nechytá iné; doplnenia neodporujú telu; kroky sedia s platnými pravidlami a skillmi workflow; opakovaná sekvencia príkazov patrí do skriptu skillu (P-030).
 3. Oprava podľa vlastníka:
    - `skills/agentic`: oprav hneď cez `workflow:save` (`save skill <meno> --replace --content "..."` alebo `--sed`); doplnenia zlúč do tela bez straty významu.
-   - `skills/operator`: kozmetika a refaktor (preformulovanie, zlúčenie doplnení, oprava písmena domény v ceste) bez zmeny významu ulož rovnako; `save` ju porovná (`skill-check.mjs diff <meno> --file <nový SKILL.md>`: príkazy, cesty, odkazy, riadky „nie …“, čísla, popis) a zmenu významu odmietne. Zmenu významu ukáž operátorovi (čo, prečo) pod `**Pre teba:**` a po jeho „áno“ ulož s `--approved "<jeho slová>"`.
+   - `skills/operator`: kozmetika a refaktor (preformulovanie, zlúčenie doplnení, oprava písmena domény v ceste) bez zmeny významu ulož rovnako; `save` ju porovná (`skill-check.mjs diff <meno> --file <nový SKILL.md>`: príkazy, cesty, odkazy, riadky „nie …“, čísla, popis) a zmenu významu odmietne. Zmenu významu ukáž operátorovi (čo, prečo), spýtaj sa dialógom `AskUserQuestion` a po jeho „áno“ ulož s `--approved "<jeho slová>"`.
    - Ručný skill mimo brain: navrhni operátorovi presun do `skills/operator/<meno>` (inak ho nevidí `find`, consolidate ani iný stroj).
 4. `save skill` spúšťa tú istú kontrolu: skill s `error` neuloží.
 5. Výsledok oznám po skilloch: opravené, navrhnuté operátorovi, ponechané `warn` s dôvodom.

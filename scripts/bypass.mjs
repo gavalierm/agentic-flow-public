@@ -204,7 +204,7 @@ export function bypassOf({ tool, toolInput = {}, cwd = process.cwd(), anchors = 
 export function bypassReason(hit, cwd) {
   const rel = toPosix(path.relative(cwd, hit.path)) || '.';
   const why = String(hit.denial.reason || '').replace(/\s+/g, ' ').slice(0, 120);
-  return `this call reaches ${rel}, which a ${hit.denial.tool} call refused earlier in this turn also reached (${why}); reaching it another way is a bypass (P-054): this target stays closed for the rest of this turn. Write the refused command and its message in the result, and do the work that does not need the target. A refusal by the operator or a harness permission is the operator's decision: when the work needs the target, ask whether to allow it under **Pre teba:** (Stav: otázka). A workflow hook refusal names its own way: use that way. When nothing else remains, end with Stav: hotovo and name the step that stayed undone (P-061)`;
+  return `this call reaches ${rel}, which a ${hit.denial.tool} call refused earlier in this turn also reached (${why}); reaching it another way is a bypass (P-054): this target stays closed for the rest of this turn. Write the refused command and its message in the result, and do the work that does not need the target. A refusal by the operator or a harness permission is the operator's decision: when the work needs the target, ask whether to allow it with AskUserQuestion. A workflow hook refusal names its own way: use that way. When nothing else remains, end with Stav: hotovo and name the step that stayed undone (P-061)`;
 }
 
 /** Files that set what the workflow enforces (hooks, permissions, plugins): a change goes past the operator (P-054). */
