@@ -117,6 +117,10 @@ test('shellWrites: output options, redirects, cp/mv/tee/mkdir targets; devices a
 test('shellWrites: -o of find and test is the logical OR, not an output file; gcc/curl -o still is', () => {
   assert.deepEqual(shellWrites('cd /x && find . -path ./.git -prune -o -type f -print | head', '/w'), []);
   assert.deepEqual(shellWrites('[ -f a -o -f b ] && test -d c -o -d d', '/w'), []);
+  // grep -o is "only matching": the regex after it is no write target (agentic-flow-public#11)
+  assert.deepEqual(shellWrites("grep -o '^description:.\\{0,260\\}' skills/*/SKILL.md", '/w'), []);
+  assert.deepEqual(shellWrites("for f in a b; do grep.exe -o 'x\\{1,3\\}' \"$f\"; done; rg -o 'y' .", '/w'), []);
+  assert.deepEqual(shellWrites('ssh -o BatchMode=yes host true; ps -o pid= -p 1', '/w'), []);
   assert.deepEqual(shellWrites('gcc main.c -o /tmp/a.out', '/w'), ['/tmp/a.out']);
   assert.deepEqual(shellWrites('curl -s -o out.json https://x', '/w'), ['/w/out.json']);
 });

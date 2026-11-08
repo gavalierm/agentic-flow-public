@@ -447,7 +447,7 @@ function saveSkill(ctx) {
   for (const w of found.filter((x) => x.level === 'warn')) out(`skill check warn: ${w.line ? `line ${w.line} ` : ''}${w.message}`);
   if (args['from-procedure']) ops.push(removeNames(ctx.brainDir, 'procedures.log', asList(args['from-procedure'])));
   if (args['from-sequence']) ops.push(removeNames(ctx.brainDir, 'sequences.log', asList(args['from-sequence'])));
-  const res = brainWrite(ctx, { ops, message: `save skill ${name} (${hit ? (sed !== null ? 'edit' : 'extend') : origin})` });
+  const res = brainWrite(ctx, { ops, message: `save skill ${name} (${hit ? (sed !== null ? 'edit' : 'refactor') : origin})` });
   finish(ctx, res, [rel, ...scripts]);
   const notDeployed = deploySkills(ctx);
   out(hit ? `${sed !== null ? 'edited' : 'refactored'} existing skill ${hit.skillName}` : `new skill ${name} (origin: ${origin})`);
@@ -511,7 +511,7 @@ function saveRepoSkill(ctx, repo, name) {
   const errors = found2.filter((x) => x.level === 'error');
   if (errors.length) fail(`skill check: ${errors.map((x) => `${x.line ? `line ${x.line} ` : ''}${x.message}`).join('; ')}; nothing saved (workflow:skill-check)`);
   for (const w of found2.filter((x) => x.level === 'warn')) out(`skill check warn: ${w.line ? `line ${w.line} ` : ''}${w.message}`);
-  out(formatRepoWrite(repoWrite(ctx, repo, { ops, message: `save skill ${name} (${hit ? (sed !== null ? 'edit' : 'extend') : origin})` })));
+  out(formatRepoWrite(repoWrite(ctx, repo, { ops, message: `save skill ${name} (${hit ? (sed !== null ? 'edit' : 'refactor') : origin})` })));
   const notDeployed = deploySkills(ctx);
   out(hit ? `${sed !== null ? 'edited' : 'extended'} skill ${name} of repo ${repo}` : `new skill ${name} of repo ${repo} (origin: ${origin})`);
   out(notDeployed ? `not deployed to this project (${notDeployed}); other sessions of the repo get it at their next start` : `deployed to ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR))}; other sessions of the repo get it at their next start`);

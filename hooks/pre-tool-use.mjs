@@ -257,7 +257,7 @@ export function bashTargets(command, cwd = process.cwd()) {
   const abs = (p) => path.resolve(base, p.startsWith('~/') ? path.join(home, p.slice(2)) : p);
   for (const part of maskShell(command).split(/\s*(?:&&|\|\||;|\n)\s*/)) {
     const words = part.trim().split(/\s+/).filter(Boolean);
-    const lead = words[0] === 'sudo' ? 1 : 0;
+    const lead = leadOf(words);
     const prog = words[lead]?.split('/').pop();
     const args = words.slice(lead + 1).filter((w) => !w.startsWith('-') && !/^['"]?[$<>|(`]/.test(w) && !/^[0-9]*>/.test(w));
     if (prog === 'cd') {
@@ -289,12 +289,20 @@ export function bashTargets(command, cwd = process.cwd()) {
  * (`--outdir /tmp/x`, `-o ~/x`). Removing files is not counted (cleanup goes through P-018). 2026-11-04: `wrangler deploy
  * --dry-run --outdir /tmp/claude-1007/wr` left a bundle outside the project; only Write and Edit were checked.
  */
+// The program of a segment comes after sudo and shell keywords: `for f in a; do grep -o x "$f"; done` runs grep, not `do`.
+const LEAD_WORDS = new Set(['sudo', 'do', 'then', 'else', 'elif', 'if', 'while', 'until', 'time', 'nohup', 'command', 'exec', '!', '{']);
+function leadOf(words) {
+  let i = 0;
+  while (i < words.length - 1 && LEAD_WORDS.has(words[i])) i++;
+  return i;
+}
 // `--outDir` (tsc) and `--outdir` (wrangler) alike; short `-o` only lower case (`curl -O` takes no value).
 const OUTPUT_LONG = /^--(out|output|outdir|out-dir|output-dir|outfile|out-file|output-file|dest|destination|target-dir|log-file|cache-dir|prefix)$/i;
 const OUTPUT_OPT = { test: (w) => w === '-o' || OUTPUT_LONG.test(w) };
-// In find and test/[ `-o` is the logical OR, not an output file (alice 2026-11-04: `find . -path ./.git -prune -o -type f`
-// was denied as a write to `-type`).
-const OR_O_PROGS = new Set(['find', 'test', '[', '[[']);
+// Programs whose `-o` is no output file: the logical OR in find and test/[ (alice 2026-11-04: `find . -path ./.git -prune
+// -o -type f` was denied as a write to `-type`), "only matching" in grep and rg (a worker's `grep -o '<regex>'` was denied
+// as a write to the regex and P-054 then locked the inventory, agentic-flow-public#11), an option or format elsewhere.
+const OR_O_PROGS = new Set(['find', 'test', '[', '[[', 'grep', 'egrep', 'fgrep', 'zgrep', 'rg', 'ag', 'git', 'ssh', 'scp', 'sftp', 'set', 'ps', 'pgrep', 'mount', 'lsblk', 'findmnt', 'join', 'ip']);
 // PowerShell write cmdlets and their aliases (Windows agent, alice 2026-11-07: `Set-Content -Path $env:TEMP\a.ps1` was no
 // write). The target is -Path/-FilePath/-LiteralPath, for copy/move -Destination, else the first (copy/move: second) positional.
 const PS_WRITE = /^(set-content|add-content|out-file|new-item|export-csv|export-clixml|sc|ac|ni)$/i;
@@ -324,7 +332,7 @@ export function shellWrites(command, cwd = process.cwd(), env = process.env) {
   const add = (w) => { const v = unmask(w); if (v && !/[$`*?]/.test(v) && !/^\/dev\//.test(v)) found.push(abs(v)); };
   for (const part of maskShell(command).split(/\s*(?:&&|\|\||;|\n|\|)\s*/)) {
     const words = part.trim().split(/\s+/).filter(Boolean);
-    const lead = words[0] === 'sudo' ? 1 : 0;
+    const lead = leadOf(words);
     const prog = words[lead]?.split('/').pop();
     if (prog === 'cd') { if (words[lead + 1] && !/[$`]/.test(words[lead + 1])) base = abs(unmask(words[lead + 1])); continue; }
     const args = words.slice(lead + 1).filter((w) => !w.startsWith('-') && !/^['"]?[$<>|(`]/.test(w) && !/^[0-9]*>/.test(w));
@@ -337,7 +345,7 @@ export function shellWrites(command, cwd = process.cwd(), env = process.env) {
       const w = unmask(words[i]);
       const eq = w.match(/^(--[a-zA-Z-]+)=(.+)$/);
       if (eq && OUTPUT_OPT.test(eq[1])) add(eq[2]);
-      else if (OUTPUT_OPT.test(w) && words[i + 1] && !(w === '-o' && OR_O_PROGS.has(prog))) add(words[i + 1]);
+      else if (OUTPUT_OPT.test(w) && words[i + 1] && !(w === '-o' && OR_O_PROGS.has(String(prog).replace(/\.exe$/i, '')))) add(words[i + 1]);
     }
     for (const m of part.matchAll(/(?:^|\s)[0-9]*>{1,2}\s*(\S+)/g)) if (!/^&/.test(unmask(m[1]))) add(m[1]);
   }
@@ -438,7 +446,7 @@ export function bashEdits(command, cwd = process.cwd()) {
   const abs = (p) => path.resolve(base, p.startsWith('~/') ? path.join(home, p.slice(2)) : p);
   for (const part of maskShell(command).split(/\s*(?:&&|\|\||;|\n|\|)\s*/)) {
     const words = part.trim().split(/\s+/).filter(Boolean).filter((w) => !/^[0-9]*>/.test(w));
-    const lead = words[0] === 'sudo' ? 1 : 0;
+    const lead = leadOf(words);
     if (words[lead]?.split('/').pop() === 'cd') {
       if (words[lead + 1] && !/[$`]/.test(words[lead + 1])) base = abs(unmask(words[lead + 1]));
       continue;
