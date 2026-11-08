@@ -153,6 +153,7 @@ test('code topic in a domain: git worktree <domain>/.worktrees/<repo>/<id> on to
     for (const args of [['add', '-A'], ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'feat']]) spawnSync('git', args, { cwd: wt });
     r = fx.run('done.mjs', ['--topic', '--verified', 'feature.txt present']);
     assert.equal(r.status, 0, r.out);
+    assert.match(r.out, /note: agentic\/HANDOVER\.md did not change in topic\/feat; .*save\.mjs handover --repo project/, 'the repo HANDOVER is the project state (D-0002)');
     assert.ok(fs.existsSync(path.join(fx.project, 'feature.txt')));
     assert.ok(!fs.existsSync(wt));
     assert.doesNotMatch(fx.git(fx.project, 'worktree', 'list'), /feat/);

@@ -7,7 +7,8 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { readMemory, readSkills } from '../scripts/records.mjs';
+import { readMemory, readSkills, projectRecords } from '../scripts/records.mjs';
+import { domainRepos, REPO_HANDOVER } from '../scripts/repo-knowledge.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
 import { tokens } from '../scripts/keys.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
@@ -24,6 +25,33 @@ function fingerprint(projectDir, sources) {
     h.update(fs.existsSync(file) ? fs.readFileSync(file) : Buffer.from('missing'));
   }
   return h.digest('hex').slice(0, 12);
+}
+
+/**
+ * Repo knowledge of the domain (D-0002): counts per repo, HANDOVER.md over its limit, stale derived records (sources are
+ * repo paths) and keys or skill names that live both in brain and in a repo (one subject, one home).
+ */
+export function repoReport(ctx, brainRecords) {
+  if (!ctx.domain) return { repos: [], limits: [], stale: [], both: [] };
+  const recs = projectRecords(ctx.domain, ctx.brainDir).filter((r) => !r.topic && (r.kind !== 'skill' || r.path.endsWith('/SKILL.md')));
+  const max = ctx.policy?.limits?.repo_handover_lines ?? 150;
+  const repos = [];
+  const limits = [];
+  for (const repo of domainRepos(ctx.domain, ctx.brainDir)) {
+    const mine = recs.filter((r) => r.repo === repo.name);
+    if (!mine.length) continue;
+    const count = (k) => mine.filter((r) => r.kind === k).length;
+    repos.push({ repo: repo.name, memory: count('memory'), decisions: count('decision'), runbooks: count('runbook'), skills: count('skill'), handover: mine.some((r) => r.kind === 'handover') });
+    const ho = path.join(repo.dir, 'agentic', REPO_HANDOVER);
+    if (fs.existsSync(ho)) {
+      const lines = fs.readFileSync(ho, 'utf8').split('\n').length;
+      if (lines > max) limits.push(`${repo.name}/agentic/${REPO_HANDOVER} ${lines} lines > ${max}`);
+    }
+  }
+  const stale = recs.filter((r) => r.origin === 'derived' && r.data.fingerprint && fingerprint(path.join(ctx.domain.root, r.repo), r.data.sources || []) !== r.data.fingerprint).map((r) => r.path);
+  const brainKeys = new Map(brainRecords.map((r) => [`${r.kind}:${r.key}`, r.path]));
+  const both = recs.filter((r) => r.kind !== 'handover' && brainKeys.has(`${r.kind}:${r.key}`)).map((r) => `${r.key}: ${brainKeys.get(`${r.kind}:${r.key}`)} + ${r.path}`);
+  return { repos, limits, stale, both };
 }
 
 export function report(ctx) {
@@ -52,7 +80,8 @@ export function report(ctx) {
   const projectRules = fs.existsSync(rulesDir) ? fs.readdirSync(rulesDir).filter((f) => f.endsWith('.md') && f !== 'README.md').map((f) => ({ name: f.replace(/\.md$/, ''), chars: fs.readFileSync(path.join(rulesDir, f), 'utf8').length })).sort((a, b) => b.chars - a.chars) : [];
   const rules = { chars: assembled.chars, lines: assembled.lines, over: assembled.overLimit, project: projectRules };
   const health = checkProject(ctx).filter((r) => r.findings.length).map((r) => ({ name: r.name, errors: r.findings.filter((f) => f.level === 'error').length, warns: r.findings.filter((f) => f.level === 'warn').length }));
-  return { limits: [...idx.warnings, ...assembled.overLimit], counts: idx.counts, stale, duplicates, mergeable, byOrigin, rules, health };
+  const repos = repoReport(ctx, [...memory, ...readSkills(ctx.brainDir)]);
+  return { limits: [...idx.warnings, ...assembled.overLimit, ...repos.limits], counts: idx.counts, stale: [...stale, ...repos.stale], duplicates, mergeable, byOrigin, rules, health, repos };
 }
 
 try {
@@ -63,6 +92,8 @@ try {
   } else {
     out(`counts: memory ${r.counts.memory}, decisions ${r.counts.decisions}, skills ${r.counts.skills}`);
     out(r.limits.length ? `over limit: ${r.limits.join('; ')}` : 'within limits');
+    if (r.repos.repos.length) out(`repo knowledge: ${r.repos.repos.map((x) => `${x.repo} memory ${x.memory}, decisions ${x.decisions}, runbooks ${x.runbooks}, skills ${x.skills}${x.handover ? ', HANDOVER' : ''}`).join('; ')}`);
+    out(`in brain and in a repo (keep one home: save.mjs move <path> --repo <repo>, or remove the repo copy with save --repo): ${r.repos.both.length ? r.repos.both.join('; ') : 'none'}`);
     out(`rules: ${r.rules.chars} chars, ${r.rules.lines} lines; project rules (condense, merge, remove those a core principle covers): ${r.rules.project.length ? r.rules.project.map((p) => `${p.name} ${p.chars}`).join(', ') : 'none'}`);
     out(`stale derived (fingerprint changed, re-derive or delete): ${r.stale.length ? r.stale.join(', ') : 'none'}`);
     out(`possible duplicate subjects (merge): ${r.duplicates.length ? r.duplicates.map((d) => `${d.token}: ${d.paths.join(' + ')}`).join('; ') : 'none'}`);

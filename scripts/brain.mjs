@@ -339,7 +339,7 @@ export function brainWrite(ctx, opts) {
   return withBrainLock(ctx.brainDir, () => brainWriteUnlocked(ctx, opts));
 }
 
-function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, agentId = null }) {
+function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, agentId = null, env: extraEnv = {} }) {
   const { brainDir, thread, policy } = ctx;
   if (!brainDir) throw new Error('brain unavailable');
   if (agentId || inSubagent()) throw new Error('brain write refused in subagent; return the result to the main agent (P-025)');
@@ -387,7 +387,7 @@ function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, 
       touched.push(op.path);
     }
   }
-  const env = brainScriptEnv();
+  const env = { ...brainScriptEnv(), ...extraEnv };
   const add = gitRetry(['add', '-A', '--', ...touched], { cwd: brainDir, env });
   if (!add.ok) throw new Error(`git add failed: ${firstLine(add.stderr)}`);
   const staged = git(['diff', '--cached', '--quiet'], { cwd: brainDir });

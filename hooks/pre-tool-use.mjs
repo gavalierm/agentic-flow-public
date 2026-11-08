@@ -11,6 +11,7 @@ import { git, isInside, toPosix } from '../scripts/util.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
 import { SUBAGENT_ALLOWED } from '../scripts/comms.mjs';
 import { readTopics } from '../scripts/records.mjs';
+import { knowledgeDirOf, PROJECT_KNOWLEDGE } from '../scripts/repo-knowledge.mjs';
 import { findSecret } from '../scripts/secrets.mjs';
 import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell } from '../scripts/own-files.mjs';
 import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, stateDenials, transcriptDenials, withDenial } from '../scripts/bypass.mjs';
@@ -597,6 +598,19 @@ export function isTempPath(abs, env = process.env) {
  * not change, commit or release that code itself (2026-11-02: a repo-cleanup thread changed the workflow and asked the
  * operator for a release; the routing rule was text only). Returns the deny reason or null.
  */
+/**
+ * `<repo>/agentic/` of a domain repo (or of its topic worktree) is written only by save (P-013, D-0002): format checks,
+ * dedup and the commit into the repo happen there. Also keeps topicOwnedCheck from reading a knowledge save as code.
+ */
+export function repoKnowledgeWrite(ctx, absPaths) {
+  if (!ctx.domain) return null;
+  for (const p of absPaths) {
+    const k = knowledgeDirOf(ctx.domain, ctx.brainDir, p);
+    if (k) return `${k.repo}/${PROJECT_KNOWLEDGE}/ is written only by save (P-013, D-0002): save.mjs memory|decision|skill|handover ... --repo ${k.repo} (checks the format, deduplicates, commits into the repo${k.topic ? `, in topic ${k.topic} into its worktree` : ''}); a brain record moves with save.mjs move <path> --repo ${k.repo}`;
+  }
+  return null;
+}
+
 export function topicOwnedCheck(ctx, absPaths) {
   const owned = ctx.policy?.topic_owned || {};
   if (!ctx.brainDir || !absPaths.length) return null;
@@ -801,6 +815,8 @@ function pathChecks(input, ctx, cwd) {
   const target = targetOf(tool, toolInput);
   if (target) {
     const abs = resolve(target);
+    const knowledge = repoKnowledgeWrite(ctx, [abs]);
+    if (knowledge) return permissionOutput('deny', knowledge);
     const owned = topicOwnedCheck(ctx, [abs]);
     if (owned) return permissionOutput('deny', owned);
     const written = [toolInput.content, toolInput.new_string, ...(toolInput.edits || []).map((e) => e.new_string), toolInput.new_source].filter((v) => typeof v === 'string').join('\n');
@@ -865,6 +881,9 @@ function pathChecks(input, ctx, cwd) {
     snapshotShell(ctx, input.tool_use_id, shellDirs(cmd, cwd));
     const targets = bashTargets(cmd, cwd);
     const edits = bashEdits(cmd, cwd);
+    const strayFile = (t) => fs.existsSync(t) && !fs.statSync(t).isDirectory() && ['untracked', 'ignored by git'].includes(classifyTarget(t).reason);
+    const knowledge = repoKnowledgeWrite(ctx, [...targets, ...edits, ...shellWrites(cmd, cwd)].filter((t) => !strayFile(t)));
+    if (knowledge) return permissionOutput('deny', knowledge);
     const owned = topicOwnedCheck(ctx, [...targets, ...edits, ...gitWriteDirs(cmd, cwd)]);
     if (owned) return permissionOutput('deny', owned);
     const secret = secretOutsideLocal(ctx, targets, cmd);

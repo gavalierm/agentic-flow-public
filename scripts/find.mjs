@@ -3,7 +3,7 @@ import { allRecords, readDecisions, normalizedNames } from './records.mjs';
 import { normalizeKey, tokens } from './keys.mjs';
 
 function line(r) {
-  return { path: r.path, description: r.description, kind: r.kind, key: r.key, status: r.status, id: r.id };
+  return { path: r.path, description: r.description, kind: r.kind, key: r.key, status: r.status, id: r.id, ...(r.repo ? { repo: r.repo } : {}), ...(r.topic ? { topic: r.topic } : {}) };
 }
 
 /** Exact match on key, alias or normalized name/title. */
@@ -40,11 +40,11 @@ export function findRelatesTo(brainDir, target, { validOnly = false, domain = nu
 }
 
 /** Similar keys of the same type: share at least one name token (P-031, save refuses silently creating a near duplicate). */
-export function findSimilar(brainDir, key) {
+export function findSimilar(brainDir, key, domain = null) {
   const [type, ...rest] = String(key).split('-');
   const want = new Set(tokens(rest.join('-')));
   if (!want.size) return [];
-  return allRecords(brainDir)
+  return allRecords(brainDir, domain)
     .filter((r) => r.kind === 'memory' && r.key !== key && String(r.key).startsWith(type + '-'))
     .filter((r) => tokens(String(r.key).slice(type.length + 1)).some((t) => want.has(t)))
     .map(line);

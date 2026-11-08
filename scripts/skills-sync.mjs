@@ -31,6 +31,19 @@ export function brainSkillDirs(brainDir) {
   return out;
 }
 
+/** Skills of repo knowledge folders (`<repo>/agentic/skills/<name>/SKILL.md`); agentic only (P-032). */
+export function repoSkillDirs(sources = []) {
+  const out = [];
+  for (const src of sources) {
+    const dir = path.join(src.dir, 'skills');
+    if (!fs.existsSync(dir)) continue;
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory() && fs.existsSync(path.join(dir, e.name, 'SKILL.md'))) out.push({ name: e.name, owner: 'agentic', repo: src.repo, dir: path.join(dir, e.name) });
+    }
+  }
+  return out;
+}
+
 export function ensureGitignore(projectDir, entries) {
   const file = path.join(projectDir, '.gitignore');
   const current = readText(file, '');
@@ -55,7 +68,7 @@ function substitutePluginRoot(dir) {
  * Copy brain skills (and, for Codex, workflow skills) into the generated skills directory of the harness.
  * Returns { copied: [names], removed: [names], conflicts: [names] }. Throws on name conflict with workflow skills (P-024).
  */
-export function syncBrainSkills({ projectDir, brainDir, harness = 'claude-code' }) {
+export function syncBrainSkills({ projectDir, brainDir, harness = 'claude-code', repoSources = [] }) {
   const h = harnessSkills(harness);
   const target = path.join(projectDir, h.dir);
   const marker = path.join(target, GENERATED_MARKER);
@@ -67,6 +80,17 @@ export function syncBrainSkills({ projectDir, brainDir, harness = 'claude-code' 
   const seen = new Set();
   const duplicates = skills.filter((s) => (seen.has(s.name) ? true : (seen.add(s.name), false))).map((s) => s.name);
   if (duplicates.length) throw new Error(`same skill name in skills/operator and skills/agentic: ${duplicates.join(', ')} (P-032)`);
+  // Skills of the session repo and of held code-topic worktrees (D-0002); one name has one home.
+  const fromRepos = repoSkillDirs(repoSources);
+  const clash = fromRepos.filter((s) => workflowNames.includes(s.name) || seen.has(s.name)).map((s) => `${s.repo}/${s.name}`);
+  const repoSeen = new Map();
+  for (const s of fromRepos) {
+    if (repoSeen.has(s.name) && repoSeen.get(s.name) !== s.repo) clash.push(`${s.repo}/${s.name} (also ${repoSeen.get(s.name)})`);
+    repoSeen.set(s.name, s.repo);
+  }
+  if (clash.length) throw new Error(`repo skill name(s) collide with brain, workflow or another repo skill: ${[...new Set(clash)].join(', ')}; keep one (save.mjs move or --remove, D-0002)`);
+  const unique = new Set();
+  skills.push(...fromRepos.filter((s) => (unique.has(s.name) ? false : (unique.add(s.name), true))));
   for (const name of previous) fs.rmSync(path.join(target, name), { recursive: true, force: true });
   fs.mkdirSync(target, { recursive: true });
   for (const s of skills) copyDir(s.dir, path.join(target, s.name));

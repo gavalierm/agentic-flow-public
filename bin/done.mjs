@@ -15,6 +15,7 @@ import { heldTopics, readTopic, setTopicState, freePointMail } from '../scripts/
 import { registerTopic } from '../scripts/comms.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
 import { asList } from '../scripts/frontmatter.mjs';
+import { PROJECT_KNOWLEDGE, REPO_HANDOVER } from '../scripts/repo-knowledge.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const out = (s) => process.stdout.write(s + '\n');
@@ -163,6 +164,10 @@ function mergeCode(ctx, id, topic) {
     const fetchBranch = git(['fetch', '--quiet', copy, branch], { cwd: ctx.projectDir });
     if (!fetchBranch.ok) fail(`fetch of ${branch} from copy failed: ${fetchBranch.stderr}`);
   }
+  // The repo HANDOVER is the project state (D-0002): a code topic that leaves it untouched is reported, not refused.
+  const handoverRel = `${PROJECT_KNOWLEDGE}/${REPO_HANDOVER}`;
+  const handoverDiff = git(['diff', '--name-only', `${mainBranch}...${worktree ? branch : 'FETCH_HEAD'}`, '--', handoverRel], { cwd: ctx.projectDir });
+  if (handoverDiff.ok && !handoverDiff.stdout) out(`note: ${handoverRel} did not change in ${branch}; if the project state moved, update it (save.mjs handover --repo ${ctx.projectName} --file <file>, D-0002)`);
   const mergeMain = git(['merge', '--no-ff', '--quiet', '-m', `Merge ${branch} (done --topic ${id})`, worktree ? branch : 'FETCH_HEAD'], { cwd: ctx.projectDir });
   if (!mergeMain.ok) {
     git(['merge', '--abort'], { cwd: ctx.projectDir });

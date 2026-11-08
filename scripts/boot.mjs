@@ -10,6 +10,7 @@ import { heldTopics, mailboxTopics } from './topic.mjs';
 import { mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics } from './comms.mjs';
 import { syncBrainSkills } from './skills-sync.mjs';
 import { readTopics } from './records.mjs';
+import { sessionKnowledgeSources, KNOWLEDGE_KINDS, REPO_HANDOVER } from './repo-knowledge.mjs';
 
 export const BOOT_MARKERS = ['## Pravidlá', '## Stav vlákna', '## Index pamäte', '## Index rozhodnutí', '## Otvorené témy', '## Workflow'];
 
@@ -80,6 +81,8 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
     const held = info.held;
     if (held.length && held[0].handover) status += `\nHandover (primárny podklad, P-026):\n${held[0].handover.trim().replace(/^## /gm, '### ')}`;
   }
+  // repo knowledge of the session repo and held code topics (D-0002): one line each, the HANDOVER of a topic's repo in full.
+  for (const line of repoKnowledgeLines(ctx)) status += `\n${line}`;
   // T3-WORKAROUND(t3-clear-cursor) T3 (claudeAgent) keeps resuming the session id it opened with (t3code#24152); session-start redirects it (t3-clear.mjs).
   if (t3Note) status += `\n${t3Note}`;
   parts.push(`${BOOT_MARKERS[1]}\n${status}`);
@@ -102,7 +105,7 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   // skills of the brain into the project (P-017)
   if (ctx.brainDir) {
     try {
-      syncBrainSkills({ projectDir: ctx.projectDir, brainDir: ctx.brainDir, harness });
+      syncBrainSkills({ projectDir: ctx.projectDir, brainDir: ctx.brainDir, harness, repoSources: sessionKnowledgeSources(ctx) });
     } catch (err) {
       notices.push(err.message);
     }
@@ -127,6 +130,31 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   const overLimit = text.length > limit;
   if (overLimit) text += `\nlimit: boot context ${text.length} chars > ${limit}; nothing was trimmed, shorten rules or run consolidate (P-022)\n`;
   return { text, chars: text.length, overLimit, notices, rules, source, status: operatorStatus(ctx, info) };
+}
+
+/** Records in a repo knowledge folder (memory, decisions, runbooks, skills). */
+function countKnowledge(dir) {
+  let n = 0;
+  for (const sub of Object.keys(KNOWLEDGE_KINDS)) {
+    const d = path.join(dir, sub);
+    if (!fs.existsSync(d)) continue;
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (sub === 'skills' ? e.isDirectory() && fs.existsSync(path.join(d, e.name, 'SKILL.md')) : e.isFile() && e.name.endsWith('.md')) n++;
+    }
+  }
+  return n;
+}
+
+/** Start lines for repo knowledge (D-0002): `repo vedomosti: <repo> n záznamov, HANDOVER`, plus a topic repo's HANDOVER.md. */
+export function repoKnowledgeLines(ctx) {
+  const lines = [];
+  for (const src of sessionKnowledgeSources(ctx)) {
+    const handover = path.join(src.dir, REPO_HANDOVER);
+    const has = fs.existsSync(handover);
+    lines.push(`repo vedomosti: ${src.repo}${src.topic ? ` (téma ${src.topic})` : ''} ${countKnowledge(src.dir)} záznamov, ${has ? 'HANDOVER' : 'bez HANDOVER'}`);
+    if (has && src.topic) lines.push(`HANDOVER ${src.repo} (stav projektu):\n${fs.readFileSync(handover, 'utf8').trim().replace(/^## /gm, '### ')}`);
+  }
+  return lines;
 }
 
 /** The start question of a thread without a topic (P-050); Stop arms no auto timer after it. */

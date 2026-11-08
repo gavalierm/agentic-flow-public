@@ -8,6 +8,9 @@
 //   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]'] [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
 //   save.mjs handover <topic> (--task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>)
 //   save.mjs docs [--message "..."]   persona only: commits the files written directly into docs/ (P-024)
+//   memory, decision, skill: --repo [<name>] writes into <repo>/agentic/ of the domain (bare: the session repo); --brain "<why>" keeps a repo's record in brain
+//   save.mjs handover --repo [<name>] (--file <path> | --content "...")   state of the repo: <repo>/agentic/HANDOVER.md
+//   save.mjs move <brain path> --repo <name> [--dry-run]   moves a brain record (memory, decision, agentic skill) into the repo
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -26,6 +29,7 @@ import { renderHandover, checkHandover } from '../scripts/brain-checks.mjs';
 import { removeNames } from '../scripts/logs.mjs';
 import { setTopicState, readTopic } from '../scripts/topic.mjs';
 import { workflowSkillNames, PROJECT_SKILLS_DIR } from '../scripts/skills-sync.mjs';
+import { PROJECT_KNOWLEDGE, REPO_HANDOVER, domainRepos, repoByName, sessionRepo, singleRepoOf, nextRepoDecisionId, repoWrite, formatRepoWrite, heldRepoTopic } from '../scripts/repo-knowledge.mjs';
 import { checkSkill, meaningDiff } from '../scripts/skill-check.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -52,6 +56,53 @@ function finish(ctx, res, paths) {
   if (rules.overLimit.length) out(`limit: ${rules.overLimit.join('; ')}: condense your project rules after the current unit of work (skill workflow:consolidate; mandated by the workflow, not out of scope, P-002): merge overlapping ones, shorten wording, remove those a core principle covers (save rule <name> --remove --reason "superseded by P-XXX"), P-022`);
 }
 
+/**
+ * Repo target of a save (D-0002, P-007 step 4): `--repo <name>` writes into `<repo>/agentic/`, bare `--repo` into the
+ * session repo. Returns the repo name or null (brain).
+ */
+/** Memory types that never belong to one repo (D-0002 boundary: operator, people). */
+const BRAIN_ONLY_TYPES = ['operator', 'person'];
+
+function repoTarget(ctx) {
+  if (args.repo === undefined) return null;
+  if (args.brain !== undefined) fail('--repo and --brain exclude each other');
+  const name = args.repo === true ? sessionRepo(ctx) : String(args.repo);
+  if (!name) fail('--repo without a name: this session has no repo of its own (it runs in the brain); name it: --repo <name>');
+  repoByName(ctx.domain, name, ctx.brainDir);
+  return name;
+}
+
+/**
+ * Brain is for knowledge of the persona, the operator, people, the environment and of several repos; one repo's own
+ * knowledge goes into that repo. Code checks only what it can decide: a `project-<repo>` key is refused in brain, a
+ * record whose references all point into one repo gets a note (the agent decides). `--brain "<why>"` keeps it in brain.
+ */
+function brainGuard(ctx, key, refs = []) {
+  if (!ctx.domain) return;
+  const why = typeof args.brain === 'string' ? args.brain.trim() : '';
+  if (args.brain !== undefined && why.length < 10) fail('--brain needs the reason why this repo knowledge stays in brain (at least 10 characters)');
+  if (why) return;
+  const repos = domainRepos(ctx.domain, ctx.brainDir).map((r) => r.name).sort((a, b) => b.length - a.length);
+  const own = repos.find((r) => key === `project-${r}` || String(key).startsWith(`project-${r}-`));
+  if (own) fail(`${key} describes repo ${own}: its knowledge belongs to ${own}/${PROJECT_KNOWLEDGE}/ (add --repo ${own}); only when it is not knowledge of that repo alone: --brain "<why>" (D-0002, P-007)`);
+  const one = singleRepoOf(ctx.domain, ctx.brainDir, refs);
+  if (one) out(`note: looks like repo ${one} (every reference points into it): knowledge of that repo alone is saved with --repo ${one}; knowledge of several repos, people or the environment stays in brain (P-007)`);
+}
+
+/** Path of a record inside `<repo>/agentic/` from its brain-relative path, or null when it lies elsewhere. */
+function knowledgeRel(ctx, recPath) {
+  const abs = path.resolve(ctx.brainDir, recPath);
+  const parts = toPosixPath(path.relative(ctx.domain.root, abs)).split('/');
+  const i = parts.indexOf(PROJECT_KNOWLEDGE);
+  return i === -1 ? null : parts.slice(i + 1).join('/');
+}
+
+/** Same key elsewhere (brain or another repo, or a topic worktree the thread does not hold) is refused: one record per key (P-031). */
+function otherHome(ctx, matches, repo) {
+  const held = repo ? heldRepoTopic(ctx, repo)?.topic || null : null;
+  return matches.find((m) => (repo ? m.repo !== repo || (m.topic && m.topic !== held) : !!m.repo));
+}
+
 function saveMemory(ctx) {
   const [type, ...nameParts] = rest;
   const name = nameParts.join(' ');
@@ -62,15 +113,20 @@ function saveMemory(ctx) {
   if (!['operator', 'derived', 'observed'].includes(origin)) fail('origin must be operator | derived | observed (P-009)');
   const sources = asList(args.sources);
   if (origin === 'derived' && !sources.length) fail('derived record needs --sources f1,f2 (P-009)');
-  const matches = find(ctx.brainDir, key).filter((m) => m.kind === 'memory');
-  const byAlias = matches.length ? matches : find(ctx.brainDir, name).filter((m) => m.kind === 'memory' && m.key.startsWith(type + '-'));
+  const repo = repoTarget(ctx);
+  if (repo && BRAIN_ONLY_TYPES.includes(type)) fail(`${type} records stay in brain: knowledge about the operator and people is not knowledge of one repo (D-0002, P-007)`);
+  if (!repo) brainGuard(ctx, key, [...asList(args['relates-to']), ...sources]);
+  const matches = find(ctx.brainDir, key, ctx.domain).filter((m) => m.kind === 'memory');
+  const byAlias = matches.length ? matches : find(ctx.brainDir, name, ctx.domain).filter((m) => m.kind === 'memory' && m.key.startsWith(type + '-'));
+  const elsewhere = otherHome(ctx, byAlias, repo);
+  if (elsewhere) fail(`${elsewhere.key} already exists in ${elsewhere.repo ? `repo ${elsewhere.repo}${elsewhere.topic ? ` (topic ${elsewhere.topic})` : ''}` : 'brain'}: ${elsewhere.path}; one record per key (P-031): ${elsewhere.repo ? `save it with --repo ${elsewhere.repo}` : repo ? `move it: save.mjs move ${elsewhere.path} --repo ${repo}` : ''}`);
   let rel = `memory/${key}.md`;
   let existing = null;
   if (byAlias.length) {
-    rel = byAlias[0].path;
-    existing = parseFrontmatter(readText(path.join(ctx.brainDir, rel), ''));
+    rel = repo ? knowledgeRel(ctx, byAlias[0].path) : byAlias[0].path;
+    existing = parseFrontmatter(readText(path.resolve(ctx.brainDir, byAlias[0].path), ''));
   } else {
-    const similar = findSimilar(ctx.brainDir, key);
+    const similar = findSimilar(ctx.brainDir, key, ctx.domain);
     if (similar.length && !args.new) {
       fail(`similar key exists (P-031): ${similar.map((s) => `${s.key} (${s.path})`).join(', ')}\nchoose explicitly: reuse the existing name, or pass --new to create ${key}`);
     }
@@ -88,9 +144,12 @@ function saveMemory(ctx) {
   };
   if (origin === 'derived') {
     data.sources = sources;
-    data.fingerprint = fingerprint(ctx.projectDir, sources);
+    // Sources of a repo record are paths in that repo (D-0002), so consolidate checks them from any session.
+    data.fingerprint = fingerprint(repo ? path.join(ctx.domain.root, repo) : ctx.projectDir, sources);
   }
-  const res = brainWrite(ctx, { ops: [{ path: rel, content: serializeFrontmatter(data, String(args.content)) }], message: `save memory ${data.key}` });
+  const op = { path: rel, content: serializeFrontmatter(data, String(args.content)) };
+  if (repo) return out(formatRepoWrite(repoWrite(ctx, repo, { ops: [op], message: `save memory ${data.key}` })));
+  const res = brainWrite(ctx, { ops: [op], message: `save memory ${data.key}` });
   finish(ctx, res, [rel]);
 }
 
@@ -100,6 +159,9 @@ function saveDecision(ctx) {
   const relates = asList(args['relates-to']);
   if (!relates.length) fail('decision needs --relates-to (P-008, P-031)');
   if (!args.what || !args.reason) fail('decision needs --what and --reason (P-008)');
+  const repo = repoTarget(ctx);
+  if (repo) return saveRepoDecision(ctx, repo, title, relates);
+  brainGuard(ctx, '', relates);
   const id = nextDecisionId(ctx.brainDir);
   const slug = normalizeKey(title).slice(0, 40);
   const rel = `decisions/${id.toLowerCase()}-${slug}.md`;
@@ -116,6 +178,27 @@ function saveDecision(ctx) {
   const res = brainWrite(ctx, { ops, message: `save decision ${id} ${slug}` });
   finish(ctx, res, [rel]);
   out(`decision ${id}: reference it in the commit message of the change it drives (P-008)`);
+}
+
+/** Decision of one repo: numbered within the repo over its main checkout and all topic worktrees (`<repo>/D-0001`). */
+function saveRepoDecision(ctx, repo, title, relates) {
+  const id = nextRepoDecisionId(ctx.domain, repo);
+  const slug = normalizeKey(title).slice(0, 40);
+  const rel = `decisions/${id.toLowerCase()}-${slug}.md`;
+  const ops = [];
+  if (args.supersedes) {
+    const held = heldRepoTopic(ctx, repo)?.topic || null;
+    const old = find(ctx.brainDir, String(args.supersedes).replace(new RegExp(`^${repo}/`), ''), ctx.domain)
+      .find((m) => m.kind === 'decision' && m.repo === repo && (!m.topic || m.topic === held));
+    if (!old) fail(`decision ${args.supersedes} not found in repo ${repo}`);
+    const parsed = parseFrontmatter(readText(path.resolve(ctx.brainDir, old.path), ''));
+    ops.push({ path: knowledgeRel(ctx, old.path), content: serializeFrontmatter({ ...parsed.data, status: `superseded-by ${id}`, updated: today() }, parsed.body) });
+  }
+  const data = { key: id, id, title, status: 'valid', relates_to: relates, aliases: asList(args.aliases), supersedes: args.supersedes ? String(args.supersedes).replace(new RegExp(`^${repo}/`), '') : undefined, created: today() };
+  const body = `**Rozhodnuté:** ${args.what}\n\n**Zamietnuté alternatívy:** ${args.alternatives || '-'}\n\n**Dôvod:** ${args.reason}\n`;
+  ops.push({ path: rel, content: serializeFrontmatter(data, body) });
+  out(formatRepoWrite(repoWrite(ctx, repo, { ops, message: `save decision ${id} ${slug}` })));
+  out(`decision ${repo}/${id}: reference it as ${repo}/${id} in the commit message of the change it drives (P-008)`);
 }
 
 const PRECEDENCE_RE = /prednos[tť]|\boverrid|takes? precedence/i;
@@ -291,8 +374,12 @@ function removeSkill(ctx, name) {
 function saveSkill(ctx) {
   const [name] = rest;
   if (!name || !isValidId(name) || hasDiacritics(name)) fail('usage: save.mjs skill <name> --description "..." --content "..." --origin error|routine');
+  const repo = repoTarget(ctx);
+  if (repo) return saveRepoSkill(ctx, repo, name);
   if (args.remove) return removeSkill(ctx, name);
   if (workflowSkillNames().includes(name)) fail(`"${name}" is a workflow skill name; choose another (P-024)`);
+  const inRepo = ctx.domain && find(ctx.brainDir, name, ctx.domain).find((m) => m.kind === 'skill' && m.repo);
+  if (inRepo) fail(`skill ${name} exists in repo ${inRepo.repo} (${inRepo.path}): one skill name per domain, skills-sync deploys both; save it with --repo ${inRepo.repo}`);
   const origin = args.origin || 'error';
   if (!['error', 'routine'].includes(origin)) fail('origin must be error | routine (P-032)');
   const sed = args.sed === undefined ? null : String(args.sed);
@@ -357,7 +444,133 @@ function saveSkill(ctx) {
   for (const s of scripts) out(`script runs as: ${s.endsWith(".sh") ? "sh" : "node"} ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR, path.posix.basename(path.posix.dirname(s)), path.posix.basename(s)))} (write this path in the skill text)`);
 }
 
+/** Skill of one repo (`<repo>/agentic/skills/<name>/`): agentic only, one name per domain (skills-sync deploys both). */
+function saveRepoSkill(ctx, repo, name) {
+  if (args.approved !== undefined) fail('skills of a repo are agentic only; operator skills stay in brain (P-032)');
+  if (workflowSkillNames().includes(name)) fail(`"${name}" is a workflow skill name; choose another (P-024)`);
+  const inBrain = readSkills(ctx.brainDir).find((sk) => sk.skillName === name);
+  if (inBrain) fail(`skill ${name} exists in brain (${inBrain.path}): one skill name per domain; move it: save.mjs move ${path.posix.dirname(inBrain.path)} --repo ${repo}`);
+  const held = heldRepoTopic(ctx, repo)?.topic || null;
+  const found = find(ctx.brainDir, name, ctx.domain).filter((m) => m.kind === 'skill' && m.repo);
+  const other = found.find((m) => m.repo !== repo);
+  if (other) fail(`skill ${name} exists in repo ${other.repo} (${other.path}): one skill name per domain`);
+  const hit = found.find((m) => m.topic === held && held) || found.find((m) => !m.topic);
+  const dirAbs = path.join(held ? heldRepoTopic(ctx, repo).dir : path.join(ctx.domain.root, repo), PROJECT_KNOWLEDGE, 'skills', name);
+  const rel = hit ? knowledgeRel(ctx, hit.path) : `skills/${name}/SKILL.md`;
+  if (args.remove) {
+    if (!hit) fail(`skill ${name} does not exist in repo ${repo}`);
+    if (!args.reason) fail('--remove needs --reason "superseded by workflow:<skill> | P-XXX | ..."');
+    const files = fs.existsSync(dirAbs) ? fs.readdirSync(dirAbs, { recursive: true }).map(String).filter((f) => fs.statSync(path.join(dirAbs, f)).isFile()) : [];
+    return out(formatRepoWrite(repoWrite(ctx, repo, { ops: files.map((f) => ({ path: `skills/${name}/${toPosixPath(f)}`, remove: true })), message: `remove skill ${name}: ${args.reason}` })));
+  }
+  const origin = args.origin || 'error';
+  if (!['error', 'routine'].includes(origin)) fail('origin must be error | routine (P-032)');
+  const sed = args.sed === undefined ? null : String(args.sed);
+  if (sed !== null && (args.content !== undefined || args.replace)) fail('--sed edits the existing body; do not combine it with --content or --replace');
+  if (sed === null && args.content === undefined) fail('--content required (or --sed s/<pattern>/<replacement>/ to edit an existing skill)');
+  let text;
+  if (hit) {
+    const parsed = parseFrontmatter(readText(path.resolve(ctx.brainDir, hit.path), ''));
+    const data = { ...parsed.data, aliases: [...new Set([...asList(parsed.data.aliases), ...asList(args.aliases)])], updated: today() };
+    if (args.description) data.description = args.description;
+    if (sed === null && !args.replace && repeatsBody(parsed.body, String(args.content))) fail(`--content repeats the body of skill ${name}; pass only the addition, or --replace with the whole corrected body (P-003)`);
+    const body = sed !== null ? applySed(parsed.body, sed) : args.replace ? `${String(args.content).trim()}\n` : `${parsed.body.trim()}\n\n## Doplnenie ${today()}\n${String(args.content).trim()}\n`;
+    text = serializeFrontmatter(data, body);
+  } else {
+    if (sed !== null) fail(`--sed: skill ${name} does not exist in repo ${repo}`);
+    if (!args.description) fail('new skill needs --description "Použi, keď ..." (trigger, P-003)');
+    text = serializeFrontmatter({ name, description: args.description, origin, aliases: asList(args.aliases), created: today() }, String(args.content));
+  }
+  const ops = [{ path: rel, content: text }];
+  const scripts = [];
+  for (const src of asList(args.script)) {
+    const file = path.resolve(src);
+    const base = path.basename(file);
+    if (!/^[a-z0-9][a-z0-9._-]*\.(mjs|js|sh)$/.test(base)) fail(`--script ${src}: name must be lowercase english, .mjs | .js | .sh (P-049)`);
+    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) fail(`--script ${src}: file not found`);
+    if (fs.statSync(file).size > 64 * 1024) fail(`--script ${src}: over 64 KB; a skill script stays small`);
+    ops.push({ path: `${path.posix.dirname(rel)}/${base}`, content: fs.readFileSync(file, 'utf8') });
+    scripts.push(base);
+  }
+  const found2 = checkSkill({ name, dir: dirAbs, text, owner: 'agentic', projectDir: ctx.projectDir, limit: ctx.policy?.limits?.skill_description_chars ?? 300, pendingScripts: scripts });
+  const errors = found2.filter((x) => x.level === 'error');
+  if (errors.length) fail(`skill check: ${errors.map((x) => `${x.line ? `line ${x.line} ` : ''}${x.message}`).join('; ')}; nothing saved (workflow:skill-check)`);
+  for (const w of found2.filter((x) => x.level === 'warn')) out(`skill check warn: ${w.line ? `line ${w.line} ` : ''}${w.message}`);
+  out(formatRepoWrite(repoWrite(ctx, repo, { ops, message: `save skill ${name} (${hit ? (sed !== null ? 'edit' : 'extend') : origin})` })));
+  out(hit ? `${sed !== null ? 'edited' : 'extended'} skill ${name} of repo ${repo}` : `new skill ${name} of repo ${repo} (origin: ${origin}); it reaches sessions of the repo at their next start`);
+  for (const base of scripts) out(`script runs as: ${base.endsWith('.sh') ? 'sh' : 'node'} ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR, name, base))} (write this path in the skill text)`);
+}
+
+/** State of a repo for whoever takes it over (`<repo>/agentic/HANDOVER.md`); the handover of a topic stays in brain (P-011). */
+function saveRepoHandover(ctx, repo) {
+  const content = args.file ? fs.readFileSync(String(args.file), 'utf8') : args.content !== undefined ? String(args.content) : null;
+  if (content === null) fail('usage: save.mjs handover --repo [<name>] --file <path> | --content "..." (the whole current state of the repo)');
+  out(formatRepoWrite(repoWrite(ctx, repo, { ops: [{ path: REPO_HANDOVER, content: content.endsWith('\n') ? content : `${content}\n` }], message: `handover ${repo}` })));
+}
+
+/**
+ * Move a brain record of one repo into the repo (D-0002): written into the repo first, then removed from brain; no
+ * "moved" stub stays. A decision gets the next number of the repo and `moved_from: <brain>/<old id>`.
+ */
+function saveMove(ctx) {
+  const [src] = rest;
+  const repo = repoTarget(ctx);
+  if (!src || !repo) fail('usage: save.mjs move <brain path: memory/<key>.md | decisions/<file>.md | skills/agentic/<name>> --repo <name> [--dry-run]');
+  const rel = toPosixPath(src).replace(/^\.\//, '').replace(/\/$/, '');
+  const abs = path.join(ctx.brainDir, rel);
+  if (rel.split('/').includes('..') || !fs.existsSync(abs)) fail(`${rel}: not found in brain`);
+  const brainName = path.basename(ctx.brainDir);
+  let ops = [];
+  let removed = [];
+  let note = null;
+  if (/^memory\/[^/]+\.md$/.test(rel)) {
+    const type = String(parseFrontmatter(fs.readFileSync(abs, 'utf8')).data.type || path.basename(rel, '.md').split('-')[0]);
+    if (BRAIN_ONLY_TYPES.includes(type)) fail(`${rel}: ${type} records stay in brain: knowledge about the operator and people is not knowledge of one repo (D-0002, P-007)`);
+    ops = [{ path: rel, content: fs.readFileSync(abs, 'utf8') }];
+    removed = [rel];
+  } else if (/^decisions\/[^/]+\.md$/.test(rel)) {
+    const parsed = parseFrontmatter(fs.readFileSync(abs, 'utf8'));
+    const oldId = String(parsed.data.id || parsed.data.key || path.basename(rel, '.md'));
+    const id = nextRepoDecisionId(ctx.domain, repo);
+    const slug = path.basename(rel, '.md').replace(/^d-\d+-?/i, '') || normalizeKey(String(parsed.data.title || '')).slice(0, 40);
+    ops = [{ path: `decisions/${id.toLowerCase()}-${slug}.md`, content: serializeFrontmatter({ ...parsed.data, key: id, id, moved_from: `${brainName}/${oldId}`, updated: today() }, parsed.body) }];
+    removed = [rel];
+    note = `decision ${brainName}/${oldId} is now ${repo}/${id}; references to ${oldId} in brain stay as they are (supersedes, commit messages)`;
+  } else if (/^skills\/agentic\/[^/]+(\/SKILL\.md)?$/.test(rel)) {
+    const dir = rel.replace(/\/SKILL\.md$/, '');
+    const name = dir.split('/')[2];
+    const files = fs.readdirSync(path.join(ctx.brainDir, dir), { recursive: true }).map(String).filter((f) => fs.statSync(path.join(ctx.brainDir, dir, f)).isFile()).map(toPosixPath);
+    ops = files.map((f) => ({ path: `skills/${name}/${f}`, content: fs.readFileSync(path.join(ctx.brainDir, dir, f), 'utf8') }));
+    removed = files.map((f) => `${dir}/${f}`);
+  } else if (/^skills\/operator\//.test(rel)) {
+    fail(`${rel}: operator skills stay in brain; skills of a repo are agentic only (P-032)`);
+  } else {
+    fail(`${rel}: only memory/, decisions/ and skills/agentic/<name> move into a repo`);
+  }
+  const target = ops.map((o) => `${repo}/${PROJECT_KNOWLEDGE}/${o.path}`);
+  if (args['dry-run']) {
+    out(`dry run: ${removed.join(', ')} -> ${target.join(', ')}`);
+    if (note) out(note);
+    return;
+  }
+  const exists = ops.map((o) => path.join(ctx.domain.root, repo, PROJECT_KNOWLEDGE, o.path)).find((f) => fs.existsSync(f));
+  if (exists) fail(`${toPosixPath(path.relative(ctx.domain.root, exists))} already exists in the repo; nothing moved`);
+  out(formatRepoWrite(repoWrite(ctx, repo, { ops, message: `move ${brainName}/${rel} into ${repo}` })));
+  let res;
+  try {
+    res = brainWrite(ctx, { ops: removed.map((r) => ({ path: r, remove: true })), message: `move ${rel} to ${repo}/${PROJECT_KNOWLEDGE}`, env: { WORKFLOW_DECISION_MOVED: removed.join(',') } });
+  } catch (err) {
+    fail(`${rel} is now in ${repo} but stays in brain too (${err.message.split('\n')[0]}): one record per key (P-031); fix the cause and remove it from brain, or revert the commit in ${repo}`);
+  }
+  const emptied = path.join(ctx.brainDir, rel.startsWith('skills/') ? rel.replace(/\/SKILL\.md$/, '') : '');
+  if (rel.startsWith('skills/') && fs.existsSync(emptied) && !fs.readdirSync(emptied, { recursive: true }).length) fs.rmSync(emptied, { recursive: true });
+  finish(ctx, res, removed);
+  if (note) out(note);
+}
+
 function saveHandover(ctx) {
+  const repo = repoTarget(ctx);
+  if (repo) return saveRepoHandover(ctx, repo);
   const [topic] = rest;
   if (!topic) fail('usage: save.mjs handover <topic> --task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>');
   const holderError = syncAndCheckHolder(ctx.brainDir, `topics/${topic}/handover.md`, ctx.thread);
@@ -385,8 +598,9 @@ try {
   const ctx = loadContext({ project: args.project });
   const foreign = foreignProjectCwd(ctx, args.project);
   if (foreign) fail(foreign);
-  const handlers = { memory: saveMemory, decision: saveDecision, rule: saveRule, exception: saveException, skill: saveSkill, handover: saveHandover, docs: saveDocs };
-  if (!handlers[category]) fail('usage: save.mjs memory|decision|rule|exception|skill|handover|docs ...');
+  const handlers = { memory: saveMemory, decision: saveDecision, rule: saveRule, exception: saveException, skill: saveSkill, handover: saveHandover, docs: saveDocs, move: saveMove };
+  if (!handlers[category]) fail('usage: save.mjs memory|decision|rule|exception|skill|handover|docs|move ...');
+  if (args.repo !== undefined && !['memory', 'decision', 'skill', 'handover', 'move'].includes(category)) fail(`--repo: ${category} lives in brain only (memory, decision, skill, handover and move take --repo)`);
   handlers[category](ctx);
 } catch (err) {
   fail(err.message);
