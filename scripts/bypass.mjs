@@ -36,6 +36,20 @@ function tokens(segment) {
  * text: a commit message with "; " gave a part whose words read as paths (bob 2026-11-08: "commit iba v agentic/
  * preskočí testy; …" matched the refused <repo>/agentic and blocked a commit that did not touch it).
  */
+/**
+ * Heredoc bodies fed to a program that only stores or reads them (`cat > f <<EOF`, `python3 - <<EOF`) are data: the
+ * text `git checkout --` inside a script being written is no history operation (alice 2026-11-03: writing release.sh
+ * asked the operator), and a `/** comment` inside it is no path (alice 2026-11-08: it matched a refused temp file and
+ * locked the write to scratch/ the refusal named). A body fed to a shell (`bash <<EOF`, `ssh host <<EOF`) is executed and stays.
+ */
+const SHELL_RUNNERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ssh', 'sudo', 'su', 'eval', 'xargs', 'env', 'nohup', 'time']);
+export function withoutDataHeredocs(command) {
+  return String(command).replace(/([^\n]*?)<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2[^\n]*\n[\s\S]*?\n\s*\3\s*(?=\n|$)/g, (m, head) => {
+    const prog = head.split(/&&|\|\||;|\|/).pop().trim().split(/\s+/)[0]?.split('/').pop();
+    return SHELL_RUNNERS.has(prog) ? m : m.split('\n')[0];
+  });
+}
+
 export function segments(cmd) {
   const out = [];
   let cur = '', quote = '';
@@ -79,7 +93,7 @@ export function analyze(tool, toolInput = {}, cwd = process.cwd(), anchors = [])
     let dir = cwd;
     const cmd = String(toolInput.command);
     if (/(^|[^0-9&>])>{1,2}(?!&)\s*[^\s&]/.test(cmd.replace(/"[^"]*"|'[^']*'/g, '""')) || /<<-?\s*['"]?\w/.test(cmd)) write = true;
-    for (const segment of segments(cmd)) {
+    for (const segment of segments(withoutDataHeredocs(cmd))) {
       const t = tokens(segment.trim()).filter(Boolean);
       let i = 0;
       while (i < t.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i])) i++;

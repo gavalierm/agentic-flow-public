@@ -12,6 +12,9 @@ import { workflowSkillNames, GENERATED_MARKER, PROJECT_SKILLS_DIR } from './skil
 
 const TRIGGER = /^(Použi|Použij|Use)\b/i;
 
+/** NIST curve names (P-256 ...) look like principle ids; they are not references (Bob 2026-11-08, DNSSEC). */
+const NIST_CURVES = new Set(['192', '224', '256', '384', '521']);
+
 function principleIds() {
   const dir = path.join(PLUGIN_ROOT, 'docs', 'principles');
   try { return new Set(fs.readdirSync(dir).filter((f) => /^P-\d{3}\.md$/.test(f)).map((f) => f.slice(0, 5))); } catch { return null; }
@@ -97,7 +100,7 @@ export function checkSkill({ name, dir, text, owner, projectDir, home = os.homed
     if (/^nie\s/i.test(line) || /\\nnie\s/.test(line)) hasNie = true;
     if (/^nie\s/i.test(line)) return;
     for (const m of line.matchAll(/\bworkflow:([a-z][a-z0-9-]*)/g)) if (!wf.has(m[1])) add('error', n, 'reference', `workflow:${m[1]} does not exist`);
-    if (principles) for (const m of line.matchAll(/\bP-(\d{3})\b/g)) if (!principles.has(`P-${m[1]}`)) add('error', n, 'reference', `P-${m[1]} does not exist`);
+    if (principles) for (const m of line.matchAll(/\bP-(\d{3})\b/g)) if (!NIST_CURVES.has(m[1]) && !principles.has(`P-${m[1]}`)) add('error', n, 'reference', `P-${m[1]} does not exist`);
     for (const p of pathsIn(line)) {
       const abs = expand(p, home);
       const renamed = oldDomainPath(abs, home);

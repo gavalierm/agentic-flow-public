@@ -28,8 +28,8 @@ import { buildIndexes } from '../scripts/index.mjs';
 import { renderHandover, checkHandover } from '../scripts/brain-checks.mjs';
 import { removeNames } from '../scripts/logs.mjs';
 import { setTopicState, readTopic } from '../scripts/topic.mjs';
-import { workflowSkillNames, PROJECT_SKILLS_DIR } from '../scripts/skills-sync.mjs';
-import { PROJECT_KNOWLEDGE, REPO_HANDOVER, domainRepos, repoByName, sessionRepo, singleRepoOf, nextRepoDecisionId, repoWrite, formatRepoWrite, heldRepoTopic } from '../scripts/repo-knowledge.mjs';
+import { workflowSkillNames, PROJECT_SKILLS_DIR, syncBrainSkills } from '../scripts/skills-sync.mjs';
+import { sessionKnowledgeSources, PROJECT_KNOWLEDGE, REPO_HANDOVER, domainRepos, repoByName, sessionRepo, singleRepoOf, nextRepoDecisionId, repoWrite, formatRepoWrite, heldRepoTopic } from '../scripts/repo-knowledge.mjs';
 import { checkSkill, meaningDiff } from '../scripts/skill-check.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -45,6 +45,17 @@ function fingerprint(projectDir, sources) {
     h.update(fs.existsSync(file) ? fs.readFileSync(file) : Buffer.from('missing'));
   }
   return h.digest('hex').slice(0, 12);
+}
+
+/**
+ * Deploy the saved skill into the project now (skills-sync, as at session start): the path printed by
+ * "script runs as" exists right after the save, not only at the next session (Bob 2026-11-08: only SKILL.md was there).
+ * Returns null when deployed, else the reason.
+ */
+function deploySkills(ctx) {
+  if (!ctx.brainDir || !ctx.projectDir) return 'no brain or project';
+  try { syncBrainSkills({ projectDir: ctx.projectDir, brainDir: ctx.brainDir, repoSources: sessionKnowledgeSources(ctx) }); return null; }
+  catch (err) { return err.message; }
 }
 
 function finish(ctx, res, paths) {
@@ -368,7 +379,9 @@ function removeSkill(ctx, name) {
   const abs = path.join(ctx.brainDir, dir);
   const left = fs.existsSync(abs) ? fs.readdirSync(abs, { recursive: true }).map(String).filter((f) => fs.statSync(path.join(abs, f)).isFile()) : [];
   if (fs.existsSync(abs) && !left.length) fs.rmSync(abs, { recursive: true });
-  return finish(ctx, res, files);
+  finish(ctx, res, files);
+  const notDeployed = deploySkills(ctx);
+  if (notDeployed) out(`not removed from the project (${notDeployed}); it leaves at the next session start`);
 }
 
 function saveSkill(ctx) {
@@ -439,7 +452,9 @@ function saveSkill(ctx) {
   if (args['from-sequence']) ops.push(removeNames(ctx.brainDir, 'sequences.log', asList(args['from-sequence'])));
   const res = brainWrite(ctx, { ops, message: `save skill ${name} (${hit ? (sed !== null ? 'edit' : 'extend') : origin})` });
   finish(ctx, res, [rel, ...scripts]);
-  out(hit ? `${sed !== null ? 'edited' : 'extended'} existing skill ${hit.skillName}` : `new skill ${name} (origin: ${origin}); it reaches the project at the next session start`);
+  const notDeployed = deploySkills(ctx);
+  out(hit ? `${sed !== null ? 'edited' : 'extended'} existing skill ${hit.skillName}` : `new skill ${name} (origin: ${origin})`);
+  out(notDeployed ? `not deployed to the project (${notDeployed}); it reaches the project at the next session start` : `deployed to ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR))}`);
   // P-052: the skill text calls its script by the deployed absolute path, never relative to the cwd or from scratch.
   for (const s of scripts) out(`script runs as: ${s.endsWith(".sh") ? "sh" : "node"} ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR, path.posix.basename(path.posix.dirname(s)), path.posix.basename(s)))} (write this path in the skill text)`);
 }
@@ -461,7 +476,10 @@ function saveRepoSkill(ctx, repo, name) {
     if (!hit) fail(`skill ${name} does not exist in repo ${repo}`);
     if (!args.reason) fail('--remove needs --reason "superseded by workflow:<skill> | P-XXX | ..."');
     const files = fs.existsSync(dirAbs) ? fs.readdirSync(dirAbs, { recursive: true }).map(String).filter((f) => fs.statSync(path.join(dirAbs, f)).isFile()) : [];
-    return out(formatRepoWrite(repoWrite(ctx, repo, { ops: files.map((f) => ({ path: `skills/${name}/${toPosixPath(f)}`, remove: true })), message: `remove skill ${name}: ${args.reason}` })));
+    out(formatRepoWrite(repoWrite(ctx, repo, { ops: files.map((f) => ({ path: `skills/${name}/${toPosixPath(f)}`, remove: true })), message: `remove skill ${name}: ${args.reason}` })));
+    const notDeployed = deploySkills(ctx);
+    if (notDeployed) out(`not removed from this project (${notDeployed}); it leaves at the next session start`);
+    return;
   }
   const origin = args.origin || 'error';
   if (!['error', 'routine'].includes(origin)) fail('origin must be error | routine (P-032)');
@@ -497,7 +515,9 @@ function saveRepoSkill(ctx, repo, name) {
   if (errors.length) fail(`skill check: ${errors.map((x) => `${x.line ? `line ${x.line} ` : ''}${x.message}`).join('; ')}; nothing saved (workflow:skill-check)`);
   for (const w of found2.filter((x) => x.level === 'warn')) out(`skill check warn: ${w.line ? `line ${w.line} ` : ''}${w.message}`);
   out(formatRepoWrite(repoWrite(ctx, repo, { ops, message: `save skill ${name} (${hit ? (sed !== null ? 'edit' : 'extend') : origin})` })));
-  out(hit ? `${sed !== null ? 'edited' : 'extended'} skill ${name} of repo ${repo}` : `new skill ${name} of repo ${repo} (origin: ${origin}); it reaches sessions of the repo at their next start`);
+  const notDeployed = deploySkills(ctx);
+  out(hit ? `${sed !== null ? 'edited' : 'extended'} skill ${name} of repo ${repo}` : `new skill ${name} of repo ${repo} (origin: ${origin})`);
+  out(notDeployed ? `not deployed to this project (${notDeployed}); other sessions of the repo get it at their next start` : `deployed to ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR))}; other sessions of the repo get it at their next start`);
   for (const base of scripts) out(`script runs as: ${base.endsWith('.sh') ? 'sh' : 'node'} ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR, name, base))} (write this path in the skill text)`);
 }
 

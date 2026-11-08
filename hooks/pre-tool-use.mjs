@@ -14,7 +14,7 @@ import { readTopics } from '../scripts/records.mjs';
 import { knowledgeDirOf, PROJECT_KNOWLEDGE } from '../scripts/repo-knowledge.mjs';
 import { findSecret } from '../scripts/secrets.mjs';
 import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell } from '../scripts/own-files.mjs';
-import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, stateDenials, transcriptDenials, withDenial } from '../scripts/bypass.mjs';
+import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, stateDenials, transcriptDenials, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-052', 'P-054', 'P-055'] };
 
@@ -67,18 +67,9 @@ function rememberCreated(ctx, abs) {
   writeThreadState(ctx.brainDir, ctx.thread, { ...state, created_files: list.slice(-CREATED_LIMIT) });
 }
 
-/**
- * Heredoc bodies fed to a program that only stores or reads them (`cat > f <<EOF`, `python3 - <<EOF`) are data: the
- * text `git checkout --` inside a script being written is no history operation (alice 2026-11-03: writing release.sh
- * asked the operator). A body fed to a shell (`bash <<EOF`, `ssh host <<EOF`) is executed and stays.
- */
+/** Data heredocs (scripts/bypass.mjs): bodies stored or read, not executed. */
 const SHELL_RUNNERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ssh', 'sudo', 'su', 'eval', 'xargs', 'env', 'nohup', 'time']);
-export function withoutDataHeredocs(command) {
-  return String(command).replace(/([^\n]*?)<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2[^\n]*\n[\s\S]*?\n\s*\3\s*(?=\n|$)/g, (m, head) => {
-    const prog = head.split(/&&|\|\||;|\|/).pop().trim().split(/\s+/)[0]?.split('/').pop();
-    return SHELL_RUNNERS.has(prog) ? m : m.split('\n')[0];
-  });
-}
+export { withoutDataHeredocs };
 
 /**
  * The executed part of a command for the history check: data heredocs dropped, and quoted arguments of programs that

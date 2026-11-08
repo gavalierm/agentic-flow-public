@@ -129,6 +129,9 @@ test('skill --script: the script is stored next to SKILL.md in one brain commit;
     assert.equal(r.status, 0, r.out);
     assert.equal(fx.read('skills/agentic/release-x/release.mjs'), fs.readFileSync(src, 'utf8'));
     assert.match(r.out, /script runs as: node \/.+\/\.claude\/skills\/release-x\/release\.mjs/);
+    const printed = r.out.match(/script runs as: node (\S+)/)[1];
+    assert.ok(fs.existsSync(printed), `the printed path exists right after the save (Bob 2026-11-08): ${printed}`);
+    assert.match(r.out, /deployed to /);
     const sh = path.join(fx.root, 'sync.sh');
     fs.writeFileSync(sh, 'echo ok\n');
     const r2 = fx.run('save.mjs', ['skill', 'release-x', '--content', 'sh', '--origin', 'routine', '--script', sh]);
@@ -141,6 +144,9 @@ test('skill --script: the script is stored next to SKILL.md in one brain commit;
     fs.writeFileSync(bad, 'x');
     r = fx.run('save.mjs', ['skill', 'release-x', '--content', 'y', '--origin', 'routine', '--script', bad]);
     assert.equal(r.status, 1); assert.match(r.stderr, /--script/);
+    r = fx.run('save.mjs', ['skill', 'release-x', '--remove', '--reason', 'test']);
+    assert.equal(r.status, 0, r.out);
+    assert.equal(fs.existsSync(path.dirname(printed)), false, 'a removed skill leaves the project at once (pilot 2026-11-08)');
   } finally { fx.cleanup(); }
 });
 

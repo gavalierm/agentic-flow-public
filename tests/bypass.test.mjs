@@ -22,6 +22,11 @@ test('analyze: paths a call reaches and whether it may write them', () => {
     assert.equal(analyze('Bash', { command: `sed -n 1p ${f}` }, dir).write, false);
     assert.equal(analyze('Bash', { command: `sed -i s/x/y/ ${f}` }, dir).write, true);
     assert.equal(analyze('Bash', { command: `cat a.md > b.md` }, dir).write, true);
+    // a data heredoc body is text, not paths (alice 2026-11-08: "/** NIST ..." in a script being written locked scratch/)
+    const doc = analyze('Bash', { command: `cat > ${f} <<'EOF'\n/** NIST curves */\nconst x = '/etc/passwd';\nEOF\nnode ${f}` }, dir);
+    assert.equal(doc.write, true);
+    assert.deepEqual(doc.paths, [f]);
+    assert.ok(analyze('Bash', { command: `bash <<'EOF'\nrm /etc/hosts\nEOF` }, dir).paths.includes('/etc/hosts'), 'a body fed to a shell runs');
     assert.deepEqual(analyze('Bash', { command: 'git grep foo -- docs' }, dir).paths, [path.join(dir, 'docs')]);
     assert.deepEqual(analyze('Bash', { command: 'cd docs && ls principles' }, dir).paths, [path.join(dir, 'docs', 'principles')]);
     assert.deepEqual(analyze('Read', { file_path: f }, dir), { paths: [f], write: false });

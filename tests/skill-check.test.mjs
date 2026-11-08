@@ -17,6 +17,8 @@ test('checkSkill: format, references, paths, anti-patterns, growth', () => {
     fs.mkdirSync(path.join(home, 'agentic', 'Bob', 'agent-bob'), { recursive: true });
     const check = (text, opts = {}) => checkSkill({ name: 'x', dir: null, text, owner: 'agentic', projectDir: path.join(home, 'agentic', 'Bob', 'agent-bob'), home, ...opts });
     assert.deepEqual(check(skill('1. `node ~/agentic/Bob/agent-bob/x.mjs` nie, P-003, workflow:save')).filter((f) => f.level === 'error'), []);
+    assert.deepEqual(check(skill('DNSSEC: ECDSA Curve P-256 (algoritmus 13), P-384 nie')).filter((f) => f.level === 'error'), [], 'a NIST curve name is not a principle reference');
+    assert.ok(check(skill('podľa P-999')).some((f) => f.level === 'error' && /P-999 does not exist/.test(f.message)));
     assert.ok(codes(check(skill('a', 'origin: routine\n', 'y'))).includes('error:name'));
     assert.ok(codes(check('---\nname: x\n---\nbody\n')).includes('error:description'));
     assert.ok(codes(check(skill('a', ''))).includes('error:origin'));
