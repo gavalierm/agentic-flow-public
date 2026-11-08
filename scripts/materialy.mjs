@@ -76,3 +76,42 @@ export function oversized(projectDir, policy) {
   walk(root);
   return found;
 }
+
+const SCRATCH_SKIP = new Set(['.git', 'node_modules', '.cache', '__pycache__']);
+
+/**
+ * Files in <project>/scratch/ changed since `sinceMs`: { count, files } (newest first, relative to the project). A
+ * directory with its own .git (a clone) is skipped, its work lives in that repo. The walk stops after `budget` entries.
+ * scratch/ is not in git (P-052): inputs and results left there were lost (operator 2026-11-08); done reminds of them.
+ */
+export function scratchSince(projectDir, sinceMs, { budget = 5000 } = {}) {
+  const found = [];
+  let seen = 0;
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    if (dir !== root && entries.some((e) => e.name === '.git')) return;
+    for (const e of entries) {
+      if (++seen > budget) return;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (!SCRATCH_SKIP.has(e.name)) walk(p); } else if (e.isFile()) {
+        let m;
+        try { m = fs.statSync(p).mtimeMs; } catch { continue; }
+        if (m >= sinceMs) found.push({ path: path.relative(projectDir, p).split(path.sep).join('/'), m });
+      }
+    }
+  };
+  const root = path.join(projectDir, 'scratch');
+  walk(root);
+  found.sort((a, b) => b.m - a.m);
+  return { count: found.length, files: found.map((f) => f.path) };
+}
+
+/** One reminder line for done, or null: files changed in scratch/ since the topic was taken or last closed (P-062). */
+export function scratchReminder(projectDir, sinceMs, topic) {
+  if (!projectDir || !Number.isFinite(sinceMs)) return null;
+  const { count, files } = scratchSince(projectDir, sinceMs);
+  if (!count) return null;
+  const shown = files.slice(0, 5).join(', ') + (count > 5 ? `, … (+${count - 5})` : '');
+  return `scratch: ${count} file(s) changed since ${new Date(sinceMs).toISOString().slice(0, 16)} are only in scratch/ (not in git): ${shown}. Inputs from outside and results of work move now to materialy/${topic || '<téma>'}/ (skill workflow:materialy), procedures to a skill; intermediate results stay (P-062, P-052)`;
+}

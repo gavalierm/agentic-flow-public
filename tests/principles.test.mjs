@@ -54,4 +54,12 @@ test('principles hook: one principle file or the index passes; searching or list
   assert.equal(principlesBulkRead('Bash', { command: 'cat docs/t3-workarounds.json' }, root), null);
   assert.match(principlesBulkRead('Grep', { pattern: 'x', path: p }) || '', /one principle/);
   assert.match(principlesBulkRead('Glob', { pattern: 'docs/principles/*.md' }) || '', /one principle/);
+  // text that only names the path (mail body in a heredoc, echo) is not a read; a listing piped to grep searches the listing
+  for (const command of [`cat > scratch/m.md <<'EOF'\nhook denied ls ${p}/ and grep -r x ${p}\nEOF\nnode comms.mjs send --file scratch/m.md`, `echo "see ${p}" >> scratch/n.md`, `ls ${path.join(root, 'docs')}/*.md | grep -c md`, `comms.mjs send --text - <<EOF\nrg x ${p}\nEOF`]) {
+    assert.equal(principlesBulkRead('Bash', { command }, root), null, command);
+  }
+  // a heredoc a shell or an interpreter runs still reads
+  for (const command of [`sh <<'EOF'\nls ${p}\nEOF`, `node <<'EOF'\nrequire('fs').readdirSync('${p}')\nEOF`, `echo x && ls ${p}`]) {
+    assert.match(principlesBulkRead('Bash', { command }, root) || '', /one principle at a time/, command);
+  }
 });

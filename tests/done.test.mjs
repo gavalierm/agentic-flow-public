@@ -132,3 +132,26 @@ test('done --topic is refused in a wake turn and for a non-holder', () => {
     assert.ok(fx.exists('topics/d/topic.json'));
   } finally { fx.cleanup(); }
 });
+
+test('done reminds of files changed in scratch/ since the claim or the last done, clones skipped (P-062, operator 2026-11-08)', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'd2', '--subject', 'Discussion']).status, 0);
+    const scratch = path.join(fx.project, 'scratch');
+    fs.mkdirSync(path.join(scratch, 'clone', '.git'), { recursive: true });
+    fs.writeFileSync(path.join(scratch, 'clone', 'code.js'), 'x\n');
+    fs.writeFileSync(path.join(scratch, 'analyza.md'), '# výsledok\n');
+    let r = fx.run('done.mjs', ['--verified', 'saw output']);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.stdout, /scratch: 1 file\(s\) changed since .* only in scratch\/ \(not in git\): scratch\/analyza\.md\. .*materialy\/d2\//);
+    assert.doesNotMatch(r.stdout, /code\.js/);
+    assert.ok(JSON.parse(fx.read('topics/d2/topic.json')).last_done);
+    // nothing new since the last done: no line
+    const past = new Date(Date.now() - 60000);
+    fs.utimesSync(path.join(scratch, 'analyza.md'), past, past);
+    assert.equal(fx.run('topic.mjs', ['claim', 'd2']).status, 0);
+    r = fx.run('done.mjs', ['--verified', 'saw output']);
+    assert.equal(r.status, 0, r.out);
+    assert.doesNotMatch(r.stdout, /scratch:/);
+  } finally { fx.cleanup(); }
+});

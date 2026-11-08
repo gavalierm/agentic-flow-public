@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PLUGIN_ROOT, readJson, writeJson, shortSha, parseArgs, fail } from '../scripts/util.mjs';
-import { enabledPluginsFor, channelOf, WORKFLOW_CONFIG, resolveTargetProject, ensureWorkflowConfig, brainExists, loadPolicy, expandBrainPath, SCRATCH_DIR, NO_BRAIN_NOTE } from '../scripts/config.mjs';
+import { enabledPluginsFor, channelOf, WORKFLOW_CONFIG, resolveTargetProject, ensureWorkflowConfig, brainExists, loadPolicy, expandBrainPath, PERSONA_BRAIN, SCRATCH_DIR, NO_BRAIN_NOTE } from '../scripts/config.mjs';
 import { commitPersonaFiles } from '../scripts/persona.mjs';
 import { syncBrainSkills, ensureGitignore } from '../scripts/skills-sync.mjs';
 import { generateCodex } from '../adapters/codex/generate.mjs';
@@ -17,7 +17,10 @@ export const MANAGED_KEYS = ['enabledPlugins', 'autoMemoryEnabled', 'autoCompact
 export function claudeSettings(policy, brainRel, channel = 'stable') {
   const deny = [];
   for (const p of policy.harness?.deny_paths || []) {
-    for (const e of expandBrainPath(p, brainRel)) deny.push(`Edit(${e})`);
+    // A bare deny pattern matches at any depth under the cwd (gitignore; Claude Code permissions docs): in a persona,
+    // `Edit(rules/**)` and `Edit(README.md)` also denied rules/ and scripts/README.md of a code copy inside the project
+    // (assist 2026-11-08). `/` anchors them at the project root, which is the persona's brain.
+    for (const e of expandBrainPath(p, brainRel)) deny.push(`Edit(${brainRel === PERSONA_BRAIN && !/^[/~.]/.test(e) ? '/' : ''}${e})`);
   }
   deny.push('Edit(.claude/skills/**)');
   // Native ask: the whole command or the command followed by arguments (`git checkout --orphan` is not

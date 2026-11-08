@@ -16,9 +16,16 @@ import { registerTopic } from '../scripts/comms.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
 import { asList } from '../scripts/frontmatter.mjs';
 import { PROJECT_KNOWLEDGE, REPO_HANDOVER } from '../scripts/repo-knowledge.mjs';
+import { scratchReminder } from '../scripts/materialy.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const out = (s) => process.stdout.write(s + '\n');
+
+/** Since when files in scratch/ belong to this unit: the last done of the topic, else the claim (P-062). */
+function unitStart(ctx, id, topic) {
+  const t = Date.parse(topic?.last_done || readHolder(ctx.brainDir, id)?.since || '');
+  return Number.isFinite(t) ? t : NaN;
+}
 
 function pickTopic(ctx) {
   if (args['topic-id']) return args['topic-id'];
@@ -94,15 +101,23 @@ function doneUnit(ctx, id) {
   }
   ops.push({ path: `topics/${id}/handover.md`, content: freeHandover() });
   // The main topic stays held and is never free (P-045): no state change, no free point.
-  const main = readTopic(ctx.brainDir, id)?.kind === 'main';
-  if (!main) ops.push(setTopicState(ctx, id, 'free'));
+  const topic = readTopic(ctx.brainDir, id);
+  const main = topic?.kind === 'main';
+  notes.unshift(scratchReminder(ctx.projectDir, unitStart(ctx, id, topic), id));
+  const topicOp = main ? { path: `topics/${id}/topic.json`, content: JSON.stringify(topic, null, 2) + '\n' } : setTopicState(ctx, id, 'free');
+  if (topicOp.content) {
+    const t = JSON.parse(topicOp.content);
+    t.last_done = nowIso();
+    topicOp.content = JSON.stringify(t, null, 2) + '\n';
+    ops.push(topicOp);
+  }
   const res = brainWrite(ctx, { ops, message: `done ${id}: unit of work done (verified: ${String(args.verified).slice(0, 60)})` });
   out(formatWriteResult(res, [`topics/${id}/handover.md`, `topics/${id}/topic.json`]));
   if (main) out(`topic main stays held by ${ctx.thread} (persona main thread, never free, P-045); handover reset.`);
   else out(`topic ${id} is free; handover reset. Continue in a new session for the next unit of work (P-026).`);
   const mail = freePointMail(ctx, id, { record: !main });
   if (mail) out(mail);
-  for (const n of notes) out(n);
+  for (const n of notes.filter(Boolean)) out(n);
   for (const w of buildIndexes(ctx.brainDir, ctx.policy).warnings) out(`limit: ${w}`);
 }
 
@@ -204,6 +219,8 @@ function doneTopic(ctx, id) {
   out(formatWriteResult(res, [`topics/archive/${id}/`]));
   out(merge.note);
   out(`topic ${id} closed and archived. Start a new session for the next topic (P-026).`);
+  const scratch = scratchReminder(ctx.projectDir, unitStart(ctx, id, topic), id);
+  if (scratch) out(scratch);
   // The mail closes the topic too: new mail gets 410 at once, waiting mail bounces to its senders (alice 2026-11-02).
   const comms = registerTopic(ctx, id, { close: true });
   if (comms.ok) out(`mail: topic ${id} closed in the mail service (new mail refused, waiting mail returned to the senders)`);

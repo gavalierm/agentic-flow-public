@@ -15,7 +15,7 @@ import { findSecret } from '../scripts/secrets.mjs';
 import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell } from '../scripts/own-files.mjs';
 import { catalogPreTool } from '../scripts/catalog/pretool.mjs';
 import { bigWriteDeny } from '../scripts/materialy.mjs';
-import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, stateDenials, transcriptDenials, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
+import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, segments, stateDenials, transcriptDenials, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-052', 'P-054', 'P-055'] };
 
@@ -409,22 +409,39 @@ export function servicesWrite(absPaths, env = process.env, allowed = []) {
  */
 const PRINCIPLES_REF = /([^\s'"=:;|&<>()]*docs[\\/]principles)(?=[\s'"/\\*;|&<>()]|$)(?!\/(?:P-\d{3}|README)\.md(?![\w.-]))/g;
 const DOCS_REF = /([^\s'"=:;|&<>()]*docs)\/?(?=[\s'"*;|&<>()]|$)/g;
+// Text a command only writes or sends is not a read (assist from a topic 2026-11-08: a heredoc with a mail body that named
+// the principles path was denied): data heredocs and echo/printf parts are left out; a heredoc fed to a shell or an
+// interpreter runs, so it stays.
+const CODE_RUNNERS = new Set(['node', 'python', 'python3', 'perl', 'ruby', 'deno', 'bun']);
+const TEXT_ONLY = new Set(['echo', 'printf']);
+function readParts(command) {
+  const noData = String(command).replace(/([^\n]*?)<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2[^\n]*\n[\s\S]*?\n\s*\3\s*(?=\n|$)/g, (m, head) => {
+    const prog = head.split(/&&|\|\||;|\|/).pop().trim().split(/\s+/)[0]?.split('/').pop();
+    return CODE_RUNNERS.has(prog) || prog === 'sh' || prog === 'bash' ? m : withoutDataHeredocs(m);
+  });
+  return segments(noData).filter((seg) => {
+    const prog = (seg.trim().split(/\s+/).filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w))[0] || '').replace(/^\(+/, '').split('/').pop();
+    return !TEXT_ONLY.has(prog);
+  });
+}
 export function principlesBulkRead(tool, toolInput = {}, cwd = process.cwd()) {
-  const text = tool === 'Bash' || tool === 'PowerShell' ? String(toolInput.command || '')
-    : tool === 'Grep' ? `${toolInput.path || ''} ${toolInput.glob || ''}`
-    : tool === 'Glob' ? `${toolInput.pattern || ''} ${toolInput.path || ''}` : '';
+  const shell = tool === 'Bash' || tool === 'PowerShell';
+  const parts = shell ? readParts(toolInput.command || '')
+    : tool === 'Grep' ? [`${toolInput.path || ''} ${toolInput.glob || ''}`]
+    : tool === 'Glob' ? [`${toolInput.pattern || ''} ${toolInput.path || ''}`] : [''];
   const home = process.env.HOME || '';
   // Only a directory that really is a principles dir (holds P-001.md): a project's own docs/principles stays free.
-  const real = [...text.matchAll(PRINCIPLES_REF)].some((m) => {
+  const real = parts.some((text) => [...text.matchAll(PRINCIPLES_REF)].some((m) => {
     const ref = m[1].startsWith('~/') ? path.join(home, m[1].slice(2)) : m[1];
     return fs.existsSync(path.join(path.resolve(cwd, ref), 'P-001.md'));
-  });
+  }));
   // A search over the parent docs/ walks into principles/ too (git grep x -- docs, grep -r x docs): the same bulk read.
-  const searching = tool === 'Grep' || tool === 'Glob' || /(^|[\s;&|(`])(?:git\s+grep|[ef]?grep|ugrep|rg|ag|ack|find)(?=\s)/.test(text);
-  const viaDocs = searching && [...text.matchAll(DOCS_REF)].some((m) => {
+  // The search and docs/ must be one part: `ls docs/*.md | grep x` searches the listing, not the directory.
+  const searches = (text) => !shell || /(^|[\s;&|(`])(?:git\s+grep|[ef]?grep|ugrep|rg|ag|ack|find)(?=\s)/.test(text);
+  const viaDocs = parts.some((text) => searches(text) && [...text.matchAll(DOCS_REF)].some((m) => {
     const ref = m[1].startsWith('~/') ? path.join(home, m[1].slice(2)) : m[1];
     return fs.existsSync(path.join(path.resolve(cwd, ref), 'principles', 'P-001.md'));
-  });
+  }));
   return real || viaDocs ? 'docs/principles/ is read one principle at a time: the rule in rules/ is the working text, and only when you are unsure why a rule exists you open docs/principles/P-NNN.md for that one rule (P-001); searching or listing the whole directory is not allowed' : null;
 }
 /** The domain marker decides the boundary: no agent changes it (it would widen its own domain). */

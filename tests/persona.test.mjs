@@ -67,7 +67,8 @@ test('persona: adapter writes settings, scratch/ and commits generated files thr
     const msg = git(p.dir, 'log', '-1', '--format=%s');
     assert.match(msg, /^\[brain-script\] adapter/);
     const settings = JSON.parse(fs.readFileSync(path.join(p.dir, '.claude', 'settings.json'), 'utf8'));
-    assert.ok(settings.permissions.deny.includes('Edit(memory/**)'));
+    assert.ok(settings.permissions.deny.includes('Edit(/memory/**)'), 'anchored at the persona root, not any memory/ under the cwd');
+    assert.ok(settings.permissions.deny.includes('Edit(/README.md)') && !settings.permissions.deny.includes('Edit(README.md)'), 'a bare README.md would deny every README.md at any depth');
     assert.ok(!settings.permissions.deny.some((d) => d.includes('scratch')));
     assert.ok(fs.existsSync(path.join(p.dir, 'scratch')));
     assert.match(fs.readFileSync(path.join(p.dir, '.gitignore'), 'utf8'), /^scratch\/$/m);

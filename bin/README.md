@@ -16,7 +16,7 @@ Vstupné body skriptov, volané ako `node <plugin>/bin/<name>.mjs` v koreni proj
 | `thread.mjs [--id] [-- <args>]` | P-038 | vygeneruje `WORKFLOW_THREAD_ID` a spustí harness |
 | `adapter.mjs claude-code | codex | --version` | P-017, P-015 | Claude Code: `.claude/settings.json`, `.workflow.json`, `.gitignore`, kópia skillov brain; Codex: `.codex/config.toml`, `AGENTS.md`, lokálne `.codex/hooks.json` a `.agents/skills/` (pozri `adapters/codex/`) |
 | `save.mjs memory|decision|rule|exception|skill|handover` | P-013, P-007 | skript skillu `save` |
-| `done.mjs [--topic] --verified` | P-029, P-005, P-006, P-036 | skript skillu `done` |
+| `done.mjs [--topic] --verified` | P-029, P-005, P-006, P-036, P-062 | skript skillu `done`; riadok `scratch: …` = súbory zmenené v `scratch/` od zabratia alebo posledného `done` |
 | `error.mjs list|check|resolve` | P-003, P-028 | skript skillu `error` |
 | `delegate.mjs prepare|check` | P-027, P-028 | skript skillu `delegate` |
 | `t3-workarounds.mjs list|check [--t3-home] [--t3] [--thread] [--no-upstream] [--json]` | PLAN 35 | register T3 workaroundov (`docs/t3-workarounds.json`) a ich kontrola po každom upgrade T3; `FAIL` → exit 1 |
