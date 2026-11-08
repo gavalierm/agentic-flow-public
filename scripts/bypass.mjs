@@ -16,6 +16,8 @@ const SHELLS = ['Bash', 'PowerShell', 'Monitor'];
 const INTERPRETERS = new Set(['node', 'sh', 'bash', 'zsh', 'dash', 'python', 'python3', 'pwsh', 'powershell', 'deno', 'bun', 'ruby', 'perl', 'env', 'sudo', 'nice', 'timeout', 'xargs']);
 const READ_PROGRAMS = new Set(['cat', 'head', 'tail', 'less', 'more', 'ls', 'stat', 'file', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'echo', 'printf', 'true', 'test', '[', 'pwd', 'which', 'type', 'realpath', 'readlink', 'basename', 'dirname', 'du', 'df', 'tree', 'diff', 'cmp', 'md5sum', 'sha1sum', 'sha256sum', 'jq', 'sort', 'uniq', 'cut', 'tr', 'nl', 'column', 'get-content', 'get-childitem', 'select-string', 'test-path', 'cd', 'set-location']);
 const READ_GIT = new Set(['status', 'log', 'diff', 'show', 'grep', 'ls-files', 'ls-tree', 'rev-parse', 'describe', 'blame', 'cat-file', 'shortlog', 'reflog', 'ls-remote', 'remote', 'branch', 'tag']);
+const SHELL_LEAD = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', '{', '(', 'time']);
+const SHELL_END = new Set(['done', 'fi', 'esac', '}', ')']);
 const FILE_WRITE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
 
 export function callKey(tool, toolInput = {}) {
@@ -96,9 +98,12 @@ export function analyze(tool, toolInput = {}, cwd = process.cwd(), anchors = [])
     for (const segment of segments(withoutDataHeredocs(cmd))) {
       const t = tokens(segment.trim()).filter(Boolean);
       let i = 0;
-      while (i < t.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i])) i++;
+      // Shell keywords are no programs: `do grep …` runs grep, `done`/`fi` end a block, `for s in a b` lists words
+      // (agentic-flow-public#16: a read-only loop over skill folders counted as a write and P-054 locked it).
+      while (i < t.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t[i]) || SHELL_LEAD.has(t[i]))) i++;
       const program = (t[i] || '').split(/[\\/]/).pop().toLowerCase();
-      if (!program) continue;
+      if (!program || SHELL_END.has(program)) continue;
+      if (program === 'for' || program === 'select' || program === 'case') continue;
       if (program === 'cd' || program === 'set-location' || program === 'pushd') {
         if (t[i + 1]) dir = path.resolve(dir, expand(t[i + 1]));
         continue;

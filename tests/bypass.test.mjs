@@ -193,3 +193,18 @@ test('hook: a write refused outside the project (P-052) locks only the outside t
     assert.match(JSON.stringify(again.json || {}), /P-054|outside the project/, 'the outside target stays refused');
   } finally { fx.cleanup(); }
 });
+
+test('hook: a write refused outside the project does not lock reading other targets of the call, a loop is no write (agentic-flow-public#16)', () => {
+  const fx = setup();
+  try {
+    const skills = path.join(fx.root, 'other-brain', 'skills');
+    for (const s of ['a', 'b']) { fs.mkdirSync(path.join(skills, s), { recursive: true }); fs.writeFileSync(path.join(skills, s, 'SKILL.md'), 'x\n'); }
+    const out = path.join(os.tmpdir(), 'wf-p16');
+    const refused = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `for s in a b; do grep -c x ${skills}/$s/SKILL.md ${skills}/a/SKILL.md > ${out}_$s.txt; done` } });
+    assert.equal(refused.json.hookSpecificOutput?.permissionDecision, 'deny', refused.stderr);
+    assert.match(refused.json.hookSpecificOutput.permissionDecisionReason, /outside the project/);
+    const read = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `cd ${skills}; for s in a b; do grep -oE 'x' $s/SKILL.md; done; grep -c x a/SKILL.md; test -e ${fx.project}` } });
+    assert.doesNotMatch(JSON.stringify(read.json || {}), /P-054/, 'reading the skills the refused command also read is no bypass');
+    assert.equal(analyze('Bash', { command: `for s in a b; do grep -c x ${skills}/a/SKILL.md; done` }, fx.root).write, false, 'for/do/done are shell keywords, not writing programs');
+  } finally { fx.cleanup(); }
+});

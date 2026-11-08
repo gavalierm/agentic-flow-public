@@ -651,6 +651,37 @@ export function gitWriteDirs(command, cwd = process.cwd()) {
   return dirs;
 }
 
+/**
+ * `git add -f <folder|glob>` adds every ignored file under it, not only the one the task needs (agentic-flow-public#15:
+ * `git add -f .claude/skills` staged the ignored, generated .workflow-generated.json). A forced add names files.
+ */
+export function forcedAddIgnored(command, cwd = process.cwd()) {
+  let base = cwd;
+  const home = process.env.HOME || '';
+  const abs = (b, p) => path.resolve(b, p.startsWith('~/') ? path.join(home, p.slice(2)) : p);
+  for (const part of maskShell(command).split(/\s*(?:&&|\|\||;|\n)\s*/)) {
+    const w = part.trim().split(/\s+/).filter(Boolean).map(unmask);
+    if (w[0] === 'cd') { if (w[1] && !/[$`]/.test(w[1])) base = abs(base, w[1]); continue; }
+    let i = w[0] === 'sudo' ? 1 : 0;
+    if (path.basename(w[i] || '') !== 'git') continue;
+    let dir = base;
+    i++;
+    while (i < w.length && w[i].startsWith('-')) {
+      if (w[i] === '-C' && w[i + 1]) { dir = abs(dir, w[i + 1]); i += 2; } else if (w[i] === '-c') i += 2; else i++;
+    }
+    if (w[i] !== 'add') continue;
+    const rest = w.slice(i + 1);
+    if (!rest.some((x) => x === '-f' || x === '--force' || /^-[a-zA-Z]*f[a-zA-Z]*$/.test(x))) continue;
+    const specs = rest.filter((x) => !x.startsWith('-'));
+    const wide = specs.filter((x) => /[*?[]/.test(x) || (() => { try { return fs.statSync(abs(dir, x)).isDirectory(); } catch { return false; } })());
+    if (!wide.length) continue;
+    const res = git(['ls-files', '--others', '--ignored', '--exclude-standard', '--', ...wide], { cwd: dir });
+    const ignored = res.status === 0 ? res.stdout.split('\n').filter(Boolean) : [];
+    if (ignored.length) return `git add -f ${wide.join(' ')} adds ignored files too (${ignored.slice(0, 5).join(', ')}${ignored.length > 5 ? ', …' : ''}); add the folder without -f and force only a named file the task needs: git add -f <file>`;
+  }
+  return null;
+}
+
 /** CLAUDE.md is loaded into every session unchecked and goes stale; project knowledge lives in brain (P-007, operator 2026-11-03). */
 export const CLAUDE_MD_REASON = (rel) => `${rel}: CLAUDE.md is loaded into every session unchecked and goes stale (an agent took an outdated address from it); project knowledge goes to brain through workflow:save (memory, decision, rule, skill), the workflow rules come from its SessionStart hook (P-007, P-013). Move a still valid fact into brain; only deleting CLAUDE.md is allowed`;
 function claudeMdWrite(ctx, absPaths) {
@@ -798,14 +829,23 @@ export function run(input) {
   // The principles guard refuses only the bulk read; one principle file is its own sanctioned way, so the refusal locks
   // nothing (alice 2026-11-08: a refused `cat docs/principles/*` locked the README edit, and the agent asked the operator
   // a fake question to be let on, P-061).
-  if (decision === 'deny' && state && !principlesBulkRead(tool, toolInput, cwd)) {
+  // A refused forced add names its own way (git add without -f, a named file) on the same paths: it locks nothing either.
+  if (decision === 'deny' && state && !principlesBulkRead(tool, toolInput, cwd) && !/ adds ignored files too /.test(out.hookSpecificOutput.permissionDecisionReason || '')) {
     const found = analyze(tool, toolInput, cwd, anchors);
     const write = found.write;
     // A P-052 refusal (write outside the project) is about the outside target only: the way it names, a work file in
     // scratch/, may touch the other paths of the call (alice 2026-11-07: a patch script in the system temp dir locked
     // the repo files it was to change for the rest of the turn, and the work stopped until the operator wrote "up").
     const reasonText = out.hookSpecificOutput.permissionDecisionReason;
-    const paths = / is outside the (project|domain)/.test(reasonText) ? found.paths.filter((p) => !insideProject(ctx, p)) : found.paths;
+    // The refusal is about the write target outside, not about what the call only reads there (agentic-flow-public#16:
+    // `grep <brain skills> > D:/tmp_$s.txt` refused, then reading the same skills was locked as a bypass).
+    let paths = found.paths;
+    if (/ is outside the (project|domain)/.test(reasonText)) {
+      const cmd = String(toolInput.command || '');
+      const writes = tool === 'Bash' || tool === 'PowerShell' ? [...shellWrites(cmd, cwd), ...bashEdits(cmd, cwd), ...bashTargets(cmd, cwd)] : found.paths;
+      paths = [...new Set(writes.map((p) => path.resolve(cwd, p)))].filter((p) => !p.startsWith('/dev/') && !insideProject(ctx, p));
+      if (!paths.length) paths = found.paths.filter((p) => !insideProject(ctx, p));
+    }
     if (paths.length) writeThreadState(ctx.brainDir, ctx.thread, withDenial(readThreadState(ctx.brainDir, ctx.thread), { key: callKey(tool, toolInput), tool, paths, write, reason: out.hookSpecificOutput.permissionDecisionReason.slice(0, 160) }));
   }
   return out;
@@ -941,6 +981,8 @@ function pathChecks(input, ctx, cwd) {
     }
     const guard = guardConfigWrite(ctx.projectDir, [...shellWrites(cmd, cwd), ...edits, ...targets]);
     if (guard) return permissionOutput('ask', guard);
+    const forced = forcedAddIgnored(cmd, cwd);
+    if (forced) return permissionOutput('deny', forced);
     const hookSkip = gitHookBypass(executedText(cmd));
     if (hookSkip) return permissionOutput('ask', `git with ${hookSkip} runs past the git hooks that guard brain and repos (brain pre-commit, repo checks); the operator confirms it (P-054)`);
     const isCreated = (t) => created.has(t) || [...created].some((c) => isInside(c, t));

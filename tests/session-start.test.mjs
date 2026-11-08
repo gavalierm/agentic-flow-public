@@ -35,8 +35,10 @@ test('resume and clear keep the same thread id; compact adds the handover of the
       const r = fx.hook('session-start.mjs', { source });
       assert.match(r.context, /thread a1 \| topic work \(working, mode operator\) \| mail: 0/, source);
       assert.doesNotMatch(r.context, /Handover \(primárny podklad/);
+      assert.doesNotMatch(r.context, /Po kompakcii \(P-019\)/);
     }
     const c = fx.hook('session-start.mjs', { source: 'compact' });
+    assert.match(c.context, /Po kompakcii \(P-019\): pravidlá, výnimky a pokyny platia iba z tohto bloku/, 'the summary is no source of rules (agentic-flow-public#18)');
     assert.match(c.context, /Handover \(primárny podklad, P-026\):\n### Zadanie\nDo the thing/);
     assert.match(c.context, /open: work \(working, a1, next: step 2\)/);
     assert.deepEqual(headings(c.context), BOOT_MARKERS);
