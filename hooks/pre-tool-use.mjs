@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
-import { loadContext, allowOutside, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR } from '../scripts/config.mjs';
+import { loadContext, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR } from '../scripts/config.mjs';
 import { git, isInside, toPosix } from '../scripts/util.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
 import { SUBAGENT_ALLOWED } from '../scripts/comms.mjs';
@@ -375,7 +375,17 @@ function outsideReason(ctx, abs) {
   const scratch = toPosix(path.join(ctx.projectDir, SCRATCH_DIR));
   const where = ctx.domain ? `outside the domain ${toPosix(ctx.domain.root)}` : 'outside the project';
   const extra = ctx.domain ? '; a lasting exception is only the domain brain policy domain.allow_outside, changed on the operator\'s instruction' : '';
-  return `${toPosix(abs)} is ${where}${isTempPath(abs) ? ' (system temp dir)' : ''}; the agent writes only inside it: work files and tool output go to ${scratch}/ (gitignored, no confirmation, P-052)${extra}${otherProjectHint(abs)}`;
+  return `${toPosix(abs)} is ${where}${isTempPath(abs) ? ' (system temp dir)' : ''}; the agent writes only inside it: work files and tool output go to ${scratch}/ (gitignored, no confirmation, P-052)${extra}${otherProjectHint(abs)}${rootHint(ctx, abs)}`;
+}
+/**
+ * The domain lies outside the projects root saved for this machine (project.mjs root) and the target is inside it: the
+ * domain was created in the wrong folder (carol 2026-11-09: persona in ~/agentic, the operator's domains elsewhere, the move
+ * refused with no hint). Moving a domain is the operator's step; the agent gives it as an item under **Operátor:**.
+ */
+function rootHint(ctx, abs) {
+  const root = machineRoot();
+  if (!root || !ctx.domain || isInside(root, ctx.domain.root) || !isInside(root, abs)) return '';
+  return `; this domain ${toPosix(ctx.domain.root)} is outside the projects root of this machine ${toPosix(root)} (project.mjs root): moving the domain there is the operator's step, give it as an item under **Operátor:** (mv ${toPosix(ctx.domain.root)} ${toPosix(path.join(root, path.basename(ctx.domain.root)))}, then adapter.mjs in each project)`;
 }
 /**
  * The target belongs to another workflow project (its folder or a topic copy has .workflow.json): its work runs in a

@@ -9,9 +9,11 @@ import { personaRepoName } from './persona-name.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
 import { gh, sshRemote, DEFAULT_TOKEN_FILE } from './github.mjs';
 import { DOMAIN_MARKER, domainDir } from './config.mjs';
+import { projectRoots } from './project.mjs';
 
 export async function createPersona(name, {
-  root = path.join(os.homedir(), 'agentic'),
+  // The domain goes under the machine's projects root (project.mjs root), not always ~/agentic (carol 2026-11-09).
+  root = projectRoots({ home: path.join(os.homedir(), 'agentic') })[0],
   tokenFile = DEFAULT_TOKEN_FILE,
   apiUrl = process.env.GITHUB_API_URL || 'https://api.github.com',
   remoteFor = sshRemote,

@@ -247,3 +247,21 @@ test('resolveProject: a session project that became a domain root resolves to th
     assert.equal(domainRootProject(root), root, 'brain outside the domain root: unchanged');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('domain: a write refused outside a domain that lies outside the saved projects root names the move as the operator step (carol 2026-11-09)', () => {
+  const d = domainFx();
+  try {
+    const rootFile = path.join(d.outside, 'projects-root');
+    const domains = path.join(d.outside, 'Domains');
+    fs.mkdirSync(domains);
+    fs.writeFileSync(rootFile, `${domains}\n`);
+    const input = { tool_name: 'Write', tool_input: { file_path: path.join(domains, 'Carol', 'a.txt'), content: 'x' } };
+    let r = d.fx.hook('pre-tool-use.mjs', input, { env: { WORKFLOW_ROOT_FILE: rootFile } });
+    assert.equal(decision(r), 'deny');
+    assert.match(reason(r), /this domain .* is outside the projects root of this machine .*Domains \(project\.mjs root\): moving the domain there is the operator's step, give it as an item under \*\*Operátor:\*\*/);
+    r = d.fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(d.outside, 'b.txt'), content: 'x' } }, { env: { WORKFLOW_ROOT_FILE: rootFile } });
+    assert.doesNotMatch(reason(r), /projects root of this machine/, 'a target outside the saved root: no hint');
+    r = d.fx.hook('pre-tool-use.mjs', input);
+    assert.doesNotMatch(reason(r), /projects root of this machine/, 'no saved root: no hint');
+  } finally { d.cleanup(); }
+});

@@ -7,6 +7,8 @@
 // Layout: ~/agentic/<Name>/<repo> (code repositories, each a T3 project) and ~/agentic/<Name>/<name>-brain;
 // the project folder (domain) is the folder name the operator chose (--domain, spaces allowed), by default the project
 // name with an upper case first letter; repositories stay lower case.
+//   project.mjs root [<dir>]                                         show the projects root of this machine, or save it
+//     (~/.config/agentic-flow/projects-root); the first explicit --root of restore, connect or create saves it too
 //   project.mjs inventory <dir> [--json]                             files of a repository by group, with dead paths
 //   project.mjs tidy --project <dir> --plan <file.json>              apply the agreed removals and moves in the brain
 //   project.mjs wizard start <name> | end                           open (2 h) or close the window of the wizard (T3 setup left is named at the end)
@@ -24,11 +26,12 @@ import { loadContext, loadPolicy, inSubagent, isWakeTurn, readThreadState, write
 import { setupT3, pendingT3Line } from '../scripts/t3-setup.mjs';
 import { brainWrite, formatWriteResult } from '../scripts/brain.mjs';
 import { setWizard } from '../scripts/wizard.mjs';
-import { probe, restore, connect, create, inventory, formatInventory, projectRoots } from '../scripts/project.mjs';
+import { probe, restore, connect, create, inventory, formatInventory, projectRoots, machineRoot, setMachineRoot, rootFile } from '../scripts/project.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const [cmd, target] = args._;
-// Roots: every --root, WORKFLOW_PROJECTS_ROOT, ~/agentic when it exists, the root of the session project; new projects go to the first.
+// Roots: every --root, WORKFLOW_PROJECTS_ROOT, the saved root of this machine, ~/agentic when it exists, the root of the
+// session project; new projects go to the first.
 const session = (() => { try { const c = loadContext({ requireBrain: false }); return { projectDir: c.projectDir, brainDir: c.brainDir }; } catch { return {}; } })();
 const explicit = process.argv.slice(2).flatMap((a, i, all) => (a === '--root' && all[i + 1] ? [all[i + 1]] : a.startsWith('--root=') ? [a.slice(7)] : []));
 const roots = projectRoots({ explicit, ...session });
@@ -36,6 +39,12 @@ const root = roots[0];
 const gh = { apiUrl: process.env.GITHUB_API_URL || undefined, tokenFile: args['token-file'] || undefined };
 for (const k of Object.keys(gh)) if (gh[k] === undefined) delete gh[k];
 const out = (s) => process.stdout.write(`${s}\n`);
+
+/** The operator's choice of root is kept for this machine: the first explicit --root of a write is saved (carol 2026-11-09). */
+function rememberRoot() {
+  if (!explicit.length || machineRoot()) return [];
+  try { return [`projects root ${setMachineRoot(explicit[0])} saved for this machine (${rootFile()}); change it with project.mjs root <dir>`]; } catch { return []; }
+}
 
 function guardWrite() {
   if (inSubagent()) fail('project changes are refused in a subagent (P-025)');
@@ -95,17 +104,25 @@ try {
     if (!target) fail('usage: project.mjs restore <name>');
     guardWrite();
     const r = restore(target, { root, domain: typeof args.domain === 'string' ? args.domain : null });
-    out(`restored ${r.projectDirs.join(', ')}\n${list([...r.lines, ...t3Step(r.projectDirs, target)])}`);
+    out(`restored ${r.projectDirs.join(', ')}\n${list([...r.lines, ...t3Step(r.projectDirs, target), ...rememberRoot()])}`);
   } else if (cmd === 'connect') {
     if (!target) fail('usage: project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside] [--domain "<folder>"]');
     guardWrite();
     const r = await connect({ project: target, repo: args.repo || null, brain: args.brain || null, renameBrain: !!args['rename-brain'], adopt: !!args.adopt, brainBranch: args['brain-branch'] || null, setAside: typeof args['set-aside'] === 'string' ? args['set-aside'] : !!args['set-aside'], domain: typeof args.domain === 'string' ? args.domain : null, root, ...gh });
-    out(`connected ${r.projectDir} (brain ${r.brainDir})\n${list([...r.lines, ...t3Step([r.projectDir], target)])}`);
+    out(`connected ${r.projectDir} (brain ${r.brainDir})\n${list([...r.lines, ...t3Step([r.projectDir], target), ...rememberRoot()])}`);
   } else if (cmd === 'create') {
     if (!target) fail('usage: project.mjs create <name> [--repo <repo>] --purpose "<one sentence>"');
     guardWrite();
     const r = await create({ name: target, repo: args.repo || null, purpose: args.purpose, domain: typeof args.domain === 'string' ? args.domain : null, root, ...gh });
-    out(`created ${r.projectDir} (brain ${r.brainDir})\n${list([...r.lines, ...t3Step([r.projectDir], target)])}`);
+    out(`created ${r.projectDir} (brain ${r.brainDir})\n${list([...r.lines, ...t3Step([r.projectDir], target), ...rememberRoot()])}`);
+  } else if (cmd === 'root') {
+    if (!target) {
+      const saved = machineRoot();
+      out(`projects root: ${root}${saved && path.resolve(saved) === path.resolve(root) ? ` (saved in ${rootFile()})` : saved ? ` (saved ${saved}, overridden by --root or WORKFLOW_PROJECTS_ROOT)` : ' (not saved for this machine: project.mjs root <dir>)'}`);
+    } else {
+      guardWrite();
+      try { out(`projects root ${setMachineRoot(target)} saved for this machine (${rootFile()})`); } catch (err) { fail(err.message); }
+    }
   } else if (cmd === 't3') {
     if (!target) fail('usage: project.mjs t3 <dir> [--name <project>] [--no-welcome] | t3 <dir> --registered');
     guardWrite();

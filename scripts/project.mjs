@@ -8,7 +8,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PLUGIN_ROOT, git, gitRemote, exists, readJson, toPosix } from './util.mjs';
-import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDirName, checkDomainName, DOMAIN_MARKER } from './config.mjs';
+import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDirName, checkDomainName, DOMAIN_MARKER, machineRoot } from './config.mjs';
+// The projects root saved for this machine lives in config.mjs: the write hook reads it without this module's GitHub code.
+export { ROOT_FILE, rootFile, machineRoot, setMachineRoot } from './config.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
 import { ensureLineEndings, EOL_RULE } from './eol.mjs';
 import { gh, ghOwner, ghOwnedRepos, ghRootNames, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
@@ -62,9 +64,12 @@ export function sessionRoot(projectDir, brainDir) {
   return nested ? path.dirname(parent) : parent;
 }
 
-/** Roots to search, the first is where new projects go: --root, WORKFLOW_PROJECTS_ROOT, ~/agentic when it exists, the session's root. */
+/**
+ * Roots to search, the first is where new projects and personas go: --root, WORKFLOW_PROJECTS_ROOT, the root saved for this
+ * machine (machineRoot), ~/agentic when it exists, the session's root.
+ */
 export function projectRoots({ explicit = [], env = process.env, projectDir = null, brainDir = null, home = DEFAULT_ROOT } = {}) {
-  const list = [...explicit, env.WORKFLOW_PROJECTS_ROOT, exists(home) ? home : null, sessionRoot(projectDir, brainDir)].filter(Boolean).map((d) => path.resolve(d));
+  const list = [...explicit, env.WORKFLOW_PROJECTS_ROOT, machineRoot(env), exists(home) ? home : null, sessionRoot(projectDir, brainDir)].filter(Boolean).map((d) => path.resolve(d));
   const uniq = [...new Set(list)];
   return uniq.length ? uniq : [home];
 }

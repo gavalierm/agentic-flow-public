@@ -27,6 +27,77 @@ export const PERSONA_BRAIN = '.';
 export const BRAIN_ENTRIES = ['memory/**', 'decisions/**', 'rules/**', 'skills/**', 'topics/**', 'exceptions/**', 'logs/**', 'policy.json', '.githooks/**', '.gitattributes', '.gitignore', '.workflow.json', 'README.md'];
 // P-052: work files of the agent; P-018: operator's local files. Writable in a persona.
 export const SCRATCH_DIR = 'scratch';
+
+// The folder of this machine's projects (domains) as the operator chose it (carol 2026-11-09: the operator keeps domains in
+// another folder, the persona was created in ~/agentic and its move was refused by P-052; the choice was stored nowhere).
+// One line in ~/.config/agentic-flow/projects-root, written by `project.mjs root <dir>` or by the first explicit --root.
+export const ROOT_FILE = 'projects-root';
+export const rootFile = (env = process.env) => env.WORKFLOW_ROOT_FILE || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', ROOT_FILE);
+
+/** The projects root saved for this machine, or null. */
+export function machineRoot(env = process.env) {
+  try {
+    const dir = fs.readFileSync(rootFile(env), 'utf8').trim();
+    return dir ? path.resolve(dir.replace(/^~(?=$|[\\/])/, env.HOME || os.homedir())) : null;
+  } catch { return null; }
+}
+
+/** Save the projects root of this machine; the folder must exist. Returns the saved absolute path. */
+export function setMachineRoot(dir, env = process.env) {
+  const abs = path.resolve(String(dir).replace(/^~(?=$|[\\/])/, env.HOME || os.homedir()));
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) throw new Error(`${abs} is not a folder`);
+  const file = rootFile(env);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${abs}\n`);
+  return abs;
+}
+const NAME_RE = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
+// Brain layout of the workflow template (P-024).
+const BRAIN_MARKS = ['topics', 'logs', 'exceptions'];
+// Files of older agent setups: rules and memory kept outside the workflow brain format.
+const LEGACY_MARKS = ['RULES.md', 'CLAUDE.md', 'AGENTS.md', 'errors', 'artifacts', 'agentic-brain'];
+
+export function checkName(name) {
+  if (!NAME_RE.test(String(name || ''))) throw new Error(`project name must be lowercase letters, digits and dashes (3-50 chars), got "${name}"`);
+  return name;
+}
+
+/** Kind of a repository from the names in its root: workflow-project, workflow-brain, legacy, code, empty. */
+export function classifyNames(names) {
+  const set = new Set(names);
+  if (!names.length) return 'empty';
+  if (set.has(WORKFLOW_CONFIG)) return 'workflow-project';
+  if (set.has('.githooks') && BRAIN_MARKS.every((m) => set.has(m))) return 'workflow-brain';
+  if (LEGACY_MARKS.some((m) => set.has(m))) return 'legacy';
+  return 'code';
+}
+
+function localNames(dir) {
+  try { return fs.readdirSync(dir).filter((n) => n !== '.git' && n !== 'local'); } catch { return []; }
+}
+
+function subdirs(dir) {
+  try { return fs.readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort(); } catch { return []; }
+}
+
+/** Name for matching: case, spaces, dashes and underscores ignored ("Home assistant" = "home-assistant"). */
+export const matchKey = (s) => String(s || '').toLowerCase().replace(/[\s_-]+/g, '');
+
+/**
+ * Folder holding the projects of the session's machine, from the session project: <root>/<name>/<repo> next to
+ * <root>/<name>/<name>-brain, else the older flat <root>/<repo> (operator 2026-11-07: a Windows instance keeps its
+ * projects in "D:\Claude projekty", probe looked only in ~/agentic and reported nothing).
+ */
+export function sessionRoot(projectDir, brainDir) {
+  if (!projectDir) return null;
+  const proj = path.resolve(projectDir);
+  const parent = path.dirname(proj);
+  const brain = brainDir ? path.resolve(brainDir) : null;
+  // The domain may be a chosen folder name with spaces (`Home assistant` holding home-assistant-brain).
+  const nested = brain && brain !== proj && path.dirname(brain) === parent && (path.basename(brain).toLowerCase().startsWith(`${path.basename(parent).toLowerCase()}-`)
+    || matchKey(path.basename(brain).replace(/-brain$/i, '')) === matchKey(path.basename(parent)));
+  return nested ? path.dirname(parent) : parent;
+}
 // docs/: lasting documents of a persona (research, reports); written directly, committed by save.mjs docs (alice 2026-11-03).
 export const PERSONA_DOCS = 'docs';
 export const PERSONA_WRITABLE = [SCRATCH_DIR, 'local', PERSONA_DOCS];

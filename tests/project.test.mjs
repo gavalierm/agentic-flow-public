@@ -307,7 +307,7 @@ test('project roots: names match across case, spaces and dashes; a root next to 
   assert.equal(sessionRoot('/r/shop', '/r/shop-brain'), path.resolve('/r'));
   assert.equal(sessionRoot('/r/alice/agent-alice', '/r/alice/agent-alice'), path.resolve('/r/alice'));
   assert.equal(sessionRoot('/r/Shop/shop-web', '/r/Shop/shop-brain'), path.resolve('/r'), 'a capitalized project folder');
-  assert.deepEqual(projectRoots({ explicit: ['/x'], env: {}, projectDir: '/r/shop', brainDir: '/r/shop-brain', home: '/nonexistent-home' }), [path.resolve('/x'), path.resolve('/r')]);
+  assert.deepEqual(projectRoots({ explicit: ['/x'], env: { WORKFLOW_ROOT_FILE: '/nonexistent-root-file' }, projectDir: '/r/shop', brainDir: '/r/shop-brain', home: '/nonexistent-home' }), [path.resolve('/x'), path.resolve('/r')]);
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-roots-'));
   try {
     const d = path.join(base, 'Claude projekty');
@@ -333,3 +333,35 @@ test('domain folder: upper case first letter for new domains, an older lower cas
     assert.equal(domainDir(root, 'alice'), path.join(root, 'alice'), 'no second Alice next to alice');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('projects root of the machine: saved by project.mjs root, read by projectRoots before ~/agentic (carol 2026-11-09)', async () => {
+  const { machineRoot, setMachineRoot, projectRoots } = await import('../scripts/project.mjs');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-mroot-'));
+  try {
+    const env = { HOME: base, WORKFLOW_ROOT_FILE: path.join(base, 'cfg', 'projects-root') };
+    const domains = path.join(base, 'Domény');
+    fs.mkdirSync(domains);
+    const home = path.join(base, 'agentic');
+    fs.mkdirSync(home);
+    assert.equal(machineRoot(env), null, 'nothing saved');
+    assert.deepEqual(projectRoots({ env, home }), [home]);
+    assert.throws(() => setMachineRoot(path.join(base, 'missing'), env), /is not a folder/);
+    assert.equal(setMachineRoot('~/Domény', env), domains, '~/ expands to HOME');
+    assert.equal(machineRoot(env), domains);
+    assert.deepEqual(projectRoots({ env, home }), [domains, home], 'the saved root goes first: new projects and personas go there');
+    assert.deepEqual(projectRoots({ env: { ...env, WORKFLOW_PROJECTS_ROOT: '/e' }, home }), [path.resolve('/e'), domains, home]);
+    const cli = (...a) => spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'project.mjs'), ...a], { cwd: base, env: cleanEnv({ HOME: base, WORKFLOW_ROOT_FILE: env.WORKFLOW_ROOT_FILE }), encoding: 'utf8' });
+    let r = cli('root');
+    assert.match(r.stdout, new RegExp(`projects root: ${toPosixRe(domains)} \\(saved in `));
+    const other = path.join(base, 'Iné');
+    fs.mkdirSync(other);
+    r = cli('root', other);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /projects root .*Iné saved for this machine/);
+    assert.equal(fs.readFileSync(env.WORKFLOW_ROOT_FILE, 'utf8').trim(), other);
+    r = cli('root', path.join(base, 'missing'));
+    assert.notEqual(r.status, 0);
+    assert.match(r.stdout + r.stderr, /is not a folder/);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+const toPosixRe = (p) => p.replace(/\\/g, '/').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

@@ -16,7 +16,7 @@ function gitq(cwd, ...args) {
 }
 
 export function cleanEnv(extra = {}) {
-  const env = { ...process.env, WORKFLOW_PLUGIN_ROOT: PLUGIN_ROOT, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', WORKFLOW_TEMP_DIRS: '/nonexistent-temp-dir', WORKFLOW_SERVICES_DIR: '/nonexistent-services-dir', WORKFLOW_RULE_JUDGE: 'off', WORKFLOW_MACHINE_FILE: '/nonexistent-machine-dir/machine-id', WORKFLOW_PIN_FILE: '/nonexistent-machine-dir/pin.json' };
+  const env = { ...process.env, WORKFLOW_PLUGIN_ROOT: PLUGIN_ROOT, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', WORKFLOW_TEMP_DIRS: '/nonexistent-temp-dir', WORKFLOW_SERVICES_DIR: '/nonexistent-services-dir', WORKFLOW_RULE_JUDGE: 'off', WORKFLOW_MACHINE_FILE: '/nonexistent-machine-dir/machine-id', WORKFLOW_PIN_FILE: '/nonexistent-machine-dir/pin.json', WORKFLOW_ROOT_FILE: '/nonexistent-machine-dir/projects-root' };
   for (const k of ['CLAUDE_PROJECT_DIR', 'WORKFLOW_PROJECT_DIR', 'WORKFLOW_THREAD_ID', 'T3CODE_THREAD_ID', 'WORKFLOW_AGENT_ID', 'CLAUDE_AGENT_ID', 'CLAUDE_PLUGIN_ROOT']) delete env[k];
   return { ...env, ...extra };
 }
