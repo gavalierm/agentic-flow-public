@@ -216,6 +216,23 @@ test('repo knowledge: start deploys skills of the session repo and of a held cod
   } finally { fx.cleanup(); }
 });
 
+test('repo knowledge: a session in the domain brain (persona) deploys skills of every domain repo at start and after save; repo line stays off', () => {
+  const { fx, srv } = domainFx();
+  try {
+    fs.mkdirSync(path.join(srv, 'agentic', 'skills', 'host-run'), { recursive: true });
+    fs.writeFileSync(path.join(srv, 'agentic', 'skills', 'host-run', 'SKILL.md'), '---\nname: host-run\ndescription: Použi, keď test host.\norigin: routine\n---\nKrok.\n');
+    fs.writeFileSync(path.join(fx.brain, '.workflow.json'), '{"brain": "."}\n');
+    const r = fx.hook('session-start.mjs', { source: 'startup' }, { cwd: fx.brain });
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(fs.existsSync(path.join(fx.brain, '.claude', 'skills', 'host-run', 'SKILL.md')), `brain session has the repo skill: ${r.context.slice(0, 400)}`);
+    assert.doesNotMatch(r.context, /repo vedomosti: srv/, 'the start line and HANDOVER stay with the session repo and held topics');
+    fs.rmSync(path.join(fx.brain, '.claude', 'skills', 'host-run'), { recursive: true });
+    const s = fx.run('save.mjs', ['skill', 'brain-x', '--description', 'Použi, keď test brain.', '--content', 'Krok.', '--origin', 'routine'], { cwd: fx.brain });
+    assert.equal(s.status, 0, s.out + s.stderr);
+    assert.ok(fs.existsSync(path.join(fx.brain, '.claude', 'skills', 'host-run', 'SKILL.md')), 'save deploys the repo skills too');
+  } finally { fx.cleanup(); }
+});
+
 test('repo knowledge: consolidate reports repos (counts, HANDOVER limit, stale derived, a key both in brain and in a repo)', () => {
   const { fx, srv } = domainFx();
   try {

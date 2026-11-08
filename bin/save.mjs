@@ -29,7 +29,7 @@ import { renderHandover, checkHandover } from '../scripts/brain-checks.mjs';
 import { removeNames } from '../scripts/logs.mjs';
 import { setTopicState, readTopic } from '../scripts/topic.mjs';
 import { workflowSkillNames, PROJECT_SKILLS_DIR, syncBrainSkills } from '../scripts/skills-sync.mjs';
-import { sessionKnowledgeSources, PROJECT_KNOWLEDGE, REPO_HANDOVER, domainRepos, repoByName, sessionRepo, singleRepoOf, nextRepoDecisionId, repoWrite, formatRepoWrite, heldRepoTopic } from '../scripts/repo-knowledge.mjs';
+import { skillSources, PROJECT_KNOWLEDGE, REPO_HANDOVER, domainRepos, repoByName, sessionRepo, singleRepoOf, nextRepoDecisionId, repoWrite, formatRepoWrite, heldRepoTopic } from '../scripts/repo-knowledge.mjs';
 import { checkSkill, meaningDiff } from '../scripts/skill-check.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -54,7 +54,7 @@ function fingerprint(projectDir, sources) {
  */
 function deploySkills(ctx) {
   if (!ctx.brainDir || !ctx.projectDir) return 'no brain or project';
-  try { syncBrainSkills({ projectDir: ctx.projectDir, brainDir: ctx.brainDir, repoSources: sessionKnowledgeSources(ctx) }); return null; }
+  try { syncBrainSkills({ projectDir: ctx.projectDir, brainDir: ctx.brainDir, repoSources: skillSources(ctx) }); return null; }
   catch (err) { return err.message; }
 }
 

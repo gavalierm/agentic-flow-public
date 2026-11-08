@@ -75,6 +75,22 @@ export function sessionKnowledgeSources(ctx) {
   return out;
 }
 
+/**
+ * Knowledge folders whose skills the session deploys: the session sources, and for a session that runs in the domain
+ * brain (no repo of its own, a persona) also agentic/ of the main checkout of every domain repo. A persona does the
+ * domain's work from its brain while the skills over a repo live in <repo>/agentic/skills (operator 2026-11-08).
+ * Only skills: the start line and HANDOVER stay with sessionKnowledgeSources.
+ */
+export function skillSources(ctx) {
+  const out = sessionKnowledgeSources(ctx);
+  if (!ctx?.domain || sessionRepo(ctx)) return out;
+  const seen = new Set(out.map((s) => s.repo));
+  for (const r of domainRepos(ctx.domain, ctx.brainDir)) {
+    if (!seen.has(r.name)) out.push({ repo: r.name, topic: null, dir: path.join(r.dir, PROJECT_KNOWLEDGE) });
+  }
+  return out;
+}
+
 /** Repo of the domain by name; fails with the list of valid names. */
 export function repoByName(domain, name, brainDir = null) {
   if (!domain) throw new Error('--repo needs a domain (.agentic-domain); this project is not in one (D-0002)');

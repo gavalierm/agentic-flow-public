@@ -10,7 +10,7 @@ import { heldTopics, mailboxTopics } from './topic.mjs';
 import { mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics } from './comms.mjs';
 import { syncBrainSkills } from './skills-sync.mjs';
 import { readTopics } from './records.mjs';
-import { sessionKnowledgeSources, KNOWLEDGE_KINDS, REPO_HANDOVER } from './repo-knowledge.mjs';
+import { sessionKnowledgeSources, skillSources, KNOWLEDGE_KINDS, REPO_HANDOVER } from './repo-knowledge.mjs';
 
 export const BOOT_MARKERS = ['## Pravidlá', '## Stav vlákna', '## Index pamäte', '## Index rozhodnutí', '## Otvorené témy', '## Workflow'];
 
@@ -105,7 +105,7 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   // skills of the brain into the project (P-017)
   if (ctx.brainDir) {
     try {
-      syncBrainSkills({ projectDir: ctx.projectDir, brainDir: ctx.brainDir, harness, repoSources: sessionKnowledgeSources(ctx) });
+      syncBrainSkills({ projectDir: ctx.projectDir, brainDir: ctx.brainDir, harness, repoSources: skillSources(ctx) });
     } catch (err) {
       notices.push(err.message);
     }
