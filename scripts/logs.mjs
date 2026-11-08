@@ -230,7 +230,7 @@ export function flushBuffer(ctx, sessionId) {
   const threshold = policy.thresholds.sequence_repeats;
   for (const s of new Set(newSeqs)) {
     if (after.get(s) >= threshold && (before.get(s) || 0) < threshold && !rejectedProposal(brainDir, s)) {
-      signals.push(`sequence ${s} ${after.get(s)}x: create a skill with a script or add the script to the existing skill yourself, no operator approval (P-030)`);
+      signals.push(`sequence ${s} ${after.get(s)}x: create a skill with a script or refactor the existing skill around the script yourself, no operator approval (P-030)`);
     }
   }
   const oldFailures = failLines.filter((l) => {

@@ -36,7 +36,7 @@ test('checkSkill: format, references, paths, anti-patterns, growth', () => {
     assert.ok(!codes(check(skill('`t3_thread_send` do pilotného vlákna hook zamietne.'))).includes('warn:anti-pattern'), 'naming a ban is a mention');
     assert.ok(codes(check(skill('1. a\\n2. b\\nnie c, lebo d'))).includes('error:format'));
     assert.ok(codes(check(skill('a', 'origin: error\n'))).includes('warn:nie-line'));
-    assert.ok(codes(check(skill(['a', '## Doplnenie 1', 'b', '## Doplnenie 2', 'c', '## Doplnenie 3', 'd'].join('\n')))).includes('warn:growth'));
+    assert.ok(codes(check(skill(['a', '## Doplnenie 1', 'b'].join('\n')))).includes('warn:growth'), 'one appended section is already a pile, not one procedure');
     assert.ok(codes(check(skill('`${CLAUDE_PLUGIN_ROOT}/bin/x.mjs`'))).includes('error:anti-pattern'));
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });

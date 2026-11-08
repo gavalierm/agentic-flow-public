@@ -120,7 +120,8 @@ export function checkSkill({ name, dir, text, owner, projectDir, home = os.homed
     for (const [re, level, message] of ANTI) if (re.test(line) && (level === 'error' || !MENTION.test(line))) add(level, n, 'anti-pattern', message);
   });
   if (owner === 'agentic' && data.origin === 'error' && !hasNie) add('warn', 0, 'nie-line', 'skill from an error has no "nie <wrong way>, lebo <why>" line (P-003)');
-  if (additions >= 3) add('warn', 0, 'growth', `${additions} "## Doplnenie" sections: merge them into the body without loss of meaning (save skill --replace)`);
+  // An appended section makes the skill a pile of additions instead of one procedure (operator 2026-11-08).
+  if (additions >= 1) add('warn', 0, 'growth', `${additions} "## Doplnenie" section(s): merge them into one coherent body without loss of meaning (save skill --replace)`);
   if (body.length > 8000) add('warn', 0, 'growth', `body ${body.length} chars: shorten or split by tool`);
   for (const f of own) if (!referenced.has(f)) add('warn', 0, 'script', `${f} in the skill folder is not called from SKILL.md`);
   return findings;

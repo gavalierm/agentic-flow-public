@@ -56,20 +56,20 @@ test('decision gets a sequential ID, needs relates_to, supersedes marks the old 
   } finally { fx.cleanup(); }
 });
 
-test('skill: new agentic skill carries origin; second save extends it; operator skill is not edited; workflow name refused', () => {
+test('skill: new agentic skill carries origin; second save refactors it; operator skill is not edited; workflow name refused', () => {
   const fx = setup();
   try {
     let r = fx.run('save.mjs', ['skill', 'x-api', '--description', 'Použi, keď voláš X API', '--content', 'hlavička X\nnie bez hlavičky, lebo 401', '--origin', 'error']);
     assert.equal(r.status, 0, r.out);
     const s = parseFrontmatter(fx.read('skills/agentic/x-api/SKILL.md'));
     assert.equal(s.data.origin, 'error'); assert.equal(s.data.name, 'x-api');
-    r = fx.run('save.mjs', ['skill', 'x-api', '--content', 'timeout 10 s', '--origin', 'error']);
-    assert.equal(r.status, 0, r.out); assert.match(r.stdout, /extended existing skill/);
-    assert.match(fx.read('skills/agentic/x-api/SKILL.md'), /## Doplnenie .*\ntimeout 10 s/);
+    r = fx.run('save.mjs', ['skill', 'x-api', '--content', 'hlavička X, timeout 10 s\nnie bez hlavičky, lebo 401', '--origin', 'error', '--replace']);
+    assert.equal(r.status, 0, r.out); assert.match(r.stdout, /refactored existing skill/);
+    assert.match(fx.read('skills/agentic/x-api/SKILL.md'), /\nhlavička X, timeout 10 s\n/);
     assert.equal(fs.readdirSync(path.join(fx.brain, 'skills', 'agentic')).filter((d) => d !== '.gitkeep').length, 1);
     fs.mkdirSync(path.join(fx.brain, 'skills', 'operator', 'release'), { recursive: true });
     fs.writeFileSync(path.join(fx.brain, 'skills', 'operator', 'release', 'SKILL.md'), '---\nname: release\ndescription: x\n---\nx\n');
-    r = fx.run('save.mjs', ['skill', 'release', '--content', 'y', '--origin', 'error']);
+    r = fx.run('save.mjs', ['skill', 'release', '--content', 'x\nSpusti `npm publish`.', '--origin', 'error', '--replace']);
     assert.equal(r.status, 1); assert.match(r.stderr, /belongs to the operator: this edit changes its meaning/);
     r = fx.run('save.mjs', ['skill', 'save', '--description', 'x', '--content', 'y']);
     assert.equal(r.status, 1); assert.match(r.stderr, /workflow skill name/);
@@ -134,15 +134,15 @@ test('skill --script: the script is stored next to SKILL.md in one brain commit;
     assert.match(r.out, /deployed to /);
     const sh = path.join(fx.root, 'sync.sh');
     fs.writeFileSync(sh, 'echo ok\n');
-    const r2 = fx.run('save.mjs', ['skill', 'release-x', '--content', 'sh', '--origin', 'routine', '--script', sh]);
+    const r2 = fx.run('save.mjs', ['skill', 'release-x', '--content', 'sh', '--origin', 'routine', '--script', sh, '--replace']);
     assert.match(r2.out, /script runs as: sh \/.+\/\.claude\/skills\/release-x\/sync\.sh/, 'a shell script is not run by node');
     fs.writeFileSync(src, '#!/usr/bin/env node\nconsole.log("v2");\n');
-    r = fx.run('save.mjs', ['skill', 'release-x', '--content', 'v2', '--origin', 'routine', '--script', src]);
+    r = fx.run('save.mjs', ['skill', 'release-x', '--content', 'v2', '--origin', 'routine', '--script', src, '--replace']);
     assert.equal(r.status, 0, r.out);
     assert.match(fx.read('skills/agentic/release-x/release.mjs'), /v2/);
     const bad = path.join(fx.root, 'Bad Name.py');
     fs.writeFileSync(bad, 'x');
-    r = fx.run('save.mjs', ['skill', 'release-x', '--content', 'y', '--origin', 'routine', '--script', bad]);
+    r = fx.run('save.mjs', ['skill', 'release-x', '--content', 'y', '--origin', 'routine', '--script', bad, '--replace']);
     assert.equal(r.status, 1); assert.match(r.stderr, /--script/);
     r = fx.run('save.mjs', ['skill', 'release-x', '--remove', '--reason', 'test']);
     assert.equal(r.status, 0, r.out);
@@ -167,17 +167,15 @@ test('skill --remove: a superseded skill is removed with its scripts in one comm
   } finally { fx.cleanup(); }
 });
 
-test('skill --replace: the body is replaced by the corrected steps; without it the content is appended', () => {
+test('skill --replace: the body is replaced by the refactored whole; without it an existing skill is refused, nothing appended', () => {
   const fx = setup();
   try {
     let r = fx.run('save.mjs', ['skill', 'fix-x', '--description', 'Použi, keď opravuješ', '--content', 'old step', '--origin', 'error']);
     assert.equal(r.status, 0, r.out);
+    // an addition is not appended: save refuses and prints the current body to refactor (operator 2026-11-08)
     r = fx.run('save.mjs', ['skill', 'fix-x', '--content', 'extra', '--origin', 'error']);
-    assert.match(fx.read('skills/agentic/fix-x/SKILL.md'), /old step[\s\S]*## Doplnenie [\d-]+\nextra/);
-    // the whole skill sent as an addition is refused instead of duplicated under "## Doplnenie"
-    r = fx.run('save.mjs', ['skill', 'fix-x', '--content', 'old step\nextra\nnew step', '--origin', 'error']);
-    assert.equal(r.status, 1); assert.match(r.stderr, /repeats the body.*--replace/);
-    assert.equal(fx.read('skills/agentic/fix-x/SKILL.md').match(/old step/g).length, 1);
+    assert.equal(r.status, 1); assert.match(r.stderr, /exists .*merge the new knowledge into the whole skill.*--replace[\s\S]*Current body:\nold step/);
+    assert.doesNotMatch(fx.read('skills/agentic/fix-x/SKILL.md'), /extra|Doplnenie/);
     r = fx.run('save.mjs', ['skill', 'fix-x', '--content', 'new step', '--origin', 'error', '--replace']);
     assert.equal(r.status, 0, r.out);
     const text = fx.read('skills/agentic/fix-x/SKILL.md');

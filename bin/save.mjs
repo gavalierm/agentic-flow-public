@@ -356,13 +356,12 @@ function saveException(ctx) {
   finish(ctx, res, [file]);
 }
 
-/** True when at least half of the existing body lines are repeated in the addition (the agent sent the whole skill). */
-function repeatsBody(body, content) {
-  const lines = (text) => text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('## Doplnenie'));
-  const old = lines(body);
-  if (!old.length) return false;
-  const added = new Set(lines(content));
-  return old.filter((l) => added.has(l)).length * 2 >= old.length;
+/**
+ * New knowledge for an existing skill is merged into its whole body, not appended as another section: a skill reads as
+ * one procedure, not a pile of additions that repeat or contradict each other (P-003; operator 2026-11-08).
+ */
+function requireRefactor(name, rel, body) {
+  fail(`skill ${name} exists (${rel}): merge the new knowledge into the whole skill and save the result with --content "<whole body>" --replace, so it reads as one procedure without a step that repeats or contradicts another (P-003); a local fix of a few words: --sed. Current body:\n${body.trim()}`);
 }
 
 /** A skill superseded by a workflow skill or principle is removed, not kept twice (P-007, P-022; agent 2026-11-03). */
@@ -408,16 +407,14 @@ function saveSkill(ctx) {
     const parsed = parseFrontmatter(readText(path.join(ctx.brainDir, rel), ''));
     const data = { ...parsed.data, aliases: [...new Set([...asList(parsed.data.aliases), ...asList(args.aliases)])], updated: today() };
     if (args.description) data.description = args.description;
-    // --replace: the corrected steps replace the body (P-003: a skill that misled is fixed, not appended to).
-    // An addition that repeats the existing body would duplicate the whole skill under "## Doplnenie".
-    if (sed === null && !args.replace && repeatsBody(parsed.body, String(args.content))) fail(`--content repeats the body of skill ${hit.skillName}; pass only the addition, or --replace with the whole corrected body (P-003)`);
-    // --sed: in-place edit of the body; description, origin and the rest of the frontmatter are kept.
-    const body = sed !== null ? applySed(parsed.body, sed) : args.replace ? `${String(args.content).trim()}\n` : `${parsed.body.trim()}\n\n## Doplnenie ${today()}\n${String(args.content).trim()}\n`;
+    // --replace: the refactored whole body replaces the old one; --sed: in-place edit, frontmatter kept.
+    if (sed === null && !args.replace) requireRefactor(hit.skillName, rel, parsed.body);
+    const body = sed !== null ? applySed(parsed.body, sed) : `${String(args.content).trim()}\n`;
     const next = serializeFrontmatter(data, body);
     // P-032 (operator 2026-11-07): an operator skill changes without approval only when its meaning stays (cosmetic
     // edit, refactor); a change of meaning is reported to the operator and saved with --approved after their yes.
     if (hit.owner === 'operator') {
-      const diff = sed === null && !args.replace ? ['adds a section (an addition is new meaning)'] : meaningDiff(readText(path.join(ctx.brainDir, rel), ''), next);
+      const diff = meaningDiff(readText(path.join(ctx.brainDir, rel), ''), next);
       const approved = typeof args.approved === 'string' && args.approved.trim().length >= 2;
       if (approved && ctx.thread && isWakeTurn(ctx.brainDir, ctx.thread)) fail('--approved: an operator skill cannot change meaning in a turn started by a message (P-047)');
       if (diff.length && !approved) fail(`skill ${hit.skillName} belongs to the operator: this edit changes its meaning (${diff.slice(0, 8).join('; ')}${diff.length > 8 ? '; …' : ''}). Show the operator the change and why; after their yes save it again with --approved "<their words>" (P-032)`);
@@ -453,7 +450,7 @@ function saveSkill(ctx) {
   const res = brainWrite(ctx, { ops, message: `save skill ${name} (${hit ? (sed !== null ? 'edit' : 'extend') : origin})` });
   finish(ctx, res, [rel, ...scripts]);
   const notDeployed = deploySkills(ctx);
-  out(hit ? `${sed !== null ? 'edited' : 'extended'} existing skill ${hit.skillName}` : `new skill ${name} (origin: ${origin})`);
+  out(hit ? `${sed !== null ? 'edited' : 'refactored'} existing skill ${hit.skillName}` : `new skill ${name} (origin: ${origin})`);
   out(notDeployed ? `not deployed to the project (${notDeployed}); it reaches the project at the next session start` : `deployed to ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR))}`);
   // P-052: the skill text calls its script by the deployed absolute path, never relative to the cwd or from scratch.
   for (const s of scripts) out(`script runs as: ${s.endsWith(".sh") ? "sh" : "node"} ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR, path.posix.basename(path.posix.dirname(s)), path.posix.basename(s)))} (write this path in the skill text)`);
@@ -491,8 +488,8 @@ function saveRepoSkill(ctx, repo, name) {
     const parsed = parseFrontmatter(readText(path.resolve(ctx.brainDir, hit.path), ''));
     const data = { ...parsed.data, aliases: [...new Set([...asList(parsed.data.aliases), ...asList(args.aliases)])], updated: today() };
     if (args.description) data.description = args.description;
-    if (sed === null && !args.replace && repeatsBody(parsed.body, String(args.content))) fail(`--content repeats the body of skill ${name}; pass only the addition, or --replace with the whole corrected body (P-003)`);
-    const body = sed !== null ? applySed(parsed.body, sed) : args.replace ? `${String(args.content).trim()}\n` : `${parsed.body.trim()}\n\n## Doplnenie ${today()}\n${String(args.content).trim()}\n`;
+    if (sed === null && !args.replace) requireRefactor(name, hit.path, parsed.body);
+    const body = sed !== null ? applySed(parsed.body, sed) : `${String(args.content).trim()}\n`;
     text = serializeFrontmatter(data, body);
   } else {
     if (sed !== null) fail(`--sed: skill ${name} does not exist in repo ${repo}`);

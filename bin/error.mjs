@@ -35,7 +35,7 @@ try {
     const want = new Set(tokens(args._.slice(1).join(' ')));
     const fuzzy = readSkills(ctx.brainDir).filter((s) => tokens(`${s.skillName} ${s.description}`).some((t) => want.has(t))).map((s) => ({ path: s.path, description: `${s.skillName} [${s.owner}]: ${s.description}` }));
     const hits = exact.length ? exact : fuzzy;
-    out(hits.length ? `existing skill(s) for "${arg}" (extend, do not create):\n${formatMatches(hits)}` : `none: create a new skill with save skill <name> --origin error --description "Použi, keď ..."`);
+    out(hits.length ? `existing skill(s) for "${arg}" (merge the lesson into the whole skill with --replace, do not create a new one):\n${formatMatches(hits)}` : `none: create a new skill with save skill <name> --origin error --description "Použi, keď ..."`);
     // The maintainer's own thread does not mail itself: it fixes the error in workflow-dev directly (error skill, step 5).
     const maintainer = ctx.brainDir && ctx.thread && heldTopics(ctx.brainDir, ctx.thread).some((t) => t.id === 'workflow-dev');
     out(maintainer ? 'this thread holds workflow-dev: do not mail the report to yourself; fix the error here (skill fix) (P-003)' : REPORT_LINE);
