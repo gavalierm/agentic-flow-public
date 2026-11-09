@@ -9,6 +9,7 @@ import { PLUGIN_ROOT, readJson, writeJson, shortSha, parseArgs, fail } from '../
 import { enabledPluginsFor, channelOf, WORKFLOW_CONFIG, resolveTargetProject, ensureWorkflowConfig, brainExists, loadPolicy, expandBrainPath, PERSONA_BRAIN, SCRATCH_DIR, NO_BRAIN_NOTE } from '../scripts/config.mjs';
 import { commitPersonaFiles } from '../scripts/persona.mjs';
 import { syncBrainSkills, ensureGitignore } from '../scripts/skills-sync.mjs';
+import { adapterSkillSources } from '../scripts/repo-knowledge.mjs';
 import { generateCodex } from '../adapters/codex/generate.mjs';
 
 export const MANAGED_KEYS = ['enabledPlugins', 'autoMemoryEnabled', 'autoCompactWindow', 'permissions'];
@@ -89,7 +90,8 @@ export function generateClaudeCode({ projectDir, brainRel: brainRelArg = null, c
   if (hasBrain && brainInfo.persona) notes.push(commitPersonaFiles({ brainDir, policy, files: [WORKFLOW_CONFIG, '.claude/settings.json', '.gitignore'] }));
 
   if (hasBrain) {
-    const sync = syncBrainSkills({ projectDir, brainDir });
+    // Repo skills (<repo>/agentic/skills) too: without them every deploy removed them until the next start or save (mojprojekt-web 2026-11-09).
+    const sync = syncBrainSkills({ projectDir, brainDir, repoSources: adapterSkillSources(projectDir, brainDir) });
     notes.push(`brain skills copied to .claude/skills/: ${sync.copied.length ? sync.copied.join(', ') : 'none'}`);
   } else if (!brainInfo) {
     notes.push(NO_BRAIN_NOTE.replace('<harness>', 'claude-code'));

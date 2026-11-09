@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { git, gitRetry, readJson, toPosix, isInside } from './util.mjs';
-import { BRAIN_COMMIT_TAG, DOMAIN_MARKER, WORKTREES_DIR, WORKFLOW_CONFIG, brainScriptEnv, mainCheckout } from './config.mjs';
+import { BRAIN_COMMIT_TAG, DOMAIN_MARKER, WORKTREES_DIR, WORKFLOW_CONFIG, brainScriptEnv, mainCheckout, resolveDomain, threadId } from './config.mjs';
 import { withBrainLock, readHolder } from './brain.mjs';
 import { checkBrainFile } from './brain-checks.mjs';
 
@@ -89,6 +89,11 @@ export function skillSources(ctx) {
     if (!seen.has(r.name)) out.push({ repo: r.name, topic: null, dir: path.join(r.dir, PROJECT_KNOWLEDGE) });
   }
   return out;
+}
+
+/** skillSources for the adapter, which has no session context: the same sources a start or save of this project deploys. */
+export function adapterSkillSources(projectDir, brainDir) {
+  return skillSources({ projectDir, brainDir, domain: resolveDomain(projectDir), thread: threadId() });
 }
 
 /** Repo of the domain by name; fails with the list of valid names. */

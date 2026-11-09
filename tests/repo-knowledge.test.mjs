@@ -233,6 +233,19 @@ test('repo knowledge: a session in the domain brain (persona) deploys skills of 
   } finally { fx.cleanup(); }
 });
 
+test('repo knowledge: an adapter run (deploy after a release) keeps the repo skills deployed in both harnesses', () => {
+  const { fx } = domainFx();
+  try {
+    fs.mkdirSync(path.join(fx.project, 'agentic', 'skills', 'project-run'), { recursive: true });
+    fs.writeFileSync(path.join(fx.project, 'agentic', 'skills', 'project-run', 'SKILL.md'), '---\nname: project-run\ndescription: Použi, keď test run.\norigin: routine\n---\nKrok.\n');
+    for (const [harness, dir] of [['claude-code', '.claude'], ['codex', '.agents']]) {
+      const r = fx.run('adapter.mjs', [harness]);
+      assert.equal(r.status, 0, r.out + r.stderr);
+      assert.ok(fs.existsSync(path.join(fx.project, dir, 'skills', 'project-run', 'SKILL.md')), `${harness}: repo skill survives the adapter: ${r.out}`);
+    }
+  } finally { fx.cleanup(); }
+});
+
 test('repo knowledge: consolidate reports repos (counts, HANDOVER limit, stale derived, a key both in brain and in a repo)', () => {
   const { fx, srv } = domainFx();
   try {
