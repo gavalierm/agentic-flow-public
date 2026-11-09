@@ -13,7 +13,7 @@ import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDir
 export { ROOT_FILE, rootFile, machineRoot, setMachineRoot } from './config.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
 import { ensureLineEndings, EOL_RULE } from './eol.mjs';
-import { gh, ghOwner, ghOwnedRepos, ghRootNames, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
+import { gh, ghOwner, ghOwnedRepos, ghRootNames, grantAgentAccess, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_AGENT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
 
 export const DEFAULT_ROOT = path.join(os.homedir(), 'agentic');
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
@@ -254,7 +254,7 @@ function setAsideNamed(root, setAside) {
   return plan.map(({ n, from, to }) => { fs.renameSync(from, to); return `set aside: ${n} -> ${path.basename(to)}`; });
 }
 
-export async function connect({ project, repo = null, brain = null, renameBrain = false, adopt = false, brainBranch = null, setAside = false, domain = null, root = DEFAULT_ROOT, apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE, remoteFor = sshRemote }) {
+export async function connect({ project, repo = null, brain = null, renameBrain = false, adopt = false, brainBranch = null, setAside = false, domain = null, root = DEFAULT_ROOT, apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE, agentTokenFile = DEFAULT_AGENT_TOKEN_FILE, remoteFor = sshRemote }) {
   const token = readToken(tokenFile);
   const owner = await ghOwner(apiUrl, token);
   const name = checkName(project);
@@ -324,7 +324,7 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
       lines.push(push.ok ? 'brain: pushed' : `brain: push failed: ${push.stderr.split('\n')[0]}`);
     } else git(['branch', '--quiet', '--set-upstream-to', 'origin/main'], { cwd: brainDir });
   } else {
-    lines.push(...(await createRepo(apiUrl, token, owner, brainName)));
+    lines.push(...(await createRepo(apiUrl, token, owner, brainName, agentTokenFile)));
     const res = brainInit(brainDir, { remote: remoteFor(owner, brainName) });
     lines.push(...res.created.map((c) => `brain: ${c}`));
   }
@@ -335,17 +335,19 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
   return { owner, projectDir, brainDir, lines };
 }
 
-async function createRepo(apiUrl, token, owner, repo) {
+// The machine's agent account gets push access before the first push (Repository not found otherwise, Alice 2026-11-09).
+async function createRepo(apiUrl, token, owner, repo, agentTokenFile = DEFAULT_AGENT_TOKEN_FILE) {
   const probeRes = await gh(apiUrl, token, 'GET', `/repos/${owner}/${repo}`);
   if (probeRes.status === 200) throw new Error(`repository ${owner}/${repo} already exists; connect it instead`);
   if (probeRes.status !== 404) throw new Error(`cannot verify that ${owner}/${repo} is free (HTTP ${probeRes.status})`);
   const made = await gh(apiUrl, token, 'POST', '/user/repos', { name: repo, private: true });
   if (made.status !== 201 || made.json.name !== repo) throw new Error(`creating ${owner}/${repo} failed (HTTP ${made.status}): ${made.json.message || made.json.name || ''}`);
-  return [`repository created: ${owner}/${repo} (private)`];
+  const access = await grantAgentAccess(apiUrl, token, owner, repo, agentTokenFile);
+  return [`repository created: ${owner}/${repo} (private)`, ...(access ? [access] : [])];
 }
 
 /** New project: folder, private code and brain repositories, a first commit with the purpose, settings. */
-export async function create({ name, repo = null, purpose, domain = null, root = DEFAULT_ROOT, apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE, remoteFor = sshRemote }) {
+export async function create({ name, repo = null, purpose, domain = null, root = DEFAULT_ROOT, apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE, agentTokenFile = DEFAULT_AGENT_TOKEN_FILE, remoteFor = sshRemote }) {
   checkName(name);
   const repoName = checkName(repo || name);
   if (!String(purpose || '').trim()) throw new Error('create needs --purpose "<one sentence>"');
@@ -355,7 +357,7 @@ export async function create({ name, repo = null, purpose, domain = null, root =
   const brainDir = path.join(base, `${name}-brain`);
   const token = readToken(tokenFile);
   const owner = await ghOwner(apiUrl, token);
-  const lines = [...(await createRepo(apiUrl, token, owner, repoName)), ...(await createRepo(apiUrl, token, owner, `${name}-brain`))];
+  const lines = [...(await createRepo(apiUrl, token, owner, repoName, agentTokenFile)), ...(await createRepo(apiUrl, token, owner, `${name}-brain`, agentTokenFile))];
   fs.mkdirSync(projectDir, { recursive: true });
   fs.writeFileSync(path.join(projectDir, 'README.md'), `# ${repoName}\n\n${String(purpose).trim()}\n`);
   fs.writeFileSync(path.join(projectDir, '.gitattributes'), `${EOL_RULE}\n`);

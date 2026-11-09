@@ -74,6 +74,7 @@ Každý princíp je v samostatnom súbore `P-NNN.md`. Agent číta jeden súbor,
 - [P-060](P-060.md): Stručná odpoveď (concise answer) – nahradený P-061
 - [P-061](P-061.md): Protokol odpovede (reply protocol)
 - [P-062](P-062.md): Materiály témy (topic materials)
+- [P-063](P-063.md): Zámer operátora (operator intent)
 
 ## Predvolené hodnoty politiky
 

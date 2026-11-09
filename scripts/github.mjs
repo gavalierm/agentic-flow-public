@@ -30,6 +30,31 @@ export async function ghOwner(apiUrl, token) {
   return me.json.login;
 }
 
+// The machine's SSH key can belong to a separate agent account (collaborator on the operator's repositories),
+// whose token is here. A repository created with the operator's token does not have it, so a push says "Repository not found".
+export const DEFAULT_AGENT_TOKEN_FILE = path.join(os.homedir(), '.config', 'github', 'github_agent_token');
+
+/**
+ * Push access for the agent account to a new owner/repo: invite with the operator's token, accept with the agent's.
+ * Returns a line, or null when there is no agent token or it is the owner's account.
+ */
+export async function grantAgentAccess(apiUrl, token, owner, repo, agentTokenFile = DEFAULT_AGENT_TOKEN_FILE) {
+  if (!agentTokenFile || !fs.existsSync(agentTokenFile)) return null;
+  const agentToken = readToken(agentTokenFile);
+  const agent = await ghOwner(apiUrl, agentToken);
+  if (agent === owner) return null;
+  const invite = await gh(apiUrl, token, 'PUT', `/repos/${owner}/${repo}/collaborators/${agent}`, { permission: 'push' });
+  if (invite.status !== 201 && invite.status !== 204) throw new Error(`adding ${agent} to ${owner}/${repo} failed (HTTP ${invite.status}): ${invite.json.message || ''}`);
+  if (invite.status === 201) {
+    const list = await gh(apiUrl, agentToken, 'GET', '/user/repository_invitations');
+    const inv = (Array.isArray(list.json) ? list.json : []).find((i) => i.repository?.full_name === `${owner}/${repo}`);
+    if (!inv) throw new Error(`invitation of ${agent} to ${owner}/${repo} not found (HTTP ${list.status})`);
+    const accepted = await gh(apiUrl, agentToken, 'PATCH', `/user/repository_invitations/${inv.id}`);
+    if (accepted.status !== 204) throw new Error(`${agent} could not accept the invitation to ${owner}/${repo} (HTTP ${accepted.status})`);
+  }
+  return `agent account ${agent}: push access to ${owner}/${repo}`;
+}
+
 /** All repositories the account owns (paged). */
 export async function ghOwnedRepos(apiUrl, token) {
   const out = [];

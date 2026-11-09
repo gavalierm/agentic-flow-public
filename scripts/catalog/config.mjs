@@ -65,11 +65,13 @@ export function catalogConfig(projectDir) {
     for (const [name, s] of Object.entries(rawSources)) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || !isObj(s) || typeof s.path !== 'string' || !s.path) continue;
       const abs = expand(s.path, repo);
-      sources.push({ name, path: abs, mode: s.mode === 'rw' ? 'rw' : 'ro' });
+      // `from`: the file that defines the source, named in a refusal so a thread can tell who switched it on
+      const from = isObj(local?.catalog?.sources?.[name]) ? 'local/workflow.json' : WORKFLOW_CONFIG;
+      sources.push({ name, path: abs, mode: s.mode === 'rw' ? 'rw' : 'ro', from });
     }
     // materialy/ of the repo is a source of its own (rw: the topics save into it); catalog.materialy:false switches it off
     const mat = path.join(repo, 'materialy');
-    if (raw.materialy !== false && !sources.some((s) => s.name === 'materialy') && fs.existsSync(mat)) sources.push({ name: 'materialy', path: mat, mode: 'rw' });
+    if (raw.materialy !== false && !sources.some((s) => s.name === 'materialy') && fs.existsSync(mat)) sources.push({ name: 'materialy', path: mat, mode: 'rw', from: 'materialy' });
     if (!sources.length) return off;
     return {
       enabled: true,

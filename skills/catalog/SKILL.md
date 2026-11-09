@@ -6,7 +6,7 @@ argument-hint: "find <slová> | show <cesta> | sql <cesta> \"<SELECT>\""
 
 # catalog – katalóg dát projektu (P-031)
 
-Katalóg je index súborov zdrojov z `catalog.sources` v `<repo>/local/workflow.json` a priečinka `<repo>/materialy/` (zdroj `materialy`, automaticky). Bez zdroja je vypnutý a nič nerobí. Štart relácie ho obnoví (riadok `katalóg <zdroj>: …`); ručne: `node ${CLAUDE_PLUGIN_ROOT}/bin/catalog.mjs scan`.
+Katalóg je index súborov zdrojov z `catalog.sources` v `<repo>/local/workflow.json` a priečinka `<repo>/materialy/` (zdroj `materialy`, automaticky). Bez zdroja je vypnutý a nič nerobí. Štart relácie ho obnoví (riadok `katalóg <zdroj>: …`); ručne: `node ${CLAUDE_PLUGIN_ROOT}/bin/catalog.mjs scan`. Zdroj pridáva iba výslovný pokyn operátora a je to priečinok dát klienta mimo práce tém; nie priečinok, do ktorého zapisuje téma (`docs/…`), ani pri audite či otázke, lebo zdroj `ro` platí pre všetky vlákna projektu a ich zápis tam hook odmietne (Skarper 2026-11-09).
 
 1. `catalog.mjs find <slová>` – cesty a jednoriadkové popisy (najviac 20), nikdy obsah. Filtre `--kind csv|pdf_text|pdf_scan|image|archive`, `--source <n>`; `--all` zapíše úplný zoznam do `<repo>/scratch/`. `bin/find.mjs <slová>` pridá blok katalógu za výsledky brain.
 2. `catalog.mjs show <zdroj>/<cesta>` – celý riadok: pre CSV oddeľovač, kódovanie, hlavičku, typy, min/max a hodnoty nízkej kardinality (PII stĺpce sú maskované `***`).

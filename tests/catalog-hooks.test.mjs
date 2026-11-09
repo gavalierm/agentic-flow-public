@@ -112,6 +112,8 @@ test('PreToolUse: writes into a read-only source are denied (Write, Edit, redire
       const r = pre(fx, tool, input);
       assert.equal(decision(r), 'deny', `${tool} ${JSON.stringify(input).slice(0, 80)}`);
       assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /zápis do zdroja dát data \(iba čítanie\).*scratch/);
+      // the first refusal names the file that switched the source on: a parallel thread can add one (Skarper 2026-11-09)
+      if (tool === 'Write') assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /catalog\.sources\.data v local\/workflow\.json/);
     }
     // the positive cases run in a fresh fixture: a target a refusal reached stays closed for the turn (P-054)
     const ok = catalogFixture();

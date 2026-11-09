@@ -313,3 +313,11 @@ test('classifyPrompt: an operator rejection is a decision to save, before the sa
   assert.equal(classifyPrompt('páči sa mi to', policy), 'save');
   assert.equal(classifyPrompt('pridaj sekciu kontakt', policy), null);
 });
+
+test('classifyPrompt: a misreading of the operator is checked before error and reject: restate first, save after (P-063)', () => {
+  assert.equal(classifyPrompt('to som nemyslel, chcel som iba audit', policy), 'misread');
+  assert.equal(classifyPrompt('nie takto, myslel som tým iný súbor', policy), 'misread', 'not reject: „nie takto“ holds „nie tak“');
+  assert.equal(classifyPrompt('zle si pochopil zadanie', policy), 'misread', 'not error: „zle si pochopil“ holds „zle si“');
+  assert.equal(classifyPrompt('roky realizácií tam nechcem', policy), 'reject');
+  assert.equal(classifyPrompt('to je chyba', policy), 'error');
+});

@@ -172,6 +172,19 @@
       "wrong"
     ],
     "done_prompts": ["finish", "hotovo", "uzavri to", "uzavri", "uzavri tému", "done", "workflow:done"],
+    "misread_phrases": [
+      "nerozumieš",
+      "nerozumel si",
+      "nepochopil si",
+      "zle si pochopil",
+      "to som nemyslel",
+      "nemyslel som",
+      "myslel som tým",
+      "nie tak",
+      "you misunderstood",
+      "not what i meant",
+      "i meant"
+    ],
     "reject_phrases": [
       "nechcem",
       "nepáči sa mi",

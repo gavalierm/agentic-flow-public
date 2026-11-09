@@ -43,6 +43,9 @@ export function parsePrompt(prompt, policy) {
   // Operator 2026-11-03: "done" from the operator closes the whole topic; an agent closed only the unit.
   const bare = low.replace(/[\s.!]+$/, '').trim();
   if ((cfg.done_prompts || []).some((f) => bare === String(f).toLowerCase() || bare.startsWith('/workflow:done'))) return { kind: 'done' };
+  // Operator 2026-11-09 (P-063): „nie tak“, „to som nemyslel“ is a misreading of the operator, checked before error and
+  // reject, which would have the agent save its own reading at once.
+  if ((cfg.misread_phrases || []).some((f) => low.includes(f.toLowerCase()))) return { kind: 'misread' };
   if ((cfg.error_phrases || []).some((f) => low.includes(f.toLowerCase()))) return { kind: 'error' };
   // mojprojekt-web 2026-11-09: the operator rejected the years of the projects, nothing was saved, a later session put
   // them back with a timeline. Before save: „nepáči sa mi“ holds „páči sa mi“.
@@ -140,7 +143,8 @@ export function run(input) {
   if (kind === 'keepalive') extras.unshift('turn resumed after interruption (server restart): continue the interrupted work from your context/handover');
   else if (kind === 'error') extras.unshift('error reported: use skill workflow:error (P-003)');
   else if (kind === 'save') extras.unshift('save requested: use skill workflow:save (P-013)');
-  else if (kind === 'reject') extras.unshift('the operator rejects or prefers something: when it is about the work (content, form, approach), record it now with save decision (P-008), before acting; a rejection not saved comes back in a later session');
+  else if (kind === 'misread') extras.unshift('the operator says you misread them: first restate in one sentence what you now understand they mean; if two readings lead to different results, ask one AskUserQuestion with the readings as options; only when the meaning is clear record it (save decision P-008, workflow:error P-003) in the operator\'s words (P-063)');
+  else if (kind === 'reject') extras.unshift('the operator rejects or prefers something: when it is about the work (content, form, approach), record it now with save decision (P-008) in the operator\'s words, not your reading of them, before acting; a rejection not saved comes back in a later session');
   else if (kind === 'done') extras.unshift('done requested by the operator: close the whole held topic (done --topic, skill workflow:done), not only the unit of work; topic main and a thread without a topic close the unit');
   // Mail lines once per change of the waiting count (P-044, P-023 c); a wake turn already carries them.
   const signaled = state?.mail_signaled ?? 0;

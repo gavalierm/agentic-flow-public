@@ -12,7 +12,7 @@ const SPLIT = /\s*(?:&&|\|\||;|\n|\|)\s*/;
 export function readOnlySourceDeny(cfg, absPaths) {
   for (const p of absPaths) {
     const s = sourceOf(cfg, p);
-    if (s && s.mode === 'ro') return `zápis do zdroja dát ${s.name} (iba čítanie): výsledky patria do materialy/<téma>/ a medzivýsledky do scratch/ repa projektu; zdroj klienta sa nemení`;
+    if (s && s.mode === 'ro') return `zápis do zdroja dát ${s.name} (iba čítanie): výsledky patria do materialy/<téma>/ a medzivýsledky do scratch/ repa projektu; zdroj klienta sa nemení; zdroj ${s.path} zapína catalog.sources.${s.name} v ${s.from}: ak je to priečinok práce témy, nie dáta klienta, oznám operátorovi zdroj a ten súbor`;
   }
   return null;
 }
