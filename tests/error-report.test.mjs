@@ -88,6 +88,8 @@ test('no mail and no GitHub: NOT reported, draft for the operator', () => {
 });
 
 test('scrub, repo slug and maintainer override', () => {
+  const winRel = [10, 0, 26200].join('.');
+  assert.equal(scrub(`os_release=${winRel} host ${[10, 1, 2, 3].join('.')} lan ${[192, 168, 1, 5].join('.')}`, {}, { HOME: '/srv/u' }), `os_release=${winRel} host <ip> lan <ip>`, 'a Windows release is no address (#24)');
   const ctx = { projectDir: '/srv/u/work/shopapp', brainDir: '/srv/u/work/shopapp-brain' };
   const text = `in /srv/u/work/shopapp/a and shopapp-brain, C:\\Users\\jan\\x, ${FAKE_TOKEN} 10.0.0.1`;
   assert.equal(scrub(text, ctx, { HOME: '/srv/u' }), 'in <project>/a and <project>, ~\\x, <secret> <ip>');

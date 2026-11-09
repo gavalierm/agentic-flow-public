@@ -48,6 +48,16 @@ function fingerprint(projectDir, sources) {
   return h.digest('hex').slice(0, 12);
 }
 
+// Skill scripts (--script): node, shell or Python (agentic-flow-public#24: a procedure built on a Python script). The
+// runner is printed with the deployed path; Python is `python` on Windows (python3 is the Store alias there), else python3.
+const SKILL_SCRIPT = /^[a-z0-9][a-z0-9._-]*\.(mjs|js|sh|py)$/;
+const SKILL_SCRIPT_TYPES = '.mjs | .js | .sh | .py';
+export function scriptRunner(base, platform = process.platform) {
+  if (base.endsWith('.sh')) return 'sh';
+  if (base.endsWith('.py')) return platform === 'win32' ? 'python' : 'python3';
+  return 'node';
+}
+
 /**
  * Deploy the saved skill into the project now (skills-sync, as at session start): the path printed by
  * "script runs as" exists right after the save, not only at the next session (Bob 2026-11-08: only SKILL.md was there).
@@ -433,7 +443,7 @@ function saveSkill(ctx) {
   for (const src of asList(args.script)) {
     const file = path.resolve(src);
     const base = path.basename(file);
-    if (!/^[a-z0-9][a-z0-9._-]*\.(mjs|js|sh)$/.test(base)) fail(`--script ${src}: name must be lowercase english, .mjs | .js | .sh (P-049)`);
+    if (!SKILL_SCRIPT.test(base)) fail(`--script ${src}: name must be lowercase english, ${SKILL_SCRIPT_TYPES} (P-049)`);
     if (!fs.existsSync(file) || !fs.statSync(file).isFile()) fail(`--script ${src}: file not found`);
     if (fs.statSync(file).size > 64 * 1024) fail(`--script ${src}: over 64 KB; a skill script stays small`);
     const scriptRel = `${path.posix.dirname(toPosixPath(rel))}/${base}`;
@@ -454,7 +464,7 @@ function saveSkill(ctx) {
   out(hit ? `${sed !== null ? 'edited' : 'refactored'} existing skill ${hit.skillName}` : `new skill ${name} (origin: ${origin})`);
   out(notDeployed ? `not deployed to the project (${notDeployed}); it reaches the project at the next session start` : `deployed to ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR))}`);
   // P-052: the skill text calls its script by the deployed absolute path, never relative to the cwd or from scratch.
-  for (const s of scripts) out(`script runs as: ${s.endsWith(".sh") ? "sh" : "node"} ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR, path.posix.basename(path.posix.dirname(s)), path.posix.basename(s)))} (write this path in the skill text)`);
+  for (const s of scripts) out(`script runs as: ${scriptRunner(s)} ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR, path.posix.basename(path.posix.dirname(s)), path.posix.basename(s)))} (write this path in the skill text)`);
 }
 
 /** Skill of one repo (`<repo>/agentic/skills/<name>/`): agentic only, one name per domain (skills-sync deploys both). */
@@ -502,7 +512,7 @@ function saveRepoSkill(ctx, repo, name) {
   for (const src of asList(args.script)) {
     const file = path.resolve(src);
     const base = path.basename(file);
-    if (!/^[a-z0-9][a-z0-9._-]*\.(mjs|js|sh)$/.test(base)) fail(`--script ${src}: name must be lowercase english, .mjs | .js | .sh (P-049)`);
+    if (!SKILL_SCRIPT.test(base)) fail(`--script ${src}: name must be lowercase english, ${SKILL_SCRIPT_TYPES} (P-049)`);
     if (!fs.existsSync(file) || !fs.statSync(file).isFile()) fail(`--script ${src}: file not found`);
     if (fs.statSync(file).size > 64 * 1024) fail(`--script ${src}: over 64 KB; a skill script stays small`);
     ops.push({ path: `${path.posix.dirname(rel)}/${base}`, content: fs.readFileSync(file, 'utf8') });
@@ -516,7 +526,7 @@ function saveRepoSkill(ctx, repo, name) {
   const notDeployed = deploySkills(ctx);
   out(hit ? `${sed !== null ? 'edited' : 'extended'} skill ${name} of repo ${repo}` : `new skill ${name} of repo ${repo} (origin: ${origin})`);
   out(notDeployed ? `not deployed to this project (${notDeployed}); other sessions of the repo get it at their next start` : `deployed to ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR))}; other sessions of the repo get it at their next start`);
-  for (const base of scripts) out(`script runs as: ${base.endsWith('.sh') ? 'sh' : 'node'} ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR, name, base))} (write this path in the skill text)`);
+  for (const base of scripts) out(`script runs as: ${scriptRunner(base)} ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR, name, base))} (write this path in the skill text)`);
 }
 
 /** State of a repo for whoever takes it over (`<repo>/agentic/HANDOVER.md`); the handover of a topic stays in brain (P-011). */

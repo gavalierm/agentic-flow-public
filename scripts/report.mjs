@@ -43,7 +43,8 @@ export function scrub(text, ctx = {}, env = process.env) {
     .replace(/\/home\/[\w.-]+|\/Users\/[\w.-]+|[A-Za-z]:\\Users\\[\w.-]+/g, '~')
     .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '<email>')
     .replace(/ghp_[A-Za-z0-9]{20,}|github[_]pat_\w+|gho_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[bap]-[\w-]+|AKIA[0-9A-Z]{16}/g, '<secret>')
-    .replace(/\b(?:10|192\.168|172\.(?:1[6-9]|2\d|3[01]))(?:\.\d+){2,3}\b/g, '<ip>');
+    // A private IPv4 has four parts; three (a Windows release such as 10.0.x in the meta line, #24) is no address.
+    .replace(/\b(?:10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})\b/g, '<ip>');
 }
 
 function version() {
