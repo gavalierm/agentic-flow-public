@@ -9,7 +9,8 @@
       "depends_on": [
         "provider log <t3-home>/logs/provider/events.<thread, ':' -> '-'>.log with lines `[<ISO time>] ...\"type\":\"query.open\",\"options\":{...\"resume\":\"<session id>\"`",
         "T3 resumes the session id it opened with (claudeAgent resume cursor)",
-        "T3 sets T3CODE_THREAD_ID in the agent's environment"
+        "T3 sets T3CODE_THREAD_ID in the agent's environment",
+        "Claude Code appends to <session>.jsonl in place (Windows without Developer Mode: hard link instead of symlink, made by a detached process once the new transcript exists)"
       ],
       "auto": ["provider-log", "upstream"],
       "pilot": "pilot thread: say a code word, /clear, ask for a second word, restart the query (interrupt or T3 restart); the thread must answer from the session after /clear",

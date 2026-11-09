@@ -3,9 +3,54 @@
 // to the pre-clear conversation, or fails with "No conversation found" when the old transcript does not exist.
 // Fix on our side: the transcript T3 resumes, <cursor>.jsonl, becomes a symlink to the newest session's transcript.
 // Claude Code follows the link on --resume and appends to the new transcript (checked 2026-11-03).
+// Windows without Developer Mode refuses symlinks (EPERM): a hard link instead (NTFS, no privilege). Claude Code appends
+// to the transcript in place, so both names keep sharing it across turns and resumes (checked 2026-11-09). A hard link
+// needs the new transcript, which may not exist yet at SessionStart; it is never pre-created (Claude then refuses the
+// session id, checked 2026-11-09): a detached process waits for it and links then.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const SELF = fileURLToPath(import.meta.url);
+export const LINK_LATER_MS = 15 * 60 * 1000;
+
+/**
+ * Point <dir>/<cursor>.jsonl at <dir>/<sid>.jsonl (the old name must already be free): symlink, else hard link.
+ * Returns 'symlink', 'hardlink', or null when only a hard link is possible and the new transcript does not exist yet.
+ */
+export function linkTranscript(dir, cursor, sid, { symlink = fs.symlinkSync } = {}) {
+  const link = path.join(dir, `${cursor}.jsonl`);
+  const target = path.join(dir, `${sid}.jsonl`);
+  try { symlink(`${sid}.jsonl`, link); return 'symlink'; } catch (err) {
+    if (!fs.existsSync(target)) return null;
+    try { fs.linkSync(target, link); } catch (e) { throw new Error(`symlink: ${err.code || err.message}; hard link: ${e.code || e.message}`); }
+    return 'hardlink';
+  }
+}
+
+/** Wait until <dir>/<sid>.jsonl exists, then hard-link <cursor>.jsonl to it (unless that name was taken meanwhile). */
+export function linkLater(dir, cursor, sid, { timeoutMs = LINK_LATER_MS, intervalMs = 2000 } = {}) {
+  const target = path.join(dir, `${sid}.jsonl`);
+  const link = path.join(dir, `${cursor}.jsonl`);
+  const end = Date.now() + timeoutMs;
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (fs.existsSync(target)) {
+        try { fs.lstatSync(link); return resolve(null); } catch { /* still free */ }
+        try { fs.linkSync(target, link); return resolve('hardlink'); } catch { return resolve(null); }
+      }
+      if (Date.now() >= end) return resolve(null);
+      setTimeout(tick, intervalMs);
+    };
+    tick();
+  });
+}
+
+function spawnLinkLater(dir, cursor, sid) {
+  spawn(process.execPath, [SELF, '--link-later', dir, cursor, sid], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+}
 
 /** query.open event of T3's provider log that resumes a session; group 1 is the session id (T3 internal format). */
 export const RESUME_RE = /"type":"query\.open","options":\{[^\n]*?"resume":"([0-9a-f-]{36})"/g;
@@ -30,7 +75,7 @@ export function cursorFromProviderLog(thread, logDir = path.join(os.homedir(), '
  * clear: point <cursor>.jsonl at the new session's transcript (the real old file is kept as <cursor>.jsonl.pre-clear-<ts>).
  * Returns { state, note } where state is the updated thread state and note a one-line result for the boot context (or null).
  */
-export function handleT3Session(input, state, { thread, logDir, now = new Date() } = {}) {
+export function handleT3Session(input, state, { thread, logDir, now = new Date(), symlink, spawnLater = spawnLinkLater } = {}) {
   const source = input.source || 'startup';
   const sid = input.session_id;
   if (!SID.test(sid || '')) return { state, note: null };
@@ -42,15 +87,23 @@ export function handleT3Session(input, state, { thread, logDir, now = new Date()
   if (cursor === sid || path.basename(input.transcript_path || '') !== `${sid}.jsonl`) return { state: { ...state, t3_cursor: cursor }, note: null };
   const dir = path.dirname(input.transcript_path);
   const link = path.join(dir, `${cursor}.jsonl`);
-  const target = `${sid}.jsonl`;
+  let how;
   try {
     let st = null;
     try { st = fs.lstatSync(link); } catch { /* no transcript yet: T3 would fail with No conversation found */ }
     if (st?.isSymbolicLink()) fs.unlinkSync(link);
     else if (st) fs.renameSync(link, `${link}.pre-clear-${now.toISOString().replace(/[:.]/g, '-')}`);
-    fs.symlinkSync(target, link);
+    how = linkTranscript(dir, cursor, sid, { symlink });
+    if (!how) spawnLater(dir, cursor, sid);
   } catch (err) {
     return { state: { ...state, t3_cursor: cursor }, note: `T3 /clear: presmerovanie ${cursor}.jsonl zlyhalo (${err.message}); po zatvorení query sa vlákno vráti pred /clear.` };
   }
-  return { state: { ...state, t3_cursor: cursor, t3_cleared_to: sid, t3_cleared_at: now.toISOString() }, note: `T3 /clear: kurzor T3 ${cursor.slice(0, 8)} presmerovaný na novú session ${sid.slice(0, 8)}; vlákno pokračuje aj po obnovení query.` };
+  const state2 = { ...state, t3_cursor: cursor, t3_cleared_to: sid, t3_cleared_at: now.toISOString() };
+  if (!how) return { state: state2, note: `T3 /clear: kurzor T3 ${cursor.slice(0, 8)} sa presmeruje na novú session ${sid.slice(0, 8)} hard linkom, keď vznikne jej transkript (symlink nejde, napr. Windows bez Developer Mode).` };
+  return { state: state2, note: `T3 /clear: kurzor T3 ${cursor.slice(0, 8)} presmerovaný na novú session ${sid.slice(0, 8)}${how === 'hardlink' ? ' (hard link)' : ''}; vlákno pokračuje aj po obnovení query.` };
+}
+
+if (process.argv[2] === '--link-later' && process.argv[1] && path.resolve(process.argv[1]) === SELF) {
+  const [dir, cursor, sid] = process.argv.slice(3);
+  if (dir && SID.test(cursor || '') && SID.test(sid || '')) linkLater(dir, cursor, sid).then(() => process.exit(0));
 }
