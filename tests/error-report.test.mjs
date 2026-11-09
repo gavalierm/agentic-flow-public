@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { setup, PLUGIN_ROOT } from './helpers.mjs';
 import { scrub, repoSlug, maintainerOf, MAINTAINER } from '../scripts/report.mjs';
@@ -31,7 +32,7 @@ test('delivered mail is reported and recorded; a no-reply bell for it routes to 
     let r = fx.run('error.mjs', ['report', '--title', 'grep -h', '--text', 'chyba: x; príčina: y; uložené: z']);
     assert.equal(r.status, 0, r.out);
     assert.match(r.stdout, /^reported: mail m-20261107-1/);
-    assert.equal(fx.reports()['m-20261107-1'].text, 'chyba: x; príčina: y; uložené: z');
+    assert.match(fx.reports()['m-20261107-1'].text, /^chyba: x; príčina: y; uložené: z\n\nmeta: workflow=v\d/, 'the recorded text carries the environment to a later --from issue');
     assert.equal(fx.ghBody(), null, 'no issue when the mail was delivered');
     const h = fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m-20261107-1' });
     assert.match(h.context, /error report to the workflow maintainer; run node .*error\.mjs report --from m-20261107-1/);
@@ -92,4 +93,17 @@ test('scrub, repo slug and maintainer override', () => {
   assert.equal(scrub(text, ctx, { HOME: '/srv/u' }), 'in <project>/a and <project>, ~\\x, <secret> <ip>');
   assert.equal(repoSlug('https://github.com/o/r.git'), 'o/r');
   assert.deepEqual(maintainerOf({ maintainer: { comms: 'me/dev' } }), { comms: 'me/dev', repo: MAINTAINER.repo });
+});
+
+test('a report carries the reporter environment for the audit: one meta line (workflow, os, versions, harness), no host or user', () => {
+  const fx = fixture({ send_held: true });
+  try {
+    const r = fx.run('error.mjs', ['report', '--text', 'chyba: x; príčina: y; uložené: nič'], { env: { CLAUDECODE: '1', SHELL: '/bin/bash' } });
+    assert.match(r.stdout, /^reported: issue /);
+    const body = fx.ghBody();
+    const meta = (body.match(/^meta: (.+)$/m) || [])[1] || '';
+    assert.match(meta, new RegExp(`^workflow=v\\d+\\.\\d+\\.\\d+ .*os=${process.platform} .*os_release=\\S+ arch=${process.arch} node=${process.version.replace(/\./g, '\\.')} git=\\S+ harness=claude-code`), body);
+    assert.match(meta, /shell=bash t3=no$/);
+    assert.ok(!meta.includes(os.hostname()) && !meta.includes(os.userInfo().username), meta);
+  } finally { fx.cleanup(); }
 });

@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { commsSettings, runClient, parseAddress } from './comms.mjs';
 import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh } from './github.mjs';
 import { PLUGIN_ROOT, toPosix } from './util.mjs';
-import { SCRATCH_DIR } from './config.mjs';
+import { SCRATCH_DIR, channelOf } from './config.mjs';
 
 // Defaults; `policy.maintainer` ({comms, repo}) of the brain overrides (another maintainer, a fork).
 export const MAINTAINER = { comms: 'maintainer/workflow-dev', repo: 'https://github.com/gavalierm/agentic-flow-public.git' };
@@ -48,6 +48,40 @@ export function scrub(text, ctx = {}, env = process.env) {
 
 function version() {
   try { return `v${JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'package.json'), 'utf8')).version}`; } catch { return '?'; }
+}
+
+/**
+ * Reporter environment for the audit of a report, one `meta: k=v ...` line (the maintainer's issue list reads it): workflow
+ * version and channel, os with its version, arch, node, git, harness, shell, T3. No host, user or path (scrub rules).
+ */
+export function reportMeta(ctx = {}, env = process.env, { run = spawnSync, platform = process.platform } = {}) {
+  const out = (cmd, args) => {
+    try { const r = run(cmd, args, { encoding: 'utf8', timeout: 5000, env }); return r.status === 0 ? String(r.stdout || '').trim().split('\n')[0] : null; } catch { return null; }
+  };
+  let settings = null;
+  try { settings = JSON.parse(fs.readFileSync(path.join(ctx.projectDir || '.', '.claude', 'settings.json'), 'utf8')); } catch { /* no claude settings */ }
+  let osName = null;
+  if (platform === 'linux') {
+    try { osName = (fs.readFileSync('/etc/os-release', 'utf8').match(/^PRETTY_NAME="?([^"\n]+)"?$/m) || [])[1] || null; } catch { /* keep null */ }
+  } else {
+    try { osName = os.version(); } catch { /* keep null */ }
+  }
+  const harness = env.CLAUDECODE ? 'claude-code' : (env.CODEX_HOME || env.CODEX_SANDBOX || env.CODEX_THREAD_ID) ? 'codex' : null;
+  const fields = {
+    workflow: version(),
+    channel: channelOf(settings),
+    os: platform,
+    os_name: osName,
+    os_release: os.release(),
+    arch: process.arch,
+    node: process.version,
+    git: (out('git', ['--version']) || '').replace(/^git version /, '') || null,
+    harness,
+    harness_version: harness === 'claude-code' ? (out('claude', ['--version']) || '').replace(/\s*\(Claude Code\)/, '') || null : null,
+    shell: path.basename(env.SHELL || env.ComSpec || '') || null,
+    t3: env.T3CODE_THREAD_ID ? 'yes' : 'no',
+  };
+  return `meta: ${Object.entries(fields).filter(([, v]) => v).map(([k, v]) => `${k}=${String(v).trim().replace(/\s+/g, '_')}`).join(' ')}`;
 }
 
 export function reportsFile(ctx) {
@@ -104,7 +138,7 @@ export async function issueReport(ctx, title, body, maintainer = maintainerOf(ct
   const slug = repoSlug(maintainer.repo);
   if (!slug) return { ok: false, why: 'no maintainer repo configured' };
   const t = scrub(title, ctx, env).slice(0, 120);
-  const b = `${scrub(body, ctx, env)}\n\n---\nworkflow ${version()}, ${process.platform}; reported by error.mjs report (the maintainer topic was not reachable)`;
+  const b = `${scrub(body, ctx, env)}\n\n---\nreported by error.mjs report (the maintainer topic was not reachable)`;
   const tokenFile = env.WORKFLOW_GITHUB_TOKEN_FILE || DEFAULT_TOKEN_FILE;
   let token = null;
   try { token = fs.readFileSync(tokenFile, 'utf8').trim() || null; } catch { /* try gh */ }
@@ -143,6 +177,8 @@ export async function report(ctx, { text, title, fromId } = {}, env = process.en
     text = rec.text; title = rec.title;
     why.push(`mail ${fromId} not picked up by the maintainer`);
   } else {
+    // The environment travels with the text: the mail, the issue and the draft carry it, and so does --from later.
+    text = `${String(text || '').trimEnd()}\n\n${reportMeta(ctx, env)}`;
     const mail = mailReport(ctx, text, m);
     if (mail.ok) {
       writeReport(ctx, mail.id, { text, title, at: new Date().toISOString(), to: mail.to });

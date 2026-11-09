@@ -210,3 +210,18 @@ test('handoff to another machine: handover, release and push; the other machine 
     assert.equal(r.status, 0, r.out);
   } finally { fx.cleanup(); }
 });
+
+test('topic create in a brain git refuses (dubious ownership): nothing half written, the error and the start give the safe.directory command (agentic-flow-public#23)', () => {
+  const fx = setup();
+  try {
+    const env = { GIT_TEST_ASSUME_DIFFERENT_OWNER: '1' };
+    let r = fx.run('topic.mjs', ['create', 'dub', '--subject', 'Dubious', '--no-claim'], { env });
+    assert.notEqual(r.status, 0);
+    assert.match(r.out, /dubious ownership.*git config --global --add safe\.directory \S*brain/);
+    assert.ok(!fs.existsSync(path.join(fx.brain, 'topics', 'dub')), 'a failed create leaves no topic folder');
+    const s = fx.hook('session-start.mjs', { source: 'startup' }, { env });
+    assert.match(s.context, /git refuses .*safe\.directory/);
+    r = fx.run('topic.mjs', ['create', 'dub', '--subject', 'Dubious', '--no-claim']);
+    assert.equal(r.status, 0, r.out);
+  } finally { fx.cleanup(); }
+});

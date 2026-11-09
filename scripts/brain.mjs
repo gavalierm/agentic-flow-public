@@ -335,6 +335,39 @@ export function syncAndCheckHolder(brainDir, rel, thread) {
  * ops: [{ path, content }, { path, remove: true }, { from, to }]
  * Returns { committed, sha, sync, unpushed, warnings }.
  */
+/**
+ * Git refuses a repo owned by another user than the process (dubious ownership): no brain write can commit. Returns the
+ * fix with the exact command, or null when git works (agentic-flow-public#23: topic create left half a topic on Windows).
+ */
+export function gitAccessProblem(dir) {
+  const r = git(['rev-parse', '--git-dir'], { cwd: dir });
+  if (r.ok || !/dubious ownership|safe\.directory/i.test(r.stderr)) return null;
+  const home = process.env.HOME || process.env.USERPROFILE || '?';
+  return `git refuses ${toPosix(dir)} (dubious ownership: the repo belongs to another user than this process); run: git config --global --add safe.directory ${toPosix(dir)} (global config of this process: HOME=${toPosix(home)}; a hook that still fails runs with another HOME, add it there too)`;
+}
+
+/** Files and new folders a write touches, as they were before it: a failed write restores them (nothing half written). */
+function snapshot(brainDir, ops) {
+  const files = new Map();
+  const dirs = new Set();
+  for (const op of ops) {
+    if (op.from || op.remove || files.has(op.path)) continue;
+    const file = path.join(brainDir, op.path);
+    files.set(op.path, fs.existsSync(file) ? fs.readFileSync(file) : null);
+    let top = null;
+    for (let d = path.dirname(file); d.length > brainDir.length && !fs.existsSync(d); d = path.dirname(d)) top = d;
+    if (top) dirs.add(top);
+  }
+  return () => {
+    for (const [rel, data] of files) {
+      const file = path.join(brainDir, rel);
+      if (data === null) fs.rmSync(file, { force: true });
+      else fs.writeFileSync(file, data);
+    }
+    for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+  };
+}
+
 export function brainWrite(ctx, opts) {
   return withBrainLock(ctx.brainDir, () => brainWriteUnlocked(ctx, opts));
 }
@@ -363,7 +396,10 @@ function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, 
     }
   }
   if (errors.length) throw new Error(errors.join('\n'));
+  const access = gitAccessProblem(brainDir);
+  if (access) throw new Error(access);
 
+  const restore = snapshot(brainDir, ops);
   for (const op of ops) {
     if (op.from) {
       const from = path.join(brainDir, op.from);
@@ -389,7 +425,10 @@ function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, 
   }
   const env = { ...brainScriptEnv(), ...extraEnv };
   const add = gitRetry(['add', '-A', '--', ...touched], { cwd: brainDir, env });
-  if (!add.ok) throw new Error(`git add failed: ${firstLine(add.stderr)}`);
+  if (!add.ok) {
+    restore();
+    throw new Error(`git add failed: ${firstLine(add.stderr)}`);
+  }
   const staged = git(['diff', '--cached', '--quiet'], { cwd: brainDir });
   const result = { committed: false, sha: null, sync: null, unpushed: unpushedCount(brainDir), warnings: [] };
   if (!staged.ok) {

@@ -9,6 +9,7 @@ import { buildIndexes, topicLine } from './index.mjs';
 import { heldTopics, mailboxTopics } from './topic.mjs';
 import { mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics } from './comms.mjs';
 import { syncBrainSkills } from './skills-sync.mjs';
+import { gitAccessProblem } from './brain.mjs';
 import { readTopics } from './records.mjs';
 import { sessionKnowledgeSources, skillSources, KNOWLEDGE_KINDS, REPO_HANDOVER } from './repo-knowledge.mjs';
 
@@ -70,6 +71,9 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   const info = statusInfo(ctx);
   let status = info.line;
   const mailLine = mailNoticeLine(info.mail);
+  // A brain git refuses (dubious ownership) fails every save, log and topic write: say it with the fix at start (#23).
+  const gitProblem = ctx.brainDir ? gitAccessProblem(ctx.brainDir) : null;
+  if (gitProblem) status += `\n${gitProblem}`;
   if (mailLine) status += `\n${mailLine}`;
   if (ctx.thread) status += `\n${statusBlockInstruction(operatorStatus(ctx, info), !info.held.length, ctx.projectName)}`;
   if (ctx.brainDir && ctx.thread) {
