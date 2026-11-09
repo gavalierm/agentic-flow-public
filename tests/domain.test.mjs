@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
-import { shellWrites } from '../hooks/pre-tool-use.mjs';
+import { shellWrites, shellWriteTargets } from '../hooks/pre-tool-use.mjs';
 import { resolveDomain, allowOutside } from '../scripts/config.mjs';
 
 const decision = (r) => r.json.hookSpecificOutput?.permissionDecision || null;
@@ -61,6 +61,12 @@ test('domain: sibling repos inside pass; Write, redirects and tool output dirs o
     }
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'npx wrangler deploy --dry-run --outdir scratch/wr' } });
     assert.equal(decision(r), null, 'tool output into scratch passes');
+    // hooks review C3: an output option of a program the hook does not know is a guess: ask, not deny
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: `mytool build -o ${d.outside}/out.bin` } });
+    assert.equal(decision(r), 'ask');
+    assert.match(reason(r), /may write .*out\.bin \(an output option of a program the hook does not know\)/);
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: `cat > scratch/n.md <<'EOF'\necho x > ${d.outside}/f; rm -rf ${d.outside}\nEOF` } });
+    assert.equal(decision(r), null, 'a heredoc body is data, not a command');
   } finally { d.cleanup(); }
 });
 
@@ -264,4 +270,23 @@ test('domain: a write refused outside a domain that lies outside the saved proje
     r = d.fx.hook('pre-tool-use.mjs', input);
     assert.doesNotMatch(reason(r), /projects root of this machine/, 'no saved root: no hint');
   } finally { d.cleanup(); }
+});
+
+test('shellWriteTargets: one tokenizer; quotes, heredocs and substitutions; known and guessed output options (hooks review C3)', () => {
+  const w = (c) => shellWriteTargets(c, '/w', { HOME: '/h' });
+  assert.deepEqual(w("cat > out.txt <<'EOF'\n> /etc/x; rm -rf /\nEOF\necho ok"), [{ path: '/w/out.txt', sure: true }], 'heredoc body skipped');
+  assert.deepEqual(w("echo 'a; b > /etc/q'; grep -o 'x' f.txt"), [], 'a quoted ; and > are data');
+  assert.deepEqual(w("find . -name '*.js' -o -name '*.ts'"), []);
+  assert.deepEqual(w('for f in *.md; do grep -o foo "$f"; done'), []);
+  assert.deepEqual(w('ls -o; ps -o pid='), []);
+  assert.deepEqual(w('sort -o sorted.txt in.txt'), [{ path: '/w/sorted.txt', sure: true }], 'sort -o is a write');
+  assert.deepEqual(w('pandoc a.md -o ~/doc.pdf'), [{ path: '/h/doc.pdf', sure: true }]);
+  assert.deepEqual(w('mytool -o /etc/out.bin'), [{ path: '/etc/out.bin', sure: false }], 'unknown program: a guess');
+  assert.deepEqual(w('mytool -o verbose'), [], 'a value that does not look like a path is no write');
+  assert.deepEqual(w('pnpm exec tsc --outDir=/x/o'), [{ path: '/x/o', sure: true }], 'runner resolved to the program');
+  assert.deepEqual(w('mkdir -p -m 755 /x/n'), [{ path: '/x/n', sure: true }], 'mkdir -m takes a value');
+  assert.deepEqual(w('cp -t /x/d a b'), [{ path: '/x/d', sure: true }]);
+  assert.deepEqual(w('echo $(cat a > /x/sub)'), [{ path: '/x/sub', sure: true }], 'inside $( )');
+  assert.deepEqual(w('cmd >&2 2>&1 < in.txt'), [], 'duplications and reads');
+  assert.deepEqual(w('echo x > "$OUT"'), [], 'a dynamic target is not resolved here');
 });

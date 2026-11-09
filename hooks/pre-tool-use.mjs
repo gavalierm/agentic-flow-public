@@ -7,6 +7,7 @@ import path from 'node:path';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR } from '../scripts/config.mjs';
 import { git, isInside, toPosix } from '../scripts/util.mjs';
+import { parse, programIndex } from '../scripts/shell-parse.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
 import { SUBAGENT_ALLOWED } from '../scripts/comms.mjs';
 import { readTopics } from '../scripts/records.mjs';
@@ -298,9 +299,6 @@ export function leadOf(words) {
   while (i < words.length - 1 && LEAD_WORDS.has(words[i])) i++;
   return i;
 }
-// `--outDir` (tsc) and `--outdir` (wrangler) alike; short `-o` only lower case (`curl -O` takes no value).
-const OUTPUT_LONG = /^--(out|output|outdir|out-dir|output-dir|outfile|out-file|output-file|dest|destination|target-dir|log-file|cache-dir|prefix)$/i;
-const OUTPUT_OPT = { test: (w) => w === '-o' || OUTPUT_LONG.test(w) };
 // Programs whose `-o` is no output file: the logical OR in find and test/[ (alice 2026-11-04: `find . -path ./.git -prune
 // -o -type f` was denied as a write to `-type`), "only matching" in grep and rg (a worker's `grep -o '<regex>'` was denied
 // as a write to the regex and P-054 then locked the inventory, agentic-flow-public#11), an option or format elsewhere.
@@ -326,32 +324,89 @@ export function psWriteTargets(words, prog) {
 }
 /** The value of a PowerShell argument in parentheses, `([IO.Path]::GetTempPath())`, is the path inside them. */
 const psValue = (w) => String(w).replace(/^\(+|\)+$/g, '');
-export function shellWrites(command, cwd = process.cwd(), env = process.env) {
+// Output options per program (hooks review C3): the value is a file or folder the program writes. A program not in the
+// table with `-o`/`--out*` is only a guess: it counts when the value looks like a path, and outside the boundary it asks
+// instead of a deny (`sort -o`, `pandoc -o` are writes, `ls -o`, `grep -o`, `find -o` are not).
+const OUTPUT_TABLE = {
+  curl: ['-o', '--output', '--output-dir'], wget: ['-O', '--output-document', '-P', '--directory-prefix', '-o', '--output-file', '-a', '--append-output'],
+  tsc: ['--outDir', '--outFile', '--declarationDir'], wrangler: ['--outdir'], esbuild: ['--outdir', '--outfile'], vite: ['--outDir'],
+  rollup: ['-o', '--file', '-d', '--dir'], webpack: ['-o', '--output-path'], sort: ['-o', '--output'], pandoc: ['-o', '--output'],
+  gcc: ['-o'], 'g++': ['-o'], cc: ['-o'], clang: ['-o'], 'clang++': ['-o'], go: ['-o'], rustc: ['-o', '--out-dir'], cargo: ['--target-dir'],
+  npm: ['--prefix'], pnpm: ['--dir'], pip: ['--target', '-t', '--prefix', '--root'], pip3: ['--target', '-t', '--prefix', '--root'],
+  unzip: ['-d'], '7z': ['-o'], tar: ['-C', '--directory'], gh: ['-O', '--output', '-D', '--dir'], yt: ['-o'], 'yt-dlp': ['-o', '--output', '-P', '--paths'],
+  ffmpeg: [], jq: [], openssl: ['-out'], base64: ['-o'], magick: [], convert: [], dot: ['-o'], plantuml: ['-o'], mmdc: ['-o', '--output'],
+};
+const OUTPUT_GUESS = /^--(out|output|outdir|out-dir|output-dir|outfile|out-file|output-file|dest|destination|target-dir|log-file|cache-dir|prefix)$/i;
+// Runners whose next word is the program: `npx wrangler …`, `pnpm exec tsc …`, `python3 -m pip …`.
+const RUNNERS = { npx: 1, bunx: 1, pnpx: 1, uvx: 1, 'pnpm exec': 2, 'pnpm dlx': 2, 'npm exec': 2, 'yarn dlx': 2, 'python -m': 2, 'python3 -m': 2 };
+const looksLikePath = (v, abs) => /[/\\~]/.test(v) || /^\.\.?$/.test(v) || /\.[A-Za-z0-9]{1,8}$/.test(v) || fs.existsSync(abs(v));
+
+/** What a shell command writes: [{ path, sure }]; sure = false for an output option of a program the table does not know. */
+export function shellWriteTargets(command, cwd = process.cwd(), env = process.env) {
   const found = [];
   let base = cwd;
   const home = env.HOME || '';
-  const abs = (p) => path.resolve(base, p.startsWith('~/') ? path.join(home, p.slice(2)) : p);
-  const add = (w) => { const v = unmask(w); if (v && !/[$`*?]/.test(v) && !/^\/dev\//.test(v)) found.push(abs(v)); };
-  for (const part of maskShell(command).split(/\s*(?:&&|\|\||;|\n|\|)\s*/)) {
-    const words = part.trim().split(/\s+/).filter(Boolean);
-    const lead = leadOf(words);
-    const prog = words[lead]?.split('/').pop();
-    if (prog === 'cd') { if (words[lead + 1] && !/[$`]/.test(words[lead + 1])) base = abs(unmask(words[lead + 1])); continue; }
-    const args = words.slice(lead + 1).filter((w) => !w.startsWith('-') && !/^['"]?[$<>|(`]/.test(w) && !/^[0-9]*>/.test(w));
-    if ((prog === 'cp' || prog === 'mv' || prog === 'ln' || prog === 'install') && args.length > 1) add(args[args.length - 1]);
-    if (prog === 'tee' || prog === 'mkdir' || prog === 'touch') args.forEach(add);
-    if (prog && prog !== 'cp' && prog !== 'mv') psWriteTargets(words.slice(lead + 1), prog).forEach((w) => add(psValue(w)));
-    // A bare `mktemp` / `New-TemporaryFile` creates the file in the system temp dir (`$(mktemp)` is expanded by expandTemp).
-    if ((prog === 'mktemp' && !words.some((w) => w === '-p' || w.startsWith('--tmpdir='))) || /^new-temporaryfile$/i.test(prog || '')) found.push(path.join(os.tmpdir(), 'mktemp'));
-    for (let i = lead + 1; i < words.length; i++) {
-      const w = unmask(words[i]);
-      const eq = w.match(/^(--[a-zA-Z-]+)=(.+)$/);
-      if (eq && OUTPUT_OPT.test(eq[1])) add(eq[2]);
-      else if (OUTPUT_OPT.test(w) && words[i + 1] && !(w === '-o' && OR_O_PROGS.has(String(prog).replace(/\.exe$/i, '')))) add(words[i + 1]);
+  const abs = (p) => path.resolve(base, p === '~' ? home : p.startsWith('~/') ? path.join(home, p.slice(2)) : p);
+  const add = (w, sure = true) => {
+    // the temp dir expanded by expandTemp keeps its spaces masked so it stays one word
+    const v = (typeof w === 'string' ? w : w && !w.dynamic ? w.text : '').replace(/[\u0001-\u0005]/g, (c) => UNMASK[c]) || null;
+    if (v && !/^\/dev\//.test(v) && !/^&/.test(v)) found.push({ path: abs(v), sure });
+  };
+  for (const seg of parse(expandAssigned(expandTemp(String(command))))) {
+    const words = seg.words;
+    let lead = programIndex(words);
+    const name = (w) => String(w?.text || '').split(/[\\/]/).pop().replace(/\.exe$/i, '');
+    let prog = name(words[lead]);
+    const two = `${prog} ${words[lead + 1]?.text || ''}`;
+    if (RUNNERS[two] || RUNNERS[prog]) {
+      lead += RUNNERS[two] || RUNNERS[prog];
+      while (words[lead] && words[lead].text.startsWith('-')) lead++;
+      prog = name(words[lead]);
     }
-    for (const m of part.matchAll(/(?:^|\s)[0-9]*>{1,2}\s*(\S+)/g)) if (!/^&/.test(unmask(m[1]))) add(m[1]);
+    for (const r of seg.redirects) if (['>', '>>', '>|', '&>', '&>>', '<>'].includes(r.op)) add(r.target);
+    if (!prog) continue;
+    if (prog === 'cd') { const d = words[lead + 1]; if (d && !d.dynamic) base = abs(d.text); continue; }
+    const rest = words.slice(lead + 1);
+    const positional = [];
+    for (let i = 0; i < rest.length; i++) {
+      const t = rest[i].text;
+      if (t === '--') { positional.push(...rest.slice(i + 1)); break; }
+      if (t.startsWith('-') && t.length > 1) { if (prog === 'mkdir' && (t === '-m' || t === '--mode')) i++; continue; }
+      positional.push(rest[i]);
+    }
+    if (['cp', 'mv', 'ln', 'install', 'rsync'].includes(prog)) {
+      const t = rest.findIndex((w) => w.text === '-t' || w.text === '--target-directory');
+      const eq = rest.find((w) => w.text.startsWith('--target-directory='));
+      if (t >= 0 && rest[t + 1]) add(rest[t + 1]);
+      else if (eq) add(eq.text.slice('--target-directory='.length));
+      else if (positional.length > 1) add(positional[positional.length - 1]);
+    }
+    if (prog === 'tee' || prog === 'mkdir' || prog === 'touch') positional.forEach((w) => add(w));
+    if (prog !== 'cp' && prog !== 'mv') psWriteTargets(rest.map((w) => w.text), prog).forEach((w) => add(psValue(w)));
+    // A bare `mktemp` / `New-TemporaryFile` creates the file in the system temp dir (`$(mktemp)` is expanded by expandTemp).
+    if ((prog === 'mktemp' && !rest.some((w) => w.text === '-p' || w.text.startsWith('--tmpdir='))) || /^new-temporaryfile$/i.test(prog)) found.push({ path: path.join(os.tmpdir(), 'mktemp'), sure: true });
+    const known = Object.hasOwn(OUTPUT_TABLE, prog) ? OUTPUT_TABLE[prog] : null;
+    for (let i = 0; i < rest.length; i++) {
+      const t = rest[i].text;
+      const eq = t.match(/^(--?[A-Za-z][\w-]*)=(.*)$/);
+      const opt = eq ? eq[1] : t;
+      const value = eq ? (rest[i].dynamic ? null : eq[2]) : rest[i + 1];
+      if (value == null || (!eq && !rest[i + 1])) continue;
+      if (known) { if (known.includes(opt)) add(value); continue; }
+      if (OR_O_PROGS.has(prog) && opt === '-o') continue;
+      if (opt === '-o' || OUTPUT_GUESS.test(opt)) {
+        const v = typeof value === 'string' ? value : value.dynamic ? null : value.text;
+        if (v && looksLikePath(v, abs)) add(v, false);
+      }
+    }
   }
-  return [...new Set(found)];
+  const seen = new Map();
+  for (const f of found) seen.set(f.path, (seen.get(f.path) || false) || f.sure);
+  return [...seen].map(([p, sure]) => ({ path: p, sure }));
+}
+/** Paths a shell command writes, sure or guessed (P-052). */
+export function shellWrites(command, cwd = process.cwd(), env = process.env) {
+  return shellWriteTargets(command, cwd, env).map((t) => t.path);
 }
 
 /**
@@ -1008,11 +1063,18 @@ function pathChecks(input, ctx, cwd) {
     const created = createdByThread(ctx);
     const sudo = sudoDenied(ctx, cmd);
     if (sudo) return permissionOutput('deny', sudo);
+    // A domain move writes outside the domain (mv of the domain, ~/.claude history and trust): the operator's step, confirmed
+    // with the exact command; the plan (--dry) needs nothing (carol 2026-11-09).
+    if (/\bdomain-move\.mjs\b/.test(cmd) && !/\s--dry\b/.test(cmd)) return permissionOutput('ask', `domain-move.mjs moves a domain folder and writes into ~/.claude outside the domain (P-052): the operator confirms this exact command; show the plan first (domain-move.mjs <dir> --dry)`);
     const marker = domainMarkerWrite(ctx, [...targets, ...edits, ...shellWrites(cmd, cwd)]) || servicesWrite([...targets, ...edits, ...shellWrites(cmd, cwd)], process.env, outsideAllowed(ctx));
     if (marker) return permissionOutput('deny', marker);
     if (boundaryActive(ctx)) {
-      const outside = [...shellWrites(cmd, cwd), ...edits, ...targets].find((t) => !t.startsWith('/dev/') && !insideProject(ctx, t));
+      const writes = shellWriteTargets(cmd, cwd);
+      const outside = [...writes.filter((w) => w.sure).map((w) => w.path), ...edits, ...targets].find((t) => !t.startsWith('/dev/') && !insideProject(ctx, t));
       if (outside) return permissionOutput('deny', `command writes ${outsideReason(ctx, outside)}`);
+      // An output option of a program the table does not know: maybe a write, so the operator decides (hooks review C3).
+      const guess = writes.find((w) => !w.sure && !insideProject(ctx, w.path));
+      if (guess) return permissionOutput('ask', `command may write ${toPosix(guess.path)} (an output option of a program the hook does not know) outside ${ctx.domain ? `the domain ${toPosix(ctx.domain.root)}` : 'the project'}; work files go to ${toPosix(path.join(ctx.projectDir, SCRATCH_DIR))}/ (P-052)`);
     }
     const guard = guardConfigWrite(ctx.projectDir, [...shellWrites(cmd, cwd), ...edits, ...targets]);
     if (guard) return permissionOutput('ask', guard);
