@@ -341,6 +341,20 @@ const OUTPUT_GUESS = /^--(out|output|outdir|out-dir|output-dir|outfile|out-file|
 const RUNNERS = { npx: 1, bunx: 1, pnpx: 1, uvx: 1, 'pnpm exec': 2, 'pnpm dlx': 2, 'npm exec': 2, 'yarn dlx': 2, 'python -m': 2, 'python3 -m': 2 };
 const looksLikePath = (v, abs) => /[/\\~]/.test(v) || /^\.\.?$/.test(v) || /\.[A-Za-z0-9]{1,8}$/.test(v) || fs.existsSync(abs(v));
 
+/**
+ * The command runs bin/domain-move.mjs without --dry (the script itself, not its name in a quoted text: the hook asked
+ * at a handover whose --task named the script, operator 2026-11-09).
+ */
+export function runsDomainMove(command) {
+  return parse(String(command || '')).some((seg) => {
+    const words = seg.words.map((w) => w.text);
+    const i = programIndex(seg.words);
+    const prog = String(words[i] || '').split(/[\\/]/).pop();
+    const script = /^(node|nodejs|bun)(\.exe)?$/.test(prog) ? words.slice(i + 1).find((w) => !w.startsWith('-')) : words[i];
+    return /(^|[\\/])domain-move\.mjs$/.test(script || '') && !words.includes('--dry');
+  });
+}
+
 /** What a shell command writes: [{ path, sure }]; sure = false for an output option of a program the table does not know. */
 export function shellWriteTargets(command, cwd = process.cwd(), env = process.env) {
   const found = [];
@@ -1065,7 +1079,7 @@ function pathChecks(input, ctx, cwd) {
     if (sudo) return permissionOutput('deny', sudo);
     // A domain move writes outside the domain (mv of the domain, ~/.claude history and trust): the operator's step, confirmed
     // with the exact command; the plan (--dry) needs nothing (carol 2026-11-09).
-    if (/\bdomain-move\.mjs\b/.test(cmd) && !/\s--dry\b/.test(cmd)) return permissionOutput('ask', `domain-move.mjs moves a domain folder and writes into ~/.claude outside the domain (P-052): the operator confirms this exact command; show the plan first (domain-move.mjs <dir> --dry)`);
+    if (runsDomainMove(cmd)) return permissionOutput('ask', `domain-move.mjs moves a domain folder and writes into ~/.claude outside the domain (P-052): the operator confirms this exact command; show the plan first (domain-move.mjs <dir> --dry)`);
     const marker = domainMarkerWrite(ctx, [...targets, ...edits, ...shellWrites(cmd, cwd)]) || servicesWrite([...targets, ...edits, ...shellWrites(cmd, cwd)], process.env, outsideAllowed(ctx));
     if (marker) return permissionOutput('deny', marker);
     if (boundaryActive(ctx)) {

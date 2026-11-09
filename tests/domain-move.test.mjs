@@ -106,5 +106,8 @@ test('domain move: the write hook asks the operator before a move, the plan runs
     assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs ~/agentic/Carol'), 'ask');
     assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs finish ~/agentic/Carol'), 'ask');
     assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs ~/agentic/Carol --dry'), null);
+    // operator 2026-11-09: the name of the script in a quoted text is no move
+    assert.equal(decision('node ~/.claude/skills/workflow/bin/save.mjs handover t --task "vydané: domain-move.mjs presun domény"'), null);
+    assert.equal(decision('git log --grep domain-move.mjs; echo domain-move.mjs'), null);
   } finally { fx.cleanup(); }
 });
