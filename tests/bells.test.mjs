@@ -306,3 +306,10 @@ test('pause: a paused topic gets no continue ring and no auto timer; its end rin
     assert.equal(back.paused_until, undefined);
   } finally { fx.cleanup(); }
 });
+
+test('classifyPrompt: an operator rejection is a decision to save, before the save phrases (mojprojekt-web 2026-11-09)', () => {
+  assert.equal(classifyPrompt('roky realizácií tam nechcem', policy), 'reject');
+  assert.equal(classifyPrompt('Nepáči sa mi tá časová os', policy), 'reject', 'not save: „nepáči sa mi“ holds „páči sa mi“');
+  assert.equal(classifyPrompt('páči sa mi to', policy), 'save');
+  assert.equal(classifyPrompt('pridaj sekciu kontakt', policy), null);
+});

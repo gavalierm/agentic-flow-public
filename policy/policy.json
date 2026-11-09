@@ -172,6 +172,23 @@
       "wrong"
     ],
     "done_prompts": ["finish", "hotovo", "uzavri to", "uzavri", "uzavri tému", "done", "workflow:done"],
+    "reject_phrases": [
+      "nechcem",
+      "nepáči sa mi",
+      "nepáčí sa mi",
+      "nedávaj tam",
+      "nepridávaj",
+      "daj to preč",
+      "daj preč",
+      "odstráň to",
+      "to tam nebude",
+      "nie takto",
+      "i don't want",
+      "i do not want",
+      "i don't like",
+      "remove that",
+      "drop that"
+    ],
     "save_phrases": [
       "ulož",
       "zapamätaj",
