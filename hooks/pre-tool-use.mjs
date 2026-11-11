@@ -9,7 +9,7 @@ import { loadContext, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, se
 import { git, isInside, toPosix } from '../scripts/util.mjs';
 import { parse, programIndex } from '../scripts/shell-parse.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
-import { SUBAGENT_ALLOWED } from '../scripts/comms.mjs';
+import { SUBAGENT_ALLOWED, recordWaitingOperator } from '../scripts/comms.mjs';
 import { readTopics } from '../scripts/records.mjs';
 import { knowledgeDirOf, PROJECT_KNOWLEDGE } from '../scripts/repo-knowledge.mjs';
 import { findSecret } from '../scripts/secrets.mjs';
@@ -454,7 +454,7 @@ function outsideReason(ctx, abs) {
 function rootHint(ctx, abs) {
   const root = machineRoot();
   if (!root || !ctx.domain || isInside(root, ctx.domain.root) || !isInside(root, abs)) return '';
-  return `; this domain ${toPosix(ctx.domain.root)} is outside the projects root of this machine ${toPosix(root)} (project.mjs root): moving the domain there is the operator's step, give it as an item under **Operátor:** (mv ${toPosix(ctx.domain.root)} ${toPosix(path.join(root, path.basename(ctx.domain.root)))}, then adapter.mjs in each project)`;
+  return `; this domain ${toPosix(ctx.domain.root)} is outside the projects root of this machine ${toPosix(root)} (project.mjs root): moving the domain there is the operator's step, give it as an item under **Úlohy pre operátora:** (mv ${toPosix(ctx.domain.root)} ${toPosix(path.join(root, path.basename(ctx.domain.root)))}, then adapter.mjs in each project)`;
 }
 /**
  * The target belongs to another workflow project (its folder or a topic copy has .workflow.json): its work runs in a
@@ -872,7 +872,11 @@ export function run(input) {
   // P-061 (operator 2026-11-08): a question to the operator is asked in the dialog, so T3 shows the thread as "Awaiting Input";
   // a text question was lost in the thread among the mail turns. The time is kept for the Stop hook (question asked this turn).
   if (tool === 'AskUserQuestion' && !input.agent_id && ctx.brainDir && ctx.thread) {
-    writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), dialog_at: new Date().toISOString() });
+    const st = { ...readThreadState(ctx.brainDir, ctx.thread), dialog_at: new Date().toISOString() };
+    writeThreadState(ctx.brainDir, ctx.thread, st);
+    // P-061 (V1): the dialog holds the turn, so the thread cannot pick up mail: the open turn record in the mail says it waits for
+    // the operator (PostToolUse clears it); mail then answers a sender `otázka` instead of "no reply".
+    recordWaitingOperator(ctx, true, st.turn_opened_at ?? null);
   }
 
   // P-055: work for another agent goes through mail, never straight into its thread.

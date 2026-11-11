@@ -140,12 +140,12 @@ test('skill --script: the script is stored next to SKILL.md in one brain commit;
     fs.writeFileSync(bash, '#!/usr/bin/env bash\na=(x y); echo "${a[1]}"\n');
     const rb = fx.run('save.mjs', ['skill', 'release-x', '--content', 'bash', '--origin', 'routine', '--script', bash, '--replace']);
     assert.match(rb.out, /script runs as: bash \/.+\/\.claude\/skills\/release-x\/arrays\.sh/, 'a bash shebang is run by bash, sh breaks arrays (Alice 2026-11-09)');
-    const py = path.join(fx.root, 'analyza_top10.py');
+    const py = path.join(fx.root, 'analysis_top10.py');
     fs.writeFileSync(py, 'print("ok")\n');
     const r3 = fx.run('save.mjs', ['skill', 'release-x', '--content', 'py', '--origin', 'routine', '--script', py, '--replace']);
     assert.equal(r3.status, 0, r3.out);
-    assert.equal(fx.read('skills/agentic/release-x/analyza_top10.py'), 'print("ok")\n', 'a Python script is stored with the skill (#24)');
-    assert.match(r3.out, new RegExp(`script runs as: ${process.platform === 'win32' ? 'python' : 'python3'} /.+/\\.claude/skills/release-x/analyza_top10\\.py`), 'a Python script is run by python');
+    assert.equal(fx.read('skills/agentic/release-x/analysis_top10.py'), 'print("ok")\n', 'a Python script is stored with the skill (#24)');
+    assert.match(r3.out, new RegExp(`script runs as: ${process.platform === 'win32' ? 'python' : 'python3'} /.+/\\.claude/skills/release-x/analysis_top10\\.py`), 'a Python script is run by python');
     fs.writeFileSync(src, '#!/usr/bin/env node\nconsole.log("v2");\n');
     r = fx.run('save.mjs', ['skill', 'release-x', '--content', 'v2', '--origin', 'routine', '--script', src, '--replace']);
     assert.equal(r.status, 0, r.out);
@@ -157,6 +157,28 @@ test('skill --script: the script is stored next to SKILL.md in one brain commit;
     r = fx.run('save.mjs', ['skill', 'release-x', '--remove', '--reason', 'test']);
     assert.equal(r.status, 0, r.out);
     assert.equal(fs.existsSync(path.dirname(printed)), false, 'a removed skill leaves the project at once (pilot 2026-11-08)');
+  } finally { fx.cleanup(); }
+});
+
+const HAS_WORDS = fs.existsSync('/usr/share/dict/words');
+test('skill --script: names must be English words (P-049)', { skip: !HAS_WORDS && 'no system word list' }, () => {
+  const fx = setup();
+  try {
+    const mk = (n) => { const f = path.join(fx.root, n); fs.writeFileSync(f, 'echo ok\n'); return f; };
+    const save = (script, content) => fx.run('save.mjs', ['skill', 'name-x', '--description', 'Použi, keď nasadzuješ', '--content', content, '--origin', 'routine', '--script', script, '--replace']);
+    let r = save(mk('nasad-produkciu.sh'), 'run it');
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /nasad/); assert.match(r.stderr, /produkciu/); assert.match(r.stderr, /deploy-cloudflare\.sh/);
+    assert.equal(save(mk('deploy-cloudflare.sh'), 'run it').status, 0);
+    assert.equal(save(mk('ws2cf.mjs'), 'run it').status, 0, 'a token with a digit passes');
+    assert.equal(save(mk('beszel-check.sh'), 'Beszel monitors the hosts; beszel is the product').status, 0, 'a product named in the skill text passes');
+    r = save(mk('nasad-produkciu.sh'), 'call /x/.claude/skills/name-x/nasad-produkciu.sh');
+    assert.equal(r.status, 1, 'the script own name in its path does not count');
+    assert.match(r.stderr, /nasad/);
+    // Slovak prose without diacritics and a Slovak skill folder do not make a token English (dev-nahlad-tunel/nahlad.sh).
+    r = save(mk('nahlad.sh'), 'spusti /x/.claude/skills/dev-nahlad-tunel/nahlad.sh; nahlad je tunel');
+    assert.equal(r.status, 1, 'nahlad passed on the folder name or prose'); assert.match(r.stderr, /nahlad/);
+    assert.equal(save(mk('zentra-dns.sh'), 'kľúč ZENTRA_KEY zo Zentry').status, 0, 'an upper-case identifier names the product');
   } finally { fx.cleanup(); }
 });
 

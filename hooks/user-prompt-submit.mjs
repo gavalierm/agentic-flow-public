@@ -77,6 +77,10 @@ function formatTtl(s) {
 export function messageBellLine(kind, id, data) {
   const d = data && typeof data === 'object' ? data : {};
   const head = d.level && d.to ? `message ${id} (${d.level} → ${d.to})` : `message ${id}`;
+  if (kind === 'no-reply' && d.answer_state === 'otázka' && d.answer_origin === 'code') {
+    // P-061 (V1, phase 2): the recipient's turn waits for its operator's dialog and could not pick up; the mail answered for it.
+    return `${head}: reply otázka (the recipient's operator decides; its thread waits for the dialog): do not resend, promote or ask your operator the same; check the state later with comms message --id ${id} (P-061)`;
+  }
   if (kind === 'no-reply') {
     const ttl = formatTtl(d.ttl_s);
     return `${head}: no reply${ttl ? ` within ${ttl}` : ''}${P047_ACTIONS}`;

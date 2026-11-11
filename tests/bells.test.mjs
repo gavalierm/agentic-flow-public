@@ -51,6 +51,13 @@ test('classifyPrompt: only the exact whole prompt is a bell; a quoted template i
   assert.equal(classifyPrompt('to nefunguje', policy), 'error');
 });
 
+test('messageBellLine: a no-reply bell of a message the mail answered `otázka` (recipient waits for its operator) reads reply otázka, not no reply (P-061 V1)', () => {
+  const line = messageBellLine('no-reply', 'm1', { level: 'assist', to: 'project/beta', ttl_s: 1800, answer_state: 'otázka', answer_origin: 'code' });
+  assert.match(line, /^message m1 \(assist → project\/beta\): reply otázka \(/);
+  assert.doesNotMatch(line, /no reply|promote to blocker, send elsewhere/);
+  assert.match(messageBellLine('no-reply', 'm1', { level: 'assist', to: 'project/beta', answer_state: 'otázka', answer_origin: 'reply' }), /: no reply/, 'a real reply never gets here');
+});
+
 test('messageBellLine: detail from message --id, without it a line without detail', () => {
   assert.equal(messageBellLine('no-reply', 'm1', { level: 'assist', to: 'project/beta', ttl_s: 1800 }), `message m1 (assist → project/beta): no reply within 30m${ACTIONS}`);
   assert.equal(messageBellLine('undelivered', 'm2', { level: 'blocker', to: 'thread:t7', undelivered_holder: 't7', undelivered_reason: 'thread archived' }),
@@ -198,7 +205,7 @@ test('turn record: a reply that waits for or asks the operator does not hand the
     fx.hook('user-prompt-submit.mjs', { prompt: 'vypíš otázky' });
     fx.stub.reset();
     // Bob's tracker thread was rung 76 s after this reply.
-    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Položky: 1. a, 2. b.\n\n**Pre teba:** Ktoré z položiek mám urobiť? Odporúčam obe.\n\nStav: otázka' });
+    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Položky: 1. a, 2. b.\n\n**Otázky na operátora:** Ktoré z položiek mám urobiť? Odporúčam obe.\n\nStav: otázka' });
     let closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
     assert.equal(closed.length, 1);
     assert.notEqual(val(closed[0], 'next'), 'spracovať operátorove otázky');
@@ -270,7 +277,7 @@ test('operator wait: a question to the operator arms the auto timer in hours; a 
   const fx = stubbed({ messages: [] });
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
-    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: '**Pre teba:** Mám to vydať hneď? Odporúčam áno.\n\nStav: otázka' });
+    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: '**Otázky na operátora:** Mám to vydať hneď? Odporúčam áno.\n\nStav: otázka' });
     assert.equal(Math.round(hoursAhead(tstate(fx).timer.at)), 4);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Build beží.\n\nStav: čakám (na build)' });

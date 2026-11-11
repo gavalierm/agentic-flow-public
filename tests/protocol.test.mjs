@@ -12,7 +12,7 @@ import { setTimer } from '../scripts/waker.mjs';
 const stateOf = (fx) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), 'utf8'));
 
 test('parseReply: the state is the last line only; diacritics and markdown are tolerated; the question is the first item under Operátor', () => {
-  assert.deepEqual(parseReply('Vydané.\n\nStav: hotovo'), { state: 'hotovo', question: null, waitFor: null, operator: null, step: null });
+  assert.deepEqual(parseReply('Vydané.\n\nStav: hotovo'), { state: 'hotovo', question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null });
   assert.equal(parseReply('Hotové.\n**Stav:** cakam').state, 'čakám');
   assert.equal(parseReply('x\nstav: Otázka.\n\n').state, 'otázka');
   assert.equal(parseReply('Stav: hotovo\nA ešte niečo urobím neskôr.').state, null, 'the state must be the last line');
@@ -20,13 +20,13 @@ test('parseReply: the state is the last line only; diacritics and markdown are t
   assert.equal(parseReply('Commitnem a pushnem pri tvojej najbližšej správe.').state, null, 'a promise is no state');
   assert.equal(parseReply('').state, null);
   assert.equal(parseReply(undefined).state, null);
-  const q = parseReply('Návrh je hotový.\n\n**Operátor:** Vydať teraz? Odporúčam áno.\n\nStav: otázka');
-  assert.deepEqual(q, { state: 'otázka', question: 'Vydať teraz?', waitFor: null, operator: ['Vydať teraz? Odporúčam áno.'], step: null });
-  assert.equal(parseReply('**Pre teba:** Vydať teraz?\n\nStav: otázka').question, 'Vydať teraz?', 'the marker before v0.9.43 still opens the block');
-  const list = parseReply('Hotové.\n\n**Operátor:**\n- [ ] Potvrď zmazanie starého priečinka (odporúčam áno)\n- [ ] Spusti wake install\n\nĎalší text.\n\nStav: otázka');
+  const q = parseReply('Návrh je hotový.\n\n**Otázky na operátora:** Vydať teraz? Odporúčam áno.\n\nStav: otázka');
+  assert.deepEqual(q, { state: 'otázka', question: 'Vydať teraz?', waitFor: null, operator: ['Vydať teraz? Odporúčam áno.'], questions: ['Vydať teraz? Odporúčam áno.'], tasks: null, legacyOperator: false, emptySection: null, step: null });
+  assert.equal(parseReply('**Pre teba:** Vydať teraz?\n\nStav: otázka').question, 'Vydať teraz?', 'the marker before v0.9.43 still opens the block (legacy)');
+  const list = parseReply('Hotové.\n\n**Otázky na operátora:**\n- [ ] Potvrď zmazanie starého priečinka (odporúčam áno)\n- [ ] Spusti wake install\n\nĎalší text.\n\nStav: otázka');
   assert.deepEqual(list.operator, ['Potvrď zmazanie starého priečinka (odporúčam áno)', 'Spusti wake install'], 'checklist items up to an empty line');
   assert.equal(list.question, 'Potvrď zmazanie starého priečinka (odporúčam áno)', 'a confirmation is an item without a question mark');
-  assert.deepEqual(parseReply('x\n\n**Operátor:** nič\n\nStav: hotovo').operator, [], '"nič" is no item');
+  assert.deepEqual(parseReply('x\n\n**Otázky na operátora:** nič\n\nStav: hotovo').operator, [], '"nič" is no item');
   assert.equal(parseReply('Login čaká na kód, stačí napísať „pokračuj“.\n\nStav: hotovo').step, 'napísať „pokračuj', 'asking the operator to write "pokračuj" is a step (bob 2026-11-11)');
   assert.equal(parseReply('Napíš pokračuj a dokončím to.\n\nStav: hotovo').step, 'Napíš pokračuj');
   assert.equal(parseReply('Pokračujem v oprave.\n\nStav: hotovo').step, null, 'own continuation is no ask');
@@ -53,8 +53,8 @@ test('Stop: "otázka" is asked in the dialog; a reply after the dialog needs an 
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     assert.match(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Vydať teraz?\n\nStav: otázka' }).json.reason, /with AskUserQuestion now/);
     fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
-    assert.match(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Vydať teraz?\n\nStav: otázka' }).json.reason, /no item under \*\*Operátor:\*\*/);
-    const ok = 'Návrh je hotový.\n\n**Operátor:** Vydať teraz? Odporúčam áno.\n\nStav: otázka';
+    assert.match(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Vydať teraz?\n\nStav: otázka' }).json.reason, /no item under \*\*Otázky na operátora:\*\*/);
+    const ok = 'Návrh je hotový.\n\n**Otázky na operátora:** Vydať teraz? Odporúčam áno.\n\nStav: otázka';
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: ok }).json.decision, undefined);
     const t = stateOf(fx).timer;
     assert.ok(t?.auto && Date.parse(t.at) - Date.now() > 3 * 3600_000, 'waiting on the operator rings in hours');
@@ -78,7 +78,7 @@ test('Stop: "hotovo" while the handover has a next step blocks, also in a bell t
 test('parseReply: čakám carries what it waits for, in parentheses or after "na"; other states take no text', () => {
   assert.equal(parseReply('Pracovník beží.\n\nStav: čakám (na návrh od pracovníka)').waitFor, 'na návrh od pracovníka');
   assert.equal(parseReply('**Stav:** cakam na build.').waitFor, 'na build');
-  assert.deepEqual(parseReply('Stav: čakám'), { state: 'čakám', question: null, waitFor: null, operator: null, step: null });
+  assert.deepEqual(parseReply('Stav: čakám'), { state: 'čakám', question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null });
   assert.equal(parseReply('Stav: čakám ()').waitFor, null, 'empty parentheses name nothing');
   assert.equal(parseReply('Stav: hotovo (všetko)').state, null, 'only čakám may carry text');
 });
@@ -112,11 +112,11 @@ test('Stop: a step written as prose or an Operátor item under "hotovo" blocks o
     const carol = '- **Ostáva:** `~/Work/agenti/carol` naďalej existuje. Zmažem ho až na tvoje potvrdenie.\n\nStav: hotovo';
     const r = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: carol });
     assert.equal(r.json.decision, 'block');
-    assert.match(r.json.reason, /writes a step as prose \("Ostáva:.*Operátor/s);
-    const item = 'Presun je hotový.\n\n**Operátor:**\n- [ ] Potvrď zmazanie ~/Work/agenti/carol (odporúčam áno)\n\nStav: hotovo';
+    assert.match(r.json.reason, /writes a step as prose \("Ostáva:.*Úlohy pre operátora/s);
+    const item = 'Presun je hotový.\n\n**Úlohy pre operátora:**\n- [ ] Potvrď zmazanie ~/Work/agenti/carol (odporúčam áno)\n\nStav: hotovo';
     const r2 = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: item });
     assert.equal(r2.json.decision, 'block');
-    assert.match(r2.json.reason, /under \*\*Operátor:\*\* but declares "Stav: hotovo".*Stav: otázka/s);
+    assert.match(r2.json.reason, /under \*\*Otázky na operátora:\*\* \/ \*\*Úlohy pre operátora:\*\* but declares "Stav: hotovo".*Stav: otázka/s);
     assert.match(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: item.replace('Stav: hotovo', 'Stav: čakám (na odpoveď)') }).json.reason, /declares "Stav: čakám/);
     // Ending anyway: the item still waits on the operator, so the thread gets the operator timer, in hours.
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: item }).json.decision, undefined);
@@ -136,5 +136,49 @@ test('Stop: "napíš pokračuj" under hotovo blocks once; the operator is no wak
     const r = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: bob });
     assert.equal(r.json.decision, 'block');
     assert.match(r.json.reason, /writes a step as prose \("napísať „pokračuj".*save handover --next/s);
+  } finally { fx.cleanup(); }
+});
+
+test('parseReply: questions and tasks are parsed separately, one alone, the legacy heading, an empty section', () => {
+  const both = parseReply('Hotové.\n\n**Otázky na operátora:**\n- [ ] Vydať teraz? (odporúčam áno)\n\n**Úlohy pre operátora:**\n- [ ] Prihlás sa na stroji B\n- [ ] Klikni na Povoliť\n\nStav: otázka');
+  assert.deepEqual(both.questions, ['Vydať teraz? (odporúčam áno)']);
+  assert.deepEqual(both.tasks, ['Prihlás sa na stroji B', 'Klikni na Povoliť']);
+  assert.deepEqual(both.operator, [...both.questions, ...both.tasks]);
+  assert.equal(both.question, 'Vydať teraz?');
+  assert.equal(both.legacyOperator, false);
+  assert.equal(both.emptySection, null);
+  const onlyTasks = parseReply('x\n\nÚlohy pre operátora:\n- Spusti install\n\nStav: otázka');
+  assert.equal(onlyTasks.questions, null);
+  assert.deepEqual(onlyTasks.tasks, ['Spusti install']);
+  assert.equal(onlyTasks.question, 'Spusti install', 'the first task when there is no question');
+  const ascii = parseReply('x\n\n**otazky na operatora:** Ktorý variant?\n\n**Ulohy pre operatora:** Re-auth\n\nStav: otázka');
+  assert.deepEqual(ascii.questions, ['Ktorý variant?']);
+  assert.deepEqual(ascii.tasks, ['Re-auth']);
+  assert.equal(parseReply('Hotovo.\n\nStav: hotovo').operator, null);
+  const legacy = parseReply('x\n\n**Operátor:**\n- [ ] Potvrď\n\nStav: otázka');
+  assert.deepEqual(legacy.operator, ['Potvrď']);
+  assert.equal(legacy.legacyOperator, true);
+  assert.equal(legacy.questions, null);
+  assert.equal(parseReply('x\n\n**Úlohy pre operátora:** nič\n\nStav: hotovo').emptySection, '**Úlohy pre operátora:**');
+  assert.equal(parseReply('x\n\n**Otázky na operátora:**\n\nStav: hotovo').emptySection, '**Otázky na operátora:**');
+});
+
+test('Stop: the old heading and an empty section block once with their own reason; tasks alone under "hotovo" are blocked', () => {
+  const fx = setup();
+  try {
+    fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+    const stop = (msg, active = false) => fx.hook('stop.mjs', { stop_hook_active: active, last_assistant_message: msg });
+    const legacy = 'Návrh je hotový.\n\n**Operátor:** Vydať teraz? Odporúčam áno.\n\nStav: otázka';
+    const r = stop(legacy);
+    assert.equal(r.json.decision, 'block');
+    assert.match(r.json.reason, /old heading \*\*Operátor:\*\*: split it into \*\*Otázky na operátora:\*\*.*\*\*Úlohy pre operátora:\*\*.*omit the heading that has no item/s);
+    assert.equal(stop(legacy, true).json.decision, undefined, 'blocked once per turn');
+    const empty = stop('Hotové.\n\n**Úlohy pre operátora:** nič\n\nStav: hotovo');
+    assert.equal(empty.json.decision, 'block');
+    assert.match(empty.json.reason, /heading \*\*Úlohy pre operátora:\*\* with no item: omit a section/);
+    const tasks = 'Presun je hotový.\n\n**Úlohy pre operátora:**\n- [ ] Prihlás sa na stroji B\n\nStav: hotovo';
+    const t = stop(tasks);
+    assert.equal(t.json.decision, 'block');
+    assert.match(t.json.reason, /but declares "Stav: hotovo".*Stav: otázka/s);
   } finally { fx.cleanup(); }
 });

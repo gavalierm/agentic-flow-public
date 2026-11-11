@@ -6,7 +6,7 @@
 import { readHookInput, emit, isMain, contextOutput } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { bufferAppend, normalizeCommand } from '../scripts/logs.mjs';
-import { mailCount } from '../scripts/comms.mjs';
+import { mailCount, recordWaitingOperator } from '../scripts/comms.mjs';
 import { mailboxTopics } from '../scripts/topic.mjs';
 import path from 'node:path';
 import { settleOwn, settleShell } from '../scripts/own-files.mjs';
@@ -129,6 +129,8 @@ export function changedFiles(input) {
 export function run(input, now = Date.now()) {
   const ctx = loadContext({ requireBrain: false });
   if (!ctx.brainDir) return {};
+  // P-061 (V1): the operator answered (or dismissed) the dialog: the open turn no longer waits for the operator.
+  if ((input.tool_name === 'AskUserQuestion') && !input.agent_id && ctx.thread) recordWaitingOperator(ctx, false, readThreadState(ctx.brainDir, ctx.thread).turn_opened_at ?? null);
   settleOwn(ctx, changedFiles(input));
   if (input.tool_name === 'Bash' || input.tool_name === 'PowerShell') settleShell(ctx, input.tool_use_id);
   const entry = toEntry(input, ctx.policy);

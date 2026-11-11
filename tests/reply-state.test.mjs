@@ -186,3 +186,46 @@ test('mail line: an interim reply is `<id> reply <state>`, a final or old reply 
     { id: 'm5', level: 'assist', reply_to: null, reply_state: null },
   ]), ['m1 reply otázka', 'm2 reply čakám', 'm3 reply', 'm4 reply', 'm5 assist']);
 });
+
+test('hotovo guard (phase 2): the previous turn ended "otázka" and this one was not started by the operator: hotovo is refused, otázka passes', { skip }, async () => {
+  const x = await exchange();
+  try {
+    const id = x.ask();
+    // The turn that asks the operator ends "Stav: otázka" (the Stop hook records how the turn ended).
+    x.fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+    x.fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+    const stop = x.fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Návrh je hotový.\n\n**Otázky na operátora:** Variant A alebo B? Odporúčam A.\n\nStav: otázka' });
+    assert.equal(stop.json?.decision, undefined, stop.out);
+    assert.equal(x.a().last_end_state, 'otázka');
+    // A mail bell starts the next turn: the operator did not speak.
+    x.fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
+    assert.equal(x.a().turn_source, 'wake');
+    const bad = x.reply(id, 'hotovo', 'variant A');
+    assert.notEqual(bad.status, 0, 'hotovo must not pass');
+    assert.match(bad.stderr, /previous turn of this thread ended "Stav: otázka".*true state is otázka/s);
+    assert.match(x.fx.runB('comms.mjs', ['message', '--id', id]).stdout, /\| no answer/, 'nothing was sent');
+    assert.equal(x.reply(id, 'otázka', 'operator decides; I recommend A').status, 0);
+    // The operator spoke: the next turn is theirs, hotovo is true.
+    x.fx.hook('user-prompt-submit.mjs', { prompt: 'variant A' });
+    assert.equal(x.a().turn_source, 'operator');
+    assert.equal(x.reply(id, 'hotovo', 'variant A, decided by the operator').status, 0);
+  } finally { await x.done(); }
+});
+
+test('hotovo guard (phase 2): the operator answers a dialog in a turn a mail bell started: hotovo passes', { skip }, async () => {
+  const x = await exchange();
+  try {
+    const id = x.ask();
+    x.fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+    x.fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+    x.fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Návrh je hotový.\n\n**Otázky na operátora:** Variant A alebo B? Odporúčam A.\n\nStav: otázka' });
+    assert.equal(x.a().last_end_state, 'otázka');
+    x.fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
+    assert.equal(x.a().turn_source, 'wake');
+    // The dialog of this turn returns only with the operator's answer.
+    x.fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+    x.fx.hook('post-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] }, tool_response: {} });
+    const ok = x.reply(id, 'hotovo', 'variant A, answered by the operator in the dialog');
+    assert.equal(ok.status, 0, ok.stderr);
+  } finally { await x.done(); }
+});

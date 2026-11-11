@@ -264,7 +264,7 @@ test('domain: a write refused outside a domain that lies outside the saved proje
     const input = { tool_name: 'Write', tool_input: { file_path: path.join(domains, 'Carol', 'a.txt'), content: 'x' } };
     let r = d.fx.hook('pre-tool-use.mjs', input, { env: { WORKFLOW_ROOT_FILE: rootFile } });
     assert.equal(decision(r), 'deny');
-    assert.match(reason(r), /this domain .* is outside the projects root of this machine .*Domains \(project\.mjs root\): moving the domain there is the operator's step, give it as an item under \*\*Operátor:\*\*/);
+    assert.match(reason(r), /this domain .* is outside the projects root of this machine .*Domains \(project\.mjs root\): moving the domain there is the operator's step, give it as an item under \*\*Úlohy pre operátora:\*\*/);
     r = d.fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(d.outside, 'b.txt'), content: 'x' } }, { env: { WORKFLOW_ROOT_FILE: rootFile } });
     assert.doesNotMatch(reason(r), /projects root of this machine/, 'a target outside the saved root: no hint');
     r = d.fx.hook('pre-tool-use.mjs', input);

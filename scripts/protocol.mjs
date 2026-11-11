@@ -1,12 +1,12 @@
 // P-061: the reply protocol. The end of a turn is declared, not guessed from prose: the last line of the final reply is
-// `Stav: hotovo|otázka|čakám` and everything that waits on the operator is a checklist under `**Operátor:**`. Code reads
+// `Stav: hotovo|otázka|čakám` and everything that waits on the operator is a checklist under `**Otázky na operátora:**` (decisions, confirmations) or `**Úlohy pre operátora:**` (steps only the operator does). Code reads
 // only this fixed form and checks the
 // declared state against facts (handover, wakers); any other wording of a promise or a wait is no state at all
 // (operator 2026-11-08: "a hook that catches variants of promises is never reliable, the agent writes another one").
 // `čakám` names what it waits for: `Stav: čakám (na <čo>)` (operator 2026-11-08: "musí napísať aj na čo sa čaká").
 // A step is never a sentence (operator 2026-11-09: carol ended "Ostáva: … zmažem ho až na tvoje potvrdenie" with
 // "Stav: hotovo"; "všetky zadávania pokynov, čakania… musia byť protokolované, nie voľný text"): what the operator decides,
-// confirms or does is an item of the Operátor checklist, an own step is done or saved in the handover, a wait is the
+// confirms or does is an item of one of the two operator checklists, an own step is done or saved in the handover, a wait is the
 // state line. A label that writes a step as prose ("Ostáva:", "Ďalší krok:") is outside the protocol.
 
 export const STATES = ['hotovo', 'otázka', 'čakám'];
@@ -21,9 +21,12 @@ function waitTarget(rest) {
   return /\p{L}{2,}/u.test(t) ? t : null;
 }
 
-export const OPERATOR_MARK = '**Operátor:**';
-// "Pre teba" is the marker before v0.9.43; it still opens the block.
-const OPERATOR_BLOCK = /(^|\n)[ \t]*[*_]*(?:Operátor|Operator|Pre teba)[*_]*[ \t]*:[*_]*[ \t]*/iu;
+export const QUESTIONS_MARK = '**Otázky na operátora:**';
+export const TASKS_MARK = '**Úlohy pre operátora:**';
+const QUESTIONS_BLOCK = /(^|\n)[ \t]*[*_]*(?:Otázky|Otazky|Otázka|Otazka)[ \t]+na[ \t]+(?:operátora|operatora)[*_]*[ \t]*:[*_]*[ \t]*/iu;
+const TASKS_BLOCK = /(^|\n)[ \t]*[*_]*(?:Úlohy|Ulohy|Úloha|Uloha)[ \t]+pre[ \t]+(?:operátora|operatora)[*_]*[ \t]*:[*_]*[ \t]*/iu;
+// The single heading before the split (P-061 until 2026-11-11); "Pre teba" is the marker before v0.9.43. Both still parse.
+const LEGACY_BLOCK = /(^|\n)[ \t]*[*_]*(?:Operátor|Operator|Pre teba)[*_]*[ \t]*:[*_]*[ \t]*/iu;
 const ITEM = /^[ \t]*(?:[-*+][ \t]+(?:\[[ xX]?\][ \t]*)?|\d+[.)][ \t]+|\[[ xX]?\][ \t]*)(.*)$/;
 // A step written as prose under a label, at the start of a line (list marker and markdown allowed).
 const STEP_LABEL = /(^|\n)[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?[*_]*(ostáva|zostáva|zvyšok|ďalší krok|ďalšie kroky|ďalej treba|next steps?|remaining|todo|to do)[*_]*[ \t]*:[*_]*[ \t]*([^\n]*)/iu;
@@ -31,9 +34,9 @@ const STEP_LABEL = /(^|\n)[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?[*_]*(ostáva|zost
 const CONTINUE_ASK = /(?:napíš|napíšte|napis|napiste|napísať|napisat|write|type|say)[ \t]+[„"'`*_]*(pokračuj|pokracuj|continue|go on)(?![\p{L}])/iu;
 const NOTHING = /^(nič|nic|žiadn\p{L}*|nothing|none|-|–|—)?[.\s]*$/iu;
 
-/** The items of the Operátor block: inline text after the marker and the list lines under it, up to an empty line. */
-function operatorItems(body) {
-  const m = OPERATOR_BLOCK.exec(body);
+/** The items of a heading block: inline text after the marker and the list lines under it, up to an empty line. */
+function blockItems(body, re) {
+  const m = re.exec(body);
   if (!m) return null;
   const rest = body.slice(m.index + m[0].length).split('\n');
   const items = [];
@@ -49,13 +52,16 @@ function operatorItems(body) {
 }
 
 /**
- * The declared state of a reply ('hotovo' | 'otázka' | 'čakám') or null; `operator`, the items under **Operátor:**
- * (null without the block); `question`, the first item (up to its question mark when it has one) or null; for `čakám`
+ * The declared state of a reply ('hotovo' | 'otázka' | 'čakám') or null; `questions` and `tasks`, the items under
+ * **Otázky na operátora:** and **Úlohy pre operátora:** (null without the heading); `operator`, all of them together
+ * (plus the items of the old **Operátor:** heading, `legacyOperator: true`; null without any heading); `emptySection`,
+ * the heading that has no item or null; `question`, the first question (else the first task) item, up to its question
+ * mark when it has one, or null; for `čakám`
  * what it waits for (`waitFor`, null when the line does not say it); `step`, a step written as prose under a label
  * ("Ostáva: …") or null. Only `čakám` may carry text after the word.
  */
 export function parseReply(text) {
-  const out = { state: null, question: null, waitFor: null, operator: null, step: null };
+  const out = { state: null, question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null };
   if (typeof text !== 'string' || !text.trim()) return out;
   const lines = text.replace(/\s+$/, '').split('\n');
   const last = lines[lines.length - 1].replace(/[*_`>]/g, '').trim();
@@ -71,9 +77,17 @@ export function parseReply(text) {
   }
   const body = lines.slice(0, -1).join('\n');
   const prose = body.replace(/```[\s\S]*?```/g, '');
-  out.operator = operatorItems(prose);
-  if (out.operator?.length) {
-    const q = out.operator[0];
+  out.questions = blockItems(prose, QUESTIONS_BLOCK);
+  out.tasks = blockItems(prose, TASKS_BLOCK);
+  const legacy = blockItems(prose, LEGACY_BLOCK);
+  out.legacyOperator = !!legacy;
+  if (out.questions || out.tasks || legacy) out.operator = [...(out.questions || []), ...(out.tasks || []), ...(legacy || [])];
+  for (const [items, mark] of [[out.questions, QUESTIONS_MARK], [out.tasks, TASKS_MARK], [legacy, '**Operátor:**']]) {
+    if (items && !items.length) { out.emptySection = mark; break; }
+  }
+  const first = out.questions?.[0] || out.tasks?.[0] || out.operator?.[0];
+  if (first) {
+    const q = first;
     const qi = q.indexOf('?');
     out.question = (qi >= 0 ? q.slice(0, qi + 1) : q).replace(/\s+/g, ' ').trim().slice(-200);
   }

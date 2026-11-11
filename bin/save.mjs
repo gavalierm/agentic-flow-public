@@ -54,6 +54,44 @@ function fingerprint(projectDir, sources) {
 const SKILL_SCRIPT = /^[a-z0-9][a-z0-9._-]*\.(mjs|js|sh|py)$/;
 const SKILL_SCRIPT_TYPES = '.mjs | .js | .sh | .py';
 // A .sh script with a bash shebang (arrays, [[ ]]) runs as bash: sh (dash) breaks it (Alice 2026-11-09).
+// P-049: a script name says what the script does, in English. Each token of the basename (split on - _ .) is an English
+// word (system word list, also with a trailing s/es/ed/ing stripped), short (1-3 chars) or with a digit, a built-in tech
+// term, or a word of the skill text (product names; the script file names are removed from that text first).
+// Machines without a word list (macOS, Windows) skip the token check: only the SKILL_SCRIPT charset check applies there.
+const TECH_TERMS = new Set(['api', 'cli', 'json', 'csv', 'ftp', 'sftp', 'ssh', 'dns', 'url', 'http', 'https', 'npm', 'git', 'github', 'cloudflare', 'wrangler', 't3', 'mcp', 'repo', 'config', 'sync', 'env', 'auth', 'dev', 'prod', 'src', 'tmp', 'yaml', 'html', 'css', 'sql', 'regex', 'stdin', 'stdout', 'webhook', 'oauth', 'ssl', 'tls', 'cron', 'docker', 'lint', 'init', 'async', 'unix', 'linux', 'macos', 'xml', 'pdf', 'png', 'jpg', 'svg', 'utf']);
+let wordListCache;
+function wordList() {
+  if (wordListCache !== undefined) return wordListCache;
+  try { wordListCache = new Set(fs.readFileSync('/usr/share/dict/words', 'utf8').split('\n').map((w) => w.trim().toLowerCase()).filter(Boolean)); } catch { wordListCache = null; }
+  return wordListCache;
+}
+// Returns the tokens of the script name that are not English (empty = fine, or no word list on this machine).
+export function nonEnglishScriptTokens(base, skillText = '', scriptNames = [base], words = wordList()) {
+  if (!words) return [];
+  let text = String(skillText);
+  // Script names with and without the extension do not count, nor paths (skill folder names are often Slovak:
+  // dev-nahlad-tunel/nahlad.sh passed on its own folder name, 2026-11-11).
+  for (const n of new Set([base, ...scriptNames])) text = text.split(n).join(' ').split(n.replace(/\.[^.]+$/, '')).join(' ');
+  text = text.replace(/[^\s`'"()]*\/[^\s`'"()]*/g, ' ');
+  // Only a capitalized word (a product name: Cloudflare, Beszel) or an upper-case identifier part (ZENTRA_KEY) of the
+  // text counts, not Slovak prose without diacritics.
+  const capitalized = text.match(/(?<![\p{L}\d])\p{Lu}[a-z0-9]+(?![\p{L}\d])/gu) || [];
+  const upper = text.match(/(?<![\p{L}\d])[A-Z][A-Z0-9]{3,}(?![\p{Ll}])/gu) || [];
+  const inText = new Set([...capitalized, ...upper].map((w) => w.toLowerCase()));
+  const known = (t) => words.has(t) || TECH_TERMS.has(t) || inText.has(t) || (t.startsWith('re') && t.length > 5 && words.has(t.slice(2)));
+  const stem = base.replace(/\.[^.]+$/, '').toLowerCase();
+  return stem.split(/[-_.]+/).filter(Boolean).filter((t) => {
+    if (t.length <= 3 || /\d/.test(t)) return false;
+    if (known(t)) return false;
+    for (const suf of ['s', 'es', 'ed', 'ing']) if (t.endsWith(suf) && t.length > suf.length + 1 && known(t.slice(0, -suf.length))) return false;
+    return true;
+  });
+}
+function checkScriptName(src, base, skillText, scriptNames) {
+  const bad = nonEnglishScriptTokens(base, skillText, scriptNames);
+  if (bad.length) fail(`--script ${src}: the name must be English; not English: ${bad.join(', ')}. Name the action and its target, e.g. \`deploy-cloudflare.sh\`, not \`nasad-produkciu.sh\` or \`deploy-production.sh\` (P-049)`);
+}
+
 export function scriptRunner(base, platform = process.platform, content = '') {
   if (base.endsWith('.sh')) return /^#!.*\bbash\b/.test(String(content).split('\n', 1)[0]) ? 'bash' : 'sh';
   if (base.endsWith('.py')) return platform === 'win32' ? 'python' : 'python3';
@@ -444,10 +482,12 @@ function saveSkill(ctx) {
   // Scripts of the skill (P-030 "skill with a script"): copied next to SKILL.md; skills-sync deploys the whole directory.
   const scripts = [];
   const runners = new Map();
+  const scriptFiles = asList(args.script).map((x) => path.basename(path.resolve(x)));
   for (const src of asList(args.script)) {
     const file = path.resolve(src);
     const base = path.basename(file);
     if (!SKILL_SCRIPT.test(base)) fail(`--script ${src}: name must be lowercase english, ${SKILL_SCRIPT_TYPES} (P-049)`);
+    checkScriptName(src, base, ops[0].content, scriptFiles);
     if (!fs.existsSync(file) || !fs.statSync(file).isFile()) fail(`--script ${src}: file not found`);
     if (fs.statSync(file).size > 64 * 1024) fail(`--script ${src}: over 64 KB; a skill script stays small`);
     const scriptRel = `${path.posix.dirname(toPosixPath(rel))}/${base}`;
@@ -515,10 +555,12 @@ function saveRepoSkill(ctx, repo, name) {
   const ops = [{ path: rel, content: text }];
   const scripts = [];
   const runners = new Map();
+  const scriptFiles = asList(args.script).map((x) => path.basename(path.resolve(x)));
   for (const src of asList(args.script)) {
     const file = path.resolve(src);
     const base = path.basename(file);
     if (!SKILL_SCRIPT.test(base)) fail(`--script ${src}: name must be lowercase english, ${SKILL_SCRIPT_TYPES} (P-049)`);
+    checkScriptName(src, base, text, scriptFiles);
     if (!fs.existsSync(file) || !fs.statSync(file).isFile()) fail(`--script ${src}: file not found`);
     if (fs.statSync(file).size > 64 * 1024) fail(`--script ${src}: over 64 KB; a skill script stays small`);
     ops.push({ path: `${path.posix.dirname(rel)}/${base}`, content: fs.readFileSync(file, 'utf8') });

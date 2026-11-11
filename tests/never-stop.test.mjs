@@ -121,7 +121,7 @@ test('Stop: a question to the operator only in text blocks once with the dialog;
   try {
     assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    const text = 'Návrh je hotový.\n\n**Pre teba:** Vydať teraz? Odporúčam áno.\n\nStav: otázka';
+    const text = 'Návrh je hotový.\n\n**Otázky na operátora:** Vydať teraz? Odporúčam áno.\n\nStav: otázka';
     const r = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: text }).json;
     assert.equal(r.decision, 'block');
     assert.match(r.reason, /with AskUserQuestion now.*Awaiting Input/);
@@ -180,7 +180,7 @@ test('Stop: "<project> / bez témy" in a reply blocks once unless it ends with t
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: `${block}Hotovo.\n\nStav: hotovo` }).json.decision, undefined, 'blocks once');
     // The unknown topic asked with the block passes.
     fx.hook('user-prompt-submit.mjs', { prompt: 'ahoj' });
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: `${block}**Pre teba:** Aká bude téma?\n\nStav: otázka` }).json.decision, undefined);
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: `${block}**Otázky na operátora:** Aká bude téma?\n\nStav: otázka` }).json.decision, undefined);
     // A topic created in the turn: the block must name it.
     assert.equal(fx.run('topic.mjs', ['create', 'predaj-pneumatik', '--subject', 'Predaj pneumatík']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
@@ -195,12 +195,12 @@ test('Stop: a thread without a topic asking the operator for one gets no auto ti
   const fx = setup();
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'spustam' });
-    const ask = 'pilot / bez témy\n\nDostupné témy:\n- žiadne\n\n**Pre teba:** Aká bude téma?\n\nStav: otázka';
+    const ask = 'pilot / bez témy\n\nDostupné témy:\n- žiadne\n\n**Otázky na operátora:** Aká bude téma?\n\nStav: otázka';
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: ask }).json.decision, undefined);
     assert.equal(activeTimer(stateOf(fx)), null, 'no timer: nothing to continue, the operator answers the topic question');
     assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Hotová prvá časť.\n\n**Pre teba:** Pokračovať variantom A? Odporúčam A.\n\nStav: otázka' });
+    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Hotová prvá časť.\n\n**Otázky na operátora:** Pokračovať variantom A? Odporúčam A.\n\nStav: otázka' });
     assert.equal(stateOf(fx).timer?.auto, true, 'a held topic still gets the P-061 timer');
   } finally { fx.cleanup(); }
 });

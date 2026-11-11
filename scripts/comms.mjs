@@ -275,6 +275,24 @@ export function recordTurn(ctx, state, held = [], { openedAt = null, next = null
 }
 
 /**
+ * P-061 (V1): the flag `waiting_operator` of this thread's OPEN turn record in the mail (`comms turn --waiting-operator`):
+ * the turn waits for the operator's dialog (AskUserQuestion), so the service does not expire a message of this thread as
+ * "no reply" but tells the sender `otázka`. `openedAt` (turn_opened_at of the thread state) binds it to this very turn; the
+ * end of the turn record (Stop, keepalive close after a crash) clears it. Never throws; an outage or an older client = nothing.
+ */
+export function recordWaitingOperator(ctx, waiting, openedAt = null) {
+  try {
+    const s = commsSettings(ctx);
+    if (!s.enabled || !ctx.thread) return { ok: false, skipped: true };
+    const args = ['turn', '--waiting-operator', waiting ? 'true' : 'false', ...(openedAt ? ['--opened-at', String(openedAt)] : [])];
+    const res = runClient(ctx, args, { timeoutMs: Math.min(s.waitMs, 1000) });
+    return res.ok ? { ok: true, ...(res.data || {}) } : { ok: false, unavailable: !!res.unavailable, error: res.error };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
  * Idempotent topic registration in the mail service (P-037, P-041). The holder is the thread in topics/<id>/holder.json
  * unless `holder` is given (null: the topic is free). `takeover: true` lets the service replace another holder (a takeover
  * on operator instruction, P-037, P-045); `release: true` clears the holder (client flags `--takeover`, `--release`);

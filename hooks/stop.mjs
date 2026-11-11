@@ -6,8 +6,8 @@
 // One answered `otázka` or `čakám` is not reminded: its sender knows the state, the final `hotovo` follows.
 // Reply protocol (P-061, operator 2026-11-08): the final reply declares its state on the last line, `Stav: hotovo|otázka|čakám`;
 // the hook reads only that line and checks it against facts, in every turn (bell turns too), never the wording of the reply:
-// no state, a step written as prose ("Ostáva: …", operator 2026-11-09), items under **Operátor:** with a state other than
-// `otázka`, `otázka` without an Operátor item or asked as text and not in the dialog (AskUserQuestion, so T3 shows "Awaiting Input",
+// no state, a step written as prose ("Ostáva: …", operator 2026-11-09), items under **Otázky na operátora:** / **Úlohy pre operátora:** with a state other than
+// `otázka`, the old **Operátor:** heading or an empty section (once), `otázka` without such an item or asked as text and not in the dialog (AskUserQuestion, so T3 shows "Awaiting Input",
 // operator 2026-11-08), `čakám` without what it waits for (`Stav: čakám (na <čo>)`,
 // operator 2026-11-08) or without a waker armed by code, or `hotovo` while the
 // held work topic's handover has a next step blocks the stop once. Ending anyway keeps the loop alive: `otázka` and `čakám`
@@ -37,19 +37,21 @@ export const FINAL_REPLY = 'The operator sees only your last message of this tur
 
 // flow-public#25 (2026-11-10): the operator asked how to hand a task to another agent; "do it now" made the agent create and
 // deploy a skill nobody asked for. Every "do it" here is bound to the work the operator asked for; a proposal stays an offer.
-export const OFFER = 'Only work the operator asked for is done now; a change they did not ask for (their prompt asked a question, for advice, a proposal or to find something out) is never done: offer it as an item "- [ ] <…>" under **Operátor:** with "Stav: otázka" (P-002, P-063)';
-const STATES_HELP = 'hotovo = nothing is left, neither for you nor for the operator (the handover has no next step, no Operátor item); otázka = what only the operator decides, confirms or does, each as one item "- [ ] <…>" under **Operátor:**, and the first asked with AskUserQuestion (your recommended option first) so T3 shows it; čakám = an event with a waker armed by code, written "Stav: čakám (na <what>)" (<plugin>/bin/timer.mjs --in <min>m --then "<step>", mail with a deadline, run_in_background, schedule_task). A promise ("I will do it later", "at your next message") is no state: do the asked work now. ' + OFFER;
+export const OFFER = 'Only work the operator asked for is done now; a change they did not ask for (their prompt asked a question, for advice, a proposal or to find something out) is never done: offer it as an item "- [ ] <…>" under **Otázky na operátora:** with "Stav: otázka" (P-002, P-063)';
+const STATES_HELP = 'hotovo = nothing is left, neither for you nor for the operator (the handover has no next step, no item for the operator); otázka = what only the operator decides or confirms is an item "- [ ] <…>" under **Otázky na operátora:**, what only the operator does (login, install, a click) an item under **Úlohy pre operátora:** (omit a heading with no item), and the first asked with AskUserQuestion (your recommended option first) so T3 shows it; čakám = an event with a waker armed by code, written "Stav: čakám (na <what>)" (<plugin>/bin/timer.mjs --in <min>m --then "<step>", mail with a deadline, run_in_background, schedule_task). A promise ("I will do it later", "at your next message") is no state: do the asked work now. ' + OFFER;
 export const NO_STATE_REASON = `the final reply has no state line: end it with exactly one line "Stav: hotovo", "Stav: otázka" or "Stav: čakám (na <what>)" (P-061). ${STATES_HELP}`;
-export const NO_QUESTION_REASON = `the reply declares "Stav: otázka" but has no item under **Operátor:**: list there what only the operator decides, confirms or does ("- [ ] <…>", a choice with your recommended option), or declare the state that is true (P-061). ${STATES_HELP}`;
+export const NO_QUESTION_REASON = `the reply declares "Stav: otázka" but has no item under **Otázky na operátora:** or **Úlohy pre operátora:**: list there what only the operator decides or confirms (questions) or does (tasks) ("- [ ] <…>", a choice with your recommended option), or declare the state that is true (P-061). ${STATES_HELP}`;
 // Operator 2026-11-09: carol ended "Ostáva: … zmažem ho až na tvoje potvrdenie" with "Stav: hotovo"; a step is protocol,
 // never a sentence.
-export const STEP_REASON = (step) => `the reply writes a step as prose ("${step}"), outside the protocol: a step of the asked work is done now, or saved with save handover --next and the state "Stav: čakám (na <what>)" with a waker; what the operator decides, confirms or does is an item "- [ ] <…>" under **Operátor:** with "Stav: otázka" (P-061). ${STATES_HELP}`;
-export const OPERATOR_STATE_REASON = (state, item) => `the reply lists for the operator "${item}" under **Operátor:** but declares "Stav: ${state}": what waits on the operator is "Stav: otázka", asked with AskUserQuestion; if it is part of the asked work and you can do it yourself, do it and drop the item (P-061, P-058); a change the operator did not ask for stays an item, with "Stav: otázka". ${STATES_HELP}`;
-export const DIALOG_REASON = `the reply asks the operator in text, which is lost in the thread among other turns: ask the one decision only the operator has with AskUserQuestion now (your recommended option first), so T3 shows the thread as "Awaiting Input"; after the answer continue the work. The items under **Operátor:** stay in the reply; the dialog asks the first one (P-061, operator 2026-11-08). ${STATES_HELP}`;
+export const STEP_REASON = (step) => `the reply writes a step as prose ("${step}"), outside the protocol: a step of the asked work is done now, or saved with save handover --next and the state "Stav: čakám (na <what>)" with a waker; what the operator decides or confirms is an item "- [ ] <…>" under **Otázky na operátora:**, what only the operator does an item under **Úlohy pre operátora:**, with "Stav: otázka" (P-061). ${STATES_HELP}`;
+export const OPERATOR_STATE_REASON = (state, item) => `the reply lists for the operator "${item}" under **Otázky na operátora:** / **Úlohy pre operátora:** but declares "Stav: ${state}": what waits on the operator is "Stav: otázka", asked with AskUserQuestion; if it is part of the asked work and you can do it yourself, do it and drop the item (P-061, P-058); a change the operator did not ask for stays an item, with "Stav: otázka". ${STATES_HELP}`;
+export const LEGACY_HEADING_REASON = `the reply uses the old heading **Operátor:**: split it into **Otázky na operátora:** (decisions and confirmations only the operator has, also asked with AskUserQuestion) and **Úlohy pre operátora:** (steps only the operator does: login, install, a click in a UI); omit the heading that has no item (P-061)`;
+export const EMPTY_SECTION_REASON = (heading) => `the reply has the heading ${heading} with no item: omit a section that has nothing in it, and write it only with items "- [ ] <…>" (P-061)`;
+export const DIALOG_REASON = `the reply asks the operator in text, which is lost in the thread among other turns: ask the one decision only the operator has with AskUserQuestion now (your recommended option first), so T3 shows the thread as "Awaiting Input"; after the answer continue the work. The items under the operator headings stay in the reply; the dialog asks the first one (P-061, operator 2026-11-08). ${STATES_HELP}`;
 // P-050 (operator 2026-11-08): "Chcem riešiť tému predaja pneumatík" got "<project> / bez témy" as the first reply and the work
 // went on without a topic; the status block of a thread without a topic is only for a topic that stays unknown.
 export const STALE_STATUS_REASON = (project, id) => `the reply shows "${project} / bez témy", but this thread holds topic ${id}: start the reply with "${project} / ${id}", without the list of topics and without the topic question (P-050)`;
-export const NO_TOPIC_REASON = (project) => `the reply shows "${project} / bez témy" and goes on without a topic: if the operator's prompt names the topic or starts work, claim it or create it now (topic.mjs create <id> --subject "<subject>" claims it, skill workflow:topic) and start the reply with "${project} / <id>"; if the topic is unknown or you only propose one (the prompt asks for a proposal or says to change nothing), do not create it: end with "**Operátor:** Aká bude téma? (návrh: <id>)", the same question in AskUserQuestion, and "Stav: otázka" (P-050)`;
+export const NO_TOPIC_REASON = (project) => `the reply shows "${project} / bez témy" and goes on without a topic: if the operator's prompt names the topic or starts work, claim it or create it now (topic.mjs create <id> --subject "<subject>" claims it, skill workflow:topic) and start the reply with "${project} / <id>"; if the topic is unknown or you only propose one (the prompt asks for a proposal or says to change nothing), do not create it: end with "**Otázky na operátora:** Aká bude téma? (návrh: <id>)", the same question in AskUserQuestion, and "Stav: otázka" (P-050)`;
 export const NO_WAIT_TARGET_REASON = `the reply declares "Stav: čakám" but not what it waits for: write the state line as "Stav: čakám (na <what>)", e.g. "Stav: čakám (na výsledok pracovníka)" (P-061, operator 2026-11-08)`;
 export const NO_WAKER_REASON = `the reply declares "Stav: čakám" but no waker is armed: arm one now (<plugin>/bin/timer.mjs --in <min>m --then "<step>", mail with a deadline, run_in_background, schedule_task) or do the work. The operator is no waker: a decision of theirs is "Stav: otázka" (P-061)`;
 export const NEXT_STEP_REASON = (topic, next) => `the reply declares "Stav: hotovo", but the handover of topic ${topic} has a next step: "${next}". Do it now in this turn. If it waits for an event, arm a waker and declare "Stav: čakám (na <what>)"; if it needs the operator, ask with AskUserQuestion; if it is done, save the handover without it (P-061, P-026)`;
@@ -105,7 +107,7 @@ export function run(input) {
   // P-061: the declared state. A question to the operator makes the handover step the operator's move, not a continuation;
   // only a timer (resume_at) rings the thread (bob 2026-11-03: rung 76 s after a question, before the operator could read it).
   const reply = parseReply(input.last_assistant_message);
-  // Items under **Operátor:** wait on the operator whatever state the reply declares (operator 2026-11-09).
+  // Items under the operator headings wait on the operator whatever state the reply declares (operator 2026-11-09).
   const toOperator = reply.state === 'otázka' || !!reply.operator?.length;
   if (ctx.thread) {
     try { held = ctx.brainDir ? heldTopics(ctx.brainDir, ctx.thread) : []; } catch { held = []; }
@@ -118,6 +120,9 @@ export function run(input) {
     idleWait = work ? waitOnlyStep(work.next) : null;
     const snooze = !work && held.find((t) => t.state === 'paused' && t.paused_until && Date.parse(t.paused_until) > Date.now());
     closeTurn = () => {
+      // The state this turn ended with: `comms send --reply-to --state hotovo` refuses it in a turn the operator did not start
+      // when the previous turn ended `otázka` (P-061, phase 2).
+      if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_end_state: reply.state || null });
       const st = ctx.brainDir ? readThreadState(ctx.brainDir, ctx.thread) : {};
       const timer = activeTimer(st);
       if (!timer && snooze) return recordTurn(ctx, 'closed', held, { openedAt, next: `pause of topic ${snooze.id} ended: run topic.mjs resume ${snooze.id}, then continue from handover`, resumeAt: snooze.paused_until });
@@ -198,6 +203,8 @@ export function run(input) {
     else if (noTopicBlock && held.length) violation = STALE_STATUS_REASON(ctx.projectName, held[0].id);
     else if (noTopicBlock && !topicStart) violation = NO_TOPIC_REASON(ctx.projectName);
     else if (!reply.state) violation = NO_STATE_REASON;
+    else if (reply.legacyOperator) violation = LEGACY_HEADING_REASON;
+    else if (reply.emptySection) violation = EMPTY_SECTION_REASON(reply.emptySection);
     else if (reply.step) violation = STEP_REASON(reply.step);
     else if (reply.operator?.length && reply.state !== 'otázka') violation = OPERATOR_STATE_REASON(reply.state, reply.operator[0].slice(0, 120));
     else if (reply.state === 'otázka' && !dialog && !topicStart) violation = DIALOG_REASON;

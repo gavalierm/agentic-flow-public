@@ -6,13 +6,13 @@ import assert from 'node:assert/strict';
 import { setup } from './helpers.mjs';
 import { AUTO_TIMER_THEN } from '../hooks/stop.mjs';
 
-const OFFER = /did not ask for[^]*Operátor[^]*Stav: otázka/;
+const OFFER = /did not ask for[^]*operátora[^]*Stav: otázka/;
 
 test('Stop after an operator question: a proposed change is kept as an offer, never pushed to be done', () => {
   const fx = setup();
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'Ako odovzdám zadanie ďalšiemu agentovi? Prompt alebo skript?' });
-    const item = 'Najjednoduchšie poštou (assist).\n\n**Operátor:**\n- [ ] Vytvoriť skill na odovzdanie zadania (odporúčam)\n\nStav: hotovo';
+    const item = 'Najjednoduchšie poštou (assist).\n\n**Otázky na operátora:**\n- [ ] Vytvoriť skill na odovzdanie zadania (odporúčam)\n\nStav: hotovo';
     const r = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: item });
     assert.equal(r.json.decision, 'block');
     assert.doesNotMatch(r.json.reason, /if you can do it yourself, do it/, 'no unconditional push to do the item');

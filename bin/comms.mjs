@@ -278,6 +278,15 @@ function cmdSend(ctx) {
     if (replyState === 'čakám' && !waitFor) fail('--state čakám needs --wait-for "<what>": the event you wait for (worker, build, other mail); being busy is not a state, the pickup already shows it (P-061)');
     if (replyState !== 'čakám' && waitFor) fail('--wait-for belongs to --state čakám only');
     if (cancels) fail('--cancels belongs to a new message (--level, --to), not to a reply');
+    // P-061 (fáza 2): `hotovo` is true only when the operator spoke after the question. The previous turn of this thread ended
+    // `Stav: otázka` and this turn was not started by the operator (mail bell, keepalive, timer): the true state is `otázka`.
+    if (replyState === 'hotovo' && ctx.brainDir && ctx.thread && !inSubagent()) {
+      const st = readThreadState(ctx.brainDir, ctx.thread);
+      // The operator also speaks in a dialog of this turn (AskUserQuestion blocks until answered), e.g. in a turn a mail bell
+      // started (pilot 2026-11-11): a dialog of this turn counts as the operator's answer.
+      const answeredHere = !!st.dialog_at && !!st.turn_started_at && st.dialog_at >= st.turn_started_at;
+      if (st.last_end_state === 'otázka' && st.turn_source !== 'operator' && !answeredHere) fail(`--state hotovo refused: the previous turn of this thread ended "Stav: otázka" and this turn was not started by the operator (turn source ${st.turn_source || 'unknown'}), so the question is still open; the true state is otázka: send --state otázka with your recommendation (the sender waits for your operator), hotovo only after the operator answered (P-061)`);
+    }
     if (replyState === 'čakám' && ctx.brainDir && ctx.thread && !validWaker(readThreadState(ctx.brainDir, ctx.thread))) fail(`--state čakám without a waker in this thread: arm a timer first (${TIMER_CMD} set --in <30m|2h> --then "<step>") or start the background work, else nothing brings the final reply (P-061)`);
   } else if (replyState || waitFor) {
     fail('--state and --wait-for belong to a reply (--reply-to <id>)');

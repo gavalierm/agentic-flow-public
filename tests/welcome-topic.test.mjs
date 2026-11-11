@@ -10,11 +10,11 @@ import { parseReply } from '../scripts/protocol.mjs';
 test('welcome: ends with the start question the Stop hook accepts, never creates the topic', () => {
   assert.equal(WELCOME_TOPIC_QUESTION, TOPIC_QUESTION);
   const msg = welcomeMessage('novy', 'novy-web');
-  assert.ok(msg.includes(`**Operátor:** ${TOPIC_QUESTION}`), msg);
+  assert.ok(msg.includes(`**Otázky na operátora:** ${TOPIC_QUESTION}`), msg);
   assert.match(msg, /Tému nezakladaj/);
   assert.match(msg, /AskUserQuestion/);
   // The reply the welcome asks for is what topicStart recognizes (question up to the first "?").
-  assert.equal(parseReply(`novy / bez témy\n\nZhrnutie.\n\n**Operátor:** ${TOPIC_QUESTION} (návrh: web – Web pre klienta)\n\nStav: otázka`).question, TOPIC_QUESTION);
+  assert.equal(parseReply(`novy / bez témy\n\nZhrnutie.\n\n**Otázky na operátora:** ${TOPIC_QUESTION} (návrh: web – Web pre klienta)\n\nStav: otázka`).question, TOPIC_QUESTION);
 });
 
 test('Stop hook: a proposed topic is asked, not created', () => {

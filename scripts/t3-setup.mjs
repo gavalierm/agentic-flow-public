@@ -57,7 +57,7 @@ export function welcomeMessage(name, repo, { adopted = false } = {}) {
     'Toto je uvítacie vlákno projektu: over stavový blok session (brain, pravidlá, témy) a v jednej odpovedi zhrň účel projektu, čo je v repe a v brain, a navrhni prvú tému práce. Nič nemeň.',
     // The Stop hook lets a reply without a topic end only with the start question (stop.mjs topicStart); any other
     // question got NO_TOPIC_REASON and the welcome thread created the proposed topic itself (Alice 2026-11-09).
-    `Tému nezakladaj ani nezaberaj: voľbu má operátor. Odpoveď skonči položkou "**Operátor:** ${WELCOME_TOPIC_QUESTION} (návrh: <id> – <predmet>)", tú istú otázku polož dialógom AskUserQuestion s navrhnutou témou ako prvou voľbou, a "Stav: otázka".`,
+    `Tému nezakladaj ani nezaberaj: voľbu má operátor. Odpoveď skonči položkou "**Otázky na operátora:** ${WELCOME_TOPIC_QUESTION} (návrh: <id> – <predmet>)", tú istú otázku polož dialógom AskUserQuestion s navrhnutou témou ako prvou voľbou, a "Stav: otázka".`,
   ].join('\n');
 }
 
