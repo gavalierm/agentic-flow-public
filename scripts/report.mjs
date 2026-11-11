@@ -10,6 +10,7 @@ import { commsSettings, runClient, parseAddress } from './comms.mjs';
 import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh } from './github.mjs';
 import { PLUGIN_ROOT, toPosix } from './util.mjs';
 import { SCRATCH_DIR, channelOf } from './config.mjs';
+import { parseFrontmatter, asList } from './frontmatter.mjs';
 
 // Defaults; `policy.maintainer` ({comms, repo}) of the brain overrides (another maintainer, a fork).
 export const MAINTAINER = { comms: 'maintainer/workflow-dev', repo: 'https://github.com/gavalierm/agentic-flow-public.git' };
@@ -24,7 +25,37 @@ export function repoSlug(url) {
   return m ? `${m[1]}/${m[2]}` : null;
 }
 
-/** Text for a public issue: machine paths, project and brain names, addresses and secrets of this instance removed. */
+/**
+ * Names of people the brain knows (memory of type person or operator: name and aliases), for scrub. D-0009 (operator
+ * 2026-11-11): flow-public#27 carried the first name of the instance's operator. A generic name ("operator") is no name.
+ */
+export function peopleNames(brainDir) {
+  if (!brainDir) return [];
+  let files = [];
+  try { files = fs.readdirSync(path.join(brainDir, 'memory')).filter((f) => f.endsWith('.md')); } catch { return []; }
+  const names = new Set();
+  for (const f of files) {
+    let data;
+    try { ({ data } = parseFrontmatter(fs.readFileSync(path.join(brainDir, 'memory', f), 'utf8'))); } catch { continue; }
+    if (!['person', 'operator'].includes(data.type)) continue;
+    for (const n of [data.name, ...asList(data.aliases)]) {
+      for (const w of String(n || '').split(/[\s,]+/)) if (/^\p{Lu}\p{L}{2,}$/u.test(w)) names.add(w);
+    }
+  }
+  return [...names];
+}
+
+/** A name with its Slovak and Czech case endings ("Štepán", "Štepánovi"; "Hana", "Hany"). */
+function nameRe(name) {
+  const stem = name.length >= 4 && /[aeiouyáéíóúý]$/iu.test(name) ? name.slice(0, -1) : name;
+  return new RegExp(`(?<!\\p{L})${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\p{L}*`, 'gu');
+}
+
+/**
+ * Text for a public issue: machine paths, project and brain names, names of known people, addresses and secrets of this
+ * instance removed. Client data in the wording (categories, figures) code cannot tell: the agent writes the report in
+ * general terms (skill error, step 5, D-0009).
+ */
 export function scrub(text, ctx = {}, env = process.env) {
   let s = String(text || '');
   const home = env.HOME || os.homedir();
@@ -38,6 +69,7 @@ export function scrub(text, ctx = {}, env = process.env) {
   // Bare project and brain names, longest first (`shop-brain` before `shop`).
   const names = [ctx.projectDir, ctx.brainDir].filter(Boolean).map((d) => path.basename(d)).filter((n) => n.length > 3).sort((a, b) => b.length - a.length);
   for (const name of names) s = s.replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'), '<project>');
+  for (const name of peopleNames(ctx.brainDir).sort((a, b) => b.length - a.length)) s = s.replace(nameRe(name), '<person>');
   s = s.split(B).join('<brain>').split(P).join('<project>');
   return s
     .replace(/\/home\/[\w.-]+|\/Users\/[\w.-]+|[A-Za-z]:\\Users\\[\w.-]+/g, '~')
