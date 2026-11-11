@@ -5,6 +5,7 @@
 // a file it changed from a clean state is recorded, so restoring it later does not ask the operator. Otherwise no output.
 import { readHookInput, emit, isMain, contextOutput } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
+import { withAnswered } from '../scripts/protocol.mjs';
 import { bufferAppend, normalizeCommand } from '../scripts/logs.mjs';
 import { mailCount, recordWaitingOperator } from '../scripts/comms.mjs';
 import { mailboxTopics } from '../scripts/topic.mjs';
@@ -131,6 +132,16 @@ export function run(input, now = Date.now()) {
   if (!ctx.brainDir) return {};
   // P-061 (V1): the operator answered (or dismissed) the dialog: the open turn no longer waits for the operator.
   if ((input.tool_name === 'AskUserQuestion') && !input.agent_id && ctx.thread) recordWaitingOperator(ctx, false, readThreadState(ctx.brainDir, ctx.thread).turn_opened_at ?? null);
+  // P-059: the answered dialog question stands for further steps of its kind (the input's questions, else those PreToolUse kept).
+  if (input.tool_name === 'AskUserQuestion' && !input.agent_id && ctx.thread) {
+    const st = readThreadState(ctx.brainDir, ctx.thread);
+    const given = (Array.isArray(input.tool_input?.questions) ? input.tool_input.questions : []).map((x) => (typeof x === 'string' ? x : x?.question)).filter(Boolean);
+    const answers = input.tool_response && typeof input.tool_response === 'object' ? input.tool_response.answers : null;
+    // A dialog closed without an answer answers nothing; a harness that reports no answers counts every question.
+    const asked = given.length ? given : st.dialog_questions || [];
+    const items = answers && typeof answers === 'object' ? asked.filter((q) => String(answers[q] ?? '').trim()) : asked;
+    writeThreadState(ctx.brainDir, ctx.thread, { ...withAnswered(st, items), dialog_questions: [] });
+  }
   settleOwn(ctx, changedFiles(input));
   if (input.tool_name === 'Bash' || input.tool_name === 'PowerShell') settleShell(ctx, input.tool_use_id);
   const entry = toEntry(input, ctx.policy);

@@ -11,6 +11,7 @@ import { parse, programIndex } from '../scripts/shell-parse.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
 import { SUBAGENT_ALLOWED, recordWaitingOperator } from '../scripts/comms.mjs';
 import { readTopics } from '../scripts/records.mjs';
+import { repeatsAnswered, REPEATED_QUESTION_REASON } from '../scripts/protocol.mjs';
 import { knowledgeDirOf, PROJECT_KNOWLEDGE } from '../scripts/repo-knowledge.mjs';
 import { findSecret } from '../scripts/secrets.mjs';
 import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell } from '../scripts/own-files.mjs';
@@ -861,6 +862,9 @@ export function pluginScopeCall(command) {
   return null;
 }
 
+/** The question texts of an AskUserQuestion call (kept until the dialog is answered, P-059). */
+export const dialogQuestions = (toolInput) => (Array.isArray(toolInput?.questions) ? toolInput.questions : []).map((x) => (typeof x === 'string' ? x : x?.question)).filter(Boolean);
+
 export function run(input) {
   const ctx = loadContext({ requireBrain: false });
   const tool = input.tool_name;
@@ -872,7 +876,17 @@ export function run(input) {
   // P-061 (operator 2026-11-08): a question to the operator is asked in the dialog, so T3 shows the thread as "Awaiting Input";
   // a text question was lost in the thread among the mail turns. The time is kept for the Stop hook (question asked this turn).
   if (tool === 'AskUserQuestion' && !input.agent_id && ctx.brainDir && ctx.thread) {
-    const st = { ...readThreadState(ctx.brainDir, ctx.thread), dialog_at: new Date().toISOString() };
+    // P-059: a dialog that repeats a question the operator answered in this thread is refused once per turn (the operator sees
+    // the dialog before any Stop check); a second call in the turn passes: the agent then holds the step for serious.
+    const before = readThreadState(ctx.brainDir, ctx.thread);
+    const turnKey = before.turn_started_at || 'turn';
+    if (before.repeat_denied_at !== turnKey) for (const q of dialogQuestions(toolInput)) {
+      const old = repeatsAnswered(q, before.answered_questions || []);
+      if (!old) continue;
+      writeThreadState(ctx.brainDir, ctx.thread, { ...before, repeat_denied_at: turnKey });
+      return permissionOutput('deny', REPEATED_QUESTION_REASON(old, q.replace(/\s+/g, ' ').trim()));
+    }
+    const st = { ...readThreadState(ctx.brainDir, ctx.thread), dialog_at: new Date().toISOString(), dialog_questions: dialogQuestions(toolInput) };
     writeThreadState(ctx.brainDir, ctx.thread, st);
     // P-061 (V1): the dialog holds the turn, so the thread cannot pick up mail: the open turn record in the mail says it waits for
     // the operator (PostToolUse clears it); mail then answers a sender `otázka` instead of "no reply".

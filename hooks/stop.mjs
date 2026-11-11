@@ -22,7 +22,8 @@ import { flushBuffer, proposalKey } from '../scripts/logs.mjs';
 import { unpushedCount, brainSync } from '../scripts/brain.mjs';
 import { recordTurn, isMainTopic } from '../scripts/comms.mjs';
 import { heldTopics } from '../scripts/topic.mjs';
-import { parseReply } from '../scripts/protocol.mjs';
+import { parseReply, repeatsAnswered, REPEATED_QUESTION_REASON } from '../scripts/protocol.mjs';
+export { REPEATED_QUESTION_REASON };
 import { TOPIC_QUESTION } from '../scripts/boot.mjs';
 import { waitOnlyStep, validWaker, activeTimer, setTimer, AUTO_TIMER_MS, AUTO_TIMER_MAX_MS, OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS, IDLE_RING_MS } from '../scripts/waker.mjs';
 
@@ -122,7 +123,7 @@ export function run(input) {
     closeTurn = () => {
       // The state this turn ended with: `comms send --reply-to --state hotovo` refuses it in a turn the operator did not start
       // when the previous turn ended `otázka` (P-061, phase 2).
-      if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_end_state: reply.state || null });
+      if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_end_state: reply.state || null, last_questions: reply.state === 'otázka' ? (reply.questions || []).slice(0, 5).map((q) => q.replace(/\s+/g, ' ').trim().slice(0, 300)) : [] });
       const st = ctx.brainDir ? readThreadState(ctx.brainDir, ctx.thread) : {};
       const timer = activeTimer(st);
       if (!timer && snooze) return recordTurn(ctx, 'closed', held, { openedAt, next: `pause of topic ${snooze.id} ended: run topic.mjs resume ${snooze.id}, then continue from handover`, resumeAt: snooze.paused_until });
@@ -197,6 +198,10 @@ export function run(input) {
     // The start question of a thread without a topic comes from the status block of the session start (boot.mjs).
     const topicStart = !held.length && toOperator && reply.question === TOPIC_QUESTION;
     const noTopicBlock = typeof msg === 'string' && ctx.projectName && msg.split('\n').some((l) => l.replace(/[*_`]/g, '').trim() === `${ctx.projectName} / bez témy`);
+    // P-059: a question item that repeats one the operator answered earlier in the thread (an answer of this very turn is no earlier one).
+    const earlier = (turnState.answered_questions || []).filter((a) => !turnState.turn_started_at || a.at < turnState.turn_started_at);
+    let repeated = null;
+    if (reply.state === 'otázka' && !(turnState.repeat_denied_at && turnState.repeat_denied_at === turnState.turn_started_at)) for (const item of reply.questions || []) { const old = repeatsAnswered(item, earlier); if (old) { repeated = REPEATED_QUESTION_REASON(old, item.replace(/\s+/g, ' ').trim()); break; } }
     let violation = null;
     // A harness that sends no reply text (field missing) cannot be checked; an empty reply is no state.
     if (typeof msg !== 'string') violation = null;
@@ -209,6 +214,7 @@ export function run(input) {
     else if (reply.operator?.length && reply.state !== 'otázka') violation = OPERATOR_STATE_REASON(reply.state, reply.operator[0].slice(0, 120));
     else if (reply.state === 'otázka' && !dialog && !topicStart) violation = DIALOG_REASON;
     else if (reply.state === 'otázka' && !reply.question) violation = NO_QUESTION_REASON;
+    else if (repeated) violation = repeated;
     else if (reply.state === 'čakám' && !reply.waitFor) violation = NO_WAIT_TARGET_REASON;
     else if (reply.state === 'čakám' && !waker && !idleWait && !paused) violation = NO_WAKER_REASON;
     else if (reply.state === 'hotovo' && work && !idleWait && !waker) violation = NEXT_STEP_REASON(work.id, work.next);

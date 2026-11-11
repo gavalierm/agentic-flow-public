@@ -126,13 +126,15 @@ test('Stop: a question to the operator only in text blocks once with the dialog;
     assert.equal(r.decision, 'block');
     assert.match(r.reason, /with AskUserQuestion now.*Awaiting Input/);
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: text }).json.decision, undefined, 'blocks once');
+    // P-059: the question of the first turn was answered by the operator; the fallback turn asks another one.
+    const text2 = 'Návrh je hotový.\n\n**Otázky na operátora:** Ktorú farbu tlačidla použiť? Odporúčam modrú.\n\nStav: otázka';
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: text }).json.decision, undefined, 'the dialog failed: text fallback');
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: text2 }).json.decision, undefined, 'the dialog failed: text fallback');
     // A dialog of an earlier turn does not count for this one.
     const f = path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`);
     fs.writeFileSync(f, JSON.stringify({ ...stateOf(fx), dialog_at: '2020-01-01T00:00:00.000Z' }));
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: text }).json.decision, 'block');
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: text2 }).json.decision, 'block');
   } finally { fx.cleanup(); }
 });
 

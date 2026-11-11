@@ -10,6 +10,31 @@
 // state line. A label that writes a step as prose ("Ostáva:", "Ďalší krok:") is outside the protocol.
 
 export const STATES = ['hotovo', 'otázka', 'čakám'];
+
+// P-059 (operator 2026-11-11): a decision of the operator stands for further steps of the same kind. Questions he answered
+// in a thread (an item of a reply that ended `otázka`, a dialog question) are kept in `answered_questions` ({q, at}, newest last).
+export const ANSWERED_MAX = 20;
+const plain = (s) => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+const CONSENT_KIND = /\b(pozri|pozret|potvrd|schval|suhlas|mozem|nasadi|zluci)/;
+const stems = (s) => [...new Set((plain(s).match(/[a-z0-9]{5,}/g) || []).map((w) => w.slice(0, 5)))];
+/** The answered question (text) the new item repeats, or null: both of the consent/review kind, or 60 % of >= 3 significant words shared. */
+export function repeatsAnswered(newItem, answered) {
+  const n = plain(newItem || '');
+  const words = stems(newItem || '');
+  for (const a of Array.isArray(answered) ? answered : []) {
+    const old = typeof a === 'string' ? a : a?.q;
+    if (!old) continue;
+    if (CONSENT_KIND.test(n) && CONSENT_KIND.test(plain(old))) return old;
+    const oldWords = new Set(stems(old));
+    if (words.length >= 3 && words.filter((w) => oldWords.has(w)).length / words.length >= 0.6) return old;
+  }
+  return null;
+}
+/** `state.answered_questions` with the questions added (text items, at the time `at`), at most ANSWERED_MAX, newest last. */
+export function withAnswered(state, items, at = new Date().toISOString()) {
+  const add = (Array.isArray(items) ? items : []).map((q) => String(q).replace(/\s+/g, ' ').trim().slice(0, 300)).filter(Boolean).map((q) => ({ q, at }));
+  return { ...state, answered_questions: [...(Array.isArray(state?.answered_questions) ? state.answered_questions : []), ...add].slice(-ANSWERED_MAX) };
+}
 const ASCII = { hotovo: 'hotovo', otazka: 'otázka', cakam: 'čakám' };
 
 export const STATE_LINE = 'Stav: hotovo | otázka | čakám (na <čo>)';
@@ -97,3 +122,6 @@ export function parseReply(text) {
   if (ask) out.step = ask[0].replace(/\s+/g, ' ').trim();
   return out;
 }
+
+/** P-059: the reason of the Stop block and of the PreToolUse denial of a dialog that repeats an answered question. */
+export const REPEATED_QUESTION_REASON = (oldItem, newItem) => `the operator already answered a question of this kind in this thread ("${String(oldItem).slice(0, 120)}"); you now ask "${String(newItem).slice(0, 120)}": his decision stands for further steps of the same kind. Act on it and report in the body what you did and what you could not verify yourself (e.g. the look in a browser); keep the question only when the step is serious (irreversible: deleting data, git history, money, a message to a third party, a secret) or his decision does not cover it, e.g. he rejected the previous version or asked for this preview (P-059)`;

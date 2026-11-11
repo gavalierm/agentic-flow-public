@@ -5,6 +5,7 @@
 // (P-003, P-013), queued Stop signals, thread title after a topic change (P-036). Bells are recognised only as the exact whole prompt. Opens the turn record (P-043).
 import { readHookInput, emit, contextOutput, isMain, enforceLines } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
+import { withAnswered } from '../scripts/protocol.mjs';
 import { statusInfo, rulesHash, BOOT_MARKERS } from '../scripts/boot.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { recordTurn, runClient, mailNoticeLine, isMainTopic } from '../scripts/comms.mjs';
@@ -174,7 +175,10 @@ export function run(input) {
   // (rules hash), not at every update (tokens, operator 2026-11-03).
   const upd = state ? updateNotice(state) : null;
   if (upd?.line) extras.unshift(upd.line);
-  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...state, ...keepTimer, ...(upd?.patch || {}), turn_started_at: new Date().toISOString(), ...(title?.patch || {}), turn_source: (kind === 'keepalive' || kind === 'continue') ? 'keepalive' : (kind === 'wake' || messageBell) ? 'wake' : 'operator', pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash });
+  const turnSource = (kind === 'keepalive' || kind === 'continue') ? 'keepalive' : (kind === 'wake' || messageBell) ? 'wake' : 'operator';
+  // P-059: the operator started this turn: the questions the last reply ended with are answered (a bell does not answer them).
+  const answered = state && turnSource === 'operator' && state.last_questions?.length ? { ...withAnswered(state, state.last_questions, state.turn_started_at || new Date(Date.now() - 1).toISOString()), last_questions: [] } : state;
+  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...answered, ...keepTimer, ...(upd?.patch || {}), turn_started_at: new Date().toISOString(), ...(title?.patch || {}), turn_source: turnSource, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash });
   if (extras.length) lines.push(extras.join('; '));
   const limited = enforceLines(lines.join('\n'), ctx.policy?.limits?.hook_signal_lines ?? 2);
   // Nothing new: empty context (contextOutput leaves additionalContext out).
