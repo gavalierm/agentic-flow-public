@@ -74,8 +74,46 @@ export function cursorFromProviderLog(thread, logDir = path.join(os.homedir(), '
  * SessionStart in a T3 thread. startup: the new session is T3's cursor; resume: keep the recorded cursor (record it once).
  * clear: point <cursor>.jsonl at the new session's transcript (the real old file is kept as <cursor>.jsonl.pre-clear-<ts>).
  * Returns { state, note } where state is the updated thread state and note a one-line result for the boot context (or null).
+ * First the session folders of the session and the cursor become real folders (realSessionDirs).
  */
-export function handleT3Session(input, state, { thread, logDir, now = new Date(), symlink, spawnLater = spawnLinkLater } = {}) {
+export function handleT3Session(input, state, opts = {}) {
+  const fixed = input.transcript_path ? realSessionDirs(path.dirname(input.transcript_path), [input.session_id, state?.t3_cursor]) : [];
+  const r = clearSession(input, state, opts);
+  return fixed.length ? { ...r, note: [r.note, ...fixed].filter(Boolean).join('\n') } : r;
+}
+
+/**
+ * alice 2026-11-10: the folder <id>/ beside a transcript (tool-results, subagents) was a symlink into another history
+ * folder; Claude Code refuses to persist a large hook output or tool result through a linked folder ("tool-results
+ * path refused: … is a link or not a directory") and cuts it to 10 000 chars. The real folder moves under the session's
+ * own name and the old place becomes a symlink to it, so paths already written in transcripts still resolve.
+ * Returns one note line per folder made real.
+ */
+export function realSessionDirs(dir, ids) {
+  const notes = [];
+  for (const id of new Set(ids.filter((x) => SID.test(x || '')))) {
+    const p = path.join(dir, id);
+    let st;
+    try { st = fs.lstatSync(p); } catch { continue; }
+    if (!st.isSymbolicLink()) continue;
+    let target;
+    try { target = fs.realpathSync(p); } catch { continue; } // dangling link: Claude Code makes the folder itself once it is gone
+    if (!fs.statSync(target).isDirectory() || target === path.resolve(p)) continue;
+    const back = fs.readlinkSync(p);
+    try {
+      fs.unlinkSync(p);
+      fs.renameSync(target, p);
+      fs.symlinkSync(p, target, 'dir');
+      notes.push(`história: priečinok session ${id.slice(0, 8)} bol odkaz na ${target}; teraz je skutočný (staré miesto odkazuje naň), výstupy nástrojov sa znova ukladajú celé.`);
+    } catch (err) {
+      try { if (!fs.existsSync(p)) fs.symlinkSync(back, p, 'dir'); } catch { /* best effort */ }
+      notes.push(`história: priečinok session ${id.slice(0, 8)} je odkaz a nepodarilo sa ho nahradiť (${err.code || err.message}); veľké výstupy sa orežú.`);
+    }
+  }
+  return notes;
+}
+
+function clearSession(input, state, { thread, logDir, now = new Date(), symlink, spawnLater = spawnLinkLater } = {}) {
   const source = input.source || 'startup';
   const sid = input.session_id;
   if (!SID.test(sid || '')) return { state, note: null };
