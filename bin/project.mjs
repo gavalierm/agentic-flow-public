@@ -9,6 +9,8 @@
 // name with an upper case first letter; repositories stay lower case.
 //   project.mjs root [<dir>]                                         show the projects root of this machine, or save it
 //     (~/.config/agentic-flow/projects-root); the first explicit --root of restore, connect or create saves it too
+//   project.mjs mail <dir>                                         sender key and <brain>/local/comms.json of a project
+//     whose brain has no mail config (connect and create do it themselves)
 //   project.mjs inventory <dir> [--json]                             files of a repository by group, with dead paths
 //   project.mjs tidy --project <dir> --plan <file.json>              apply the agreed removals and moves in the brain
 //   project.mjs wizard start <name> | end                           open (2 h) or close the window of the wizard (T3 setup left is named at the end)
@@ -26,7 +28,7 @@ import { loadContext, loadPolicy, inSubagent, isWakeTurn, readThreadState, write
 import { setupT3, startWelcome, pendingT3Line } from '../scripts/t3-setup.mjs';
 import { brainWrite, formatWriteResult } from '../scripts/brain.mjs';
 import { setWizard } from '../scripts/wizard.mjs';
-import { probe, restore, connect, create, inventory, formatInventory, projectRoots, machineRoot, setMachineRoot, rootFile } from '../scripts/project.mjs';
+import { probe, restore, connect, create, issueMailKey, inventory, formatInventory, projectRoots, machineRoot, setMachineRoot, rootFile } from '../scripts/project.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const [cmd, target] = args._;
@@ -122,6 +124,7 @@ function startDeferredWelcome(ctx) {
 }
 
 const list = (lines) => lines.map((l) => `- ${l}`).join('\n');
+const mailStep = (r) => [issueMailKey({ projectDir: r.projectDir, brainDir: r.brainDir, sessionBrain: session.brainDir })];
 
 try {
   if (cmd === 'probe') {
@@ -137,12 +140,12 @@ try {
     if (!target) fail('usage: project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside] [--domain "<folder>"]');
     guardWrite();
     const r = await connect({ project: target, repo: args.repo || null, brain: args.brain || null, renameBrain: !!args['rename-brain'], adopt: !!args.adopt, brainBranch: args['brain-branch'] || null, setAside: typeof args['set-aside'] === 'string' ? args['set-aside'] : !!args['set-aside'], domain: typeof args.domain === 'string' ? args.domain : null, root, ...gh });
-    out(`connected ${r.projectDir} (brain ${r.brainDir})\n${list([...r.lines, ...t3Step([r.projectDir], target), ...rememberRoot()])}`);
+    out(`connected ${r.projectDir} (brain ${r.brainDir})\n${list([...r.lines, ...mailStep(r), ...t3Step([r.projectDir], target), ...rememberRoot()])}`);
   } else if (cmd === 'create') {
     if (!target) fail('usage: project.mjs create <name> [--repo <repo>] --purpose "<one sentence>"');
     guardWrite();
     const r = await create({ name: target, repo: args.repo || null, purpose: args.purpose, domain: typeof args.domain === 'string' ? args.domain : null, root, ...gh });
-    out(`created ${r.projectDir} (brain ${r.brainDir})\n${list([...r.lines, ...t3Step([r.projectDir], target), ...rememberRoot()])}`);
+    out(`created ${r.projectDir} (brain ${r.brainDir})\n${list([...r.lines, ...mailStep(r), ...t3Step([r.projectDir], target), ...rememberRoot()])}`);
   } else if (cmd === 'root') {
     if (!target) {
       const saved = machineRoot();
@@ -158,6 +161,13 @@ try {
     if (!fs.existsSync(path.join(dir, WORKFLOW_CONFIG))) fail(`${dir} is not a workflow project (no ${WORKFLOW_CONFIG})`);
     if (args.registered) { recordPending({ [dir]: null }); out(`t3: ${dir} recorded as set up in T3`); }
     else out(list(t3Step([dir], typeof args.name === 'string' ? args.name : path.basename(path.dirname(dir)))));
+  } else if (cmd === 'mail') {
+    if (!target) fail('usage: project.mjs mail <dir>');
+    guardWrite();
+    const dir = path.resolve(target);
+    const brainDir = brainOf(dir);
+    if (!brainDir) fail(`${dir} is not a workflow project (no ${WORKFLOW_CONFIG} with a brain)`);
+    out(`- ${issueMailKey({ projectDir: dir, brainDir, sessionBrain: session.brainDir })}`);
   } else if (cmd === 'inventory') {
     if (!target) fail('usage: project.mjs inventory <dir>');
     const inv = inventory(path.resolve(target));
@@ -191,7 +201,7 @@ try {
       out(['wizard closed', ...startDeferredWelcome(ctx).map((l) => `- ${l}`)].join('\n'));
     } else fail('usage: project.mjs wizard start <name> | end');
   } else {
-    fail('usage: project.mjs probe|restore|connect|create|t3|inventory|tidy|wizard ... (see the header of bin/project.mjs)');
+    fail('usage: project.mjs probe|restore|connect|create|t3|mail|inventory|tidy|wizard ... (see the header of bin/project.mjs)');
   }
 } catch (err) {
   fail(err.message);

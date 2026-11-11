@@ -76,7 +76,7 @@ async function fakeGithub(sb) {
           const r = spawnSync('git', ['ls-tree', '--name-only', 'HEAD'], { cwd: dir, encoding: 'utf8' });
           return r.status === 0 ? send(200, r.stdout.trim().split('\n').filter(Boolean).map((name) => ({ name }))) : send(409, {});
         }
-        return send(200, { name: m[1] });
+        return send(200, { name: m[1], private: !m[1].startsWith('pub-') });
       }
       send(500, {});
     });
@@ -106,6 +106,21 @@ test('classifyNames and decide: workflow project, workflow brain, older setup, p
   assert.equal(decide([], [{ kind: 'code' }, { kind: 'legacy' }]), 'adopt');
   assert.equal(decide([], [{ kind: 'code' }, { kind: 'workflow-brain' }]), 'connect');
   assert.equal(decide([], []), 'create');
+});
+
+test('connect a public code repo: .workflow.json says visibility public and the line names the brain route', async () => {
+  const sb = sandbox();
+  const hub = await fakeGithub(sb);
+  try {
+    const opts = { root: sb.root, apiUrl: hub.apiUrl, tokenFile: sb.tokenFile, remoteFor: sb.remoteFor };
+    sb.seed('pub-web', { 'index.html': '<h1>x</h1>\n' });
+    const r = await connect({ project: 'pub', repo: 'pub-web', ...opts });
+    assert.match(r.lines.join('\n'), /visibility: owner1\/pub-web is PUBLIC: its knowledge stays in brain/);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(sb.root, 'Pub', 'pub-web', '.workflow.json'), 'utf8')).visibility, 'public');
+    sb.seed('pub2', { 'a.js': '1\n' });
+    const r2 = await connect({ project: 'pub', repo: 'pub2', ...opts });
+    assert.doesNotMatch(r2.lines.join('\n'), /PUBLIC/, 'a private repo gets no mark');
+  } finally { await hub.close(); sb.cleanup(); }
 });
 
 test('adopt an older project: probe finds it, connect renames and adopts the brain on its current branch, tidy removes the agreed files, restore pulls', async () => {

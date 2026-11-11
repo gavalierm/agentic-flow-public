@@ -13,6 +13,7 @@ import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDir
 export { ROOT_FILE, rootFile, machineRoot, setMachineRoot } from './config.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
 import { ensureLineEndings, EOL_RULE } from './eol.mjs';
+import { servicesClient } from './comms.mjs';
 import { gh, ghOwner, ghOwnedRepos, ghRootNames, grantAgentAccess, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_AGENT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
 
 export const DEFAULT_ROOT = path.join(os.homedir(), 'agentic');
@@ -332,6 +333,14 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
   if (marker) lines.push(marker);
   adapter(projectDir, `../${brainName}`);
   lines.push('settings generated');
+  // A public code repo keeps no workflow knowledge (repoPublic): records, decisions and runbooks would be pushed publicly
+  // (alice 2026-11-11, an adopted static web).
+  const info = await gh(apiUrl, token, 'GET', `/repos/${owner}/${repoName}`);
+  if (info.status === 200 && info.json?.private === false) {
+    const cfgFile = path.join(projectDir, WORKFLOW_CONFIG);
+    fs.writeFileSync(cfgFile, `${JSON.stringify({ ...(readJson(cfgFile, {}) || {}), visibility: 'public' }, null, 2)}\n`);
+    lines.push(`visibility: ${owner}/${repoName} is PUBLIC: its knowledge stays in brain (save --repo refuses it), secrets in local/; check its history for secrets and that its deploy leaves out the workflow files (skill project, public repo)`);
+  }
   return { owner, projectDir, brainDir, lines };
 }
 
@@ -420,4 +429,32 @@ export function formatInventory(inv) {
     for (const it of items) out.push(`- ${it.path} ${it.bytes} B ${it.changed || '-'}${it.dead.length ? ` dead: ${it.dead.join(', ')}` : ''}`);
   }
   return out.join('\n');
+}
+
+/**
+ * Mail of a project's brain: a sender key for the project (its folder name, the mail project name) and
+ * `<brain>/local/comms.json` with the instance of the session's mail config. connect and create left a new brain without
+ * it: the project's topics were not registered and its mail stayed in local/outbox (alice 2026-11-11). The key is never
+ * printed; a brain that has the config keeps it.
+ */
+export function issueMailKey({ projectDir, brainDir, sessionBrain, client = servicesClient(), run = spawnSync }) {
+  const target = path.join(brainDir, 'local', 'comms.json');
+  if (exists(target)) return 'mail: config exists (<brain>/local/comms.json)';
+  const sender = path.basename(projectDir);
+  const how = `issue a key with node ${toPosix(client)} key add --instance <instance> --sender ${sender} and write {instance, key, instance_id} to ${toPosix(target)} (mode 600)`;
+  const src = sessionBrain ? readJson(path.join(sessionBrain, 'local', 'comms.json'), null) : null;
+  if (!src?.instance || !src?.instance_id) return `mail: NOT set up (this session has no mail config with instance and instance_id): ${how}`;
+  if (!exists(client)) return `mail: NOT set up (mail client ${toPosix(client)} not found): ${how}`;
+  const json = (text) => { try { return JSON.parse(String(text || '')); } catch { return null; } };
+  const r = run(process.execPath, [client, 'key', 'add', '--instance', src.instance, '--sender', sender], { encoding: 'utf8', timeout: 15000 });
+  const res = json(r.stdout);
+  if (r.status !== 0 || !res?.key) {
+    const why = json(r.stderr)?.error || String(r.stderr || r.error?.message || `exit ${r.status}`).trim().split('\n')[0];
+    return `mail: NOT set up (key add failed: ${why}): ${how}`;
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, `${JSON.stringify({ instance: src.instance, key: res.key, instance_id: src.instance_id }, null, 2)}\n`, { mode: 0o600 });
+  const h = run(process.execPath, [client, 'health', '--config', target], { encoding: 'utf8', timeout: 15000 });
+  const ok = h.status === 0 && json(h.stdout)?.instance_id === src.instance_id;
+  return `mail: key issued for sender ${sender} (<brain>/local/comms.json)${ok ? ', service answers' : '; the service did NOT answer: run comms.mjs status in the project'}`;
 }

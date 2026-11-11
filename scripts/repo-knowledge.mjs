@@ -202,8 +202,17 @@ export function checkKnowledgeFile(rel, content, policy) {
  * the checkout that has it or a temporary worktree. Only agentic/ paths are committed, nothing is pushed. A refused
  * commit (the repo's pre-commit) leaves nothing behind.
  */
+/**
+ * A code repo public on GitHub (`"visibility": "public"` in its .workflow.json, written by connect): its knowledge stays in
+ * the private brain. save --repo would have pushed project records, decisions and deploy runbooks publicly (alice 2026-11-11).
+ */
+export function repoPublic(dir) {
+  return readJson(path.join(dir, WORKFLOW_CONFIG), {})?.visibility === 'public';
+}
+
 export function repoWrite(ctx, repoName, { ops, message }) {
   const repo = repoByName(ctx.domain, repoName, ctx.brainDir);
+  if (repoPublic(repo.dir)) throw new Error(`${repo.name} is public on GitHub ("visibility": "public" in ${repo.name}/${WORKFLOW_CONFIG}): its knowledge would be pushed publicly; save it into brain without --repo (a project-${repo.name} record needs no --brain), secrets into local/`);
   if (!message || !String(message).trim()) throw new Error('commit message required');
   const errors = ops.flatMap((op) => checkKnowledgeFile(op.path, op.remove ? null : op.content, ctx.policy));
   if (errors.length) throw new Error(errors.join('\n'));

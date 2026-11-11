@@ -30,7 +30,7 @@ import { renderHandover, checkHandover } from '../scripts/brain-checks.mjs';
 import { removeNames } from '../scripts/logs.mjs';
 import { setTopicState, readTopic } from '../scripts/topic.mjs';
 import { workflowSkillNames, PROJECT_SKILLS_DIR, syncBrainSkills } from '../scripts/skills-sync.mjs';
-import { skillSources, PROJECT_KNOWLEDGE, REPO_HANDOVER, domainRepos, repoByName, sessionRepo, singleRepoOf, nextRepoDecisionId, repoWrite, formatRepoWrite, heldRepoTopic } from '../scripts/repo-knowledge.mjs';
+import { skillSources, PROJECT_KNOWLEDGE, REPO_HANDOVER, domainRepos, repoByName, sessionRepo, singleRepoOf, nextRepoDecisionId, repoWrite, formatRepoWrite, heldRepoTopic, repoPublic } from '../scripts/repo-knowledge.mjs';
 import { checkSkill, meaningDiff } from '../scripts/skill-check.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -105,11 +105,12 @@ function brainGuard(ctx, key, refs = []) {
   const why = typeof args.brain === 'string' ? args.brain.trim() : '';
   if (args.brain !== undefined && why.length < 10) fail('--brain needs the reason why this repo knowledge stays in brain (at least 10 characters)');
   if (why) return;
-  const repos = domainRepos(ctx.domain, ctx.brainDir).map((r) => r.name).sort((a, b) => b.length - a.length);
+  const all = domainRepos(ctx.domain, ctx.brainDir);
+  const repos = all.filter((r) => !repoPublic(r.dir)).map((r) => r.name).sort((a, b) => b.length - a.length);
   const own = repos.find((r) => key === `project-${r}` || String(key).startsWith(`project-${r}-`));
   if (own) fail(`${key} describes repo ${own}: its knowledge belongs to ${own}/${PROJECT_KNOWLEDGE}/ (add --repo ${own}); only when it is not knowledge of that repo alone: --brain "<why>" (D-0002, P-007)`);
   const one = singleRepoOf(ctx.domain, ctx.brainDir, refs);
-  if (one) out(`note: looks like repo ${one} (every reference points into it): knowledge of that repo alone is saved with --repo ${one}; knowledge of several repos, people or the environment stays in brain (P-007)`);
+  if (one && !all.some((r) => r.name === one && repoPublic(r.dir))) out(`note: looks like repo ${one} (every reference points into it): knowledge of that repo alone is saved with --repo ${one}; knowledge of several repos, people or the environment stays in brain (P-007)`);
 }
 
 /** Path of a record inside `<repo>/agentic/` from its brain-relative path, or null when it lies elsewhere. */
