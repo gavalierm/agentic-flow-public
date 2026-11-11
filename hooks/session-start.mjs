@@ -33,9 +33,10 @@ export function run(input) {
   // Catalog of project data: scan within its budget before the boot text; it never fails the boot and does nothing without a source.
   const catalog = catalogBoot(ctx, { source: input.source || 'startup', state: ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : null });
   const boot = buildBootContext(ctx, { source: input.source || 'startup', t3Note: notes.length ? notes.join('\n') : null, catalogLines: catalog.lines });
-  // P-021: the revision this session loaded; the prompt and tool hooks announce a later update once.
+  // P-021: the revision this session loaded; the prompt and tool hooks announce a later update once. P-001: a new or
+  // compacted context starts with an empty read budget (post-tool-use readNudge).
   if (ctx.brainDir && ctx.thread) {
-    try { const w = installedWorkflow(); writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), plugin_sha: w.sha, plugin_version: w.version, ...(catalog.stateHash ? { catalog_boot_hash: catalog.stateHash } : {}) }); } catch { /* state is best effort */ }
+    try { const w = installedWorkflow(); writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), plugin_sha: w.sha, plugin_version: w.version, read_budget: null, ...(catalog.stateHash ? { catalog_boot_hash: catalog.stateHash } : {}) }); } catch { /* state is best effort */ }
   }
   return contextOutput('SessionStart', boot.text);
 }

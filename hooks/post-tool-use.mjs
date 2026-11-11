@@ -14,7 +14,15 @@ import { bashTargets, bashEdits } from './pre-tool-use.mjs';
 import { wakerFromTool, recordWaker } from '../scripts/waker.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 
-export const HOOK_META = { event: 'PostToolUse|PostToolUseFailure', class: 'log+c', limit: '1 line (once per waiting message)', principles: ['P-018', 'P-030', 'P-028', 'P-003', 'P-041', 'P-042', 'P-061', 'P-021'] };
+export const HOOK_META = { event: 'PostToolUse|PostToolUseFailure', class: 'log+c', limit: '1 line (once per waiting message; once per read step)', principles: ['P-001', 'P-018', 'P-030', 'P-028', 'P-003', 'P-041', 'P-042', 'P-061', 'P-021'] };
+
+// P-001 (2026-11-11): a web project's main thread read a whole page, all CSS and JS, web sources and an image itself and
+// its context was compacted after 8 minutes; the rule "research goes to a worker" was text only. The main thread now
+// learns how much tool output it took in since the session (re)started and is pointed to a worker at each step.
+export const READ_STEP_CHARS = 80_000;
+export const WEB_NUDGE_CALLS = 2;
+export const IMAGE_CHARS = 6_000;
+const WEB_TOOLS = ['WebFetch', 'WebSearch'];
 
 export const WATCH_INTERVAL_MS = 15_000;
 export const WATCHED_LEVELS = ['blocker', 'steer'];
@@ -65,6 +73,49 @@ export function watch(ctx, input, now = Date.now()) {
   return lines.length ? lines.join('\n') : null;
 }
 
+/** Characters a tool result adds to the context; an image counts as IMAGE_CHARS, not its base64 data. */
+export function outputChars(response) {
+  if (response == null) return 0;
+  if (typeof response === 'string') return response.length;
+  let images = 0;
+  const text = JSON.stringify(response, (key, value) => {
+    if (value && typeof value === 'object' && value.type === 'image') { images += 1; return undefined; }
+    if (key === 'base64' || (key === 'data' && typeof value === 'string' && value.length > 1000)) { images += 1; return undefined; }
+    return value;
+  }) || '';
+  return text.length + images * IMAGE_CHARS;
+}
+
+/**
+ * Read budget of the main thread (P-001): tool output since the session start or the last compaction (session-start
+ * clears it). Returns { line, budget }: a line at each READ_STEP_CHARS step and once at the WEB_NUDGE_CALLS-th web call.
+ */
+export function readNudge(budget, input) {
+  const b = { chars: 0, web: 0, step: 0, web_said: false, ...(budget || {}) };
+  b.chars += outputChars(input.tool_response);
+  if (WEB_TOOLS.includes(input.tool_name)) b.web += 1;
+  const lines = [];
+  const step = Math.floor(b.chars / READ_STEP_CHARS);
+  if (step > b.step) {
+    b.step = step;
+    lines.push(`context: the main thread took in ~${Math.round(b.chars / 1000)} KB of tool output this session; further surveys (other files, styles, logs, docs, sources) go to a worker (workflow:delegate, delegate.mjs prepare --task) that returns the conclusion; read here only the part you edit (P-001)`);
+  }
+  if (b.web >= WEB_NUDGE_CALLS && !b.web_said) {
+    b.web_said = true;
+    lines.push('context: checking web sources is research: give the remaining checks to a worker (workflow:delegate), it returns the facts with their URLs, not the pages (P-001)');
+  }
+  return { line: lines.length ? lines.join('\n') : null, budget: b };
+}
+
+/** Read budget line for the main thread; subagents read on their own context and are not counted. */
+export function readBudget(ctx, input) {
+  if (input.agent_id || input.agent_type || !ctx.brainDir || !ctx.thread) return null;
+  const state = readThreadState(ctx.brainDir, ctx.thread);
+  const r = readNudge(state.read_budget, input);
+  writeThreadState(ctx.brainDir, ctx.thread, { ...state, read_budget: r.budget });
+  return r.line;
+}
+
 /** Files the finished tool call changed (file tools, shell targets and in-place edits). */
 export function changedFiles(input) {
   const cwd = input.cwd || process.cwd();
@@ -84,8 +135,8 @@ export function run(input, now = Date.now()) {
   if (entry) bufferAppend(ctx.brainDir, input.session_id, entry);
   // P-061: a waker armed by this call (background task or agent, scheduler, mail) lets the turn end waiting.
   if (!input.agent_id && ctx.thread) recordWaker(ctx.brainDir, ctx.thread, wakerFromTool(input, now));
-  const line = watch(ctx, input, now);
-  return line ? contextOutput('PostToolUse', line) : {};
+  const lines = [readBudget(ctx, input), watch(ctx, input, now)].filter(Boolean);
+  return lines.length ? contextOutput('PostToolUse', lines.join('\n')) : {};
 }
 
 if (isMain(import.meta.url)) {
