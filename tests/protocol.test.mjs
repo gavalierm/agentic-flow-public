@@ -27,6 +27,9 @@ test('parseReply: the state is the last line only; diacritics and markdown are t
   assert.deepEqual(list.operator, ['Potvrď zmazanie starého priečinka (odporúčam áno)', 'Spusti wake install'], 'checklist items up to an empty line');
   assert.equal(list.question, 'Potvrď zmazanie starého priečinka (odporúčam áno)', 'a confirmation is an item without a question mark');
   assert.deepEqual(parseReply('x\n\n**Operátor:** nič\n\nStav: hotovo').operator, [], '"nič" is no item');
+  assert.equal(parseReply('Login čaká na kód, stačí napísať „pokračuj“.\n\nStav: hotovo').step, 'napísať „pokračuj', 'asking the operator to write "pokračuj" is a step (bob 2026-11-11)');
+  assert.equal(parseReply('Napíš pokračuj a dokončím to.\n\nStav: hotovo').step, 'Napíš pokračuj');
+  assert.equal(parseReply('Pokračujem v oprave.\n\nStav: hotovo').step, null, 'own continuation is no ask');
 });
 
 test('Stop: a reply without a state blocks once in every turn; ending anyway closes the turn', () => {
@@ -122,5 +125,16 @@ test('Stop: a step written as prose or an Operátor item under "hotovo" blocks o
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: item.replace('Stav: hotovo', 'Stav: otázka') }).json.decision, undefined, 'the protocol form passes');
+  } finally { fx.cleanup(); }
+});
+
+test('Stop: "napíš pokračuj" under hotovo blocks once; the operator is no waker (bob 2026-11-11)', () => {
+  const fx = setup();
+  try {
+    fx.hook('user-prompt-submit.mjs', { prompt: 'dokonči login' });
+    const bob = 'Kód je uložený, ale súbor sa mi v tomto ťahu nedá prečítať. Stačí napísať „pokračuj“ a dokončím prihlásenie.\n\nStav: hotovo';
+    const r = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: bob });
+    assert.equal(r.json.decision, 'block');
+    assert.match(r.json.reason, /writes a step as prose \("napísať „pokračuj".*save handover --next/s);
   } finally { fx.cleanup(); }
 });

@@ -53,7 +53,7 @@ test('assist and reply between two threads; list takes nothing, receive --id sho
     setTurnSource(fx.brain, 'a1', 'wake');
 
     // A reply takes the level of its original (no --level needed); it settles the picked assist.
-    const reply = fx.run('comms.mjs', ['send', '--reply-to', id, '--text', 'ANSWER users(id, name)']);
+    const reply = fx.run('comms.mjs', ['send', '--reply-to', id, '--state', 'hotovo', '--text', 'ANSWER users(id, name)']);
     assert.equal(reply.status, 0, reply.out);
     assert.match(reply.stdout, new RegExp(`-> reply to ${id}`));
     assert.doesNotMatch(reply.stdout, /assist sent: continue other work/);
@@ -63,10 +63,10 @@ test('assist and reply between two threads; list takes nothing, receive --id sho
     const gone = fx.run('comms.mjs', ['receive', '--id', id]);
     assert.equal(gone.status, 1); assert.match(gone.stderr, /no waiting message with that id/);
     // --to with --reply-to is refused (the reply would silently ignore --to)
-    const both = fx.runB('comms.mjs', ['send', '--reply-to', id, '--to', 'project/alpha', '--level', 'assist', '--text', 'x']);
+    const both = fx.runB('comms.mjs', ['send', '--reply-to', id, '--state', 'hotovo', '--to', 'project/alpha', '--level', 'assist', '--text', 'x']);
     assert.equal(both.status, 1); assert.match(both.stderr, /--reply-to and --to exclude each other/);
     // a reply to your own message would come back to you
-    const own = fx.runB('comms.mjs', ['send', '--reply-to', id, '--text', 'x']);
+    const own = fx.runB('comms.mjs', ['send', '--reply-to', id, '--state', 'hotovo', '--text', 'x']);
     assert.notEqual(own.status, 0); assert.match(own.out, /vaša vlastná/);
 
     // b2 sees the reply via its thread; the reply is a reply, so nothing is picked on b2's side.

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Stop: closes the turn record for keepalive (P-043, with the turn's opened_at); one brain write per turn for buffered logs
 // (P-030); signals are queued for the next prompt (P-023 c), each skill proposal once per thread. A missing reply is found by the message TTL in the mail service (P-042, P-046), not here.
-// Picked assist (P-042, 2026-11-02): an assist message this thread picked up (`comms receive`) and has not answered (`send --reply-to`)
-// is one queued line at the stop, not a block: the answer is due, the turn may still end.
+// Picked assist (P-042, 2026-11-02): an assist message this thread picked up (`comms receive`) and has given no reply state
+// (`send --reply-to --state`) is one queued line at the stop, not a block: the answer is due, the turn may still end.
+// One answered `otázka` or `čakám` is not reminded: its sender knows the state, the final `hotovo` follows.
 // Reply protocol (P-061, operator 2026-11-08): the final reply declares its state on the last line, `Stav: hotovo|otázka|čakám`;
 // the hook reads only that line and checks it against facts, in every turn (bell turns too), never the wording of the reply:
 // no state, a step written as prose ("Ostáva: …", operator 2026-11-09), items under **Operátor:** with a state other than
@@ -89,7 +90,9 @@ export function mistakeClaim(text) {
 // hypothetical one, and a wrong block cost a whole extra turn (operator 2026-11-08, hooks review).
 export const MISTAKE_REASON = (sentence) => `mistake named in the last reply: "${sentence.slice(0, 120)}"; if it was one, handle it with skill workflow:error (fix, clean up, save a skill or rule, report it) and say what you saved (P-003)`;
 
-export const PICKED_ASSIST_LINE = (list) => `picked assist unanswered: ${list.map((w) => w.id).join(', ')}; answer each with comms send --reply-to <id>; answered another way (one reply for several, a new message): comms settle --id <id>; else say why it waits (P-042)`;
+export const PICKED_ASSIST_LINE = (list) => `picked assist unanswered: ${list.map((w) => w.id).join(', ')}; answer each with comms send --reply-to <id> --state hotovo|otázka|čakám; answered another way (one reply for several, a new message): comms settle --id <id> (P-042)`;
+/** Picked assist without a reply state: the only ones the stop reminds of. */
+export const unansweredPicked = (state) => (Array.isArray(state?.picked_assist) ? state.picked_assist : []).filter((w) => !w.state);
 
 export function run(input) {
   const ctx = loadContext({ requireBrain: false });
@@ -155,7 +158,7 @@ export function run(input) {
   }
   if (ctx.thread) {
     const state = readThreadState(ctx.brainDir, ctx.thread);
-    const picked = Array.isArray(state.picked_assist) ? state.picked_assist : [];
+    const picked = unansweredPicked(state);
     // Once per queued line: a stop that finds the same reminder still waiting does not queue it again.
     if (picked.length && !(state.pending_signals || []).some((sig) => sig.startsWith('picked assist unanswered'))) signals.push(PICKED_ASSIST_LINE(picked));
     // P-030: each proposal (sequence -> skill) once per thread, not at every Stop that sees the count again.

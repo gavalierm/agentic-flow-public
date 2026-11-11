@@ -4,11 +4,40 @@
 import { readHookInput, emit, isMain } from '../scripts/hooks-io.mjs';
 import { loadPolicy, loadContext } from '../scripts/config.mjs';
 import { logDecision } from '../scripts/denials.mjs';
+import { appendOp } from '../scripts/logs.mjs';
+import { brainWrite } from '../scripts/brain.mjs';
+import { nowIso } from '../scripts/util.mjs';
 
 export const HOOK_META = { event: 'SubagentStop', class: 'block', limit: '1 reason', principles: ['P-028'] };
 
 export function hasFailuresSection(text) {
   return /(^|\n)\s*(#+\s*|\*\*)?failures\b/i.test(String(text || ''));
+}
+
+/** The text of the "Failures" section without its heading; "" when there is none or it says none (P-028). */
+export function failuresText(text) {
+  const s = String(text || '');
+  const m = /(^|\n)\s*(#+\s*|\*\*)?failures\b/i.exec(s);
+  if (!m) return '';
+  const rest = s.slice(m.index + m[0].length).replace(/^[ \t:*\u2014\u2013-]*/, '').trim();
+  return /^none\b/i.test(rest) ? '' : rest;
+}
+
+/** One failures.log line in the shape the PostToolUse log uses: `<time> <agent> <session> <command> :: <error>` (error list reads field 2). */
+export function failureLine(input, failures, now = nowIso()) {
+  const agent = String(input.agent_id || input.agent_type || 'worker').replace(/\s+/g, '-');
+  const session = String(input.session_id || 'subagent').replace(/\s+/g, '-');
+  return `${now} ${agent} ${session} worker-result :: ${failures.replace(/\s+/g, ' ').slice(0, 400)}`;
+}
+
+/** A worker result with a non-empty Failures section goes to <brain>/logs/failures.log, the same write as the log flush (issue #28). */
+export function recordWorkerFailures(input, ctx, now = nowIso()) {
+  if (!/(^|:)worker$/.test(String(input.agent_type || ''))) return null;
+  const failures = failuresText(input.last_assistant_message);
+  if (!failures || !ctx.brainDir) return null;
+  const line = failureLine(input, failures, now);
+  brainWrite(ctx, { ops: [appendOp('failures.log', [line])], internal: true, message: 'worker failures' });
+  return line;
 }
 
 export function run(input, policy = loadPolicy(null)) {
@@ -29,6 +58,11 @@ if (isMain(import.meta.url)) {
   try {
     const input = readHookInput();
     const out = run(input);
+    if (!out.decision) {
+      try {
+        recordWorkerFailures(input, loadContext({ requireBrain: false }));
+      } catch (err) { process.stderr.write(`subagent-stop: failures not recorded: ${err.message}\n`); }
+    }
     if (out.decision === 'block') {
       try {
         const ctx = loadContext({ requireBrain: false });

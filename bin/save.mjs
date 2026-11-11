@@ -17,7 +17,7 @@ import { createHash } from 'node:crypto';
 import { lfBytes } from '../scripts/eol.mjs';
 import { spawnSync } from 'node:child_process';
 import { parseArgs, fail, today, readText } from '../scripts/util.mjs';
-import { loadContext, isWakeTurn, machineName, foreignProjectCwd } from '../scripts/config.mjs';
+import { loadContext, isWakeTurn, machineName, foreignProjectCwd, readThreadState } from '../scripts/config.mjs';
 import { brainWrite, formatWriteResult, syncAndCheckHolder } from '../scripts/brain.mjs';
 import { parseFrontmatter, serializeFrontmatter, asList } from '../scripts/frontmatter.mjs';
 import { makeKey, normalizeKey, hasDiacritics, isValidId, KEY_TYPES } from '../scripts/keys.mjs';
@@ -26,7 +26,8 @@ import { readDecisions, readSkills, nextDecisionId } from '../scripts/records.mj
 import { assembleRules } from '../scripts/rules.mjs';
 import { ruleCorpus, judgeRule, unanswered, onlyCondenses } from '../scripts/rule-gate.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
-import { renderHandover, checkHandover } from '../scripts/brain-checks.mjs';
+import { renderHandover, checkHandover, handoverNextStep } from '../scripts/brain-checks.mjs';
+import { reminderStep, armedSchedule, REMINDER_REFUSAL } from '../scripts/waker.mjs';
 import { removeNames } from '../scripts/logs.mjs';
 import { setTopicState, readTopic } from '../scripts/topic.mjs';
 import { workflowSkillNames, PROJECT_SKILLS_DIR, syncBrainSkills } from '../scripts/skills-sync.mjs';
@@ -612,6 +613,8 @@ function saveHandover(ctx) {
   const content = args.file ? fs.readFileSync(args.file, 'utf8') : renderHandover({ task: args.task, done: args.done, next: args.next, files: args.files, questions: args.questions });
   const errors = checkHandover(content, ctx.policy.limits.handover_lines);
   if (errors.length) fail(errors.join('\n'));
+  const reminder = ctx.thread ? reminderStep(handoverNextStep(content)) : null;
+  if (reminder && !armedSchedule(readThreadState(ctx.brainDir, ctx.thread))) fail(REMINDER_REFUSAL(reminder));
   const ops = [{ path: `topics/${topic}/handover.md`, content }, setTopicState(ctx, topic, readTopic(ctx.brainDir, topic)?.state === 'paused' ? 'paused' : 'working')];
   const res = brainWrite(ctx, { ops, message: `handover ${topic}` });
   out(formatWriteResult(res, [`topics/${topic}/handover.md`]));

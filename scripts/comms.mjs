@@ -41,7 +41,9 @@ export function mailProjectName(ctx) {
   return ctx.persona && PERSONA_REPO_RE.test(name || '') ? name.slice(PERSONA_PREFIX.length) : name;
 }
 export const LEVELS = ['blocker', 'steer', 'assist'];
-/** Mechanical categories of the prompt line (P-044, operator 2026-11-02): a reply (reply_to or thread-addressed), else the level. */
+/** Mechanical categories of the prompt line (P-044, operator 2026-11-02): a reply (reply_to or thread-addressed), else the level.
+ * An interim reply names its state after the category: `reply otázka`, `reply čakám` (P-061). */
+export const INTERIM_REPLY_STATES = ['otázka', 'čakám'];
 export const CATEGORIES = ['reply', ...LEVELS];
 /** Client subcommands a subagent may run (read only, P-025). The triage subagent is removed (2026-11-02). */
 export const SUBAGENT_ALLOWED = ['receive', 'list', 'count'];
@@ -145,6 +147,12 @@ export function categoryOf(item) {
   return item.reply_to || item.to_thread ? 'reply' : item.level;
 }
 
+/** Category with the state of an interim reply (`reply otázka`, `reply čakám`); a final reply is plain `reply`. */
+export function categoryLabel(item) {
+  const category = categoryOf(item);
+  return category === 'reply' && INTERIM_REPLY_STATES.includes(item.reply_state) ? `reply ${item.reply_state}` : category;
+}
+
 /**
  * Waiting messages (status line P-023 e, prompt hooks). Comms listing items (`count.items`: id, level, reply_to, to_thread,
  * sender, created_at) give the mechanical category of each message; a server without items only gives a total.
@@ -215,7 +223,7 @@ export function formatMail(mail) {
 
 /** Mechanical lines of waiting mail for the prompt: `<id> <category>`, never a body (P-044). */
 export function mailLines(items = []) {
-  return items.map((it) => `${it.id} ${categoryOf(it)}`);
+  return items.map((it) => `${it.id} ${categoryLabel(it)}`);
 }
 
 /**

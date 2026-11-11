@@ -227,9 +227,11 @@ test('next step: "hotovo" with a handover step blocks; ending anyway hands the s
     let closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
     assert.equal(val(closed[0], 'next'), 'skontrolovať zajtrajší report', 'the continue ring keeps the loop alive');
     // A schedule armed for the step rings the thread itself: no block and no continue bell (2026-11-03, ai-news).
-    assert.equal(fx.run('save.mjs', ['handover', 'an', '--task', 'T', '--next', 'po 06:00 skontrolovať report']).status, 0);
+    // The schedule comes first: save handover refuses a time-bound step without one (operator 2026-11-11).
+    assert.notEqual(fx.run('save.mjs', ['handover', 'an', '--task', 'T', '--next', 'po 06:00 skontrolovať report']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'nastav ranný beh' });
     fx.hook('post-tool-use.mjs', { tool_name: 'mcp__t3-code__schedule_task', tool_input: { prompt: 'p', schedule: { type: 'fixed_time', timeOfDay: '06:00' } }, tool_response: '{"scheduledTaskId":"st1"}' });
+    assert.equal(fx.run('save.mjs', ['handover', 'an', '--task', 'T', '--next', 'po 06:00 skontrolovať report']).status, 0);
     fx.stub.reset();
     assert.notEqual(fx.hook('stop.mjs', { last_assistant_message: 'Ranný beh je nastavený.\n\nStav: čakám (na ranný beh)' }).json.decision, 'block');
     closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');

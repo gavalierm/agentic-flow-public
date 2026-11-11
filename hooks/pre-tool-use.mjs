@@ -257,7 +257,7 @@ export function bashTargets(command, cwd = process.cwd()) {
   const targets = [];
   let base = cwd;
   const home = process.env.HOME || '';
-  const abs = (p) => path.resolve(base, p.startsWith('~/') ? path.join(home, p.slice(2)) : p);
+  const abs = (p) => path.resolve(base, gitBashPath(p.startsWith('~/') ? path.join(home, p.slice(2)) : p));
   for (const part of maskShell(command).split(/\s*(?:&&|\|\||;|\n)\s*/)) {
     const words = part.trim().split(/\s+/).filter(Boolean);
     const lead = leadOf(words);
@@ -360,7 +360,7 @@ export function shellWriteTargets(command, cwd = process.cwd(), env = process.en
   const found = [];
   let base = cwd;
   const home = env.HOME || '';
-  const abs = (p) => path.resolve(base, p === '~' ? home : p.startsWith('~/') ? path.join(home, p.slice(2)) : p);
+  const abs = (p) => path.resolve(base, gitBashPath(p === '~' ? home : p.startsWith('~/') ? path.join(home, p.slice(2)) : p));
   const add = (w, sure = true) => {
     // the temp dir expanded by expandTemp keeps its spaces masked so it stays one word
     const v = (typeof w === 'string' ? w : w && !w.dynamic ? w.text : '').replace(/[\u0001-\u0005]/g, (c) => UNMASK[c]) || null;
@@ -541,7 +541,7 @@ export function bashEdits(command, cwd = process.cwd()) {
   const edits = [];
   let base = cwd;
   const home = process.env.HOME || '';
-  const abs = (p) => path.resolve(base, p.startsWith('~/') ? path.join(home, p.slice(2)) : p);
+  const abs = (p) => path.resolve(base, gitBashPath(p.startsWith('~/') ? path.join(home, p.slice(2)) : p));
   for (const part of maskShell(command).split(/\s*(?:&&|\|\||;|\n|\|)\s*/)) {
     const words = part.trim().split(/\s+/).filter(Boolean).filter((w) => !/^[0-9]*>/.test(w));
     const lead = leadOf(words);
@@ -681,6 +681,17 @@ export function foregroundWait(command) {
     if (Number(m[1]) * WAIT_UNIT[m[2]] > 10) return `sleep ${m[1]}${m[2]}`;
   }
   return null;
+}
+
+/**
+ * Git Bash on Windows gives paths as /d/<projekt>/...; on win32 they become D:/... before path.resolve, otherwise the
+ * drive is taken from the cwd and the scratch/ write is denied (issue #28, 2026-11-11). Other platforms: unchanged.
+ */
+export function gitBashPath(p, platform = process.platform) {
+  const s = String(p);
+  if (platform !== 'win32') return s;
+  const m = /^\/([a-zA-Z])(\/.*)?$/.exec(s);
+  return m ? `${m[1].toUpperCase()}:${m[2] || '/'}` : s;
 }
 
 /** System temp directories (os.tmpdir(), /tmp, /var/tmp; WORKFLOW_TEMP_DIRS overrides, the test fixtures live in /tmp). */
@@ -854,9 +865,9 @@ export function run(input) {
   const ctx = loadContext({ requireBrain: false });
   const tool = input.tool_name;
   const toolInput = input.tool_input || {};
-  const cwd = input.cwd || process.cwd();
+  const cwd = gitBashPath(input.cwd || process.cwd());
   const policy = ctx.policy;
-  const resolve = (p) => path.resolve(cwd, p);
+  const resolve = (p) => path.resolve(cwd, gitBashPath(p));
 
   // P-061 (operator 2026-11-08): a question to the operator is asked in the dialog, so T3 shows the thread as "Awaiting Input";
   // a text question was lost in the thread among the mail turns. The time is kept for the Stop hook (question asked this turn).
@@ -971,7 +982,7 @@ function pathChecks(input, ctx, cwd) {
   const tool = input.tool_name;
   const toolInput = input.tool_input || {};
   const policy = ctx.policy;
-  const resolve = (p) => path.resolve(cwd, p);
+  const resolve = (p) => path.resolve(cwd, gitBashPath(p));
 
   const target = targetOf(tool, toolInput);
   if (target) {

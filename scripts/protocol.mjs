@@ -27,6 +27,8 @@ const OPERATOR_BLOCK = /(^|\n)[ \t]*[*_]*(?:Operátor|Operator|Pre teba)[*_]*[ \
 const ITEM = /^[ \t]*(?:[-*+][ \t]+(?:\[[ xX]?\][ \t]*)?|\d+[.)][ \t]+|\[[ xX]?\][ \t]*)(.*)$/;
 // A step written as prose under a label, at the start of a line (list marker and markdown allowed).
 const STEP_LABEL = /(^|\n)[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?[*_]*(ostáva|zostáva|zvyšok|ďalší krok|ďalšie kroky|ďalej treba|next steps?|remaining|todo|to do)[*_]*[ \t]*:[*_]*[ \t]*([^\n]*)/iu;
+// A request that the operator write "pokračuj" makes the operator the waker (bob 2026-11-11, after a bypass lock).
+const CONTINUE_ASK = /(?:napíš|napíšte|napis|napiste|napísať|napisat|write|type|say)[ \t]+[„"'`*_]*(pokračuj|pokracuj|continue|go on)(?![\p{L}])/iu;
 const NOTHING = /^(nič|nic|žiadn\p{L}*|nothing|none|-|–|—)?[.\s]*$/iu;
 
 /** The items of the Operátor block: inline text after the marker and the list lines under it, up to an empty line. */
@@ -77,5 +79,7 @@ export function parseReply(text) {
   }
   const step = STEP_LABEL.exec(prose);
   if (step && !NOTHING.test(step[3].replace(/[*_`]/g, ''))) out.step = `${step[2]}: ${step[3]}`.replace(/\s+/g, ' ').trim().slice(0, 160);
+  const ask = !out.step && CONTINUE_ASK.exec(prose);
+  if (ask) out.step = ask[0].replace(/\s+/g, ' ').trim();
   return out;
 }

@@ -14,6 +14,8 @@
     "repo_handover_lines": 150,
     "hook_signal_lines": 2,
     "worker_result_chars": 2000,
+    "worker_skill_chars": 12000,
+    "worker_skill_min_matches": 2,
     "catalog_boot_lines": 2,
     "catalog_find_lines": 20,
     "catalog_line_chars": 220,

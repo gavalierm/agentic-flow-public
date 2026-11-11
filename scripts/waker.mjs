@@ -24,6 +24,8 @@ export const OPERATOR_TIMER_MAX_MS = 24 * 3600_000;
 export const IDLE_RING_MS = [4 * 3600_000, 12 * 3600_000, 24 * 3600_000];
 /** Reply window after sending mail that needs an answer: the sender is rung then even if nobody replied. */
 export const REPLY_WINDOW_MS = { blocker: 15 * 60_000, assist: 60 * 60_000 };
+/** Sender timer after an interim reply, [first, max] (doubles per unchanged check): `otázka` waits on the recipient's operator (hours), `čakám` on an event. */
+export const REPLY_STATE_TIMER_MS = { otázka: [OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS], čakám: [REPLY_WINDOW_MS.assist, 4 * 3600_000] };
 
 const L = '\\p{L}';
 // "čakám", "počkám", "čakáme", "cakam", "čakať", "čaká na …", "waiting for", "I'll wait" (sk without diacritics too).
@@ -104,6 +106,31 @@ export function wakerFromTool(input, now = Date.now()) {
   if ((tool === 'Bash' || tool === 'PowerShell') && /comms\.mjs\s+send\b/.test(String(ti.command || '')) && !/--reply-to/.test(String(ti.command || '')) && /(^|\n)sent \S+/.test(respText)) return bg('mail');
   return null;
 }
+
+// A reminder or a step bound to a clock time or date lives in a harness schedule (schedule_task in T3), not as text in the
+// handover: the text rang nobody and the reminder was closed instead of moved (operator 2026-11-11, claude CLI re-auth).
+const REMINDER_WORD = /(?<![\p{L}])(pripom[ie]n\p{L}*|pripomeň\p{L}*|budík\p{L}*|budik\p{L}*|remind\p{L}*|alarm\p{L}*|expir\p{L}*)/iu;
+const AT_TIME = /(?<![\p{L}\d])(?:o|do|pred|po|okolo|at|by|before|after|~)\s*\d{1,2}:\d{2}(?!\d)/iu;
+const ON_DATE = /(?<![\p{L}\d])(?:o|do|pred|by|before|on|dňa|dna)\s+(?:\d{4}-\d{2}-\d{2}|\d{1,2}\.\s?\d{1,2}\.)(?!\d)/iu;
+const IN_HOURS = /(?<![\p{L}\d])(?:o|za|in)\s+\d+\s*(?:h|hod\p{L}*|hours?|d|dní|dni|dňa|days?)(?![\p{L}])/iu;
+const TOMORROW = /(?<![\p{L}])(zajtra|pozajtra|tomorrow)(?![\p{L}])/iu;
+
+/** The phrase of a handover step that names a reminder or a time it is bound to, or null. */
+export function reminderStep(next) {
+  const s = String(next || '');
+  for (const re of [REMINDER_WORD, AT_TIME, ON_DATE, IN_HOURS, TOMORROW]) {
+    const m = re.exec(s);
+    if (m) return m[0].trim();
+  }
+  return null;
+}
+
+/** A harness schedule (schedule_task, CronCreate, ScheduleWakeup) recorded for this thread and still armed, or null. */
+export function armedSchedule(state, now = Date.now()) {
+  return (state?.wakers || []).find((w) => w.kind === 'scheduler' && !w.remove && (w.recurring || (w.until && Date.parse(w.until) > now))) || null;
+}
+
+export const REMINDER_REFUSAL = (phrase) => `handover not saved: the next step names a reminder or a time ("${phrase}"), and no schedule is armed in this thread. A reminder is a T3 timer, not text in the handover or memory (operator 2026-11-11): arm it first with schedule_task (or CronCreate), at a time before the event, then save the handover again. A reminder that is due is moved to the next time, never closed without a new timer`;
 
 /** Thread timer still ahead, or null. */
 export function activeTimer(state, now = Date.now()) {

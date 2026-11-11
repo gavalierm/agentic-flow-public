@@ -187,7 +187,7 @@ test('reply to a closed topic: the picked assist is settled with the new-mail ro
   const fx = stubbed({ messages: [], send_closed: true });
   try {
     fx.setThreadState({ picked_assist: [{ id: 'm7', from: 'bob', at: '2026-11-02T21:39:37.658Z' }] });
-    const r = fx.run('comms.mjs', ['send', '--reply-to', 'm7', '--text', 'prijaté']);
+    const r = fx.run('comms.mjs', ['send', '--reply-to', 'm7', '--state', 'hotovo', '--text', 'prijaté']);
     assert.notEqual(r.status, 0);
     assert.match(r.out, /uzavretá[\s\S]*assist m7 settled: the sender's topic is closed/);
     assert.equal((fx.threadState().picked_assist || []).length, 0);
@@ -211,7 +211,7 @@ test('assist without a reply path is not waiting for an answer; settle closes on
     assert.deepEqual(fx.threadState().picked_assist.map((w) => w.id), ['t1']);
     // an old entry without a reply path (picked before this fix): the refused reply settles it
     fx.stub.set({ messages: [], send_no_path: true });
-    r = fx.run('comms.mjs', ['send', '--reply-to', 't1', '--text', 'ok']);
+    r = fx.run('comms.mjs', ['send', '--reply-to', 't1', '--state', 'hotovo', '--text', 'ok']);
     assert.notEqual(r.status, 0);
     assert.match(r.out, /assist t1 settled: it has no reply path/);
     assert.equal(fx.threadState().picked_assist.length, 0);
@@ -231,7 +231,7 @@ test('sender topic: --from a held topic, a reply from the topic the original was
     assert.notEqual(r.status, 0);
     assert.match(r.out, /does not hold that topic; held: .*alpha/);
     fx.setThreadState({ picked_assist: [{ id: 'm9', from: 'bob', topic: 'zulu', at: '2026-11-03T08:00:00Z' }] });
-    r = fx.run('comms.mjs', ['send', '--reply-to', 'm9', '--text', 'ok']);
+    r = fx.run('comms.mjs', ['send', '--reply-to', 'm9', '--state', 'hotovo', '--text', 'ok']);
     assert.equal(r.status, 0, r.out);
     assert.equal(fromOf(), 'zulu');
   } finally { fx.cleanup(); }
