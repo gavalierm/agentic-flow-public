@@ -181,10 +181,14 @@ export function transcriptDenials(transcriptPath, since = '') {
       continue;
     }
     if (since && e.timestamp && e.timestamp < since) continue;
+    // A permission rule of the settings (`permissionDecision.source` config) is no operator decision: it reads a `sed -n`
+    // or a `cp` source as a write and resolves relative paths from the session folder, so it locks like a workflow hook
+    // refusal, not like the operator in the dialog (11 of 14 locks were false, audit M2 2026-11-11).
+    const rule = e.permissionDecision?.source === 'config';
     for (const r of results) {
       const use = uses.get(r.tool_use_id);
       const msg = resultText(r);
-      if (use && r.is_error && HARNESS_DENIAL.test(msg)) out.push({ ...use, key: callKey(use.tool, use.input), reason: msg.split('\n')[0].slice(0, 160), harness: true });
+      if (use && r.is_error && HARNESS_DENIAL.test(msg)) out.push({ ...use, key: callKey(use.tool, use.input), reason: msg.split('\n')[0].slice(0, 160), harness: !rule, rule });
     }
   }
   return out;
@@ -194,16 +198,19 @@ export function transcriptDenials(transcriptPath, since = '') {
  * The earlier denial this call reaches again by another way, or null. After a workflow hook refusal only a write after
  * a refused write to the same path locks: a read finds the cause, and a refused read locked every later read of the
  * folder, so one false positive of a heuristic check stopped the turn (operator 2026-11-08, hooks review). A harness
- * refusal (permission rule, operator) also locks reads after a refused read.
+ * refusal by the operator also locks reads after a refused read; a permission rule of the settings locks like a hook.
+ * `own(path)` marks the thread's own work files (scratch/): a refusal elsewhere never closes them (5 of 13 locks wrote
+ * into the project's scratch/, audit M2 2026-11-11).
  */
-export function bypassOf({ tool, toolInput = {}, cwd = process.cwd(), anchors = [], denials = [] }) {
+export function bypassOf({ tool, toolInput = {}, cwd = process.cwd(), anchors = [], denials = [], own = () => false }) {
   const key = callKey(tool, toolInput);
-  const cur = analyze(tool, toolInput, cwd, anchors);
+  const found = analyze(tool, toolInput, cwd, anchors);
+  const cur = { ...found, paths: found.paths.filter((p) => !own(p)) };
   if (!cur.paths.length) return null;
   for (const d of denials) {
     if (d.key === key) continue;
     const prev = d.paths ? { paths: d.paths, write: d.write } : analyze(d.tool, d.input, cwd, anchors);
-    // A harness refusal (permission rule, the operator in the dialog) is the operator's decision: it locks reads too.
+    // A refusal by the operator in the dialog is the operator's decision: it locks reads too.
     if (d.harness ? prev.write && !cur.write : !prev.write || !cur.write) continue;
     // A folder above the refused path counts only when it exists (git grep -- docs after docs/principles was refused).
     const hit = cur.paths.find((p) => prev.paths.some((q) => isInside(q, p) || (isInside(p, q) && fs.existsSync(p))));
@@ -215,7 +222,7 @@ export function bypassOf({ tool, toolInput = {}, cwd = process.cwd(), anchors = 
 export function bypassReason(hit, cwd) {
   const rel = toPosix(path.relative(cwd, hit.path)) || '.';
   const why = String(hit.denial.reason || '').replace(/\s+/g, ' ').slice(0, 120);
-  return `this call reaches ${rel}, which a ${hit.denial.tool} call refused earlier in this turn also reached (${why}); reaching it another way is a bypass (P-054): this target stays closed for the rest of this turn. Write the refused command and its message in the result, and do the work that does not need the target. A refusal by the operator or a harness permission is the operator's decision: when the work needs the target, ask whether to allow it with AskUserQuestion. A workflow hook refusal names its own way: use that way. The lock ends with this turn: when the work still needs the target, save the step with save handover --next, arm a waker (<plugin>/bin/timer.mjs --in 1m --then "<step>") and end with Stav: čakám (na nový ťah: <step>); the new turn has the target open. Not Stav: hotovo with an undone step and not "napíš pokračuj": the operator is no waker (P-061, P-026)`;
+  return `this call reaches ${rel}, which a ${hit.denial.tool} call refused earlier in this turn also reached (${why}); reaching it another way is a bypass (P-054): this target stays closed for the rest of this turn. Write the refused command and its message in the result, and do the work that does not need the target. A refusal by the operator in the dialog is the operator's decision: when the work needs the target, ask whether to allow it with AskUserQuestion. A workflow hook refusal names its own way: use that way; a permission rule of the settings refused a write: write a work file in scratch/ or use the way the workflow names (save.mjs). The lock ends with this turn: when the work still needs the target, save the step with save handover --next, arm a waker (<plugin>/bin/timer.mjs --in 1m --then "<step>") and end with Stav: čakám (na nový ťah: <step>); the new turn has the target open. Not Stav: hotovo with an undone step and not "napíš pokračuj": the operator is no waker (P-061, P-026)`;
 }
 
 /** Files that set what the workflow enforces (hooks, permissions, plugins): a change goes past the operator (P-054). */

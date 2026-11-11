@@ -67,12 +67,28 @@ test('persona: adapter writes settings, scratch/ and commits generated files thr
     const msg = git(p.dir, 'log', '-1', '--format=%s');
     assert.match(msg, /^\[brain-script\] adapter/);
     const settings = JSON.parse(fs.readFileSync(path.join(p.dir, '.claude', 'settings.json'), 'utf8'));
-    assert.ok(settings.permissions.deny.includes('Edit(/memory/**)'), 'anchored at the persona root, not any memory/ under the cwd');
-    assert.ok(settings.permissions.deny.includes('Edit(/README.md)') && !settings.permissions.deny.includes('Edit(README.md)'), 'a bare README.md would deny every README.md at any depth');
-    assert.ok(!settings.permissions.deny.some((d) => d.includes('scratch')));
+    assert.equal(settings.permissions.deny, undefined, 'no native deny: the PreToolUse hook guards the persona brain (D-0011)');
     assert.ok(fs.existsSync(path.join(p.dir, 'scratch')));
     assert.match(fs.readFileSync(path.join(p.dir, '.gitignore'), 'utf8'), /^scratch\/$/m);
     assert.equal(git(p.origin, 'log', '-1', '--format=%s', 'main'), msg, 'pushed');
+  } finally { p.cleanup(); }
+});
+
+test('persona: materialy/ is written directly and committed byte for byte by save.mjs docs (D-0011)', () => {
+  const p = persona();
+  try {
+    assert.equal(p.run('adapter.mjs', ['claude-code', '--brain', '.']).status, 0);
+    const logo = path.join(p.dir, 'materialy', 'web', 'logo.png');
+    const out = p.hook({ tool_name: 'Write', tool_input: { file_path: logo, content: 'x' } });
+    assert.notEqual(out.hookSpecificOutput?.permissionDecision, 'deny', JSON.stringify(out));
+    fs.mkdirSync(path.dirname(logo), { recursive: true });
+    fs.writeFileSync(logo, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0xfe, 0x0a]));
+    fs.mkdirSync(path.join(p.dir, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(p.dir, 'docs', 'report.md'), '# Report\n');
+    const r = p.run('save.mjs', ['docs', '--message', 'web materials']);
+    assert.equal(r.status, 0, r.out);
+    assert.equal(git(p.dir, 'status', '--porcelain'), '', 'materialy/ and docs/ committed');
+    assert.equal(git(p.dir, 'hash-object', 'materialy/web/logo.png'), git(p.dir, 'rev-parse', 'HEAD:materialy/web/logo.png'), 'binary committed byte for byte');
   } finally { p.cleanup(); }
 });
 

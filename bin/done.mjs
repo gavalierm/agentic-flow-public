@@ -3,15 +3,17 @@
 //   done.mjs [--topic-id <id>] --verified "<observation>" [--procedures a,b] [--derivations k1,k2]
 //   done.mjs --list                       existing names in procedures.log / derivations.log
 //   done.mjs --topic [--topic-id <id>] --verified "<observation>" [--keep-copy]
+// A unit (no --topic) keeps the topic held by the thread; in a code topic it merges the topic branch into the main branch
+// and keeps the copy (D-0011). --topic in a turn started by a message needs an answer of the operator in a dialog of it.
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, fail, git, nowIso } from '../scripts/util.mjs';
-import { loadContext, isWakeTurn, inSubagent, foreignProjectCwd } from '../scripts/config.mjs';
+import { loadContext, isWakeTurn, dialogAnsweredInTurn, inSubagent, foreignProjectCwd } from '../scripts/config.mjs';
 import { brainWrite, brainSync, formatWriteResult, readHolder, isHolderOf } from '../scripts/brain.mjs';
 import { freeHandover } from '../scripts/brain-checks.mjs';
 import { recordNames, existingNames } from '../scripts/logs.mjs';
 import { rejectedProposal } from '../scripts/find.mjs';
-import { heldTopics, readTopic, setTopicState, freePointMail } from '../scripts/topic.mjs';
+import { heldTopics, readTopic, freePointMail } from '../scripts/topic.mjs';
 import { registerTopic } from '../scripts/comms.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
 import { asList } from '../scripts/frontmatter.mjs';
@@ -100,22 +102,21 @@ function doneUnit(ctx, id) {
     return;
   }
   ops.push({ path: `topics/${id}/handover.md`, content: freeHandover() });
-  // The main topic stays held and is never free (P-045): no state change, no free point.
+  // The topic stays held by this thread (D-0011: 22 of 27 web topics were micro-topics, their topic cycle was 44 % of the
+  // calls); topic main is never free anyway (P-045). No state change, no free point; done --topic closes the topic.
   const topic = readTopic(ctx.brainDir, id);
   const main = topic?.kind === 'main';
   notes.unshift(scratchReminder(ctx.projectDir, unitStart(ctx, id, topic), id));
-  const topicOp = main ? { path: `topics/${id}/topic.json`, content: JSON.stringify(topic, null, 2) + '\n' } : setTopicState(ctx, id, 'free');
-  if (topicOp.content) {
-    const t = JSON.parse(topicOp.content);
-    t.last_done = nowIso();
-    topicOp.content = JSON.stringify(t, null, 2) + '\n';
-    ops.push(topicOp);
-  }
+  // The verified code of the unit goes into the main branch before anything is written, so a failed merge writes nothing
+  // (D-0011: 5 questions "may I merge?", each answered with the recommended option, 5 887 s of waiting).
+  const merge = topic?.kind === 'code' ? mergeCode(ctx, id, topic, { keepCopy: true, label: `done ${id}` }) : null;
+  if (topic) ops.push({ path: `topics/${id}/topic.json`, content: JSON.stringify({ ...topic, last_done: nowIso() }, null, 2) + '\n' });
   const res = brainWrite(ctx, { ops, message: `done ${id}: unit of work done (verified: ${String(args.verified).slice(0, 60)})` });
   out(formatWriteResult(res, [`topics/${id}/handover.md`, `topics/${id}/topic.json`]));
+  if (merge) out(merge.note);
   if (main) out(`topic main stays held by ${ctx.thread} (persona main thread, never free, P-045); handover reset.`);
-  else out(`topic ${id} is free; handover reset. Continue in a new session for the next unit of work (P-026).`);
-  const mail = freePointMail(ctx, id, { record: !main });
+  else out(`topic ${id} stays held by ${ctx.thread}; handover reset. A follow-up on the same work (a remark, a fix) is the next unit in this topic, not a new topic; done --topic closes it (D-0011).`);
+  const mail = freePointMail(ctx, id, { record: false });
   if (mail) out(mail);
   for (const n of notes.filter(Boolean)) out(n);
   for (const w of buildIndexes(ctx.brainDir, ctx.policy).warnings) out(`limit: ${w}`);
@@ -145,7 +146,7 @@ function setBackSameAsBranch(dir, branch) {
   return done;
 }
 
-function mergeCode(ctx, id, topic) {
+function mergeCode(ctx, id, topic, { keepCopy = !!args['keep-copy'], label = `done --topic ${id}` } = {}) {
   const copy = path.resolve(ctx.projectDir, topic.copy || `../${ctx.projectName}-topics/${id}`);
   const branch = `topic/${id}`;
   if (!fs.existsSync(path.join(copy, '.git'))) return { merged: false, note: `no code copy at ${copy}; nothing to merge` };
@@ -183,12 +184,12 @@ function mergeCode(ctx, id, topic) {
   const handoverRel = `${PROJECT_KNOWLEDGE}/${REPO_HANDOVER}`;
   const handoverDiff = git(['diff', '--name-only', `${mainBranch}...${worktree ? branch : 'FETCH_HEAD'}`, '--', handoverRel], { cwd: ctx.projectDir });
   if (handoverDiff.ok && !handoverDiff.stdout) out(`note: ${handoverRel} did not change in ${branch}; if the project state moved, update it (save.mjs handover --repo ${ctx.projectName} --file <file>, D-0002)`);
-  const mergeMain = git(['merge', '--no-ff', '--quiet', '-m', `Merge ${branch} (done --topic ${id})`, worktree ? branch : 'FETCH_HEAD'], { cwd: ctx.projectDir });
+  const mergeMain = git(['merge', '--no-ff', '--quiet', '-m', `Merge ${branch} (${label})`, worktree ? branch : 'FETCH_HEAD'], { cwd: ctx.projectDir });
   if (!mergeMain.ok) {
     git(['merge', '--abort'], { cwd: ctx.projectDir });
     fail(`merge of ${branch} into ${mainBranch} failed: ${mergeMain.stderr}`);
   }
-  if (!args['keep-copy']) {
+  if (!keepCopy) {
     // A worktree (v3) is removed through git, so the repo forgets it; its merged branch goes too. A legacy clone is a dir.
     if (worktree) {
       const rm = git(['worktree', 'remove', '--force', copy], { cwd: ctx.projectDir });
@@ -198,12 +199,14 @@ function mergeCode(ctx, id, topic) {
       try { fs.rmdirSync(path.dirname(copy)); } catch { /* other topics of the repo remain */ }
     } else fs.rmSync(copy, { recursive: true, force: true });
   }
-  return { merged: true, note: `${branch} merged into ${mainBranch}${args['keep-copy'] ? '' : `; copy ${copy} removed`}` };
+  return { merged: true, note: `${branch} merged into ${mainBranch}${keepCopy ? '' : `; copy ${copy} removed`}` };
 }
 
 function doneTopic(ctx, id) {
   guard(ctx, id);
-  if (isWakeTurn(ctx.brainDir, ctx.thread)) fail('done --topic refused: this turn was started by a message, not the operator (P-047)');
+  // An answer of the operator in a dialog of this turn is the operator's instruction, the message never is (P-047; D-0011:
+  // the topic stayed open after 2 questions and 1 599 s).
+  if (isWakeTurn(ctx.brainDir, ctx.thread) && !dialogAnsweredInTurn(ctx.brainDir, ctx.thread)) fail('done --topic refused: this turn was started by a message, not the operator, and the operator answered no dialog in it: ask the operator with AskUserQuestion whether to close the topic (P-047, D-0011)');
   const topic = readTopic(ctx.brainDir, id);
   if (!topic) fail(`topic ${id} does not exist`);
   if (topic.kind === 'main') fail('topic main is the persona main thread: it is never closed or archived (P-045)');

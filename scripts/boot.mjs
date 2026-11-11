@@ -7,7 +7,7 @@ import { WORKFLOW_CONFIG, SCRATCH_DIR, readThreadState, writeThreadState } from 
 import { assembleRules } from './rules.mjs';
 import { buildIndexes, topicLine } from './index.mjs';
 import { heldTopics, mailboxTopics } from './topic.mjs';
-import { mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics } from './comms.mjs';
+import { mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics, isMainTopic, noticesCount } from './comms.mjs';
 import { syncBrainSkills } from './skills-sync.mjs';
 import { gitAccessProblem } from './brain.mjs';
 import { readTopics } from './records.mjs';
@@ -22,11 +22,14 @@ export function statusInfo(ctx) {
   // Mailboxes as in comms list/receive: held topics and free-point topics (P-044).
   const mailTopics = ctx.brainDir ? mailboxTopics(ctx) : [];
   const mail = mailCount(ctx, mailTopics);
+  // Open notices of the instance, in the persona main thread only (D-0011: 41 open, none decided, nobody saw them).
+  const notices = held.some(isMainTopic) && mail.available ? noticesCount(ctx) : null;
   const thread = ctx.thread || '- (no stable id: start via thread.mjs or T3; topics cannot be claimed)';
   return {
-    line: `thread ${thread} | topic ${topic} | ${formatMail(mail)}`,
+    line: `thread ${thread} | topic ${topic} | ${formatMail(mail)}${notices ? ` | notices: ${notices} open (comms notices; decide only on operator instruction, P-046)` : ''}`,
     held,
     mail,
+    notices,
   };
 }
 
@@ -181,6 +184,7 @@ export function operatorStatus(ctx, info) {
     lines.push(...(free.length ? free.map((t) => `- ${t.id}${t.subject && t.subject !== t.id ? ` – ${t.subject}` : ''}`) : ['- žiadne']));
     lines.push('', `**Otázky na operátora:** ${TOPIC_QUESTION}`);
   }
+  if (info.notices) lines.splice(1, 0, `Otvorené oznamy: ${info.notices}`);
   if (info.mail.count) lines.splice(1, 0, `Pošta: ${info.mail.count}${info.mail.blockers ? ` (${info.mail.blockers} blocker)` : ''}${info.mail.steers ? ` (${info.mail.steers} steer)` : ''}`);
   return lines.join('\n');
 }

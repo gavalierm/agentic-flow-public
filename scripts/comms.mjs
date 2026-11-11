@@ -45,8 +45,8 @@ export const LEVELS = ['blocker', 'steer', 'assist'];
  * An interim reply names its state after the category: `reply otázka`, `reply čakám` (P-061). */
 export const INTERIM_REPLY_STATES = ['otázka', 'čakám'];
 export const CATEGORIES = ['reply', ...LEVELS];
-/** Client subcommands a subagent may run (read only, P-025). The triage subagent is removed (2026-11-02). */
-export const SUBAGENT_ALLOWED = ['receive', 'list', 'count'];
+/** Client subcommands a subagent may run (read only, P-025; `status` and `notices` only read, audit M2 2026-11-11). The triage subagent is removed (2026-11-02). */
+export const SUBAGENT_ALLOWED = ['receive', 'list', 'count', 'status', 'notices'];
 
 /**
  * Default client: the pilot layout (`../../comms`, a test instance next to its projects) first, then the installed
@@ -90,6 +90,35 @@ export function commsSettings(ctx) {
 
 export function commsConfigured(ctx) {
   return commsSettings(ctx).enabled;
+}
+
+export const NOTICES_CACHE = 'notices-count.json';
+
+/**
+ * Open notices of the instance for the status line of the persona main thread (D-0011: 41 open notices, none decided
+ * since 11-02, nobody saw them). One client call per `comms.notices_ttl_s` (300 s), cached in the client dir; null when
+ * comms is off or does not answer.
+ */
+export function noticesCount(ctx, now = Date.now()) {
+  const s = commsSettings(ctx);
+  if (!s.enabled || !s.clientDir) return null;
+  const file = path.join(s.clientDir, NOTICES_CACHE);
+  const cached = readJson(file, null);
+  if (Number.isFinite(cached?.count) && now - Date.parse(cached.at) < (ctx.policy?.comms?.notices_ttl_s ?? 300) * 1000) return cached.count;
+  const res = runClient(ctx, ['notices']);
+  if (!res.ok || !Array.isArray(res.data?.notices)) return null;
+  const count = res.data.notices.length;
+  try {
+    fs.mkdirSync(s.clientDir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ at: new Date(now).toISOString(), count }) + '\n');
+  } catch { /* the count is shown without the cache */ }
+  return count;
+}
+
+/** A decision changes the count: the next status line asks again. */
+export function dropNoticesCache(ctx) {
+  const s = commsSettings(ctx);
+  if (s.clientDir) fs.rmSync(path.join(s.clientDir, NOTICES_CACHE), { force: true });
 }
 
 /**

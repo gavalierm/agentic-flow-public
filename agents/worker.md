@@ -17,6 +17,6 @@ Pravidlá:
 - Použi skilly pribalené v zadaní; sú to overené postupy a poučenia z predchádzajúcich chýb.
 - Nič neoznačuj za hotové alebo funkčné bez jedného pozorovania výsledku.
 
-Formát výsledku (limit 2 000 znakov):
+Formát výsledku (limit 3 000 znakov; dlhší výsledok hook vráti skrátiť):
 1. Záver (čo si zistil alebo urobil) so zdrojmi (cesty, riadky, príkazy).
 2. Časť `Failures:` – čo zlyhalo a čo nakoniec fungovalo. Ak nič nezlyhalo, napíš `Failures: none`. Bez tejto časti ťa hook vráti dopísať ju.

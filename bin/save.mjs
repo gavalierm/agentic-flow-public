@@ -664,11 +664,13 @@ function saveHandover(ctx) {
 
 /** Persona docs/ (P-024): files written directly are committed and pushed in one script commit. */
 function saveDocs(ctx) {
-  if (!ctx.brainInfo?.persona) fail('save.mjs docs: only a persona keeps documents in brain (docs/); in a project they belong to the project repo (P-024)');
-  const st = spawnSync('git', ['status', '--porcelain', '-uall', '--', 'docs'], { cwd: ctx.brainDir, encoding: 'utf8' });
+  if (!ctx.brainInfo?.persona) fail('save.mjs docs: only a persona keeps documents in brain (docs/, materialy/); in a project they belong to the project repo (P-024)');
+  // materialy/ like docs/ (D-0011). A file is committed byte for byte (PDF, image); only .md is read as text for its checks.
+  const st = spawnSync('git', ['status', '--porcelain', '-uall', '--', 'docs', 'materialy'], { cwd: ctx.brainDir, encoding: 'utf8' });
   const rels = st.stdout.split('\n').filter(Boolean).map((l) => l.slice(3).replace(/^.* -> /, ''));
-  if (!rels.length) { out('unchanged: docs/ (nothing to commit)'); return; }
-  const ops = rels.map((rel) => (fs.existsSync(path.join(ctx.brainDir, rel)) ? { path: rel, content: fs.readFileSync(path.join(ctx.brainDir, rel), 'utf8') } : { path: rel, remove: true }));
+  if (!rels.length) { out('unchanged: docs/, materialy/ (nothing to commit)'); return; }
+  const read = (rel) => fs.readFileSync(path.join(ctx.brainDir, rel), rel.endsWith('.md') ? 'utf8' : undefined);
+  const ops = rels.map((rel) => (fs.existsSync(path.join(ctx.brainDir, rel)) ? { path: rel, content: read(rel) } : { path: rel, remove: true }));
   const res = brainWrite(ctx, { ops, message: `docs: ${args.message || rels.join(', ')}` });
   finish(ctx, res, rels);
 }

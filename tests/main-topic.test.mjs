@@ -24,6 +24,7 @@ function fakeClient(root) {
 const a = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(log)}, a.join(' ') + '\\n');
 if (a[0] === 'count') process.stdout.write(JSON.stringify({ total: 1, blocker: 1, ids: ['m1'], cached: false }));
+else if (a[0] === 'notices') process.stdout.write(JSON.stringify({ notices: [{ id: 'n1' }, { id: 'n2' }] }));
 else process.stdout.write(JSON.stringify({ ok: true, created: true }));
 `);
   return { file, lines: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []) };
@@ -62,8 +63,10 @@ test('persona main thread: topic main is held, registered as @<persona>/main, co
     assert.match(claim.out, /topic main claimed by p1/);
     assert.ok(p.client.lines().some((l) => /^register-topic --persona bob --main --holder p1\b/.test(l)), p.client.lines().join('\n'));
 
-    const after = block(p.hook('session-start.mjs', { source: 'startup' }));
-    assert.equal(after, 'bob / main\nPošta: 1 (1 blocker)');
+    const started = p.hook('session-start.mjs', { source: 'startup' });
+    const after = block(started);
+    assert.equal(after, 'bob / main\nPošta: 1 (1 blocker)\nOtvorené oznamy: 2');
+    assert.match(started, /\| notices: 2 open/, 'open notices in the status line of the main thread (D-0011)');
     assert.ok(p.client.lines().some((l) => /^count --persona bob --thread p1\b/.test(l)), 'mailbox @bob/main is counted');
 
     assert.equal(p.run('topic.mjs', ['main']).status, 0, 'idempotent');
@@ -75,6 +78,7 @@ test('persona main thread: topic main is held, registered as @<persona>/main, co
     // A work topic of the main thread comes first; main is not offered as free to other threads.
     assert.equal(p.run('topic.mjs', ['create', 'work', '--subject', 'Work']).status, 0);
     assert.equal(block(p.hook('session-start.mjs', { source: 'startup' })).split('\n')[0], 'bob / work');
+    assert.equal(p.client.lines().filter((l) => /^notices\b/.test(l)).length, 1, 'notices cached for comms.notices_ttl_s');
   } finally { p.cleanup(); }
 });
 

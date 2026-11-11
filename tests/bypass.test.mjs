@@ -95,6 +95,32 @@ test('transcriptDenials: harness refusals of the current turn only', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('bypassOf: a permission rule refusal locks like a hook, the operator locks reads too; own scratch/ is never locked', () => {
+  const dir = tmp();
+  try {
+    const t = path.join(dir, 's.jsonl');
+    const skill = path.join(dir, '.claude', 'skills', 'issues');
+    const scratch = path.join(dir, 'scratch');
+    fs.mkdirSync(skill, { recursive: true });
+    fs.mkdirSync(scratch);
+    fs.writeFileSync(path.join(skill, 'issues.mjs'), 'x');
+    const use = (id, command) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] } });
+    const res = (id, source) => ({ type: 'user', timestamp: '2026-11-09T09:23:00Z', permissionDecision: { decision: 'reject', source }, message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: 'Permission to use Bash with command cp has been denied.' }] } });
+    // alice 2026-11-09 09:23: the rule refused `cp <skill> scratch/`, the lock then refused Write scratch/issues.mjs and the turn asked the operator.
+    const cp = `cp ${skill}/issues.mjs ${scratch}/issues.mjs`;
+    fs.writeFileSync(t, [use('a', cp), res('a', 'config'), use('b', `cat ${skill}/issues.mjs`), res('b', 'user_reject')].map((l) => JSON.stringify(l)).join('\n') + '\n');
+    const [byRule, byOperator] = transcriptDenials(t, '2026-11-09T09:00:00Z');
+    assert.deepEqual([byRule.rule, byRule.harness, byOperator.rule, byOperator.harness], [true, false, false, true]);
+    const own = (p) => p === scratch || p.startsWith(scratch + path.sep);
+    const write = { tool: 'Write', toolInput: { file_path: path.join(scratch, 'issues.mjs'), content: 'y' }, cwd: dir, own };
+    assert.equal(bypassOf({ ...write, denials: [byRule] }), null, 'own scratch/ stays open');
+    assert.ok(bypassOf({ ...write, own: undefined, denials: [byRule] }), 'only the own-work exception opens the refused cp target');
+    const readSkill = { tool: 'Read', toolInput: { file_path: path.join(skill, 'issues.mjs') }, cwd: dir, own };
+    assert.equal(bypassOf({ ...readSkill, denials: [byRule] }), null, 'the rule read a cp source as a write: reading it is no bypass');
+    assert.ok(bypassOf({ tool: 'Bash', toolInput: { command: `sed -n 1p ${skill}/issues.mjs` }, cwd: dir, own, denials: [byOperator] }), 'the operator refused the read: reading it another way is');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('thread state keeps only the denials of the current turn', () => {
   const s = withDenial({ turn_started_at: '2026-11-07T10:00:00Z', denials: [{ at: '2026-11-07T09:00:00Z', key: 'old' }] }, { key: 'new' });
   assert.deepEqual(stateDenials(s).map((d) => d.key), ['new']);

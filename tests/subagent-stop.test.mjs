@@ -20,9 +20,14 @@ test('missing Failures blocks the subagent; present section, exempt agents and s
   assert.equal(run({ agent_type: 'worker', last_assistant_message: 'x' }, policy).decision, 'block');
   assert.deepEqual(run({ agent_type: 'workflow:worker', last_assistant_message: 'x', stop_hook_active: true }, policy), {});
   assert.equal(hasFailuresSection('no failures were seen'), false, 'word inside a sentence is not a section');
+  // The length limit of the policy is enforced by the hook, not by a manual check (audit M4 2026-11-11).
+  const long = run({ agent_type: 'workflow:worker', last_assistant_message: 'x'.repeat(3001) + '\nFailures: none' }, policy);
+  assert.equal(long.decision, 'block');
+  assert.match(long.reason, /3016 chars, the limit is 3000/);
+  assert.deepEqual(run({ agent_type: 'workflow:worker', last_assistant_message: 'x'.repeat(2900) + '\nFailures: none' }, policy), {});
 });
 
-test('delegate check enforces the Failures section and the 2 000 char limit', () => {
+test('delegate check enforces the Failures section and the char limit', () => {
   assert.deepEqual(checkResult('result\nFailures: none', 2000), []);
   assert.equal(checkResult('result', 2000).length, 1);
   assert.equal(checkResult('x'.repeat(2001) + '\nFailures: none', 2000).length, 1);

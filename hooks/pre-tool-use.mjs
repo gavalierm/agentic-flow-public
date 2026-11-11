@@ -441,6 +441,17 @@ function outsideAllowed(ctx) {
 function boundaryActive(ctx) {
   return Boolean(ctx.domain) || Boolean(ctx.brainInfo && !ctx.brainInfo.error);
 }
+
+/**
+ * Global paths of the harness in the policy (`harness.deny_paths` starting with `~/`, P-014): no tool writes there, also
+ * where allow_outside would let it. The hook is the guard: Claude Code settings carry no native deny since D-0011.
+ */
+function harnessPathWrite(ctx, targets) {
+  const roots = (ctx.policy?.harness?.deny_paths || []).filter((p) => p.startsWith('~/'))
+    .map((p) => path.join(os.homedir(), ...p.slice(2).split('/').filter((s) => s && !s.includes('*'))));
+  const hit = targets.find((t) => roots.some((r) => isInside(r, t)));
+  return hit ? `${toPosix(hit)} is a global path of the harness (${roots.map(toPosix).join(', ')}): the agent never writes there (P-014)` : null;
+}
 function outsideReason(ctx, abs) {
   const scratch = toPosix(path.join(ctx.projectDir, SCRATCH_DIR));
   const where = ctx.domain ? `outside the domain ${toPosix(ctx.domain.root)}` : 'outside the project';
@@ -640,7 +651,10 @@ export function executedScripts(command, depth = 0) {
     }
     if (INTERPRETERS.has(head)) {
       i++;
-      while (i < t.length && t[i].startsWith('-')) i++;
+      // `node --check <file>` only parses the file, it runs nothing (5 subagent refusals, audit M2 2026-11-11).
+      let check = false;
+      while (i < t.length && t[i].startsWith('-')) { if (head === 'node' && (t[i] === '--check' || t[i] === '-c')) check = true; i++; }
+      if (check) continue;
       if (head === 'deno' && t[i] === 'run') i++;
     }
     if (t[i] && /\.[cm]?[jt]s$/.test(unmask(t[i]))) out.push({ script: toPosix(unmask(t[i])), args: t.slice(i + 1).map(unmask) });
@@ -652,7 +666,8 @@ export function commsSubagentCheck(command, agentType = '') {
   const cmd = String(command || '');
   const calls = executedScripts(cmd).filter((e) => /(^|\/)comms\.mjs$/.test(e.script)).map((e) => e.args.find((a) => !a.startsWith('-')) || '');
   for (const sub of calls) {
-    if (!SUBAGENT_ALLOWED.includes(sub)) return `subagents do not send, ack or decide mail (comms ${sub}); they may only read it (receive, list, count), P-025`;
+    // No subcommand (usage, --help) prints help and reads nothing.
+    if (sub && !SUBAGENT_ALLOWED.includes(sub)) return `subagents do not send, ack or decide mail (comms ${sub}); they may only read it (${SUBAGENT_ALLOWED.join(', ')}), P-025`;
   }
   return null;
 }
@@ -947,7 +962,7 @@ export function run(input) {
   const viaSave = (tool === 'Bash' || tool === 'PowerShell') && executedScripts(String(toolInput.command || '')).some((e) => /(^|[\\/])bin[\\/]save\.mjs$/.test(e.script));
   const denials = [...(state ? stateDenials(state) : []), ...transcriptDenials(input.transcript_path, state?.turn_started_at || '')]
     .filter((d) => !(viaSave && /\bsave\b|save\.mjs/.test(String(d.reason || ''))));
-  const bypass = denials.length ? bypassOf({ tool, toolInput, cwd, anchors, denials }) : null;
+  const bypass = denials.length ? bypassOf({ tool, toolInput, cwd, anchors, denials, own: (p) => ownWork(ctx, p) }) : null;
   if (bypass) return permissionOutput('deny', bypassReason(bypass, cwd));
 
   if (tool === 'Bash' || tool === 'PowerShell') {
@@ -1021,9 +1036,11 @@ function pathChecks(input, ctx, cwd) {
     const claudeMd = claudeMdWrite(ctx, [abs]);
     if (claudeMd) return permissionOutput('deny', claudeMd);
     if (ctx.brainDir && isInside(ctx.brainDir, abs) && !personaWritable(ctx, abs)) {
-      const persona = ctx.persona ? `; in a persona only ${SCRATCH_DIR}/ and local/ are written directly, outputs belong to the managed projects (P-024)` : '';
+      const persona = ctx.persona ? `; in a persona only ${SCRATCH_DIR}/, local/, docs/ and materialy/ are written directly (docs/ and materialy/ committed by save.mjs docs), outputs belong to the managed projects (P-024)` : '';
       return permissionOutput('deny', `direct write into brain is not allowed; use workflow:save, topic or done (P-013, P-040)${persona}`);
     }
+    const harnessPath = harnessPathWrite(ctx, [abs]);
+    if (harnessPath) return permissionOutput('deny', harnessPath);
     // P-052: work files stay in the project; topic copies ../<project>-topics/ are part of the project's work (P-036).
     // The agent's environment is its project: a write outside is denied, not asked (operator 2026-11-04: "agents must not
     // write to top-level directories, their environment is limited to the project").
@@ -1100,9 +1117,17 @@ function pathChecks(input, ctx, cwd) {
     // An empty directory holds no data and git does not track it (alice 2026-11-04: rmdir of an emptied skill dir was denied).
     const emptyDir = (t) => { try { return fs.statSync(t).isDirectory() && fs.readdirSync(t).length === 0; } catch { return false; } };
     const stray = (t) => emptyDir(t) || (fs.existsSync(t) && ['untracked', 'ignored by git'].includes(classifyTarget(t).reason));
-    if (ctx.brainDir && targets.some((t) => isInside(ctx.brainDir, t) && !personaWritable(ctx, t) && !stray(t))) {
+    // Edits in place (sed -i, perl -pi), redirects and tee count too: the native deny of the harness caught them until D-0011
+    // removed it (52 of 65 of its refusals were false). A new file in an ignored path (local/) is no brain data.
+    const shellTargets = [...targets, ...edits, ...shellWrites(cmd, cwd)];
+    const ignoredInBrain = (t) => !fs.existsSync(t) && git(['check-ignore', '-q', '--no-index', '--', t], { cwd: ctx.brainDir }).ok;
+    if (ctx.brainDir && shellTargets.some((t) => isInside(ctx.brainDir, t) && !personaWritable(ctx, t) && !stray(t) && !ignoredInBrain(t))) {
       return permissionOutput('deny', `shell write into brain is not allowed; use workflow:save, topic or done (P-013, P-040)`);
     }
+    const harnessPath = harnessPathWrite(ctx, shellTargets);
+    if (harnessPath) return permissionOutput('deny', harnessPath);
+    const skillsWrite = shellTargets.find((t) => isInside(ctx.projectDir, t) && ['/.claude/skills/', '/.agents/skills/'].some((d) => toPosix(t).includes(d)));
+    if (skillsWrite) return permissionOutput('deny', `${toPosix(skillsWrite)}: .claude/skills/ in the project is generated from brain at session start; edit skills in brain via workflow:save (P-017)`);
     const created = createdByThread(ctx);
     const sudo = sudoDenied(ctx, cmd);
     if (sudo) return permissionOutput('deny', sudo);
@@ -1128,8 +1153,11 @@ function pathChecks(input, ctx, cwd) {
     const isCreated = (t) => created.has(t) || [...created].some((c) => isInside(c, t));
     const dangerous = targets.filter((t) => !isCreated(t) && fs.existsSync(t) && !ownWork(ctx, t) && classifyTarget(t).dangerous);
     const thr = policy.destructive || {};
-    if (targets.length > (thr.files_threshold ?? 5)) {
-      return permissionOutput('ask', `operation on ${targets.length} files (> ${thr.files_threshold}); confirm the exact target list with the operator (P-018)`);
+    // The threshold counts files the command changes or removes: not the ones it creates, not missing ones and not the
+    // thread's own work files (6 files in scratch/wt asked and waited 6 896 s for the operator, audit M2 2026-11-11).
+    const changed = targets.filter((t) => !isCreated(t) && fs.existsSync(t) && !ownWork(ctx, t));
+    if (changed.length > (thr.files_threshold ?? 5)) {
+      return permissionOutput('ask', `operation on ${changed.length} files (> ${thr.files_threshold}); confirm the exact target list with the operator (P-018)`);
     }
     if (dangerous.length) {
       return permissionOutput('ask', `targets not recoverable from git: ${dangerous.map((t) => toPosix(path.relative(cwd, t))).join(', ')}; confirm with the operator before deleting or overwriting (P-018)`);

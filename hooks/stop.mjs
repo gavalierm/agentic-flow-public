@@ -45,7 +45,7 @@ export const NO_QUESTION_REASON = `the reply declares "Stav: otázka" but has no
 // Operator 2026-11-09: carol ended "Ostáva: … zmažem ho až na tvoje potvrdenie" with "Stav: hotovo"; a step is protocol,
 // never a sentence.
 export const STEP_REASON = (step) => `the reply writes a step as prose ("${step}"), outside the protocol: a step of the asked work is done now, or saved with save handover --next and the state "Stav: čakám (na <what>)" with a waker; what the operator decides or confirms is an item "- [ ] <…>" under **Otázky na operátora:**, what only the operator does an item under **Úlohy pre operátora:**, with "Stav: otázka" (P-061). ${STATES_HELP}`;
-export const OPERATOR_STATE_REASON = (state, item) => `the reply lists for the operator "${item}" under **Otázky na operátora:** / **Úlohy pre operátora:** but declares "Stav: ${state}": what waits on the operator is "Stav: otázka", asked with AskUserQuestion; if it is part of the asked work and you can do it yourself, do it and drop the item (P-061, P-058); a change the operator did not ask for stays an item, with "Stav: otázka". ${STATES_HELP}`;
+export const OPERATOR_STATE_REASON = (state, item) => `the reply lists for the operator "${item}" under **Otázky na operátora:** / **Úlohy pre operátora:** but declares "Stav: ${state}": what waits on the operator is "Stav: otázka", asked with AskUserQuestion, or "Stav: čakám (na <event>)" with a waker when the turn waits on an event and the item can wait (D-0011); if it is part of the asked work and you can do it yourself, do it and drop the item (P-061, P-058); a change the operator did not ask for stays an item, with "Stav: otázka". ${STATES_HELP}`;
 export const LEGACY_HEADING_REASON = `the reply uses the old heading **Operátor:**: split it into **Otázky na operátora:** (decisions and confirmations only the operator has, also asked with AskUserQuestion) and **Úlohy pre operátora:** (steps only the operator does: login, install, a click in a UI); omit the heading that has no item (P-061)`;
 export const EMPTY_SECTION_REASON = (heading) => `the reply has the heading ${heading} with no item: omit a section that has nothing in it, and write it only with items "- [ ] <…>" (P-061)`;
 export const DIALOG_REASON = `the reply asks the operator in text, which is lost in the thread among other turns: ask the one decision only the operator has with AskUserQuestion now (your recommended option first), so T3 shows the thread as "Awaiting Input"; after the answer continue the work. The items under the operator headings stay in the reply; the dialog asks the first one (P-061, operator 2026-11-08). ${STATES_HELP}`;
@@ -211,7 +211,7 @@ export function run(input) {
     else if (reply.legacyOperator) violation = LEGACY_HEADING_REASON;
     else if (reply.emptySection) violation = EMPTY_SECTION_REASON(reply.emptySection);
     else if (reply.step) violation = STEP_REASON(reply.step);
-    else if (reply.operator?.length && reply.state !== 'otázka') violation = OPERATOR_STATE_REASON(reply.state, reply.operator[0].slice(0, 120));
+    else if (reply.operator?.length && reply.state !== 'otázka' && reply.state !== 'čakám') violation = OPERATOR_STATE_REASON(reply.state, reply.operator[0].slice(0, 120));
     else if (reply.state === 'otázka' && !dialog && !topicStart) violation = DIALOG_REASON;
     else if (reply.state === 'otázka' && !reply.question) violation = NO_QUESTION_REASON;
     else if (repeated) violation = repeated;

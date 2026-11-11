@@ -12,7 +12,7 @@ Zápis do brain ide výlučne cez `node ${CLAUDE_PLUGIN_ROOT}/bin/save.mjs`. Wri
 1. Postup (kroky, ako niečo urobiť) → `skill`
 2. Mení správanie agenta (MUSÍ/NESMIE, „odteraz rob…“) → `rule`; ak operátor mení platný princíp → `exception`
 3. Voľba medzi alternatívami → `decision`
-4. Obsah s hodnotou sám o sebe (zoznam, text, výstup pátrania, report) → dokument v projekte, nie brain (bez save); v persone `docs/<vec>/` zapísaný priamo a commitnutý `save.mjs docs [--message "..."]`, nie `scratch/` (je gitignorovaný a dočasný)
+4. Obsah s hodnotou sám o sebe (zoznam, text, výstup pátrania, report) → dokument v projekte, nie brain (bez save); v persone `docs/<vec>/` alebo `materialy/<téma>/` zapísaný priamo a commitnutý `save.mjs docs [--message "..."]`, nie `scratch/` (je gitignorovaný a dočasný)
 5. Stav nedokončenej práce → `handover`
 6. Inak opisný fakt o subjekte → `memory`
 

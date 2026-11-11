@@ -22,11 +22,9 @@ test('generated settings.json equals the policy translation; no inert keys; brai
     assert.equal(settings.autoMemoryEnabled, false);
     assert.equal(settings.autoCompactWindow, 200000);
     assert.deepEqual(settings.permissions, expected.permissions);
-    assert.ok(settings.permissions.deny.includes('Edit(../brain/**)'));
-    assert.ok(settings.permissions.deny.includes('Edit(~/.claude/**)'));
+    assert.equal(settings.permissions.deny, undefined, 'no native deny: the PreToolUse hook guards brain, skills and ~/.claude (D-0011)');
     assert.ok(settings.permissions.ask.some((a) => a.startsWith('Bash(git reset --hard')));
     assert.ok(!settings.permissions.ask.some((a) => a.startsWith('Bash(git checkout --')), 'restore of own edits is decided by the hook, a native rule would always ask');
-    assert.ok(!settings.permissions.deny.some((d) => d.startsWith('Write(')), 'Write(path) rules never match; Edit covers Write');
     assert.equal(settings.permissions.defaultMode, undefined);
     assert.equal(settings.model, 'x', 'unmanaged keys preserved');
     assert.match(r.stdout, /removed permissions.defaultMode/);
@@ -69,8 +67,8 @@ test('brain optional (P-024): without --brain no .workflow.json, no brain propos
     assert.ok(!fs.existsSync(path.join(p, '.workflow.json')), 'no default brain written');
     assert.match(r.stdout, /no brain: project without its own brain \(optional, P-024\)/);
     assert.doesNotMatch(r.stdout, /propose|and \.workflow\.json/);
-    const deny = JSON.parse(fs.readFileSync(path.join(p, '.claude', 'settings.json'), 'utf8')).permissions.deny;
-    assert.ok(!deny.some((d) => /null|<brain>/.test(d)), deny.join(','));
+    const perms = JSON.stringify(JSON.parse(fs.readFileSync(path.join(p, '.claude', 'settings.json'), 'utf8')).permissions);
+    assert.doesNotMatch(perms, /null|<brain>/);
     r = fx.run('adapter.mjs', ['claude-code', '--brain', '../fresh-brain'], { cwd: p });
     assert.equal(r.status, 0, r.out);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(p, '.workflow.json'), 'utf8')), { brain: '../fresh-brain' });

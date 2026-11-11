@@ -20,7 +20,9 @@ export const HOOK_META = { event: 'UserPromptSubmit', class: 'e+c', limit: '2 li
 const escapeRe = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // A message id holds a digit (service ids are timestamps), so „no reply yet“ or „undelivered mail“ are not bells.
 const ID = '((?=[A-Za-z0-9_.:-]*\\d)[A-Za-z0-9][A-Za-z0-9_.:-]*)';
-const TOPIC = '[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)?';
+// The wake service labels a bell `project/topic`, `@persona/topic` (main thread of a persona) or `thread/<thread id>` (ids
+// like `mcp:launch:<uuid>`): a label it sends is a bell, else the turn runs as the operator's (34 % of bells, audit M1 2026-11-11).
+const TOPIC = '@?[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.:-]*)?';
 
 /**
  * Kind of the prompt. Bells (wake, no-reply, undelivered, keepalive) are recognised ONLY when the whole prompt (trimmed)

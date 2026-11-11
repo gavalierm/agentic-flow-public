@@ -99,7 +99,7 @@ Hodnoty určil agent (operátor delegoval rozhodnutie, 2026-10-31). Sú to vých
 | Vek nespracovaného zlyhania pre signál | 7 dní | P-030 | týždeň bez spracovania je zabudnuté poučenie |
 | Prah opakovania sekvencie a postupu | 3 výskyty | P-005, P-030 | určil operátor |
 | Prah opakovania odvodenia | 2 výskyty | P-006 | druhé odvodenie už je plytvanie |
-| Výsledok subagenta | najviac 2 000 znakov | P-027 | záver so zdrojmi, nie obsah |
+| Výsledok subagenta | najviac 3 000 znakov (vynúti SubagentStop) | P-027 | záver so zdrojmi, nie obsah |
 | Limit zobudení | 6 za hodinu na dvojicu tém, stop pri 2 rovnakých správach za sebou | P-043 | slučku prezradí skôr opakovanie než počet |
 | Čakanie hooku na poštu | najviac 2 s | P-041 | výpadok pošty nesmie spomaliť ťah |
 | Počet správ pre stavový riadok | živo; po výpadku posledná hodnota a nový pokus najskôr po 60 s | P-041, P-023 | výpadok nesmie spomaliť každý prompt |

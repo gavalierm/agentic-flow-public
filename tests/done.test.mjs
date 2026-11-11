@@ -23,7 +23,8 @@ test('unit of work: verification required, logs written, handover free, repeats 
     assert.match(r.stdout, /derivation deploy-flow 3x: save the conclusion/);
     assert.equal(logView(fx, 'procedures.log').trim().split('\n').length, 3);
     assert.match(fx.read('topics/d1/handover.md'), /\(voľná\)/);
-    assert.equal(JSON.parse(fx.read('topics/d1/topic.json')).state, 'free');
+    assert.notEqual(JSON.parse(fx.read('topics/d1/topic.json')).state, 'free', 'the topic stays held by the thread (D-0011)');
+    assert.match(r.stdout, /topic d1 stays held by a1/);
     assert.match(fx.run('done.mjs', ['--list']).stdout, /procedures: deploy-web-docker 3x/);
     // sessions started before the rename still call finish.mjs
     assert.match(fx.run('finish.mjs', ['--list']).stdout, /procedures: deploy-web-docker 3x/);
@@ -72,6 +73,28 @@ test('done --topic merges the code copy into the main branch, archives the topic
     assert.equal(JSON.parse(fx.read('topics/archive/feat/topic.json')).state, 'closed');
     assert.equal(fx.run('topic.mjs', ['list']).stdout.trim(), 'no open topics');
     assert.ok(fx.git(fx.origin, 'ls-tree', '-r', '--name-only', 'main').includes('topics/archive/feat/topic.json'));
+  } finally { fx.cleanup(); }
+});
+
+test('done (unit) of a code topic merges the verified copy into the main branch, keeps the copy and the topic held (D-0011)', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'feat', '--subject', 'Feature', '--kind', 'code']).status, 0);
+    const copy = path.join(fx.root, 'project-topics', 'feat');
+    fs.writeFileSync(path.join(copy, 'feature.txt'), 'feature\n');
+    for (const args of [['config', 'user.name', 't'], ['config', 'user.email', 't@t'], ['add', '-A'], ['commit', '-q', '-m', 'feat']]) spawnSync('git', args, { cwd: copy });
+    fs.writeFileSync(path.join(copy, 'feature.txt'), 'not verified yet\n');
+    let r = fx.run('done.mjs', ['--verified', 'feature.txt present']);
+    assert.equal(r.status, 1, r.out); assert.match(r.stderr, /uncommitted changes/);
+    assert.ok(!fs.existsSync(path.join(fx.project, 'feature.txt')), 'a refused unit merges nothing');
+    spawnSync('git', ['checkout', '--', 'feature.txt'], { cwd: copy });
+    r = fx.run('done.mjs', ['--verified', 'feature.txt present']);
+    assert.equal(r.status, 0, r.out);
+    assert.equal(fs.readFileSync(path.join(fx.project, 'feature.txt'), 'utf8'), 'feature\n');
+    assert.match(fx.git(fx.project, 'log', '-1', '--format=%s'), /Merge topic\/feat \(done feat\)/);
+    assert.ok(fs.existsSync(copy), 'the copy stays for the next unit');
+    assert.match(r.stdout, /topic feat stays held by a1/);
+    assert.equal(JSON.parse(fx.read('topics/feat/holder.json')).thread, 'a1');
   } finally { fx.cleanup(); }
 });
 
@@ -128,8 +151,19 @@ test('done --topic is refused in a wake turn and for a non-holder', () => {
     fs.mkdirSync(path.join(fx.brain, 'local', 'threads'), { recursive: true });
     fs.writeFileSync(path.join(fx.brain, 'local', 'threads', 'a1.json'), JSON.stringify({ turn_source: 'wake' }));
     r = fx.run('done.mjs', ['--topic', '--verified', 'x']);
-    assert.equal(r.status, 1); assert.match(r.stderr, /P-047/);
+    assert.equal(r.status, 1); assert.match(r.stderr, /P-047/); assert.match(r.stderr, /AskUserQuestion/);
     assert.ok(fx.exists('topics/d/topic.json'));
+    // An answer of the operator in a dialog of this turn is the instruction (D-0011); an answer from an earlier turn is not.
+    const state = (s) => fs.writeFileSync(path.join(fx.brain, 'local', 'threads', 'a1.json'), JSON.stringify({ turn_source: 'wake', ...s }));
+    const now = Date.now();
+    const iso = (ms) => new Date(ms).toISOString();
+    state({ turn_started_at: iso(now), dialog_answered_at: iso(now - 60_000) });
+    r = fx.run('done.mjs', ['--topic', '--verified', 'x']);
+    assert.equal(r.status, 1, 'a dialog answered before this turn'); assert.match(r.stderr, /P-047/);
+    state({ turn_started_at: iso(now - 60_000), dialog_answered_at: iso(now) });
+    r = fx.run('done.mjs', ['--topic', '--verified', 'x']);
+    assert.equal(r.status, 0, r.out);
+    assert.ok(fx.exists('topics/archive/d/topic.json'));
   } finally { fx.cleanup(); }
 });
 

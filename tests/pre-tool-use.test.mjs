@@ -43,9 +43,17 @@ test('non-trivial edit of a modified file asks; small edit passes; history opera
     assert.deepEqual(r.json, {});
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'git reset --hard HEAD~1' } });
     assert.equal(r.json.hookSpecificOutput.permissionDecision, 'ask');
+    for (const f of 'abcdef') fs.writeFileSync(path.join(fx.project, f), 'x\n');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'rm a b c d e f' } });
     assert.equal(r.json.hookSpecificOutput.permissionDecision, 'ask');
     assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /6 files/);
+    // Own work files, files the command creates and missing ones are not counted (audit M2 2026-11-11).
+    fs.mkdirSync(path.join(fx.project, 'scratch', 'wt'), { recursive: true });
+    for (const f of 'abcdef') fs.writeFileSync(path.join(fx.project, 'scratch', 'wt', f), 'x\n');
+    for (const command of ['rm scratch/wt/a scratch/wt/b scratch/wt/c scratch/wt/d scratch/wt/e scratch/wt/f', 'echo 1 > n1; echo 2 > n2; echo 3 > n3; echo 4 > n4; echo 5 > n5; echo 6 > n6', 'rm -f g1 g2 g3 g4 g5 g6']) {
+      r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } });
+      assert.notEqual(r.json.hookSpecificOutput?.permissionDecision, 'ask', command);
+    }
   } finally { fx.cleanup(); }
 });
 
@@ -152,6 +160,10 @@ test('subagent: a script only named as an argument or in quotes is not executed;
   assert.equal(commsSubagentCheck('sed -n 1,40p /x/bin/comms.mjs'), null);
   assert.match(commsSubagentCheck('node /x/bin/comms.mjs send --level info'), /comms send/);
   assert.equal(commsSubagentCheck('node /x/bin/comms.mjs receive --topic t'), null);
+  // Syntax check, help and read-only subcommands are not sending (audit M2 2026-11-11).
+  for (const c of ['node --check /x/bin/comms.mjs', 'node -c scripts/comms.mjs', 'node /x/bin/comms.mjs --help', 'node /x/bin/comms.mjs', 'node /x/bin/comms.mjs status', 'node /x/bin/comms.mjs notices --all']) assert.equal(commsSubagentCheck(c), null, c);
+  assert.match(commsSubagentCheck('node /x/bin/comms.mjs ack --id 1'), /comms ack/);
+  assert.deepEqual(executedScripts('node --check bin/save.mjs'), []);
   const fx = setup();
   try {
     let r = fx.hook('pre-tool-use.mjs', { agent_id: 'sub1', tool_name: 'Bash', tool_input: { command: 'wc -l /x/bin/topic.mjs /x/bin/comms.mjs' } });

@@ -35,6 +35,9 @@ test('classifyPrompt: only the exact whole prompt is a bell; a quoted template i
   assert.equal(classifyPrompt('the bell said "you have mail in topic alpha", why?', policy), null);
   assert.equal(classifyPrompt('you have mail in topic', policy), null);
   assert.equal(classifyPrompt('you have mail in topic alpha beta', policy), null);
+  // labels the wake service sends for a persona main thread and for a thread without a topic (audit M1 2026-11-11)
+  for (const l of ['@alpha/main', '@beta/main', 'thread/mcp:f0a5bf5c-1234', 'thread/mcp:launch:12e5867c-aa', 'shop-web/faq']) assert.equal(classifyPrompt(`you have mail in topic ${l}`, policy), 'wake', l);
+  assert.equal(classifyPrompt('you have mail in topic @', policy), null);
   assert.deepEqual(parsePrompt('no reply m-123', policy), { kind: 'no-reply', id: 'm-123' });
   assert.deepEqual(parsePrompt('undelivered m-9', policy), { kind: 'undelivered', id: 'm-9' });
   assert.equal(classifyPrompt('there was no reply m-123 yesterday', policy), null);

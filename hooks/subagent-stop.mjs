@@ -47,11 +47,15 @@ export function run(input, policy = loadPolicy(null)) {
   // Only the workflow worker gets the result rules (delegate.mjs prepare); a built-in or plugin agent never saw them,
   // and a block there only cost a turn (operator 2026-11-08, hooks review).
   if (!/(^|:)worker$/.test(String(input.agent_type || ''))) return {};
-  if (hasFailuresSection(input.last_assistant_message)) return {};
-  return {
-    decision: 'block',
-    reason: 'Result must end with a section "Failures: <what failed and what finally worked>" (write "Failures: none" if nothing failed), P-028. Keep the whole result under the limit (2 000 chars).',
-  };
+  // The limit is enforced here: 45 of 47 results were over it and the manual `delegate.mjs check` ran 0 times (audit M4
+  // 2026-11-11). A block costs the worker one cached turn; stop_hook_active above lets the second stop through.
+  const text = String(input.last_assistant_message || '');
+  const limit = policy.limits?.worker_result_chars ?? 3000;
+  const errors = [];
+  if (!hasFailuresSection(text)) errors.push('the result must end with a section "Failures: <what failed and what finally worked>" (write "Failures: none" if nothing failed), P-028');
+  if (text.length > limit) errors.push(`the result has ${text.length} chars, the limit is ${limit} (P-027): keep the conclusion and its sources (paths, lines, commands), drop raw content and repeated detail`);
+  if (!errors.length) return {};
+  return { decision: 'block', reason: `Return the result again: ${errors.join('; ')}.` };
 }
 
 if (isMain(import.meta.url)) {

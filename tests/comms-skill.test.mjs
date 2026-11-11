@@ -122,12 +122,15 @@ test('send needs a level (a reply excepted); info is refused with the valid leve
     assert.equal(toPersona.status, 0, toPersona.out);
     assert.match(toPersona.stdout, /sent \S+ \(assist\) -> @bob\/main$/m);
     assert.doesNotMatch(toPersona.stdout, /held/);
+    // No main thread of that persona yet: the sender learns it now and gets no reply timer (audit M5 2026-11-11).
+    assert.match(toPersona.stdout, /^warning: persona bob has no main thread yet; the message waits; nobody picks it up now/m);
+    assert.doesNotMatch(toPersona.stdout, /timer set:/);
 
     // assist to a working topic waits; done (free point) lists it by id and category, release clears the holder.
     assert.equal(comms.cli(['send', '--project', 'project', '--topic', 'alpha', '--level', 'assist', '--text', 'later'], 'bob').code, 0);
     const fin = fx.run('done.mjs', ['--verified', 'seen it']);
     assert.equal(fin.status, 0, fin.out);
-    assert.match(fin.stdout, /topic alpha is free/);
+    assert.match(fin.stdout, /topic alpha stays held by a1/);
     assert.match(fin.stdout, /mail: 1 waiting for topic alpha \(free point\): \S+ assist/);
     assert.doesNotMatch(fin.stdout, /later/);
     setTurnSource(fx.brain, 'a1', 'operator');

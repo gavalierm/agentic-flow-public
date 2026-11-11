@@ -140,7 +140,9 @@ export function run(input, now = Date.now()) {
     // A dialog closed without an answer answers nothing; a harness that reports no answers counts every question.
     const asked = given.length ? given : st.dialog_questions || [];
     const items = answers && typeof answers === 'object' ? asked.filter((q) => String(answers[q] ?? '').trim()) : asked;
-    writeThreadState(ctx.brainDir, ctx.thread, { ...withAnswered(st, items), dialog_questions: [] });
+    // D-0011: an answer in this turn lets done --topic close the topic also in a turn started by a message.
+    const answeredNow = items.length ? { dialog_answered_at: new Date(now).toISOString() } : {};
+    writeThreadState(ctx.brainDir, ctx.thread, { ...withAnswered(st, items), dialog_questions: [], ...answeredNow });
   }
   settleOwn(ctx, changedFiles(input));
   if (input.tool_name === 'Bash' || input.tool_name === 'PowerShell') settleShell(ctx, input.tool_use_id);

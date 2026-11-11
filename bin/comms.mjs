@@ -18,7 +18,7 @@
 import fs from 'node:fs';
 import { parseArgs, fail, nowIso, readStdin } from '../scripts/util.mjs';
 import { loadContext, inSubagent, readThreadState, writeThreadState } from '../scripts/config.mjs';
-import { commsSettings, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, categoryLabel, LEVELS } from '../scripts/comms.mjs';
+import { commsSettings, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, categoryLabel, LEVELS, dropNoticesCache } from '../scripts/comms.mjs';
 import { readTopic, mailboxTopics, heldTopics, heldBy } from '../scripts/topic.mjs';
 import { readHolder, isHolderOf } from '../scripts/brain.mjs';
 import { setTimer, clearTimer, activeTimer, validWaker, TIMER_CMD, REPLY_WINDOW_MS, REPLY_STATE_TIMER_MS } from '../scripts/waker.mjs';
@@ -350,6 +350,9 @@ function cmdSend(ctx) {
     const sentLevel = data.level || level;
     out(`sent ${data.id} (${sentLevel}${data.level_raised_from ? `, raised from ${data.level_raised_from}: a reply is as urgent as the message it answers` : ''}) -> ${destination}${replyTo ? ` | state ${replyState}` : ''}${cancels ? ` | cancels ${cancels}` : ''}${fromNote(ctx, from)}${data.state === 'held' ? `; topic not registered: held, operator notice ${data.notice_id} (new topic? / redirect, P-045)` : ''}`);
   }
+  // The server takes the message but nobody can pick it up now (persona without a main thread): say so at sending, not
+  // 30 min later from the no-reply bell (5 of 5 such messages expired unread, audit M5 2026-11-11).
+  if (data.warning) out(`warning: ${data.warning}; nobody picks it up now: send it where someone works, or tell the operator`);
   if (replyTo && replyState === FINAL_STATE) settlePicked(ctx, replyTo);
   else if (replyTo) {
     markPicked(ctx, replyTo, replyState, waitFor);
@@ -358,7 +361,7 @@ function cmdSend(ctx) {
   const finalLevel = data.level || level;
   if (finalLevel === 'assist' && !replyTo && data.expires_at) out(`assist sent: continue other work; the reply wakes you; without pickup by ${data.expires_at} the expiry wakes you (P-042)`);
   // P-061: a picked message may stay unanswered; the thread timer rings the sender after the reply window anyway.
-  if (REPLY_WINDOW_MS[finalLevel] && !replyTo && data.id && !data.queued && ctx.brainDir && ctx.thread && !inSubagent()) {
+  if (REPLY_WINDOW_MS[finalLevel] && !replyTo && data.id && !data.queued && !data.warning && ctx.brainDir && ctx.thread && !inSubagent()) {
     const now = Date.now();
     const cur = activeTimer(readThreadState(ctx.brainDir, ctx.thread), now);
     if (!cur || Date.parse(cur.at) > now + REPLY_WINDOW_MS[finalLevel]) {
@@ -382,6 +385,7 @@ function cmdDecide(ctx) {
   const a = ['decide', '--notice', String(args.notice), '--decision', String(args.decision)];
   if (args.target) a.push('--target', String(args.target));
   const data = must(runClient(ctx, a));
+  dropNoticesCache(ctx);
   out(`notice ${data.notice_id}: ${data.decision}${data.delivered_to ? ` -> ${data.delivered_to}` : ''}`);
 }
 

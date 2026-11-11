@@ -100,7 +100,10 @@ export function sessionRoot(projectDir, brainDir) {
 }
 // docs/: lasting documents of a persona (research, reports); written directly, committed by save.mjs docs (alice 2026-11-03).
 export const PERSONA_DOCS = 'docs';
-export const PERSONA_WRITABLE = [SCRATCH_DIR, 'local', PERSONA_DOCS];
+// materialy/: what came from outside and the results of a topic (skill materialy), committed by save.mjs docs like docs/
+// (D-0011: 2 refusals on 11-11, the result stayed outside git). A literal here: materialy.mjs imports this module.
+export const PERSONA_MATERIALS = 'materialy';
+export const PERSONA_WRITABLE = [SCRATCH_DIR, 'local', PERSONA_DOCS, PERSONA_MATERIALS];
 
 /** Main checkout of the repository containing dir (never a worktree), P-024 persona. */
 export function mainCheckout(dir) {
@@ -297,6 +300,12 @@ export function writeThreadState(brainDir, id, state) {
 
 export function isWakeTurn(brainDir, id) {
   return readThreadState(brainDir, id).turn_source === 'wake';
+}
+
+/** The operator answered a dialog (AskUserQuestion) in the running turn (PostToolUse sets dialog_answered_at, D-0011). */
+export function dialogAnsweredInTurn(brainDir, id) {
+  const st = readThreadState(brainDir, id);
+  return !!st.dialog_answered_at && !!st.turn_started_at && st.dialog_answered_at >= st.turn_started_at;
 }
 
 /**

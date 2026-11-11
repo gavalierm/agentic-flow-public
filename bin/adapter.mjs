@@ -16,16 +16,9 @@ export const MANAGED_KEYS = ['enabledPlugins', 'autoMemoryEnabled', 'autoCompact
 
 /** Pure function: policy + brain relative path (null: no brain) -> project .claude/settings.json content. */
 export function claudeSettings(policy, brainRel, channel = 'stable') {
-  const deny = [];
-  for (const p of policy.harness?.deny_paths || []) {
-    // A bare deny pattern matches at any depth under the cwd (gitignore; Claude Code permissions docs): in a persona,
-    // `Edit(rules/**)` and `Edit(README.md)` also denied rules/ and scripts/README.md of a code copy inside the project
-    // (assist 2026-11-08). `/` anchors them at the project root, which is the persona's brain.
-    for (const e of expandBrainPath(p, brainRel)) deny.push(`Edit(${brainRel === PERSONA_BRAIN && !/^[/~.]/.test(e) ? '/' : ''}${e})`);
-  }
-  // Two segments already anchor at the current directory (permissions docs, 2026-11-08); `/` anchors at the project
-  // root also when the session works in a subfolder, like the brain rules above.
-  deny.push('Edit(/.claude/skills/**)');
+  // No native deny (D-0011): 52 of 65 refusals of the `Edit(<path>)` patterns were false (reads, work after `cd`), the
+  // PreToolUse hook refuses the same writes (brain P-013, `.claude/skills/` P-017, `~/.claude` P-014) for every tool.
+  // `harness.deny_paths` stays in the policy for the hook and the Codex adapter.
   // Native ask: the whole command or the command followed by arguments (`git checkout --orphan` is not
   // `git checkout --`). Commands with safe forms (ask_commands_except) are left to the PreToolUse hook,
   // a native ask rule cannot express the exception (P-018, P-015). Restores are also left to the hook: it passes a
@@ -39,7 +32,7 @@ export function claudeSettings(policy, brainRel, channel = 'stable') {
     enabledPlugins: enabledPluginsFor(channel),
     autoMemoryEnabled: policy.harness?.native_memory === true,
     autoCompactWindow: policy.compaction?.auto_compact_window_tokens ?? 200000,
-    permissions: { deny, ask },
+    permissions: { ask },
   };
 }
 
