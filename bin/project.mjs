@@ -12,9 +12,9 @@
 //   project.mjs inventory <dir> [--json]                             files of a repository by group, with dead paths
 //   project.mjs tidy --project <dir> --plan <file.json>              apply the agreed removals and moves in the brain
 //   project.mjs wizard start <name> | end                           open (2 h) or close the window of the wizard (T3 setup left is named at the end)
-//   project.mjs t3 <dir> [--name <project>] [--no-welcome] | t3 <dir> --registered   trust, T3 project and welcome thread of a
+//   project.mjs t3 <dir> [--name <project>] [--no-welcome] [--adopt] | t3 <dir> --registered   trust, T3 project and welcome thread of a
 //     repository folder (restore, connect and create do it themselves; --no-t3 skips it); --registered: the steps left
-//     for the T3 tools (no `t3` CLI) were done
+//     for the T3 tools (no `t3` CLI) were done; --adopt (connect --adopt too): the welcome thread starts at `wizard end`
 // Plan for tidy: { "remove": ["RULES.md", ...], "move": [{ "from": "artifacts/x", "to": "docs/x" }],
 //   "write": [{ "path": "decisions/D0001.md", "file": "<file with the new content>" }], "reason": "..." }
 // write: a record in the workflow format, e.g. an older decision rewritten (a decision with a key is never deleted,
@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, fail, toPosix, readJson } from '../scripts/util.mjs';
 import { loadContext, loadPolicy, inSubagent, isWakeTurn, readThreadState, writeThreadState, WORKFLOW_CONFIG } from '../scripts/config.mjs';
-import { setupT3, pendingT3Line } from '../scripts/t3-setup.mjs';
+import { setupT3, startWelcome, pendingT3Line } from '../scripts/t3-setup.mjs';
 import { brainWrite, formatWriteResult } from '../scripts/brain.mjs';
 import { setWizard } from '../scripts/wizard.mjs';
 import { probe, restore, connect, create, inventory, formatInventory, projectRoots, machineRoot, setMachineRoot, rootFile } from '../scripts/project.mjs';
@@ -81,15 +81,43 @@ function brainOf(dir) {
 }
 
 /** Trust, T3 project and welcome thread of each repository folder (the skill step agents skipped, 2026-11-08). */
+// --adopt: the welcome thread waits for `wizard end` (welcome_deferred in the thread state); started with connect it
+// proposed the adoption's own tidying while the adoption topic did it (alice 2026-11-11).
 function t3Step(dirs, name) {
   if (args['no-t3']) return ['t3: skipped (--no-t3): trust, T3 project and welcome thread were not set up'];
-  const lines = []; const update = {};
+  const lines = []; const update = {}; const deferred = {};
   for (const dir of dirs) {
-    const r = setupT3(dir, { name, policy: loadPolicy(brainOf(dir)), welcome: !args['no-welcome'] });
+    const r = setupT3(dir, { name, policy: loadPolicy(brainOf(dir)), welcome: !args['no-welcome'], deferWelcome: !!args.adopt });
     lines.push(...r.lines.map((l) => `${path.basename(dir)}: ${l}`));
     update[dir] = r.pending;
+    if (r.deferred) deferred[dir] = name;
   }
   recordPending(update);
+  if (Object.keys(deferred).length) {
+    const ctx = loadContext({ requireBrain: false });
+    if (ctx.brainDir && ctx.thread) {
+      const state = readThreadState(ctx.brainDir, ctx.thread);
+      state.welcome_deferred = { ...(state.welcome_deferred || {}), ...deferred };
+      writeThreadState(ctx.brainDir, ctx.thread, state);
+    }
+  }
+  return lines;
+}
+
+/** Welcome threads of adopted projects, started at `wizard end`; one that cannot start is left for the T3 tools. */
+function startDeferredWelcome(ctx) {
+  const state = readThreadState(ctx.brainDir, ctx.thread);
+  const deferred = state.welcome_deferred || {};
+  if (!Object.keys(deferred).length) return [];
+  delete state.welcome_deferred;
+  writeThreadState(ctx.brainDir, ctx.thread, state);
+  const lines = []; const update = {};
+  for (const [dir, name] of Object.entries(deferred)) {
+    const r = startWelcome(dir, { name, policy: loadPolicy(brainOf(dir)), adopted: true }); // wizard end needs the T3 project set up
+    lines.push(...r.lines.map((l) => `${path.basename(dir)}: ${l}`));
+    if (r.pending.length) update[dir] = r.pending;
+  }
+  if (Object.keys(update).length) recordPending(update);
   return lines;
 }
 
@@ -124,7 +152,7 @@ try {
       try { out(`projects root ${setMachineRoot(target)} saved for this machine (${rootFile()})`); } catch (err) { fail(err.message); }
     }
   } else if (cmd === 't3') {
-    if (!target) fail('usage: project.mjs t3 <dir> [--name <project>] [--no-welcome] | t3 <dir> --registered');
+    if (!target) fail('usage: project.mjs t3 <dir> [--name <project>] [--no-welcome] [--adopt] | t3 <dir> --registered');
     guardWrite();
     const dir = path.resolve(target);
     if (!fs.existsSync(path.join(dir, WORKFLOW_CONFIG))) fail(`${dir} is not a workflow project (no ${WORKFLOW_CONFIG})`);
@@ -160,7 +188,7 @@ try {
       const left = pendingT3Line(readThreadState(ctx.brainDir, ctx.thread).t3_pending);
       if (left) fail(`wizard not closed: ${left}`);
       setWizard(ctx.brainDir, ctx.thread, null);
-      out('wizard closed');
+      out(['wizard closed', ...startDeferredWelcome(ctx).map((l) => `- ${l}`)].join('\n'));
     } else fail('usage: project.mjs wizard start <name> | end');
   } else {
     fail('usage: project.mjs probe|restore|connect|create|t3|inventory|tidy|wizard ... (see the header of bin/project.mjs)');

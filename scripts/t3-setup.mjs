@@ -46,9 +46,14 @@ export function trustFolder(dir, { file = claudeConfigFile(), platform = process
 // Same text as TOPIC_QUESTION in boot.mjs (tests/welcome-topic.test.mjs keeps them equal).
 export const WELCOME_TOPIC_QUESTION = 'Aká bude téma?';
 
-export function welcomeMessage(name, repo) {
+// An adopted project: the adoption topic tidies the older setup (CLAUDE.md, an older brain); the welcome thread proposed
+// the same work and both threads deleted CLAUDE.md and edited the same skills (alice 2026-11-11).
+export const ADOPTED_NOTE = 'Projekt je prevzatý zo staršieho nastavenia: upratanie starých súborov (CLAUDE.md, starý brain, staré skilly) robí téma prevzatia; nenavrhuj ho ani nerob, navrhni prácu na samotnom projekte.';
+
+export function welcomeMessage(name, repo, { adopted = false } = {}) {
   return [
     `Vitaj v projekte ${name} (repo ${repo}).`,
+    ...(adopted ? [ADOPTED_NOTE] : []),
     'Toto je uvítacie vlákno projektu: over stavový blok session (brain, pravidlá, témy) a v jednej odpovedi zhrň účel projektu, čo je v repe a v brain, a navrhni prvú tému práce. Nič nemeň.',
     // The Stop hook lets a reply without a topic end only with the start question (stop.mjs topicStart); any other
     // question got NO_TOPIC_REASON and the welcome thread created the proposed topic itself (Alice 2026-11-09).
@@ -70,7 +75,7 @@ function runCli(command, extra, { run, platform, input }) {
  * policy (`project.t3_project_add_command`, `topics.thread_start_command`). Without the CLI (T3 Code without `t3` in PATH)
  * the result lists the same steps for the T3 tools, and `pending` names them for the Stop hook.
  */
-export function setupT3(dir, { name, repo = path.basename(dir), policy = {}, welcome = true, run = spawnSync, platform = process.platform, trustFile } = {}) {
+export function setupT3(dir, { name, repo = path.basename(dir), policy = {}, welcome = true, deferWelcome = false, run = spawnSync, platform = process.platform, trustFile } = {}) {
   const lines = [trustFolder(dir, { file: trustFile, platform }).line];
   const pending = [];
   const addCmd = policy?.project?.t3_project_add_command ?? 't3 project add';
@@ -84,13 +89,25 @@ export function setupT3(dir, { name, repo = path.basename(dir), policy = {}, wel
     lines.push(`t3: project NOT added (${add.reason}): create it with the T3 tool t3_project_create (title ${repo}, workspaceRoot ${dir})`);
   }
   if (!welcome || exists) return { lines, pending, added };
-  const message = welcomeMessage(name || repo, repo);
-  const startCmd = policy?.topics?.thread_start_command ?? 't3 thread start --json';
-  const start = added ? runCli(startCmd, ['--title', WELCOME_TITLE, dir, '-'], { run, platform, input: message }) : { ok: false, reason: 'the T3 project is not added yet' };
-  if (start.ok) lines.push(`t3: welcome thread "${WELCOME_TITLE}" started`);
-  else {
-    pending.push(`t3_thread_launch (project ${dir}, title ${WELCOME_TITLE}, message: ${message.split('\n')[0]} …)`);
-    lines.push(`t3: welcome thread NOT started (${start.reason}): start it with the T3 tool t3_thread_launch in project ${dir}, title "${WELCOME_TITLE}", message:\n${message}`);
+  if (deferWelcome) {
+    lines.push(`t3: welcome thread "${WELCOME_TITLE}" starts at wizard end (adoption: records and tidying come first)`);
+    return { lines, pending, added, deferred: true };
   }
-  return { lines, pending, added };
+  const w = startWelcome(dir, { name, repo, policy, run, platform, ready: added });
+  return { lines: [...lines, ...w.lines], pending: [...pending, ...w.pending], added };
+}
+
+/**
+ * The welcome thread "vitaj" of a project already in T3 (`ready`). An adopted project starts it at `wizard end`, after
+ * the records and the adoption topic exist: started with connect, it proposed the adoption's own tidying (alice 2026-11-11).
+ */
+export function startWelcome(dir, { name, repo = path.basename(dir), policy = {}, run = spawnSync, platform = process.platform, ready = true, adopted = false } = {}) {
+  const message = welcomeMessage(name || repo, repo, { adopted });
+  const startCmd = policy?.topics?.thread_start_command ?? 't3 thread start --json';
+  const start = ready ? runCli(startCmd, ['--title', WELCOME_TITLE, dir, '-'], { run, platform, input: message }) : { ok: false, reason: 'the T3 project is not added yet' };
+  if (start.ok) return { lines: [`t3: welcome thread "${WELCOME_TITLE}" started`], pending: [] };
+  return {
+    lines: [`t3: welcome thread NOT started (${start.reason}): start it with the T3 tool t3_thread_launch in project ${dir}, title "${WELCOME_TITLE}", message:\n${message}`],
+    pending: [`t3_thread_launch (project ${dir}, title ${WELCOME_TITLE}, message: ${message.split('\n')[0]} …)`],
+  };
 }
