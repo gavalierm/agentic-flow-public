@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PLUGIN_ROOT, cleanEnv } from './helpers.mjs';
-import { classifyNames, decide, probe, restore, connect, create, inventory } from '../scripts/project.mjs';
+import { classifyNames, decide, probe, restore, connect, create, inventory, issueMailKey } from '../scripts/project.mjs';
 import { resolveDomain } from '../scripts/config.mjs';
 
 // The scripts run in this process: same clean environment as the spawned ones.
@@ -45,24 +45,37 @@ function sandbox() {
 }
 
 // Fake GitHub for owner "owner1": repos from the remotes directory, root listing from the bare repo,
-// PATCH renames the bare repo, POST creates an empty one.
+// PATCH renames the bare repo, POST creates an empty one. The bearer token "agt" is the agent account "agent1";
+// the owner invites it as a collaborator and it accepts. calls are "<who> <method> <url>".
 async function fakeGithub(sb) {
   const calls = [];
+  const invitations = new Map();
+  let nextId = 1;
   const repos = () => fs.readdirSync(sb.remotes).filter((n) => n.endsWith('.git')).map((n) => n.slice(0, -4));
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
-      calls.push(`${req.method} ${req.url}`);
-      const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+      const who = req.headers.authorization === 'Bearer agt' ? 'agent1' : 'owner1';
+      calls.push(`${who} ${req.method} ${req.url}`);
+      const send = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(obj === undefined ? '' : JSON.stringify(obj)); };
       const url = new URL(req.url, 'http://x');
-      if (url.pathname === '/user') return send(200, { login: 'owner1' });
+      if (url.pathname === '/user') return send(200, { login: who });
       if (url.pathname === '/user/repos' && req.method === 'GET') return send(200, Number(url.searchParams.get('page')) > 1 ? [] : repos().map((name) => ({ name, private: true, pushed_at: '2026-10-30T00:00:00Z', default_branch: 'main', description: `${name} desc` })));
       if (url.pathname === '/user/repos' && req.method === 'POST') {
         const { name } = JSON.parse(body);
         spawnSync('git', ['init', '-q', '--bare', '-b', 'main', sb.remoteFor('owner1', name)]);
         return send(201, { name });
       }
+      const collab = url.pathname.match(/^\/repos\/owner1\/([^/]+)\/collaborators\/([^/]+)$/);
+      if (collab && req.method === 'PUT' && who === 'owner1') {
+        const id = nextId++;
+        invitations.set(id, { id, invitee: collab[2], repository: { full_name: `owner1/${collab[1]}` } });
+        return send(201, { id });
+      }
+      if (url.pathname === '/user/repository_invitations' && req.method === 'GET') return send(200, [...invitations.values()].filter((i) => i.invitee === who));
+      const acc = url.pathname.match(/^\/user\/repository_invitations\/(\d+)$/);
+      if (acc && req.method === 'PATCH' && invitations.get(Number(acc[1]))?.invitee === who) { invitations.delete(Number(acc[1])); return send(204); }
       const m = url.pathname.match(/^\/repos\/owner1\/([^/]+)(\/contents\/)?$/);
       if (m) {
         const dir = sb.remoteFor('owner1', m[1]);
@@ -82,7 +95,7 @@ async function fakeGithub(sb) {
     });
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  return { calls, apiUrl: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => server.close(r)) };
+  return { calls, invitations, apiUrl: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => server.close(r)) };
 }
 
 const LEGACY_BRAIN = {
@@ -141,7 +154,7 @@ test('adopt an older project: probe finds it, connect renames and adopts the bra
     const webDir = path.join(sb.root, 'Kubo', 'kubo-web');
     const brainDir = path.join(sb.root, 'Kubo', 'kubo-brain');
     assert.ok(r.lines.includes('brain repository renamed: old-brain-kubo -> kubo-brain'), r.lines.join('\n'));
-    assert.ok(hub.calls.includes('PATCH /repos/owner1/old-brain-kubo'));
+    assert.ok(hub.calls.includes('owner1 PATCH /repos/owner1/old-brain-kubo'));
     // History and data stay; the old hook is replaced by the workflow one and committed.
     assert.match(fs.readFileSync(path.join(brainDir, 'memory/zadanie.md'), 'utf8'), /Statický web/);
     assert.ok(fs.existsSync(path.join(brainDir, '.githooks', 'pre-commit.mjs')));
@@ -380,3 +393,56 @@ test('projects root of the machine: saved by project.mjs root, read by projectRo
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 const toPosixRe = (p) => p.replace(/\\/g, '/').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// project create: a new repository gets the machine's agent account as a collaborator before the first push.
+// The SSH key belongs to the agent account; without it the push says "Repository not found" (Alice 2026-11-09).
+test('create: the agent account is invited to both new repositories and accepts; no agent token, no invitation', async () => {
+  const sb = sandbox();
+  fs.writeFileSync(path.join(sb.base, 'agent-token'), 'agt\n');
+  const hub = await fakeGithub(sb);
+  const opts = { root: sb.root, apiUrl: hub.apiUrl, tokenFile: sb.tokenFile, remoteFor: sb.remoteFor };
+  try {
+    const r = await create({ name: 'novy', repo: 'novy-web', purpose: 'Web.', agentTokenFile: path.join(sb.base, 'agent-token'), ...opts });
+    assert.ok(r.lines.includes('agent account agent1: push access to owner1/novy-web'), r.lines.join('\n'));
+    assert.ok(r.lines.includes('agent account agent1: push access to owner1/novy-brain'), r.lines.join('\n'));
+    assert.ok(hub.calls.includes('owner1 PUT /repos/owner1/novy-web/collaborators/agent1'), hub.calls.join('\n'));
+    assert.equal(hub.invitations.size, 0, 'both invitations accepted');
+    assert.ok(r.lines.includes('project: pushed'), r.lines.join('\n'));
+
+    const before = hub.calls.length;
+    const r2 = await create({ name: 'druhy', purpose: 'Web.', agentTokenFile: path.join(sb.base, 'missing'), ...opts });
+    assert.ok(!r2.lines.some((l) => l.startsWith('agent account')), r2.lines.join('\n'));
+    assert.ok(!hub.calls.slice(before).some((c) => c.includes('collaborators')));
+  } finally { await hub.close(); sb.cleanup(); }
+});
+
+// A new brain of connect or create gets its sender key and <brain>/local/comms.json: without them the project's topics
+// were not registered and its mail stayed in local/outbox (alice 2026-11-11, adoption with a new brain).
+test('issueMailKey: issues a key for the project, writes the brain mail config once and checks the service', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-mailkey-'));
+  try {
+    const log = path.join(dir, 'client.log');
+    const client = path.join(dir, 'comms.mjs');
+    fs.writeFileSync(client, `import fs from 'node:fs';\nconst a = process.argv.slice(2);\nfs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(a) + '\\n');\nif (a[0] === 'key') console.log(JSON.stringify({ sender: a[a.indexOf('--sender') + 1], key: 'k-new' }));\nelse console.log(JSON.stringify({ ok: true, instance_id: 'i1' }));\n`);
+    const session = path.join(dir, 'session-brain');
+    fs.mkdirSync(path.join(session, 'local'), { recursive: true });
+    fs.writeFileSync(path.join(session, 'local', 'comms.json'), JSON.stringify({ instance: 'pilot', key: 'k-session', instance_id: 'i1' }));
+    const brainDir = path.join(dir, 'Shop', 'shop-brain');
+    const projectDir = path.join(dir, 'Shop', 'shop-web');
+    fs.mkdirSync(brainDir, { recursive: true });
+    let line = issueMailKey({ projectDir, brainDir, sessionBrain: session, client });
+    assert.match(line, /mail: key issued for sender shop-web .*service answers/);
+    const file = path.join(brainDir, 'local', 'comms.json');
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { instance: 'pilot', key: 'k-new', instance_id: 'i1' });
+    if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.deepEqual(calls[0], ['key', 'add', '--instance', 'pilot', '--sender', 'shop-web']);
+    assert.doesNotMatch(line, /k-new/, 'the key is never printed');
+    line = issueMailKey({ projectDir, brainDir, sessionBrain: session, client });
+    assert.match(line, /mail: config exists/);
+    assert.equal(fs.readFileSync(log, 'utf8').trim().split('\n').length, 2, 'no second key');
+    fs.rmSync(path.join(brainDir, 'local'), { recursive: true });
+    line = issueMailKey({ projectDir, brainDir, sessionBrain: path.join(dir, 'none'), client });
+    assert.match(line, /mail: NOT set up \(this session has no mail config[^)]*\): issue a key with node .* key add --instance <instance> --sender shop-web/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

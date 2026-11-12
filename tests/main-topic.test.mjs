@@ -49,7 +49,12 @@ function persona() {
     const res = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'hooks', name)], { cwd: dir, env: { ...env, CLAUDE_PROJECT_DIR: dir }, encoding: 'utf8', input: JSON.stringify({ session_id: 's1', cwd: dir, ...input }) });
     return JSON.parse(res.stdout.trim() || '{}').hookSpecificOutput?.additionalContext || '';
   };
-  return { dir, run, hook, client, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+  // Another thread holds topic main (committed in the persona brain).
+  const heldByOther = () => {
+    fs.writeFileSync(path.join(dir, 'topics/main/holder.json'), JSON.stringify({ thread: 'other', machine: 'm' }));
+    git(dir, 'commit', '-q', '--no-verify', '-am', 'other holder');
+  };
+  return { dir, run, hook, client, heldByOther, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
 test('persona main thread: topic main is held, registered as @<persona>/main, counts its mailbox, never free or closed', () => {
@@ -191,25 +196,19 @@ test('topic main in a wake turn: first adoption allowed, taking over a held main
     const first = p.run('topic.mjs', ['main']);
     assert.equal(first.status, 0, first.out);
     assert.match(first.out, /topic main claimed by p1/);
-    const holder = path.join(p.dir, 'topics/main/holder.json');
-    fs.writeFileSync(holder, JSON.stringify({ thread: 'other', machine: 'm' }));
-    git(p.dir, 'commit', '-q', '--no-verify', '-am', 'other holder');
+    p.heldByOther();
     const again = p.run('topic.mjs', ['main']);
     assert.notEqual(again.status, 0);
     assert.match(again.out, /started by a message/);
   } finally { p.cleanup(); }
 });
 
-test('topic main held by another thread: takeover only with --force; done on main counts the persona mailbox (bob 2026-11-01)', async () => {
+test('topic main held by another thread: takeover only with --force and --operator-approved, registered with the takeover flag (P-037, P-045)', () => {
   const p = persona();
   try {
     assert.equal(p.run('topic.mjs', ['main']).status, 0);
-    const fin = p.run('done.mjs', ['--topic-id', 'main', '--verified', 'x']);
-    assert.equal(fin.status, 0, fin.out);
-    assert.match(fin.out, /mail: 1 waiting for topic main \(free point\)/);
     const holder = path.join(p.dir, 'topics/main/holder.json');
-    fs.writeFileSync(holder, JSON.stringify({ thread: 'other', machine: 'm' }));
-    git(p.dir, 'commit', '-q', '--no-verify', '-am', 'other holder');
+    p.heldByOther();
     const refused = p.run('topic.mjs', ['main']);
     assert.notEqual(refused.status, 0);
     assert.match(refused.out, /held by other: only a new persona main thread takes it over/);
@@ -226,7 +225,7 @@ test('topic main held by another thread: takeover only with --force; done on mai
   } finally { p.cleanup(); }
 });
 
-test('topic main is never released; done on main records no free point and says it stays held (P-045)', () => {
+test('topic main is never released; done on main counts the persona mailbox, records no free point and says it stays held (P-045)', () => {
   const p = persona();
   try {
     assert.equal(p.run('topic.mjs', ['main']).status, 0);
@@ -235,6 +234,8 @@ test('topic main is never released; done on main records no free point and says 
     assert.match(rel.out, /never released \(P-045\)/);
     const fin = p.run('done.mjs', ['--topic-id', 'main', '--verified', 'x']);
     assert.equal(fin.status, 0, fin.out);
+    // bob 2026-11-01: done on main counts the persona mailbox.
+    assert.match(fin.out, /mail: 1 waiting for topic main \(free point\)/);
     assert.doesNotMatch(fin.out, /is free/);
     assert.match(fin.out, /topic main stays held by p1/);
     const stateFile = path.join(p.dir, 'local', 'threads', 'p1.json');

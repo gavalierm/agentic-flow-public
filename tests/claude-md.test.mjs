@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
 
-test('PreToolUse: writing CLAUDE.md in a workflow project is denied; deleting it passes', () => {
+test('P-007: PreToolUse: writing CLAUDE.md in a workflow project is denied; deleting it passes', () => {
   const fx = setup();
   try {
     const file = path.join(fx.project, 'CLAUDE.md');
@@ -26,7 +26,7 @@ test('PreToolUse: writing CLAUDE.md in a workflow project is denied; deleting it
   } finally { fx.cleanup(); }
 });
 
-test('SessionStart: a CLAUDE.md in the project is reported once per session with the move to brain', () => {
+test('P-007: SessionStart: a CLAUDE.md in the project is reported once per session with the move to brain', () => {
   const fx = setup();
   try {
     assert.doesNotMatch(fx.hook('session-start.mjs', { source: 'startup' }).context, /CLAUDE\.md in the project/);

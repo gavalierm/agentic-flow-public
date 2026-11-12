@@ -41,6 +41,19 @@ async function exchange() {
   return { fx, comms, ask, reply, a, b, done };
 }
 
+/** a1 got an assist, its turn ended "Stav: otázka" (the Stop hook records how the turn ended), then a mail bell started the next turn: the operator did not speak. Returns the assist id. */
+function askedThenBell(x) {
+  const id = x.ask();
+  x.fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+  x.fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
+  const stop = x.fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Návrh je hotový.\n\n**Otázky na operátora:** Variant A alebo B? Odporúčam A.\n\nStav: otázka' });
+  assert.equal(stop.json?.decision, undefined, stop.out);
+  assert.equal(x.a().last_end_state, 'otázka');
+  x.fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
+  assert.equal(x.a().turn_source, 'wake');
+  return id;
+}
+
 test('reply has no state: send --reply-to without --state is refused and nothing is sent; čakám needs --wait-for and a waker', { skip }, async () => {
   const x = await exchange();
   try {
@@ -222,7 +235,7 @@ test('sender side: the mail line names the interim state, the timer is re-armed 
   } finally { await x.done(); }
 });
 
-test('mail line: an interim reply is `<id> reply <state>`, a final or old reply plain `<id> reply`', () => {
+test('mailLines: an interim reply is `<id> reply <state>`, a final or old reply plain `<id> reply`', () => {
   assert.deepEqual(mailLines([
     { id: 'm1', level: 'assist', reply_to: 'q1', reply_state: 'otázka' },
     { id: 'm2', level: 'assist', reply_to: 'q2', reply_state: 'čakám' },
@@ -235,16 +248,7 @@ test('mail line: an interim reply is `<id> reply <state>`, a final or old reply 
 test('hotovo guard (phase 2): the previous turn ended "otázka" and this one was not started by the operator: hotovo is refused, otázka passes', { skip }, async () => {
   const x = await exchange();
   try {
-    const id = x.ask();
-    // The turn that asks the operator ends "Stav: otázka" (the Stop hook records how the turn ended).
-    x.fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    x.fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
-    const stop = x.fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Návrh je hotový.\n\n**Otázky na operátora:** Variant A alebo B? Odporúčam A.\n\nStav: otázka' });
-    assert.equal(stop.json?.decision, undefined, stop.out);
-    assert.equal(x.a().last_end_state, 'otázka');
-    // A mail bell starts the next turn: the operator did not speak.
-    x.fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
-    assert.equal(x.a().turn_source, 'wake');
+    const id = askedThenBell(x);
     const bad = x.reply(id, 'hotovo', 'variant A');
     assert.notEqual(bad.status, 0, 'hotovo must not pass');
     assert.match(bad.stderr, /previous turn of this thread ended "Stav: otázka".*true state is otázka/s);
@@ -260,13 +264,7 @@ test('hotovo guard (phase 2): the previous turn ended "otázka" and this one was
 test('hotovo guard (phase 2): the operator answers a dialog in a turn a mail bell started: hotovo passes', { skip }, async () => {
   const x = await exchange();
   try {
-    const id = x.ask();
-    x.fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    x.fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
-    x.fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Návrh je hotový.\n\n**Otázky na operátora:** Variant A alebo B? Odporúčam A.\n\nStav: otázka' });
-    assert.equal(x.a().last_end_state, 'otázka');
-    x.fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
-    assert.equal(x.a().turn_source, 'wake');
+    const id = askedThenBell(x);
     // The dialog of this turn returns only with the operator's answer.
     x.fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
     x.fx.hook('post-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] }, tool_response: {} });

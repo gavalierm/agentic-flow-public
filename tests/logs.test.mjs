@@ -4,9 +4,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
-import { normalizeCommand, sequencesFrom, rotateLines } from '../scripts/logs.mjs';
+import { normalizeCommand, sequencesFrom, rotateLines, isReadonly, readLog, bufferAppend } from '../scripts/logs.mjs';
 import { loadPolicy } from '../scripts/config.mjs';
-import { readLog, bufferAppend } from '../scripts/logs.mjs';
 const logView = (fx, name) => { const l = readLog(fx.brain, name, { rotationDays: 30 }); return l.length ? l.join('\n') + '\n' : ''; };
 
 const policy = loadPolicy(null);
@@ -41,7 +40,7 @@ test('P-030: only the maximal sequence is reported, not its sub-sequences', () =
   } finally { fx.cleanup(); }
 });
 
-test('normalization: program + first subcommand, compound commands split, read-only commands skipped', () => {
+test('P-030: normalization (program + first subcommand, compound commands and shell groups split, own scripts skipped), sequence building, line rotation', () => {
   assert.deepEqual(normalizeCommand('git fetch origin && git rebase -i origin/main && npm test -- --watch', policy), ['git fetch', 'git rebase', 'npm test']);
   assert.deepEqual(normalizeCommand('NODE_ENV=test node bin/x.mjs --flag | head -3', policy), ['node x.mjs', 'head']);
   // Workflow's own scripts never count toward a skill proposal (pilot: `node .../comms.mjs send` + `ack` flagged 5x).
@@ -49,6 +48,8 @@ test('normalization: program + first subcommand, compound commands split, read-o
   assert.deepEqual(normalizeCommand('node ${CLAUDE_PLUGIN_ROOT}/bin/topic.mjs claim a', policy), []);
   assert.deepEqual(normalizeCommand('node a.mjs && node b.mjs', policy), ['node a.mjs', 'node b.mjs'], 'different scripts are different procedures');
   assert.deepEqual(normalizeCommand('cd /tmp; ls -la; cat a.txt', policy), ['cd', 'ls', 'cat']);
+  // shell groups are skipped, the program of a $(...) assignment is kept
+  assert.deepEqual(normalizeCommand('out=$(npm test 2>&1) || { echo x; exit 1; }; ls', { logs: { subcommand_programs: ['npm'] } }), ['npm test', 'echo', 'ls']);
   assert.deepEqual(sequencesFrom(['a', 'b', 'c'], { min: 2, max: 5 }), ['a+b', 'b+c', 'a+b+c']);
   const old = `${new Date(Date.now() - 40 * 864e5).toISOString().slice(0, 10)} x s`;
   const fresh = `${new Date().toISOString().slice(0, 10)} y s`;
@@ -106,9 +107,7 @@ test('rotation: sequences older than 30 days are dropped; failures older than 7 
   } finally { fx.cleanup(); }
 });
 
-test('P-030: quoted text, heredoc bodies and reading commands are not sequence steps', async () => {
-  const { normalizeCommand, isReadonly } = await import('../scripts/logs.mjs');
-  const policy = JSON.parse(fs.readFileSync(new URL('../policy/policy.json', import.meta.url)));
+test('P-030: quoted text, heredoc bodies and reading commands are not sequence steps', () => {
   const steps = (c) => normalizeCommand(c, policy).filter((x) => !isReadonly(x, policy));
   assert.deepEqual(steps(`cd /x && git add -A && git commit -q -m "a; the b\n\nc; d" && git push`), ['git add', 'git commit', 'git push']);
   assert.deepEqual(steps(`grep -n x f; cd y && sed -n 1,5p a && sed -i s/a/b/ f`), ['sed']);
@@ -133,11 +132,6 @@ test('Stop commits logs locally and pushes only when the oldest unpushed commit 
     fx.hook('stop.mjs', { session_id: 'p2' });
     assert.equal(ahead(), 0, 'with the interval elapsed Stop pushes');
   } finally { fx.cleanup(); }
-});
-
-test('sequence normalization skips shell groups and keeps the program of $(...) assignments', async () => {
-  const { normalizeCommand } = await import('../scripts/logs.mjs');
-  assert.deepEqual(normalizeCommand('out=$(npm test 2>&1) || { echo x; exit 1; }; ls', { logs: { subcommand_programs: ['npm'] } }), ['npm test', 'echo', 'ls']);
 });
 
 test('two machines flush into their own day files: no conflict, the combined view has both, a drop only appends', () => {

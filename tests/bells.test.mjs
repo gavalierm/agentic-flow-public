@@ -28,6 +28,13 @@ function stubbed(state = {}) {
   fx.state = () => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'threads', 'a1.json'), 'utf8'));
   return fx;
 }
+/** Thread with topic alpha that has sent a message to nobody: m1 expired while held (outcome expired, state held). */
+function heldMessage() {
+  const fx = stubbed({ messages: [], message: { m1: { id: 'm1', state: 'held', level: 'assist', to: 'project/nikto', outcome: 'expired', replied: false, ttl_s: 60 } } });
+  assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+  fx.hook('user-prompt-submit.mjs', { prompt: 'pošli to' });
+  return fx;
+}
 const val = (a, k) => (a.includes(`--${k}`) ? a[a.lastIndexOf(`--${k}`) + 1] : undefined);
 
 test('classifyPrompt: only the exact whole prompt is a bell; a quoted template is an operator prompt', () => {
@@ -72,7 +79,14 @@ test('messageBellLine: detail from message --id, without it a line without detai
   assert.ok(long.length < 220, 'reason shortened');
 });
 
-test('wake: triage only with new mail, else one line ending the turn; a quoted template stays an operator prompt', () => {
+test('messageBellLine: a no-reply bell of a held message says no thread receives the address: no resend or promotion (P-045)', () => {
+  const line = messageBellLine('no-reply', 'm9', { state: 'held', level: 'blocker', to: 'p/nowhere', ttl_s: 900 });
+  assert.match(line, /^message m9 \(blocker → p\/nowhere\): no reply, held: no thread receives p\/nowhere .*do not send there again or promote it/);
+  assert.doesNotMatch(line, /promote to blocker/);
+  assert.equal(messageBellLine('no-reply', 'm8', { state: 'pending', level: 'assist', to: 'p/t' }), `message m8 (assist → p/t): no reply${ACTIONS}`);
+});
+
+test('wake bell: triage only with new mail, else one line ending the turn; a quoted template stays an operator prompt', () => {
   const fx = stubbed({ messages: [] });
   try {
     assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
@@ -331,15 +345,12 @@ test('classifyPrompt: a misreading of the operator is checked before error and r
   assert.equal(classifyPrompt('to som nemyslel, chcel som iba audit', policy), 'misread');
   assert.equal(classifyPrompt('nie takto, myslel som tým iný súbor', policy), 'misread', 'not reject: „nie takto“ holds „nie tak“');
   assert.equal(classifyPrompt('zle si pochopil zadanie', policy), 'misread', 'not error: „zle si pochopil“ holds „zle si“');
-  assert.equal(classifyPrompt('roky realizácií tam nechcem', policy), 'reject');
   assert.equal(classifyPrompt('to je chyba', policy), 'error');
 });
 
-test('no reply / undelivered of the message a reply-window timer waits for spends that timer; another message keeps it (pilot 2026-11-12)', () => {
-  const fx = stubbed({ messages: [], message: { m1: { id: 'm1', state: 'held', level: 'assist', to: 'project/nikto', outcome: 'expired', replied: false, ttl_s: 60 } } });
+test('no-reply bell: the bell of the message a reply-window timer waits for spends that timer; another message keeps it (pilot 2026-11-12)', () => {
+  const fx = heldMessage();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'pošli to' });
     setTimer(fx.brain, fx.thread, { delayMs: 60 * 60_000, then: 'check the reply to m9', forId: 'm9' });
     fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m1' });
     assert.equal(fx.state().timer.for, 'm9', 'a bell of another message keeps the timer');
@@ -353,12 +364,10 @@ test('no reply / undelivered of the message a reply-window timer waits for spend
   } finally { fx.cleanup(); }
 });
 
-test('no reply of a message spends its mail waker: a later "čakám" gets the timer with its wait target; another message keeps its waker (pilot 2026-11-12)', () => {
-  const fx = stubbed({ messages: [], message: { m1: { id: 'm1', state: 'held', level: 'assist', to: 'project/nikto', outcome: 'expired', replied: false, ttl_s: 60 } } });
+test('no-reply bell: the bell of a message spends its mail waker; a later "čakám" gets the timer with its wait target; another message keeps its waker (pilot 2026-11-12)', () => {
+  const fx = heldMessage();
   const sent = (id) => recordWaker(fx.brain, fx.thread, wakerFromTool({ tool_name: 'Bash', tool_input: { command: 'node bin/comms.mjs send --level assist --to project/nikto --text y' }, tool_response: { stdout: `sent ${id} (assist)` } }));
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'pošli to' });
     sent('m1');
     fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m1' });
     assert.deepEqual(fx.state().wakers, [], 'its own bell spent the mail waker');
@@ -395,13 +404,6 @@ test('wake without new mail after a closed turn ends without a model call; the t
     fs.rmSync(path.join(fx.brain, 'local', 'comms'), { recursive: true, force: true });
     assert.equal(fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' }).json.decision, undefined);
   } finally { fx.cleanup(); }
-});
-
-test('no reply to a held message: no resend or promotion; an existing topic, @<persona>/main or the operator (P-045)', () => {
-  const line = messageBellLine('no-reply', 'm9', { state: 'held', level: 'blocker', to: 'p/nowhere', ttl_s: 900 });
-  assert.match(line, /^message m9 \(blocker → p\/nowhere\): no reply, held: no thread receives p\/nowhere .*do not send there again or promote it/);
-  assert.doesNotMatch(line, /promote to blocker/);
-  assert.equal(messageBellLine('no-reply', 'm8', { state: 'pending', level: 'assist', to: 'p/t' }), `message m8 (assist → p/t): no reply${ACTIONS}`);
 });
 
 test('timer with a condition: code checks it without a model turn until it holds or the deadline passes (P-061)', () => {

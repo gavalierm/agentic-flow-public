@@ -18,18 +18,6 @@ test('write commits with the script tag and pushes to origin', () => {
   } finally { fx.cleanup(); }
 });
 
-test('same file changed on both sides is a disagreement: not merged, reported', () => {
-  const fx = setup({ second: true });
-  try {
-    assert.equal(fx.run('brain.mjs', ['write', 'memory/service-x.md', '--message', 'a', '--content', memoryRecord('service-x', 'from A')]).status, 0);
-    const r = fx.runB('brain.mjs', ['write', 'memory/service-x.md', '--message', 'b', '--content', memoryRecord('service-x', 'from B')]);
-    assert.equal(r.status, 0, r.out);
-    assert.match(r.stdout, /conflict: memory\/service-x\.md/);
-    assert.match(r.stdout, /unpushed: 1/);
-    assert.match(fx.git(fx.origin, 'show', 'main:memory/service-x.md'), /from A/);
-  } finally { fx.cleanup(); }
-});
-
 test('logs/*.log changed on both sides merge by union', () => {
   const fx = setup({ second: true });
   try {
@@ -119,11 +107,15 @@ test('same change made on two machines is no disagreement', () => {
   } finally { fx.cleanup(); }
 });
 
-test('disagreement names the exact resolve command; resolve --keep local settles it and pushes', () => {
+test('same file changed on both sides is a disagreement: not merged, reported with the exact resolve command; resolve --keep local settles it and pushes', () => {
   const fx = setup({ second: true });
   try {
     assert.equal(fx.run('brain.mjs', ['write', 'memory/service-x.md', '--message', 'a', '--content', memoryRecord('service-x', 'from A')]).status, 0);
     const r = fx.runB('brain.mjs', ['write', 'memory/service-x.md', '--message', 'b', '--content', memoryRecord('service-x', 'from B')]);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.stdout, /conflict: memory\/service-x\.md/);
+    assert.match(r.stdout, /unpushed: 1/);
+    assert.match(fx.git(fx.origin, 'show', 'main:memory/service-x.md'), /from A/);
     assert.match(r.stdout, /settle each file: node \S+\/bin\/brain\.mjs resolve memory\/service-x\.md --keep local\|remote/);
     const s = fx.runB('brain.mjs', ['resolve', 'memory/service-x.md', '--keep', 'local']);
     assert.equal(s.status, 0, s.out);

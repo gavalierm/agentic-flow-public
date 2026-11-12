@@ -28,7 +28,7 @@ function owned() {
   return { fx, repo };
 }
 
-test('topic_owned: only the holder of the topic writes or commits in the owned repo; reads pass; others get the mail route', () => {
+test('P-012: topic_owned: only the holder of the topic writes or commits in the owned repo; reads pass; others get the mail route', () => {
   const { fx, repo } = owned();
   try {
     const other = { env: { WORKFLOW_THREAD_ID: 'b2' } };
@@ -72,7 +72,8 @@ test('secrets: a token or credential written outside local/ is denied with the l
   } finally { fx.cleanup(); }
 });
 
-test('persona: removing an ignored leftover (.scratch/ after a migration) asks instead of the brain deny (Carol 2026-11-02)', () => {
+// Carol 2026-11-02: .scratch/ left after a migration was denied as brain data instead of asking.
+test('P-018: persona: removing an ignored leftover (.scratch/) asks instead of the brain deny', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-owned-'));
   try {
     const dir = path.join(root, 'carol');

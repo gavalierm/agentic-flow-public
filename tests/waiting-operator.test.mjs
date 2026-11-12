@@ -22,7 +22,7 @@ function stubbed(state = {}) {
 
 const ASK = { tool_name: 'AskUserQuestion', tool_input: { questions: [] } };
 
-test('PreToolUse AskUserQuestion flags the open turn waiting_operator (bound to opened_at); PostToolUse clears it', () => {
+test('P-061: PreToolUse AskUserQuestion flags the open turn waiting_operator (bound to opened_at); PostToolUse clears it', () => {
   const fx = stubbed({ opened_at: '2026-11-11T10:00:00.000Z' });
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
@@ -42,7 +42,7 @@ test('PreToolUse AskUserQuestion flags the open turn waiting_operator (bound to 
   } finally { fx.cleanup(); }
 });
 
-test('an outage or an older mail client never blocks the dialog', () => {
+test('P-061: an outage or an older mail client never blocks the dialog', () => {
   const fx = stubbed({ down: true });
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
@@ -52,7 +52,7 @@ test('an outage or an older mail client never blocks the dialog', () => {
   } finally { fx.cleanup(); }
 });
 
-test('integration with the real mail: the flag lands on the open turn record and goes away with the dialog', { skip: commsClient() ? false : 'agentic-comms not found' }, async () => {
+test('P-061: integration with the real mail: the flag lands on the open turn record and goes away with the dialog', { skip: commsClient() ? false : 'agentic-comms not found' }, async () => {
   const fx = setup();
   const comms = await startComms(fx, { senders: ['alice'] });
   try {

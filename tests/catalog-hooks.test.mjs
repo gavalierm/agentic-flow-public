@@ -65,18 +65,6 @@ test('boot: compact does not repeat an unchanged catalog line; a change brings i
   } finally { fx.cleanup(); }
 });
 
-test('boot: a repo without a source gets no catalog line, no directory and no gitignore change', () => {
-  const fx = catalogFixture();
-  try {
-    fs.rmSync(path.join(fx.project, 'local', 'workflow.json'));
-    const r = fx.hook('session-start.mjs', { source: 'startup' });
-    assert.equal(catalogLines(r.context).length, 0);
-    assert.equal(fs.existsSync(path.join(fx.project, 'local', 'catalog')), false);
-    const gi = path.join(fx.project, '.gitignore');
-    assert.doesNotMatch(fs.existsSync(gi) ? fs.readFileSync(gi, 'utf8') : '', /catalog/);
-  } finally { fx.cleanup(); }
-});
-
 test('boot: the scan stays within the hook budget on a big source and the next scan continues', () => {
   const fx = catalogFixture({ files: false, extra: { scan: { hook_budget_ms: 1, hash_budget_ms: 1 } } });
   try {
@@ -88,6 +76,23 @@ test('boot: the scan stays within the hook budget on a big source and the next s
     let total = 0;
     for (let i = 0; i < 40 && total < 40; i++) { fx.hook('session-start.mjs', { source: 'startup' }); total = fx.indexRows().length; }
     assert.equal(total, 40, 'repeated starts finish the listing');
+  } finally { fx.cleanup(); }
+});
+
+test('a repo without a source: no catalog line, directory or gitignore change at boot; no deny and no reminder in PreToolUse', () => {
+  const fx = catalogFixture();
+  try {
+    fs.rmSync(path.join(fx.project, 'local', 'workflow.json'));
+    const r = fx.hook('session-start.mjs', { source: 'startup' });
+    assert.equal(catalogLines(r.context).length, 0);
+    assert.equal(fs.existsSync(path.join(fx.project, 'local', 'catalog')), false);
+    const gi = path.join(fx.project, '.gitignore');
+    assert.doesNotMatch(fs.existsSync(gi) ? fs.readFileSync(gi, 'utf8') : '', /catalog/);
+    assert.deepEqual(pre(fx, 'Bash', { command: `ls ${fx.data}` }).json, {});
+    assert.equal(pre(fx, 'Bash', { command: `ls ${fx.data}` }).context, '');
+    // outside the project the domain rule decides (as before the catalog); the catalog adds nothing to it
+    const w = pre(fx, 'Write', { file_path: path.join(fx.data, 'x.csv'), content: 'x' });
+    assert.doesNotMatch(w.json.hookSpecificOutput?.permissionDecisionReason || '', /zdroja dát|katalóg/);
   } finally { fx.cleanup(); }
 });
 
@@ -136,18 +141,6 @@ test('PreToolUse: writes into a read-only source are denied (Write, Edit, redire
   } finally { fx.cleanup(); }
 });
 
-test('PreToolUse: no deny and no reminder for a repo without a source', () => {
-  const fx = catalogFixture();
-  try {
-    fs.rmSync(path.join(fx.project, 'local', 'workflow.json'));
-    assert.deepEqual(pre(fx, 'Bash', { command: `ls ${fx.data}` }).json, {});
-    assert.equal(pre(fx, 'Bash', { command: `ls ${fx.data}` }).context, '');
-    // outside the project the domain rule decides (as before the catalog); the catalog adds nothing to it
-    const w = pre(fx, 'Write', { file_path: path.join(fx.data, 'x.csv'), content: 'x' });
-    assert.doesNotMatch(w.json.hookSpecificOutput?.permissionDecisionReason || '', /zdroja dát|katalóg/);
-  } finally { fx.cleanup(); }
-});
-
 test('PreToolUse reminder: once per session, only Bash ls/find/grep/rg/cat over the source, not for Read/Glob/Grep or other paths', () => {
   const fx = catalogFixture();
   try {
@@ -166,21 +159,28 @@ test('PreToolUse reminder: once per session, only Bash ls/find/grep/rg/cat over 
   } finally { fx.cleanup(); }
 });
 
-test('PreToolUse reminder: other readers, a new session, switched off by catalog.reminder, and not before the source has an index', () => {
+test('PreToolUse reminder: not before the source has an index; switched off by catalog.reminder', () => {
   const fx = catalogFixture();
   try {
     assert.equal(pre(fx, 'Bash', { command: `ls ${fx.data}` }).context, '', 'no index yet: nothing to recommend');
     scanAll(fx.cfg());
-    for (const cmd of [`find ${fx.data} -name '*.csv'`, `rg Acme ${fx.data}`, `cat ${fx.data}/notes/readme.txt`]) {
-      const t = fx.thread;
-      fx.thread = t;
-      const fresh = catalogFixture();
-      try {
-        scanAll(fresh.cfg());
-        assert.match(pre(fresh, 'Bash', { command: cmd.replaceAll(fx.data, fresh.data) }).context, /^katalóg: /, cmd);
-      } finally { fresh.cleanup(); }
-    }
     fx.config({ sources: { data: { path: fx.data } }, reminder: false });
     assert.equal(pre(fx, 'Bash', { command: `ls ${fx.data}` }).context, '');
   } finally { fx.cleanup(); }
 });
+
+// every case runs in a fresh fixture, i.e. a new session
+const readerCases = [
+  ['find', (d) => `find ${d} -name '*.csv'`],
+  ['rg', (d) => `rg Acme ${d}`],
+  ['cat', (d) => `cat ${d}/notes/readme.txt`],
+];
+for (const [name, cmd] of readerCases) {
+  test(`PreToolUse reminder: Bash ${name} over the source gets the reminder in a new session`, () => {
+    const fx = catalogFixture();
+    try {
+      scanAll(fx.cfg());
+      assert.match(pre(fx, 'Bash', { command: cmd(fx.data) }).context, /^katalóg: /);
+    } finally { fx.cleanup(); }
+  });
+}

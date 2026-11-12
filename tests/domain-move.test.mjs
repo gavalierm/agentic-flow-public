@@ -48,7 +48,8 @@ function personaFx() {
   return { base, home, domain, dir, domains, env, run, cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
 
-test('domain move: plan, move with symlink, history, trust and brain paths, then finish swaps the history (carol 2026-11-09)', () => {
+// Carol 2026-11-09: a persona created in ~/agentic had to move under the saved projects root.
+test('domain move: plan, move with symlink, history, trust and brain paths, then finish swaps the history', () => {
   const f = personaFx();
   try {
     let r = f.run(f.domain, '--dry');

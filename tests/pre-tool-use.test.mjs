@@ -3,7 +3,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { setup } from './helpers.mjs';
+import { accountEmailCall, foregroundWait, gitBashPath, recursiveModeChange, shellWriteTargets } from '../hooks/pre-tool-use.mjs';
+
+const MAIL = 'owner@example.test';
 
 test('writes into brain are denied; tracked clean files pass silently; untracked or ignored targets ask', () => {
   const fx = setup();
@@ -234,5 +238,127 @@ test('P-052, audit 2.5a: Write into the harness scratchpad of this session goes 
     const other = '9a8b7c6d-1111-4222-8333-944455556666';
     r = fx.hook('pre-tool-use.mjs', { session_id: sid, tool_name: 'Write', tool_input: { file_path: path.join(pad(other), 'b.md'), content: 'x' } }, tmp);
     assert.equal(r.json.hookSpecificOutput?.permissionDecision, 'deny');
+  } finally { fx.cleanup(); }
+});
+
+// Regression 2026-11-03: a recursive chown/chmod over the project or home.
+test('recursive chown/chmod asks, also inside sudo bash -c; absolute scratch paths pass', () => {
+  const s = '/p/scratch';
+  assert.ok(recursiveModeChange(`sudo bash -c 'sed -i s/a/b/ .git/config\nchown -R u:u .'`, '/srv/x', s));
+  assert.ok(recursiveModeChange('chmod -R 755 ~/agenti', '/srv/x', s));
+  assert.ok(recursiveModeChange('sudo chown --recursive u:u /srv/u', '/', s));
+  assert.ok(recursiveModeChange('cd /p/scratch && chown -R u .', '/', s));
+  assert.equal(recursiveModeChange('chown u:u /srv/u/.git/config', '/', s), null, 'one file is not recursive');
+  assert.equal(recursiveModeChange('chmod -R u+w /p/scratch/clone', '/', s), null);
+  assert.equal(recursiveModeChange('grep -R chown src', '/', s), null);
+});
+
+// P-061: an agent that waits arms a waker; foreground waiting is denied (Bob 2026-11-01 waited on the operator).
+test('P-061: foregroundWait: sleeps, loops and watch in the foreground; data and short pauses pass', () => {
+  assert.equal(foregroundWait('sleep 30'), 'sleep 30');
+  assert.equal(foregroundWait('sleep 2m && ls'), 'sleep 2m');
+  assert.equal(foregroundWait('until [ -s f ]; do sleep 5; done'), 'loop with sleep');
+  assert.equal(foregroundWait('watch -n 5 ls'), 'watch');
+  assert.equal(foregroundWait("bash -c 'sleep 60'"), 'sleep 60');
+  assert.equal(foregroundWait('sleep 3; ls'), null);
+  assert.equal(foregroundWait("comms send --text 'sleep 60 is bad'"), null);
+  assert.equal(foregroundWait('cat <<EOF\nsleep 99\nEOF'), null);
+});
+
+test('P-061: foregroundWait: a loop sent to the background with & or bounded by timeout N (N <= 10 s) is not waiting; the real wait stays denied', () => {
+  // allowed shapes (audit 2.5 b: 4 of 20 denials in the logs)
+  assert.equal(foregroundWait("nohup bash -c 'while true; do node bin/wake.mjs run --instance pilot; sleep 2; done' >> log 2>&1 &"), null);
+  assert.equal(foregroundWait('(while true; do node w.mjs; sleep 2; done >> pilot-wake.log 2>&1 &) ; echo started'), null);
+  assert.equal(foregroundWait("timeout 8 sh -c 'until grep -q released f; do sleep 1; done'"), null);
+  assert.equal(foregroundWait("timeout 10s bash -c 'while true; do sleep 1; done'"), null);
+  // real waiting stays denied
+  assert.equal(foregroundWait("timeout 60 sh -c 'until grep -q released f; do sleep 1; done'"), 'loop with sleep');
+  assert.equal(foregroundWait('while true; do sleep 2; done && echo ok'), 'loop with sleep');
+  assert.equal(foregroundWait('while true; do sleep 2; done; ls &'), 'loop with sleep');
+  assert.equal(foregroundWait('until [ -s f ]; do sleep 5; done; while true; do sleep 2; done &'), 'loop with sleep');
+});
+
+test('P-061: pre-tool-use denies a foreground wait, allows it in the background', () => {
+  const fx = setup();
+  try {
+    const hook = (tool_input) => fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input }).json;
+    const deny = hook({ command: 'until [ -s /tmp/x ]; do sleep 30; done' });
+    assert.equal(deny.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(deny.hookSpecificOutput.permissionDecisionReason, /P-061/);
+    assert.notEqual(hook({ command: 'until [ -s /tmp/x ]; do sleep 30; done', run_in_background: true }).hookSpecificOutput?.permissionDecision, 'deny');
+  } finally { fx.cleanup(); }
+});
+
+// agentic-flow-public#15: `git add -f .claude/skills` staged the ignored .workflow-generated.json; a forced add names files.
+test('git add -f of a folder with ignored files is denied, a named file and a plain add pass', () => {
+  const fx = setup();
+  try {
+    const p = fx.project;
+    if (!fs.existsSync(path.join(p, '.git'))) spawnSync('git', ['init', '-q'], { cwd: p });
+    const skills = path.join(p, '.claude', 'skills');
+    fs.mkdirSync(path.join(skills, 'a'), { recursive: true });
+    fs.writeFileSync(path.join(skills, 'a', 'SKILL.md'), 'x\n');
+    fs.writeFileSync(path.join(skills, '.workflow-generated.json'), '{}\n');
+    fs.appendFileSync(path.join(p, '.gitignore'), '\n.claude/skills/.workflow-generated.json\n');
+    const run = (command) => fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command } });
+    for (const c of ['git add -f .claude/skills', `git -C ${p} add --force .claude`, 'git add .claude && git add -f .claude/skills']) {
+      const r = run(c);
+      assert.equal(r.json.hookSpecificOutput?.permissionDecision, 'deny', `${c}: ${r.stderr}`);
+      assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /adds ignored files too \(\.claude\/skills\/\.workflow-generated\.json\)/);
+    }
+    for (const c of ['git add .claude/skills', 'git add -f .claude/skills/a/SKILL.md']) {
+      assert.doesNotMatch(JSON.stringify(run(c).json || {}), /adds ignored files/, c);
+    }
+  } finally { fx.cleanup(); }
+});
+
+// Issue #28: Git Bash on Windows gives /d/<projekt>/... ; the write check must see D:/... (P-052).
+test('P-052: Git Bash /<drive>/ paths become <DRIVE>:/ on win32 only', () => {
+  assert.equal(gitBashPath('/d/proj/scratch/x.md', 'win32'), 'D:/proj/scratch/x.md');
+  assert.equal(gitBashPath('/c', 'win32'), 'C:/');
+  assert.equal(gitBashPath('/d/proj/scratch/x.md', 'linux'), '/d/proj/scratch/x.md', 'a POSIX path is unchanged off Windows');
+  assert.equal(gitBashPath('/home/u/x', 'win32'), '/home/u/x', 'a longer first segment is not a drive');
+  assert.equal(gitBashPath('D:\\proj\\x', 'win32'), 'D:\\proj\\x');
+});
+
+test('P-052: a Git Bash scratch path resolves inside the project scratch on win32', () => {
+  const abs = path.win32.resolve('C:\\Users\\u\\cwd', gitBashPath('/d/proj/scratch/x.md', 'win32'));
+  assert.equal(abs, 'D:\\proj\\scratch\\x.md');
+});
+
+test('P-052: a Bash write to a Git Bash /d/ path is checked as D:/ on win32 (shellWriteTargets, bashTargets)', () => {
+  const real = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  try {
+    const w = shellWriteTargets('echo x > /d/proj/scratch/a.md', 'D:/proj').map((t) => t.path);
+    assert.ok(w.some((p) => p.includes('D:/proj/scratch/a.md')), JSON.stringify(w));
+    assert.ok(!w.some((p) => p.startsWith('/d/')), 'no Git Bash form left');
+  } finally { Object.defineProperty(process, 'platform', real); }
+});
+
+// Claude Code's built-in privacy check asks the operator when a shell or web call holds the account email next to a
+// network word; the workflow tells the agent first, once per identical call (2026-11-04).
+test('account email: the account email next to a network word is flagged like the built-in check', () => {
+  assert.equal(accountEmailCall('Bash', { command: `printf 'To: ${MAIL}' | ssh -T r@x` }, MAIL), true);
+  assert.equal(accountEmailCall('Bash', { command: `cat > a.py <<'EOF'\nH="http://127.0.0.1"\nTO="Owner@Example.test"\nEOF` }, MAIL), true);
+  assert.equal(accountEmailCall('WebFetch', { url: `https://x.test/?m=owner%40example.test` }, MAIL), true);
+  assert.equal(accountEmailCall('Bash', { command: `sed -i 's/${MAIL}/x/' a.txt` }, MAIL), false, 'no network word');
+  assert.equal(accountEmailCall('Bash', { command: 'ssh r@x uptime' }, MAIL), false, 'no email');
+  assert.equal(accountEmailCall('Write', { file_path: 'a.py', content: `H="https://x"\n${MAIL}` }, MAIL), false, 'Write is not checked');
+  assert.equal(accountEmailCall('Bash', { command: `ssh r@x ${MAIL}` }, ''), false, 'no signed-in email');
+});
+
+test('account email: the hook denies the first call and lets the same call through on retry', () => {
+  const fx = setup();
+  try {
+    const cfg = path.join(fx.root, 'cfg');
+    fs.mkdirSync(cfg);
+    fs.writeFileSync(path.join(cfg, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: MAIL } }));
+    const call = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `curl -d 'to=${MAIL}' http://127.0.0.1:9/x` } };
+    const first = fx.hook('pre-tool-use.mjs', call, { env: { CLAUDE_CONFIG_DIR: cfg } });
+    assert.equal(first.json.hookSpecificOutput?.permissionDecision, 'deny', first.stderr);
+    assert.match(first.json.hookSpecificOutput.permissionDecisionReason, /account email/);
+    const again = fx.hook('pre-tool-use.mjs', call, { env: { CLAUDE_CONFIG_DIR: cfg } });
+    assert.doesNotMatch(JSON.stringify(again.json), /account email/);
   } finally { fx.cleanup(); }
 });

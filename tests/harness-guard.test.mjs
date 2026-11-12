@@ -11,7 +11,7 @@ const decision = (r) => r.json.hookSpecificOutput?.permissionDecision;
 const reason = (r) => r.json.hookSpecificOutput?.permissionDecisionReason || '';
 const bash = (fx, command) => fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } });
 
-test('shell writes into brain are refused: sed -i, tee and redirects; a new file in local/ and a read of brain pass', () => {
+test('P-013: shell writes into brain are refused: sed -i, tee and redirects; a new file in local/ and a read of brain pass', () => {
   const fx = setup();
   try {
     const tracked = path.join(fx.brain, fx.git(fx.brain, 'ls-files').split('\n').find((f) => f.endsWith('.md')));
@@ -28,7 +28,7 @@ test('shell writes into brain are refused: sed -i, tee and redirects; a new file
   } finally { fx.cleanup(); }
 });
 
-test('a shell write into .claude/skills/ of the project is refused: the skills are generated from brain (P-017)', () => {
+test('P-017: a shell write into .claude/skills/ of the project is refused: the skills are generated from brain', () => {
   const fx = setup();
   try {
     const r = bash(fx, `mkdir -p .claude/skills/x && echo x > ${path.join(fx.project, '.claude', 'skills', 'x', 'SKILL.md')}`);
@@ -37,7 +37,7 @@ test('a shell write into .claude/skills/ of the project is refused: the skills a
   } finally { fx.cleanup(); }
 });
 
-test('no tool writes into ~/.claude, the global path of the harness (P-014)', () => {
+test('P-014: no tool writes into ~/.claude, the global path of the harness', () => {
   const settings = path.join(os.homedir(), '.claude', 'settings.json');
   // One fixture per call: after a refusal the same target stays closed for the turn with a P-054 reason.
   for (const input of [{ tool_name: 'Write', tool_input: { file_path: settings, content: '{}' } }, { tool_name: 'Bash', tool_input: { command: `sed -i 's/a/b/' ${settings}` } }]) {

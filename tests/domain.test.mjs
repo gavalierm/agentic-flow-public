@@ -95,7 +95,8 @@ test('domain: allow_outside paths pass; the marker itself is never written; sudo
   } finally { a.cleanup(); }
 });
 
-test('P-018: a directory a shell command creates (program side effect) is the thread\'s own and is removed without asking (alice 2026-11-04: rm -rf .wrangler)', () => {
+// alice 2026-11-04: rm -rf .wrangler asked, though the directory was a side effect of the thread's own wrangler run.
+test('P-018: a directory a shell command creates (program side effect) is the thread\'s own and is removed without asking', () => {
   const fx = setup();
   try {
     const call = (id, command) => ({ tool_name: 'Bash', tool_use_id: id, tool_input: { command } });
@@ -113,7 +114,8 @@ test('P-018: a directory a shell command creates (program side effect) is the th
   } finally { fx.cleanup(); }
 });
 
-test('P-018: thread state a workflow script of the command creates for another thread id is the thread\'s own (alice 2026-11-12: pilot-test-sender.json waited 3.6 h overnight)', () => {
+// alice 2026-11-12: pilot-test-sender.json waited 3.6 h overnight for an approval of the thread's own file.
+test('P-018: thread state a workflow script of the command creates for another thread id is the thread\'s own', () => {
   // The pilot is another project with its own brain, outside the domain but allowed (alice: allow_outside ~/agentic).
   const pilot = setup({ brainName: 'pilot-brain' });
   const d = domainFx([pilot.root]);
@@ -156,7 +158,8 @@ test('shellWrites: -o of find and test is the logical OR, not an output file; gc
   assert.deepEqual(shellWrites('curl -s -o out.json https://x', '/w'), ['/w/out.json']);
 });
 
-test('shellWrites: temp dir variables, mktemp and PowerShell write cmdlets resolve to their target (alice 2026-11-07)', () => {
+// alice 2026-11-07: temp dir variables and PowerShell cmdlets slipped past the write check.
+test('shellWrites: temp dir variables, mktemp and PowerShell write cmdlets resolve to their target', () => {
   const t = os.tmpdir();
   assert.deepEqual(shellWrites('echo x > ${TMPDIR}/a', '/w'), [path.join(t, 'a')]);
   assert.deepEqual(shellWrites('echo x > %TEMP%/a.bat', '/w'), [path.join(t, 'a.bat')]);
@@ -279,7 +282,8 @@ test('resolveProject: a session project that became a domain root resolves to th
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('domain: a write refused outside a domain that lies outside the saved projects root names the move as the operator step (carol 2026-11-09)', () => {
+// carol 2026-11-09
+test('domain: a write refused outside a domain that lies outside the saved projects root names the move as the operator step', () => {
   const d = domainFx();
   try {
     const rootFile = path.join(d.outside, 'projects-root');
@@ -297,7 +301,8 @@ test('domain: a write refused outside a domain that lies outside the saved proje
   } finally { d.cleanup(); }
 });
 
-test('shellWriteTargets: one tokenizer; quotes, heredocs and substitutions; known and guessed output options (hooks review C3)', () => {
+// hooks review C3: one tokenizer for all write checks.
+test('shellWriteTargets: quotes, heredocs and substitutions; known and guessed output options', () => {
   const w = (c) => shellWriteTargets(c, '/w', { HOME: '/h' });
   assert.deepEqual(w("cat > out.txt <<'EOF'\n> /etc/x; rm -rf /\nEOF\necho ok"), [{ path: '/w/out.txt', sure: true }], 'heredoc body skipped');
   assert.deepEqual(w("echo 'a; b > /etc/q'; grep -o 'x' f.txt"), [], 'a quoted ; and > are data');

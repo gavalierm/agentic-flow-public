@@ -8,6 +8,7 @@ import { setup } from './helpers.mjs';
 import { bashEdits } from '../hooks/pre-tool-use.mjs';
 
 const decision = (r) => r.json.hookSpecificOutput?.permissionDecision || null;
+const askOf = (fx) => (command) => decision(fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }));
 
 function repo(fx, name, ignoreScratch = true) {
   const dir = path.join(fx.root, name);
@@ -98,6 +99,7 @@ test('bashEdits: in-place edits are targets (also for topic_owned), plain sed is
 test('git restore / checkout -- of the thread\'s own edits does not ask; other dirty files or other history ops do', () => {
   const fx = setup();
   try {
+    const ask = askOf(fx);
     const f = path.join(fx.project, 'own.txt');
     const g = path.join(fx.project, 'other.txt');
     fs.writeFileSync(f, '1\n');
@@ -108,7 +110,6 @@ test('git restore / checkout -- of the thread\'s own edits does not ask; other d
     fx.hook('pre-tool-use.mjs', edit);
     fs.writeFileSync(f, '2\n');
     fx.hook('post-tool-use.mjs', edit);
-    const ask = (command) => decision(fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }));
     assert.equal(ask('git restore own.txt'), null);
     assert.equal(ask(`git -C ${fx.project} checkout -- own.txt`), null);
     assert.equal(ask('git restore .'), null, 'only own edits are dirty');
@@ -145,7 +146,7 @@ test('a file a script changed from clean (python heredoc in another repo) is own
 test('git history text inside a heredoc written to a file does not ask; a heredoc run by a shell does', () => {
   const fx = setup();
   try {
-    const ask = (command) => decision(fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }));
+    const ask = askOf(fx);
     assert.equal(ask(`mkdir -p scratch && cat > scratch/release.sh <<'EOF'\ngit checkout -- package.json\ngit reset --hard\nEOF\nsh -n scratch/release.sh`), null, 'script text is data');
     assert.equal(ask(`python3 - <<'EOF'\nprint("git reset --hard")\nEOF`), null);
     assert.equal(ask(`bash <<'EOF'\ngit reset --hard\nEOF`), 'ask', 'a shell runs the body');
@@ -156,7 +157,7 @@ test('git history text inside a heredoc written to a file does not ask; a heredo
 test('git history text in quoted arguments (commit message, topic subject) does not ask; quoted text run by a shell does', () => {
   const fx = setup();
   try {
-    const ask = (command) => decision(fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }));
+    const ask = askOf(fx);
     assert.equal(ask(`git commit -qam "a later git restore of x\n\ngit checkout -- y" --allow-empty`), null, 'commit message');
     assert.equal(ask(`node topic.mjs create t --subject "git restore bez potvrdenia"`), null, 'topic subject');
     assert.equal(ask(`echo 'git reset --hard' && ls`), null);
@@ -174,7 +175,7 @@ test('a path set in a variable earlier in the command is resolved (T=~/repo; cd 
   assert.deepEqual(bashTargets(`T=/r/tool; mkdir -p $T && cd $T && cat > gen.mjs <<'EOF'\nx\nEOF`, '/w'), ['/r/tool/gen.mjs']);
 });
 
-test('a recurring task runs a script: schedule_task / recurring CronCreate without a script in the prompt are denied (P-030)', () => {
+test('P-030: a recurring task runs a script: schedule_task / recurring CronCreate without a script in the prompt are denied', () => {
   const fx = setup();
   try {
     const d = (tool, input) => decision(fx.hook('pre-tool-use.mjs', { tool_name: tool, tool_input: input }));

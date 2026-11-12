@@ -20,7 +20,7 @@ test('waitingClaim (handover steps): Slovak and English waiting claims, with and
     assert.equal(waitingClaim(t), null, String(t));
 });
 
-test('waitOnlyStep, parseDelay, wakerFromTool', () => {
+test('waker.mjs: waitOnlyStep, parseDelay, wakerFromTool and validWaker classify steps, delays and tool calls', () => {
   assert.ok(waitOnlyStep('Čakať na hlásenie témy carol. Potom vydanie.'));
   assert.ok(waitOnlyStep('Operátor rozhodne o presune.'));
   assert.equal(waitOnlyStep('Vydať v0.9.29.'), null);
@@ -91,7 +91,7 @@ test('Stop: "Stav: čakám" without a waker passes and code arms the timer with 
   } finally { fx.cleanup(); }
 });
 
-test('UserPromptSubmit: a fired timer names its step; the update notice re-injects the rules once', () => {
+test('UserPromptSubmit: a fired timer names its step and is spent', () => {
   const fx = setup();
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'začni' });
@@ -101,13 +101,6 @@ test('UserPromptSubmit: a fired timer names its step; the update notice re-injec
     assert.match(r.context, /timer fired .*: check the reply to m7/);
     assert.equal(stateOf(fx).timer, undefined);
   } finally { fx.cleanup(); }
-  assert.equal(updateNotice({ plugin_sha: 'aaa' }, { sha: 'aaa', version: '1' }), null);
-  const n = updateNotice({ plugin_sha: 'aaa' }, { sha: 'bbb', version: '2' }, () => ['comms', 'topic']);
-  assert.ok(n.line); assert.equal(n.patch.plugin_sha, 'bbb');
-  // Tokens (operator 2026-11-03): only the changed skills are named; none changed says so; no diff falls back to all.
-  assert.match(n.line, /changed skills: comms, topic: read one again/);
-  assert.match(updateNotice({ plugin_sha: 'aaa' }, { sha: 'bbb' }, () => []).line, /no skill changed/);
-  assert.match(updateNotice({ plugin_sha: 'aaa' }, { sha: 'bbb' }, () => null).line, /changed skills: all/);
 });
 
 test('PreToolUse: AskUserQuestion passes in every turn, so T3 shows "Awaiting Input"; the dialog time is kept (operator 2026-11-08)', () => {
@@ -163,7 +156,14 @@ test('changedSkills: names the skills a real update changed (v0.8.18 -> v0.8.19 
   assert.equal(changedSkills('nope1', 'nope2', path.join(import.meta.dirname, '..')), null);
 });
 
-test('UserPromptSubmit: an update with unchanged rules sends the update line without the rules block (tokens)', () => {
+test('update notice: only the changed skills are named; an update with unchanged rules sends the update line without the rules block (tokens)', () => {
+  assert.equal(updateNotice({ plugin_sha: 'aaa' }, { sha: 'aaa', version: '1' }), null);
+  const n = updateNotice({ plugin_sha: 'aaa' }, { sha: 'bbb', version: '2' }, () => ['comms', 'topic']);
+  assert.ok(n.line); assert.equal(n.patch.plugin_sha, 'bbb');
+  // Tokens (operator 2026-11-03): only the changed skills are named; none changed says so; no diff falls back to all.
+  assert.match(n.line, /changed skills: comms, topic: read one again/);
+  assert.match(updateNotice({ plugin_sha: 'aaa' }, { sha: 'bbb' }, () => []).line, /no skill changed/);
+  assert.match(updateNotice({ plugin_sha: 'aaa' }, { sha: 'bbb' }, () => null).line, /changed skills: all/);
   const fx = setup();
   try {
     fx.hook('session-start.mjs', { source: 'startup' });

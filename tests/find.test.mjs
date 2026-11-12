@@ -6,7 +6,7 @@ import path from 'node:path';
 import { setup } from './helpers.mjs';
 import { find, findWords, findRelatesTo, findSimilar } from '../scripts/find.mjs';
 
-test('key, alias and normalized name match; similar key does not; --relates-to finds decisions', () => {
+test('P-031: find: key, alias and normalized name match; similar key does not; --relates-to finds decisions', () => {
   const fx = setup();
   try {
     fs.writeFileSync(path.join(fx.brain, 'memory', 'service-x-service.md'), '---\nkey: service-x-service\ntype: service\nname: X Service\norigin: operator\naliases: [xs, "X Svc"]\n---\nprístup a tokeny\n');
@@ -38,7 +38,7 @@ test('key, alias and normalized name match; similar key does not; --relates-to f
   } finally { fx.cleanup(); }
 });
 
-test('word from description or name finds a skill; exact find stays exact; CLI falls back', () => {
+test('P-031: findWords: word from description or name finds a skill; exact find stays exact; CLI falls back', () => {
   const fx = setup();
   try {
     fs.mkdirSync(path.join(fx.brain, 'skills', 'agentic', 'nasadzovanie-na-server'), { recursive: true });

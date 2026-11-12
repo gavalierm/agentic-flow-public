@@ -9,13 +9,13 @@ import { setup, initProject } from './helpers.mjs';
 
 const git = (cwd, ...a) => spawnSync('git', a, { cwd, encoding: 'utf8' }).stdout.trim();
 
-function domainFx({ branch = 'main' } = {}) {
+function domainFx({ branch = 'main', visibility } = {}) {
   const fx = setup();
   fs.writeFileSync(path.join(fx.root, '.agentic-domain'), '{"brain":"brain"}');
   const srv = path.join(fx.root, 'srv');
   initProject(srv);
   if (branch) {
-    fs.writeFileSync(path.join(srv, '.workflow.json'), JSON.stringify({ brain: '../brain', knowledge_branch: branch }) + '\n');
+    fs.writeFileSync(path.join(srv, '.workflow.json'), JSON.stringify({ brain: '../brain', knowledge_branch: branch, ...(visibility && { visibility }) }) + '\n');
     git(srv, 'commit', '-qam', 'knowledge branch');
   }
   return { fx, srv };
@@ -280,5 +280,22 @@ test('repo knowledge: operator and person records stay in brain (save --repo and
     r = fx.run('save.mjs', ['move', 'memory/operator-codeword.md', '--repo', 'srv', '--dry-run']);
     assert.notEqual(r.status, 0);
     assert.match(r.out, /memory\/operator-codeword\.md: operator records stay in brain/);
+  } finally { fx.cleanup(); }
+});
+
+// A code repo that is public on GitHub keeps no workflow knowledge: save --repo would push project records, decisions
+// and runbooks publicly, and project-<repo> belongs in the private brain without --brain (alice 2026-11-11, adoption
+// of a public static web).
+test('repo knowledge: a public repo refuses save --repo (knowledge goes to brain); project-<repo> is kept in brain without --brain', () => {
+  const { fx, srv } = domainFx({ visibility: 'public' });
+  try {
+    const head = git(srv, 'rev-parse', 'HEAD');
+    let r = fx.run('save.mjs', ['memory', 'service', 'ftp', '--content', 'FTP deploy.', '--repo', 'srv']);
+    assert.notEqual(r.status, 0);
+    assert.match(r.out, /srv is public on GitHub[\s\S]*brain/);
+    assert.equal(git(srv, 'rev-parse', 'HEAD'), head, 'nothing committed into the public repo');
+    r = fx.run('save.mjs', ['memory', 'project', 'srv', '--content', 'Opis srv.']);
+    assert.equal(r.status, 0, r.out);
+    assert.ok(fs.existsSync(path.join(fx.brain, 'memory', 'project-srv.md')));
   } finally { fx.cleanup(); }
 });

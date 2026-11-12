@@ -4,9 +4,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { setup } from './helpers.mjs';
+import { setup, startComms, commsClient } from './helpers.mjs';
 import { readLog } from '../scripts/logs.mjs';
 const logView = (fx, name) => { const l = readLog(fx.brain, name, { rotationDays: 30 }); return l.length ? l.join('\n') + '\n' : ''; };
+
+// Commits what the test wrote into the topic's code copy (a separate clone next to the project).
+const commitCopy = (copy, message) => {
+  for (const args of [['config', 'user.name', 't'], ['config', 'user.email', 't@t'], ['add', '-A'], ['commit', '-q', '-m', message]]) spawnSync('git', args, { cwd: copy });
+};
 
 test('unit of work: verification required, logs written, handover free, repeats proposed, log lines cleared by save skill', () => {
   const fx = setup();
@@ -56,7 +61,7 @@ test('done --topic merges the code copy into the main branch, archives the topic
     assert.equal(fx.run('topic.mjs', ['create', 'feat', '--subject', 'Feature', '--kind', 'code']).status, 0);
     const copy = path.join(fx.root, 'project-topics', 'feat');
     fs.writeFileSync(path.join(copy, 'feature.txt'), 'feature\n');
-    for (const args of [['config', 'user.name', 't'], ['config', 'user.email', 't@t'], ['add', '-A'], ['commit', '-q', '-m', 'feat']]) spawnSync('git', args, { cwd: copy });
+    commitCopy(copy, 'feat');
     // main moves on in parallel; no conflict
     fs.writeFileSync(path.join(fx.project, 'other.txt'), 'other\n');
     fx.git(fx.project, 'add', '-A'); fx.git(fx.project, 'commit', '-q', '-m', 'other');
@@ -82,7 +87,7 @@ test('done (unit) of a code topic merges the verified copy into the main branch,
     assert.equal(fx.run('topic.mjs', ['create', 'feat', '--subject', 'Feature', '--kind', 'code']).status, 0);
     const copy = path.join(fx.root, 'project-topics', 'feat');
     fs.writeFileSync(path.join(copy, 'feature.txt'), 'feature\n');
-    for (const args of [['config', 'user.name', 't'], ['config', 'user.email', 't@t'], ['add', '-A'], ['commit', '-q', '-m', 'feat']]) spawnSync('git', args, { cwd: copy });
+    commitCopy(copy, 'feat');
     fs.writeFileSync(path.join(copy, 'feature.txt'), 'not verified yet\n');
     let r = fx.run('done.mjs', ['--verified', 'feature.txt present']);
     assert.equal(r.status, 1, r.out); assert.match(r.stderr, /uncommitted changes/);
@@ -108,7 +113,7 @@ test('done --topic: uncommitted files of the main checkout equal to the topic br
     const copy = path.join(fx.root, 'project-topics', 'tidy');
     fs.writeFileSync(path.join(copy, 'settings.txt'), 'v2\n');
     fs.writeFileSync(path.join(copy, 'gen.json'), '{}\n');
-    for (const args of [['config', 'user.name', 't'], ['config', 'user.email', 't@t'], ['add', '-A'], ['commit', '-q', '-m', 'tidy']]) spawnSync('git', args, { cwd: copy });
+    commitCopy(copy, 'tidy');
     // connect generated the same files in the main checkout, uncommitted; one other change is the operator's own
     fs.writeFileSync(path.join(fx.project, 'settings.txt'), 'v2\n');
     fs.writeFileSync(path.join(fx.project, 'gen.json'), '{}\n');
@@ -188,4 +193,50 @@ test('done reminds of files changed in scratch/ since the claim or the last done
     assert.equal(r.status, 0, r.out);
     assert.doesNotMatch(r.stdout, /scratch:/);
   } finally { fx.cleanup(); }
+});
+
+// alice 2026-11-02: done --topic closes the topic in the mail service (new mail 410, waiting mail bounces to the sender);
+// a thread that also holds main is not archived; archived topics from before are closed at the next session start.
+const skip = commsClient() ? false : 'agentic-comms not found next to the plugin (AGENTIC_COMMS_DIR)';
+
+test('done --topic closes the topic in the mail: waiting mail bounces, new mail is refused at once with the closing time', { skip }, async () => {
+  const fx = setup({ second: true });
+  const comms = await startComms(fx, { senders: ['alice', 'bob'], brains: [[fx.project, fx.brain, 'alice'], [fx.projectB, fx.brainB, 'bob']] });
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'gamma', '--subject', 'Gamma']).status, 0);
+    assert.equal(fx.runB('topic.mjs', ['create', 'beta', '--subject', 'Beta']).status, 0);
+    const send = fx.runB('comms.mjs', ['send', '--level', 'assist', '--to', 'project/gamma', '--text', 'units?']);
+    assert.equal(send.status, 0, send.out);
+    const id = /sent (\S+) \(assist\)/.exec(send.stdout)?.[1];
+    // The closing thread also holds main: the topic is closed, the thread is not archived (P-045).
+    const main = path.join(fx.brain, 'topics', 'main');
+    fs.mkdirSync(main, { recursive: true });
+    fs.writeFileSync(path.join(main, 'topic.json'), JSON.stringify({ id: 'main', subject: 'Main', kind: 'main', state: 'working' }) + '\n');
+    fs.writeFileSync(path.join(main, 'holder.json'), JSON.stringify({ thread: 'a1', mode: 'operator' }) + '\n');
+    fx.git(fx.brain, 'add', '-A'); fx.git(fx.brain, 'commit', '-q', '--no-verify', '-m', 'main held by a1 (test)');
+    const fin = fx.run('done.mjs', ['--topic', '--topic-id', 'gamma', '--verified', 'done'], { env: { T3CODE_THREAD_ID: 'a1' } });
+    assert.equal(fin.status, 0, fin.out);
+    assert.match(fin.stdout, /mail: topic gamma closed in the mail service/);
+    assert.match(fin.stdout, /holds the persona main topic, so it stays open: do not settle or archive it/);
+    assert.doesNotMatch(fin.stdout, /t3_thread_organize/);
+    assert.equal(comms.topic('project', 'gamma').state, 'closed');
+    assert.equal(comms.topic('project', 'gamma').holder, null);
+    assert.equal(JSON.parse(comms.cli(['message', '--id', id]).out).outcome, 'undelivered');
+    const late = fx.runB('comms.mjs', ['send', '--level', 'blocker', '--to', 'project/gamma', '--text', 'still?']);
+    assert.notEqual(late.status, 0, late.out);
+    assert.match(late.out, /uzavretá/);
+
+    // A topic archived before the mail knew `close`: the next session start closes it once.
+    assert.equal(fx.run('topic.mjs', ['create', 'delta', '--subject', 'Delta']).status, 0);
+    const arch = path.join(fx.brain, 'topics', 'archive', 'delta');
+    fs.mkdirSync(path.dirname(arch), { recursive: true });
+    fs.renameSync(path.join(fx.brain, 'topics', 'delta'), arch);
+    assert.equal(comms.topic('project', 'delta').state ?? 'open', 'open');
+    fx.hook('session-start.mjs', { source: 'startup' });
+    assert.equal(comms.topic('project', 'delta').state, 'closed');
+    assert.ok(JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'comms-closed.json'), 'utf8')).includes('delta'));
+  } finally {
+    await comms.stop();
+    fx.cleanup();
+  }
 });

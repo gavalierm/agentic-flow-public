@@ -8,6 +8,7 @@ import path from 'node:path';
 import { setup } from './helpers.mjs';
 import { parseReply, repeatsAnswered } from '../scripts/protocol.mjs';
 import { setTimer } from '../scripts/waker.mjs';
+import { mistakeClaim, AUTO_TIMER_THEN } from '../hooks/stop.mjs';
 
 const stateOf = (fx) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), 'utf8'));
 
@@ -197,13 +198,18 @@ const REPEAT = 'Hotové.\n\n**Otázky na operátora:**\n- [ ] Po pozretí náhľ
 const FIRST = 'Mockup beží.\n\n**Otázky na operátora:**\n- [ ] Pozri si zoznam aj článok v oboch témach a na mobile a napíš, čo sedí a čo nie.\n\nStav: otázka';
 const OTHER = 'Hotové.\n\n**Otázky na operátora:**\n- [ ] Ktorý z dvoch účtov Cloudflare mám použiť?\n\nStav: otázka';
 const stopOf = (fx, msg, active = false) => fx.hook('stop.mjs', { stop_hook_active: active, last_assistant_message: msg }).json;
+/** A fresh thread holding topic alpha whose first operator prompt ('začni') has been seen. */
+function started() {
+  const fx = setup();
+  assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+  fx.hook('user-prompt-submit.mjs', { prompt: 'začni' });
+  return fx;
+}
 const dialog = (fx) => fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'x' }] } });
 
 test('Stop: a question repeating one the operator answered blocks once; an unrelated one and a bell turn do not move it', () => {
-  const fx = setup();
+  const fx = started();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'začni' });
     dialog(fx);
     assert.equal(stopOf(fx, FIRST).decision, undefined, 'the first question is not a repeat');
     assert.equal(stateOf(fx).last_questions.length, 1);
@@ -221,11 +227,9 @@ test('Stop: a question repeating one the operator answered blocks once; an unrel
   } finally { fx.cleanup(); }
 });
 
-test('a turn started by a mail bell does not answer the last questions', () => {
-  const fx = setup();
+test('Stop: a turn started by a mail bell does not answer the last questions (P-059)', () => {
+  const fx = started();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'začni' });
     dialog(fx);
     stopOf(fx, FIRST);
     fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
@@ -234,11 +238,9 @@ test('a turn started by a mail bell does not answer the last questions', () => {
   } finally { fx.cleanup(); }
 });
 
-test('an answered AskUserQuestion question is recorded in answered_questions; one answered in this turn is no earlier answer', () => {
-  const fx = setup();
+test('AskUserQuestion: an answered question is recorded in answered_questions; one answered in this turn is no earlier answer (P-059)', () => {
+  const fx = started();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'začni' });
     const input = { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Pozri si náhľad na tuneli a potvrď?' }] } };
     fx.hook('pre-tool-use.mjs', input);
     assert.ok(!(stateOf(fx).answered_questions || []).length, 'not answered before the dialog ends');
@@ -252,11 +254,9 @@ test('an answered AskUserQuestion question is recorded in answered_questions; on
   } finally { fx.cleanup(); }
 });
 
-test('a dialog repeating an answered question is refused once per turn; a dialog closed without an answer answers nothing', () => {
-  const fx = setup();
+test('AskUserQuestion: a dialog repeating an answered question is refused once per turn; a dialog closed without an answer answers nothing (P-059)', () => {
+  const fx = started();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'začni' });
     const ask = (question, answers) => ({ tool_name: 'AskUserQuestion', tool_input: { questions: [{ question }] }, ...(answers ? { tool_response: { answers } } : {}) });
     const decision = (r) => r.json.hookSpecificOutput?.permissionDecision;
     const A = 'Môžem návrh A uložiť ako scratch/final-a.txt?';
@@ -276,4 +276,57 @@ test('a dialog repeating an answered question is refused once per turn; a dialog
     assert.notEqual(decision(fx.hook('pre-tool-use.mjs', ask('Ktorý z dvoch účtov Cloudflare mám použiť?'))), 'deny', 'an unrelated question');
     assert.equal(decision(fx.hook('pre-tool-use.mjs', ask(B))), 'deny', 'a new turn is challenged again');
   } finally { fx.cleanup(); }
+});
+
+// P-003 (operator 2026-11-03): a reply that says something happened "omylom" / "by mistake" names an error; the Stop hook
+// queues the workflow:error line for the next prompt (a block until 2026-11-08: the word list also hit quoted mistakes).
+test('mistakeClaim: admitted mistakes are found with their sentence; other words pass', () => {
+  // alice 2026-11-03: the pilot test topic was created in the wrong brain and the reply only said so.
+  const alice = 'Hotové. Pri teste v pilote vznikla **omylom** téma tt-free v brain alice. Súhlasíš?';
+  assert.equal(mistakeClaim(alice), 'Pri teste v pilote vznikla omylom téma tt-free v brain alice.');
+  for (const t of ['Omylom som zmazal súbor.', 'Soubor jsem smazal omylem.', 'I accidentally pushed to main.', 'It was deleted by mistake.', 'nedopatrením prepísané', 'Nechtiac som to spustil.', 'Nedávno som omylom zmazal súbor.', 'Skill sa spustil omylom, nie zámerne.'])
+    assert.ok(mistakeClaim(t), t);
+  for (const t of ['Hotové, vydané.', 'Omylový stav nenastal.', 'Hook na „omylom“: keď odpoveď obsahuje „omylom“ alebo "by mistake", zablokuje ju.', 'Slovo `accidentally` je v zozname.', 'mistake handling is in P-003', '', undefined, 'neomylný', 'Over, či je spúšťač jasný a nespúšťa sa omylom.', 'Guard so that nothing is accidentally installed.', 'aby sa omylom nespustil', 'This prevents accidentally pushing to main.'])
+    assert.equal(mistakeClaim(t), null, String(t));
+});
+
+test('Stop: a named mistake does not block; it is queued once as a signal for the next prompt (2026-11-08)', () => {
+  const fx = setup();
+  try {
+    fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
+    const msg = 'Téma vznikla omylom v brain alice.\n\nStav: hotovo';
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.decision, undefined);
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.decision, undefined);
+    const next = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' }).context;
+    assert.match(next, /mistake named in the last reply: "Téma vznikla omylom v brain alice\.".*workflow:error.*P-003/);
+    assert.equal(next.match(/mistake named/g).length, 1, 'the same sentence is queued once');
+    assert.doesNotMatch(fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' }).context || '', /mistake named/);
+  } finally { fx.cleanup(); }
+});
+
+// flow-public#25 (2026-11-10): the operator asked how to hand a task to another agent; the Stop hook said "do the work now"
+// and "if you can do it yourself, do it", and the agent created and deployed a skill nobody asked for. Every message that
+// pushes to act is bound to the asked work; a change the operator did not ask for stays an offer under Operátor.
+const OFFER = /did not ask for[^]*operátora[^]*Stav: otázka/;
+
+test('Stop: after an operator question a proposed change is kept as an offer, never pushed to be done', () => {
+  const fx = setup();
+  try {
+    fx.hook('user-prompt-submit.mjs', { prompt: 'Ako odovzdám zadanie ďalšiemu agentovi? Prompt alebo skript?' });
+    const item = 'Najjednoduchšie poštou (assist).\n\n**Otázky na operátora:**\n- [ ] Vytvoriť skill na odovzdanie zadania (odporúčam)\n\nStav: hotovo';
+    const r = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: item });
+    assert.equal(r.json.decision, 'block');
+    assert.doesNotMatch(r.json.reason, /if you can do it yourself, do it/, 'no unconditional push to do the item');
+    assert.match(r.json.reason, OFFER);
+    const prose = 'Najjednoduchšie poštou (assist).\n\nĎalší krok: vytvorím skill na odovzdanie zadania.\n\nStav: hotovo';
+    const p = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: prose });
+    assert.doesNotMatch(p.json.reason, /a step of yours is done now|do the work now/);
+    assert.match(p.json.reason, OFFER);
+    const none = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Poštou (assist).' });
+    assert.match(none.json.reason, OFFER, 'the state help binds "do it now" to the asked work');
+  } finally { fx.cleanup(); }
+});
+
+test('Stop: the auto timer chooses a recommended option only inside the asked work', () => {
+  assert.match(AUTO_TIMER_THEN, /offered change the operator did not ask for: that waits/);
 });
