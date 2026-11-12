@@ -135,6 +135,22 @@ test('exception: immutable refused, written per layer; rule saved; handover only
   } finally { fx.cleanup(); }
 });
 
+test('handover: over-limit content is refused before any fetch; a valid handover syncs twice, not three times', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'hl', '--subject', 'HL']).status, 0);
+    const trace = path.join(fx.root, 'git-trace.log');
+    const fetches = () => (fs.existsSync(trace) ? fs.readFileSync(trace, 'utf8').split('\n').filter((l) => /git fetch/.test(l)).length : 0);
+    const env = { GIT_TRACE: trace };
+    let r = fx.run('save.mjs', ['handover', 'hl', '--task', 'T', '--done', Array.from({ length: 12 }, (_, i) => `d${i}`).join('; '), '--next', 'c'], { env });
+    assert.equal(r.status, 1); assert.match(r.stderr, /limit 15/);
+    assert.equal(fetches(), 0, 'limit refusal must not fetch');
+    r = fx.run('save.mjs', ['handover', 'hl', '--task', 'T', '--next', 'c'], { env });
+    assert.equal(r.status, 0, r.out);
+    assert.equal(fetches(), 2, 'holder check (P-037) and push; the pre-write sync of brainWrite is not repeated');
+  } finally { fx.cleanup(); }
+});
+
 test('skill --script: the script is stored next to SKILL.md in one brain commit; bad names refused', () => {
   const fx = setup();
   try {

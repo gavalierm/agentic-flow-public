@@ -185,6 +185,25 @@ export function countByField(lines, index = 1) {
   return counts;
 }
 
+/** Distinct sessions per sequence name (3rd field of a sequences.log line): repeats inside one session are one routine. */
+export function sessionsByName(lines) {
+  const m = new Map();
+  for (const l of lines) {
+    const [, name, sid] = l.split(' ');
+    if (!name) continue;
+    if (!m.has(name)) m.set(name, new Set());
+    m.get(name).add(sid || '-');
+  }
+  return m;
+}
+
+/** Sequences that reach `threshold` sessions with this flush, without those contained in a longer one reaching it now (P-030). */
+export function newProposals(before, after, names, threshold) {
+  const reached = [...new Set(names)].filter((s) => (after.get(s)?.size || 0) >= threshold && (before.get(s)?.size || 0) < threshold);
+  const steps = (s) => ` ${s.split('+').join(' ')} `;
+  return reached.filter((s) => !reached.some((o) => o.length > s.length && steps(o).includes(steps(s))));
+}
+
 /** Key of a P-030 proposal signal (`sequence <name> <n>x: create ...` -> `sequence <name>`), null for other signals. */
 export function proposalKey(signal) {
   const m = /^sequence (\S+) \d+x: /.exec(String(signal || ''));
@@ -192,14 +211,14 @@ export function proposalKey(signal) {
 }
 
 /** Turn the per-session buffer into log lines; returns ops for brainWrite and signals. */
-export function flushBuffer(ctx, sessionId) {
+export function flushBuffer(ctx, sessionId, { sync = true } = {}) {
   const { brainDir, policy } = ctx;
   const entries = readBuffer(brainDir, sessionId);
   const signals = [];
   if (!entries.length) return { written: false, signals };
   const seqLines = readLog(brainDir, 'sequences.log', { rotationDays: policy.logs.rotation_days });
   const failLines = readLog(brainDir, 'failures.log');
-  const before = countByField(seqLines);
+  const before = sessionsByName(seqLines);
   const newFails = [];
 
   // Sequences: consecutive successful shell commands per agent; a failure breaks the run.
@@ -226,11 +245,11 @@ export function flushBuffer(ctx, sessionId) {
   const seqEntries = newSeqs.map((q) => `${date} ${q} ${sessionId}`);
   seqLines.push(...seqEntries);
   failLines.push(...newFails);
-  const after = countByField(seqLines);
+  const after = sessionsByName(seqLines);
   const threshold = policy.thresholds.sequence_repeats;
-  for (const s of new Set(newSeqs)) {
-    if (after.get(s) >= threshold && (before.get(s) || 0) < threshold && !rejectedProposal(brainDir, s)) {
-      signals.push(`sequence ${s} ${after.get(s)}x: create a skill with a script or refactor the existing skill around the script yourself, no operator approval (P-030)`);
+  for (const s of newProposals(before, after, newSeqs, threshold)) {
+    if (!rejectedProposal(brainDir, s)) {
+      signals.push(`sequence ${s} ${after.get(s).size}x: create a skill with a script or refactor the existing skill around the script yourself, no operator approval (P-030)`);
     }
   }
   const oldFailures = failLines.filter((l) => {
@@ -241,7 +260,7 @@ export function flushBuffer(ctx, sessionId) {
 
   const ops = [appendOp('sequences.log', seqEntries), appendOp('failures.log', newFails)].filter((o) => o.append);
   ops.push(...rotationOps(brainDir, policy.logs.rotation_days));
-  const res = ops.length ? brainWrite(ctx, { ops, internal: true, message: `logs flush ${sessionId}` }) : { committed: false, unpushed: 0 };
+  const res = ops.length ? brainWrite(ctx, { ops, internal: true, sync, message: `logs flush ${sessionId}` }) : { committed: false, unpushed: 0 };
   fs.rmSync(bufferFile(brainDir, sessionId), { force: true });
   return { written: res.committed, signals, unpushed: res.unpushed, sequences: newSeqs.length, failures: entries.filter((e) => e.kind === 'fail').length };
 }

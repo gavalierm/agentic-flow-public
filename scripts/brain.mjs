@@ -63,6 +63,15 @@ export function hasRemote(brainDir) {
   return git(['remote', 'get-url', 'origin'], { cwd: brainDir }).ok;
 }
 
+/** Age in ms of the oldest commit not on origin (0 when everything is pushed). */
+export function oldestUnpushedAgeMs(brainDir) {
+  if (!unpushedCount(brainDir)) return 0;
+  const branch = currentBranch(brainDir);
+  const range = git(['rev-parse', '--verify', '--quiet', `origin/${branch}`], { cwd: brainDir }).ok ? `origin/${branch}..HEAD` : 'HEAD';
+  const times = git(['log', '--format=%ct', range], { cwd: brainDir }).stdout.split('\n').filter(Boolean).map(Number);
+  return times.length ? Math.max(0, Date.now() - Math.min(...times) * 1000) : 0;
+}
+
 export function unpushedCount(brainDir) {
   const branch = currentBranch(brainDir);
   if (!hasRemote(brainDir)) return 0;
@@ -269,6 +278,14 @@ export function brainPull(brainDir) {
     if (!result.behind) return result;
     const unpushed = unpushedCount(brainDir);
     const dirty = git(['diff', '--name-only', 'HEAD'], { cwd: brainDir }).stdout.split('\n').filter(Boolean);
+    // Local commits (the log commit Stop leaves local, audit 2.3a) go out first: rebase onto origin and push, so the
+    // session does not start behind origin.
+    if (unpushed > 0 && !dirty.length) {
+      const sync = brainSyncUnlocked(brainDir);
+      if (sync.pushed) { result.pulled = result.behind; result.behind = 0; return result; }
+      result.reason = `${unpushed} unpushed commit(s)${sync.conflict ? ` (conflict: ${[].concat(sync.conflict).join(', ')})` : sync.error ? ` (${sync.error})` : ''}`;
+      return result;
+    }
     if (unpushed > 0) { result.reason = `${unpushed} unpushed commit(s)`; return result; }
     if (dirty.length) { result.reason = `uncommitted changes: ${dirty.slice(0, 3).join(', ')}${dirty.length > 3 ? ', …' : ''}`; return result; }
     const ff = git(['merge', '--ff-only', '--quiet', `origin/${branch}`], { cwd: brainDir, env: brainScriptEnv() });
@@ -372,7 +389,8 @@ export function brainWrite(ctx, opts) {
   return withBrainLock(ctx.brainDir, () => brainWriteUnlocked(ctx, opts));
 }
 
-function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, agentId = null, env: extraEnv = {} }) {
+// presynced: the caller fetched just before (syncAndCheckHolder), the pre-write sync is skipped.
+function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, presynced = false, agentId = null, env: extraEnv = {} }) {
   const { brainDir, thread, policy } = ctx;
   if (!brainDir) throw new Error('brain unavailable');
   if (agentId || inSubagent()) throw new Error('brain write refused in subagent; return the result to the main agent (P-025)');
@@ -380,7 +398,7 @@ function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, 
   const errors = [];
   const touched = [];
   const rels = ops.flatMap((op) => (op.from ? [op.from, op.to] : [op.path])).map((t) => toPosix(t).replace(/^\.\//, ''));
-  if (!internal && rels.some((r) => topicOfPath(r)) && hasRemote(brainDir)) brainSync(brainDir);
+  if (!internal && !presynced && rels.some((r) => topicOfPath(r)) && hasRemote(brainDir)) brainSync(brainDir);
   for (const op of ops) {
     const targets = op.from ? [op.from, op.to] : [op.path];
     for (const t of targets) {

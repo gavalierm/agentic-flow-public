@@ -19,7 +19,7 @@ import { loadContext, readThreadState, writeThreadState } from '../scripts/confi
 import { pendingT3Line } from '../scripts/wizard.mjs';
 import { logDecision } from '../scripts/denials.mjs';
 import { flushBuffer, proposalKey } from '../scripts/logs.mjs';
-import { unpushedCount, brainSync } from '../scripts/brain.mjs';
+import { unpushedCount, brainSync, oldestUnpushedAgeMs } from '../scripts/brain.mjs';
 import { recordTurn, isMainTopic } from '../scripts/comms.mjs';
 import { heldTopics } from '../scripts/topic.mjs';
 import { parseReply, repeatsAnswered, REPEATED_QUESTION_REASON } from '../scripts/protocol.mjs';
@@ -158,13 +158,15 @@ export function run(input) {
   if (!ctx.brainDir) return end({});
   const signals = [];
   try {
-    const res = flushBuffer(ctx, input.session_id);
+    const res = flushBuffer(ctx, input.session_id, { sync: false });
     signals.push(...res.signals);
   } catch (err) {
     signals.push(`logs not written: ${err.message.split('\n')[0]}`);
   }
   let unpushed = unpushedCount(ctx.brainDir);
-  if (unpushed > 0) {
+  // The log commit stays local: it goes out with the next brain write (brainSync pushes all commits) or here once the oldest
+  // unpushed commit is logs.stop_push_minutes old (audit 2.3a: 756 push-per-Stop commits, ~27 min of waiting).
+  if (unpushed > 0 && oldestUnpushedAgeMs(ctx.brainDir) >= (ctx.policy.logs?.stop_push_minutes ?? 30) * 6e4) {
     const sync = brainSync(ctx.brainDir);
     unpushed = sync.unpushed ?? unpushedCount(ctx.brainDir);
     if (sync.conflict) signals.push(`conflict: ${sync.conflict.join(', ')} (brain not merged, P-040)`);

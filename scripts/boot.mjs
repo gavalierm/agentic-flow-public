@@ -203,7 +203,7 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   }
   // The harness names its own scratchpad in the system temp dir; the write hook refuses it (P-052) and the refusal cost
   // turns (alice 2026-11-07: a patch script in /tmp was refused, the work waited for the operator).
-  if (harness === 'claude-code') version.push(`work files: ${toPosix(path.join(ctx.projectDir, SCRATCH_DIR))}/ (gitignored); the harness "scratchpad directory" in the system temp dir is not used here, the hook refuses writes outside the project (P-052)`);
+  if (harness === 'claude-code') version.push(`work files: ${toPosix(path.join(ctx.projectDir, SCRATCH_DIR))}/ (gitignored); the harness "scratchpad directory" in the system temp dir is not used here: Write/Edit there go to this scratch/ (read the file there), other writes outside the project are refused (P-052)`);
   version.push(...notices);
   parts.push(`${BOOT_MARKERS[5]}\n${version.join('\n')}`);
 

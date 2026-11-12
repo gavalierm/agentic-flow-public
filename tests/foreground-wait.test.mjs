@@ -15,6 +15,20 @@ test('foregroundWait: sleeps, loops and watch in the foreground; data and short 
   assert.equal(foregroundWait('cat <<EOF\nsleep 99\nEOF'), null);
 });
 
+test('foregroundWait: a loop sent to the background with & or bounded by timeout N (N <= 10 s) is not waiting; the real wait stays denied', () => {
+  // allowed shapes (audit 2.5 b: 4 of 20 denials in the logs)
+  assert.equal(foregroundWait("nohup bash -c 'while true; do node bin/wake.mjs run --instance pilot; sleep 2; done' >> log 2>&1 &"), null);
+  assert.equal(foregroundWait('(while true; do node w.mjs; sleep 2; done >> pilot-wake.log 2>&1 &) ; echo started'), null);
+  assert.equal(foregroundWait("timeout 8 sh -c 'until grep -q released f; do sleep 1; done'"), null);
+  assert.equal(foregroundWait("timeout 10s bash -c 'while true; do sleep 1; done'"), null);
+  // real waiting stays denied
+  assert.equal(foregroundWait("timeout 60 sh -c 'until grep -q released f; do sleep 1; done'"), 'loop with sleep');
+  assert.equal(foregroundWait('while true; do sleep 2; done && echo ok'), 'loop with sleep');
+  assert.equal(foregroundWait('while true; do sleep 2; done; ls &'), 'loop with sleep');
+  assert.equal(foregroundWait('until [ -s f ]; do sleep 5; done; while true; do sleep 2; done &'), 'loop with sleep');
+  assert.equal(foregroundWait('until [ -s f ]; do sleep 5; done'), 'loop with sleep');
+});
+
 test('pre-tool-use denies a foreground wait, allows it in the background', () => {
   const fx = setup();
   try {

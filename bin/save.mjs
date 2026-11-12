@@ -650,15 +650,16 @@ function saveHandover(ctx) {
   if (repo) return saveRepoHandover(ctx, repo);
   const [topic] = rest;
   if (!topic) fail('usage: save.mjs handover <topic> --task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>');
-  const holderError = syncAndCheckHolder(ctx.brainDir, `topics/${topic}/handover.md`, ctx.thread);
-  if (holderError) fail(holderError);
+  // Limits and the reminder need no remote state: refuse before the first fetch (53 limit refusals paid a whole sync cycle).
   const content = args.file ? fs.readFileSync(args.file, 'utf8') : renderHandover({ task: args.task, done: args.done, next: args.next, files: args.files, questions: args.questions });
   const errors = checkHandover(content, ctx.policy.limits.handover_lines);
   if (errors.length) fail(errors.join('\n'));
   const reminder = ctx.thread ? reminderStep(handoverNextStep(content)) : null;
   if (reminder && !armedSchedule(readThreadState(ctx.brainDir, ctx.thread))) fail(REMINDER_REFUSAL(reminder));
+  const holderError = syncAndCheckHolder(ctx.brainDir, `topics/${topic}/handover.md`, ctx.thread);
+  if (holderError) fail(holderError);
   const ops = [{ path: `topics/${topic}/handover.md`, content }, setTopicState(ctx, topic, readTopic(ctx.brainDir, topic)?.state === 'paused' ? 'paused' : 'working')];
-  const res = brainWrite(ctx, { ops, message: `handover ${topic}` });
+  const res = brainWrite(ctx, { ops, message: `handover ${topic}`, presynced: true });
   out(formatWriteResult(res, [`topics/${topic}/handover.md`]));
 }
 

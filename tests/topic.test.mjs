@@ -20,6 +20,18 @@ test('two clones claim the same topic at once: exactly one wins, loser sees the 
   } finally { fx.cleanup(); }
 });
 
+test('topic create claims in one write: one commit and one push-cycle, holder is already in the create commit', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'one', '--subject', 'One']).status, 0);
+    const log = fx.git(fx.brain, 'log', '--format=%s');
+    assert.match(log, /topic create one/);
+    assert.doesNotMatch(log, /topic claim one/);
+    assert.equal(JSON.parse(fx.git(fx.origin, 'show', 'main:topics/one/holder.json')).thread, 'a1');
+    assert.equal(fx.git(fx.brain, 'rev-list', '--count', 'origin/main..HEAD'), '0', 'pushed');
+  } finally { fx.cleanup(); }
+});
+
 test('takeover needs --force and --operator-approved; idle time never takes over', () => {
   const fx = setup({ second: true });
   try {
@@ -116,7 +128,7 @@ test('several threads on one brain clone create and claim topics at once: every 
     }
     assert.equal(fx.git(fx.brain, 'status', '--porcelain', '--', 'topics'), '', 'nothing left uncommitted');
     const log = fx.git(fx.brain, 'log', '--format=%s');
-    for (const id of ids) assert.match(log, new RegExp(`topic claim ${id} by`));
+    for (const id of ids) assert.match(log, new RegExp(`topic create ${id}`));
     assert.ok(!fs.existsSync(path.join(fx.brain, '.git', 'workflow-write.lock')));
   } finally { fx.cleanup(); }
 });

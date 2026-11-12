@@ -207,21 +207,28 @@ export function recursiveModeChange(command, cwd, scratchDir) {
 /**
  * `grep -h` (no file names) over several files, a glob or a recursive search: the output cannot be split back into files,
  * and assigning lines to files by assumed order gives false claims (alice 2026-11-07: two non-existent conflicts between
- * daily reports 11-06/11-07). Returns a one-line hint, not a block: `-h` is fine for a plain union of matches.
+ * daily reports 11-06/11-07). Returns a one-line hint, not a block: `-h` is fine for a plain union of matches, so no hint with
+ * -o or when a later stage of the pipe sorts, counts or cuts the lines (sort, uniq, wc, cut, awk): no line is then assigned to a file.
  */
 const GREP_VALUE_OPTS = new Set(['e', 'f', 'A', 'B', 'C', 'm', 'd', 'D']);
 export function grepNoFilename(command) {
-  for (const seg of maskShell(command).split(/&&|\|\||[;|\n]/)) {
+  const stages = [];
+  for (const stmt of maskShell(command).split(/&&|\|\||[;\n]/)) {
+    const parts = stmt.split('|');
+    parts.forEach((seg, i) => stages.push({ seg, aggregated: parts.slice(i + 1).some((p) => /^\s*\(?(?:\S*\/)?(?:sort|uniq|wc|cut|awk)\b/.test(p)) }));
+  }
+  for (const { seg, aggregated } of stages) {
     const words = seg.trim().split(/\s+/).filter((w) => w && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
     const prog = (words[0] || '').replace(/^\(+/, '').split('/').pop();
     if (!['grep', 'egrep', 'fgrep'].includes(prog)) continue;
-    let noName = false, recursive = false, pattern = false, opts = true;
+    let noName = false, recursive = false, onlyMatching = false, pattern = false, opts = true;
     const files = [];
     for (let i = 1; i < words.length; i++) {
       const w = words[i];
       if (opts && w === '--') { opts = false; continue; }
       if (opts && w.startsWith('--')) {
-        if (w === '--no-filename') noName = true;
+        if (w === '--only-matching') onlyMatching = true;
+        else if (w === '--no-filename') noName = true;
         else if (w === '--with-filename') noName = false;
         else if (/^--(recursive|dereference-recursive)$/.test(w)) recursive = true;
         else if (/^--(regexp|file)(=|$)/.test(w)) { pattern = true; if (!w.includes('=')) i++; }
@@ -231,7 +238,8 @@ export function grepNoFilename(command) {
       if (opts && /^-[A-Za-z]/.test(w)) {
         for (let j = 1; j < w.length; j++) {
           const c = w[j];
-          if (c === 'h') noName = true;
+          if (c === 'o') onlyMatching = true;
+          else if (c === 'h') noName = true;
           else if (c === 'H') noName = false;
           else if (c === 'r' || c === 'R') recursive = true;
           if (GREP_VALUE_OPTS.has(c)) {
@@ -247,7 +255,7 @@ export function grepNoFilename(command) {
       files.push(unmask(w));
     }
     const many = recursive || files.length > 1 || files.some((f) => /[*?[]/.test(f));
-    if (noName && many) {
+    if (noName && many && !onlyMatching && !aggregated) {
       return `grep -h over several files (${files.length ? files.slice(0, 3).join(' ') : 'recursive'}) drops file names: lines cannot be assigned to files by order; to claim which file contains what, use grep -H or one grep per file`;
     }
   }
@@ -691,6 +699,10 @@ export function foregroundWait(command) {
     if (str[0] === '"' && /\$\(|`/.test(str)) return all;
     return `${sp}''`;
   });
+  // A loop sent to the background (its `done`, with the redirects, is followed by a single &) or run under `timeout N` with N <= 10 s is no
+  // foreground wait (audit 2.5: pilot wake loop, 4 of 20 denials); the loop in front of a ; or && stays one.
+  cmd = cmd.replace(/\b(?:until|while)\b(?:(?!\bdone\b)[\s\S])*\bdone\b['"]?(?:\s*\d*>>?&?\s*[^\s&;|)]+)*\s*&(?!&)/g, '');
+  cmd = cmd.replace(/\btimeout\s+(?:-\S+\s+)*(\d+(?:\.\d+)?)([smhd]?)\s+\S+\s+(?:-c\s+)?('[^']*'|"(?:[^"\\]|\\.)*")/g, (all, n, u) => (Number(n) * WAIT_UNIT[u] <= 10 ? '' : all));
   if (/\b(until|while)\b[\s\S]*\bsleep\b/.test(cmd)) return 'loop with sleep';
   if (/\bwatch\s+(-\S+\s+)*\S/.test(cmd)) return 'watch';
   for (const m of cmd.matchAll(/\bsleep\s+(\d+(?:\.\d+)?)([smhd]?)\b/g)) {
@@ -714,6 +726,18 @@ export function gitBashPath(p, platform = process.platform) {
 export function isTempPath(abs, env = process.env) {
   const dirs = env.WORKFLOW_TEMP_DIRS ? env.WORKFLOW_TEMP_DIRS.split(path.delimiter).filter(Boolean) : [os.tmpdir(), '/tmp', '/var/tmp'];
   return dirs.some((d) => isInside(d, abs));
+}
+
+/**
+ * The harness scratchpad of this session (<temp>/claude-<uid>/<project slug>/<session>/scratchpad, which the system prompt
+ * offers) is not the work dir here (P-052): a file tool aimed at it goes to <project>/scratch/ instead of a refusal (audit 2.5a:
+ * 26 refusals, each one more turn; CLAUDE_CODE_TMPDIR in the settings.json env does not move it, checked on Claude Code 2.1.322).
+ */
+export function harnessScratchpadTarget(abs, sessionId, ctx, env = process.env) {
+  if (!ctx.projectDir) return null;
+  const m = /^(.*)\/claude-\d+\/[^/]+\/([0-9A-Fa-f-]{8,})\/scratchpad\/(.+)$/.exec(toPosix(abs));
+  if (!m || !isTempPath(`${m[1]}/x`, env) || (sessionId && m[2] !== sessionId)) return null;
+  return path.join(ctx.projectDir, SCRATCH_DIR, ...m[3].split('/'));
 }
 
 /**
@@ -1016,6 +1040,21 @@ function pathChecks(input, ctx, cwd) {
   const toolInput = input.tool_input || {};
   const policy = ctx.policy;
   const resolve = (p) => path.resolve(cwd, gitBashPath(p));
+
+  // Audit 2.5a, P-052: Write into the harness scratchpad of this session goes to scratch/; Edit follows a file that went there.
+  // Read is not in the PreToolUse matcher (one hook process per read): the note names the new path, the model reads it there
+  // (pilot pilot-0236-a). A file that really is in the scratchpad keeps the old way (a write there is refused).
+  const padKey = tool === 'NotebookEdit' ? 'notebook_path' : FILE_TOOLS.includes(tool) ? 'file_path' : null;
+  const padFrom = padKey && typeof toolInput[padKey] === 'string' ? resolve(toolInput[padKey]) : null;
+  const padTo = padFrom ? harnessScratchpadTarget(padFrom, input.session_id, ctx) : null;
+  if (padTo && !fs.existsSync(padFrom) && (tool === 'Write' || fs.existsSync(padTo))) {
+    const updated = { ...toolInput, [padKey]: padTo };
+    const out = pathChecks({ ...input, tool_input: updated }, ctx, cwd);
+    const h = out?.hookSpecificOutput || {};
+    if (h.permissionDecision === 'deny') return out;
+    const note = `the harness scratchpad is not used here: this file is ${toPosix(padTo)}; read and edit it there (Read, cat), not in the scratchpad (work files in ${SCRATCH_DIR}/, P-052)`;
+    return { ...out, hookSpecificOutput: { ...h, hookEventName: 'PreToolUse', permissionDecision: h.permissionDecision || 'allow', permissionDecisionReason: h.permissionDecisionReason || note, additionalContext: [h.additionalContext, note].filter(Boolean).join('\n'), updatedInput: updated } };
+  }
 
   const target = targetOf(tool, toolInput);
   if (target) {

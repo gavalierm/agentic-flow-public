@@ -235,3 +235,18 @@ test('maintainer: policy.maintainer through the brain writer; none turns mail of
     assert.deepEqual(JSON.parse(fx.read('policy.json')).maintainer, { comms: 'me/dev', repo: 'https://github.com/o/r' });
   } finally { fx.cleanup(); }
 });
+
+test('session start pull: a local log commit (Stop leaves it local, audit 2.3a) goes out first, then origin comes in', async () => {
+  const fx = setup({ second: true });
+  try {
+    assert.equal(fx.runB('brain.mjs', ['write', 'memory/service-y.md', '--message', 'b', '--content', memoryRecord('service-y', 'from B')]).status, 0);
+    const { brainWrite, brainPull } = await import('../scripts/brain.mjs');
+    const { appendOp } = await import('../scripts/logs.mjs');
+    const policy = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'policy', 'policy.json'), 'utf8'));
+    brainWrite({ brainDir: fx.brain, thread: 'a1', policy }, { ops: [appendOp('sequences.log', ['s1 git status'])], internal: true, sync: false, message: 'logs flush s1' });
+    const res = brainPull(fx.brain);
+    assert.equal(res.behind, 0, JSON.stringify(res));
+    assert.ok(fs.existsSync(path.join(fx.brain, 'memory', 'service-y.md')));
+    assert.match(fx.git(fx.origin, 'log', '-3', '--format=%s'), /logs flush s1/);
+  } finally { fx.cleanup(); }
+});

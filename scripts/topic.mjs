@@ -146,14 +146,18 @@ function createTopicUnlocked(ctx, { id, subject, kind = 'discussion', mode, clai
     topic.copy = relPosix(ctx.projectDir, codeCopyPath(ctx, id));
     topic.repo = path.basename(mainCheckout(ctx.projectDir)); // the repo the topic changes (v3: one domain, several repos)
   }
+  // This thread claims its own new topic: the holder goes into the create commit, one sync cycle instead of two
+  // (49 extra `topic claim` commits, median 11.1 s against ~6 s).
+  const claimNow = claim && !forThread && !newThread;
+  const holder = claimNow ? { thread: ctx.thread, machine: machineName(), mode: mode || ctx.policy?.topics?.default_holder_mode || 'operator', since: nowIso() } : null;
   const res = brainWrite(ctx, {
     internal: true,
     ops: [
       { path: `topics/${id}/topic.json`, content: JSON.stringify(topic, null, 2) + '\n' },
-      { path: `topics/${id}/holder.json`, content: '{}\n' },
+      { path: `topics/${id}/holder.json`, content: holder ? JSON.stringify(holder, null, 2) + '\n' : '{}\n' },
       { path: `topics/${id}/handover.md`, content: freeHandover() },
     ],
-    message: `topic create ${id}`,
+    message: `topic create ${id}${holder ? ` (claimed by ${ctx.thread})` : ''}`,
   });
   const out = { topic, write: res, claim: null, copy: null, thread: null };
   if (newThread && !forThread) {
@@ -171,9 +175,16 @@ function createTopicUnlocked(ctx, { id, subject, kind = 'discussion', mode, clai
     if (kind === 'code' && copy) out.copy = ensureCodeCopy(ctx, id);
     return out;
   }
-  if (claim) {
-    out.claim = claimTopic(ctx, id, { mode });
-    if (!out.claim.ok) return out;
+  if (claimNow) {
+    const sync = res.sync || {};
+    if (sync.conflict || (sync.error && sync.remoteAhead)) {
+      out.claim = { ok: false, reason: `topic ${id} created locally but not pushed (${sync.conflict ? `conflict: ${sync.conflict.join(', ')}` : sync.error}); resolve, then topic.mjs claim ${id} (P-040)` };
+      return out;
+    }
+    // Mail registration only after a successful push, as in claim.
+    const pushFailed = sync.error && sync.error !== 'no remote origin';
+    const comms = pushFailed ? { ok: false, reason: 'brain push failed: mail registration not done (repeat topic.mjs claim to register)', topic: id, skipped: false } : registerTopic(ctx, id);
+    out.claim = { ok: true, holder, pushed: !!sync.pushed, sha: res.sha, comms, ...(pushFailed ? { warning: `claim committed but not pushed (${sync.error})` } : {}) };
     if (kind === 'code' && copy) out.copy = ensureCodeCopy(ctx, id);
   }
   return out;

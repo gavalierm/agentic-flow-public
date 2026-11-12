@@ -175,10 +175,14 @@ test('subagent: a script only named as an argument or in quotes is not executed;
 
 test('grep -h over several files, a glob or recursively adds a hint; one file, stdin or -H stay silent', async () => {
   const { grepNoFilename } = await import('../hooks/pre-tool-use.mjs');
-  for (const c of ['grep -h foo a.md b.md', 'grep -hn "x y" reports/*.md', 'cd d && grep -rh foo .', 'grep --no-filename -e x a b', 'grep -iA3 -h pat a b | head']) {
+  for (const c of ['grep -h foo a.md b.md', 'grep -hn "x y" reports/*.md', 'cd d && grep -rh foo .', 'grep --no-filename -e x a b', 'grep -iA3 -h pat a b | head',
+    'grep -h foo a b | tail -12', 'grep -hc foo a b', 'grep -h x a b; sort c']) {
     assert.match(grepNoFilename(c) || '', /grep -H/, c);
   }
-  for (const c of ['grep -h foo a.md', 'cat a b | grep -h foo', 'grep -H foo a b', 'grep foo a b', 'grep -hH foo a b', 'echo "grep -h x a b"', 'grep -h "a b" c.md']) {
+  for (const c of ['grep -h foo a.md', 'cat a b | grep -h foo', 'grep -H foo a b', 'grep foo a b', 'grep -hH foo a b', 'echo "grep -h x a b"', 'grep -h "a b" c.md',
+    // aggregated output: no line is assigned to a file (audit 2.5 c: 12 of 14 hints)
+    "grep -rhoE '<form[^>]*>' --include=*.html . | sort | uniq -c | head", 'grep -ho foo a b', 'grep --only-matching -h foo a b',
+    'grep -h "^### P-" rules/*.md | sed "s/x//" | sort -n | tail -3', 'grep -h foo a b | wc -l', "grep -h foo a b | awk '{print $1}'", 'grep -h foo a b | /usr/bin/uniq -c']) {
     assert.equal(grepNoFilename(c), null, c);
   }
   const fx = setup();
@@ -206,5 +210,29 @@ test('claude plugin install|enable and marketplace add without --scope project|l
     assert.ok(r.json.hookSpecificOutput.permissionDecisionReason.includes(fx.project));
     const ok = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'claude plugin install foo@bar --scope project' } });
     assert.notEqual(ok.json.hookSpecificOutput?.permissionDecision, 'deny');
+  } finally { fx.cleanup(); }
+});
+
+test('P-052, audit 2.5a: Write into the harness scratchpad of this session goes to scratch/ with a note naming the path, Edit follows it; another session stays refused', () => {
+  const fx = setup();
+  try {
+    const tmp = { env: { WORKFLOW_TEMP_DIRS: fx.root } };
+    const sid = '0f3c2a9e-1111-4222-8333-944455556666';
+    const pad = (s) => path.join(fx.root, 'claude-1000', '-p', s, 'scratchpad');
+    const into = path.join(fx.project, 'scratch', 'n', 'a.md');
+    let r = fx.hook('pre-tool-use.mjs', { session_id: sid, tool_name: 'Write', tool_input: { file_path: path.join(pad(sid), 'n', 'a.md'), content: 'x' } }, tmp);
+    assert.equal(r.json.hookSpecificOutput?.permissionDecision, 'allow', JSON.stringify(r.json));
+    assert.deepEqual(r.json.hookSpecificOutput.updatedInput, { file_path: into, content: 'x' });
+    // Read is not in the PreToolUse matcher: the model learns the new path from this note (pilot pilot-0236-a).
+    assert.ok(r.json.hookSpecificOutput.additionalContext?.includes(into.split(path.sep).join('/')), JSON.stringify(r.json));
+    fs.mkdirSync(path.dirname(into), { recursive: true });
+    fs.writeFileSync(into, 'x');
+    r = fx.hook('pre-tool-use.mjs', { session_id: sid, tool_name: 'Edit', tool_input: { file_path: path.join(pad(sid), 'n', 'a.md'), old_string: 'x', new_string: 'y' } }, tmp);
+    assert.equal(r.json.hookSpecificOutput?.updatedInput?.file_path, into, JSON.stringify(r.json));
+    r = fx.hook('pre-tool-use.mjs', { session_id: sid, tool_name: 'Edit', tool_input: { file_path: path.join(pad(sid), 'none.md'), old_string: 'x', new_string: 'y' } }, tmp);
+    assert.equal(r.json.hookSpecificOutput?.updatedInput, undefined, 'a file in neither place is not redirected');
+    const other = '9a8b7c6d-1111-4222-8333-944455556666';
+    r = fx.hook('pre-tool-use.mjs', { session_id: sid, tool_name: 'Write', tool_input: { file_path: path.join(pad(other), 'b.md'), content: 'x' } }, tmp);
+    assert.equal(r.json.hookSpecificOutput?.permissionDecision, 'deny');
   } finally { fx.cleanup(); }
 });

@@ -126,6 +126,49 @@ test('second reply and reply to a reply are refused: one final reply per message
   } finally { await x.done(); }
 });
 
+// Audit 2.4 (2026-11-12): `send --key` (a script repeating the same blocker every 15 min) replaces the unpicked message of the same
+// sender and address; a final reply is acked by its pickup, no separate `ack`. Needs the agentic-comms with `--supersede-key`.
+test('send --key: a repeated message replaces the unpicked one; with a reply it is refused', { skip }, async () => {
+  const x = await exchange();
+  try {
+    const send = (text) => x.fx.runB('comms.mjs', ['send', '--level', 'assist', '--to', 'project/alpha', '--key', 'issue-25@3', '--text', text]);
+    assert.equal(send('first').status, 0);
+    const second = send('second');
+    assert.equal(second.status, 0, second.out);
+    const got = x.fx.run('comms.mjs', ['receive']);
+    assert.equal((got.stdout.match(/--- body/g) || []).length, 1, got.stdout);
+    assert.match(got.stdout, /second/);
+    assert.doesNotMatch(got.stdout, /first/);
+    const id = x.ask();
+    const bad = x.reply(id, 'hotovo', 'x', ['--key', 'k']);
+    assert.notEqual(bad.status, 0, 'a reply has no key');
+    assert.match(bad.stderr, /--key belongs to a new message/);
+  } finally { await x.done(); }
+});
+
+test('final reply is acked by its pickup (receive); a later ack is not an error; an interim reply still waits for ack', { skip }, async () => {
+  const x = await exchange();
+  try {
+    const id = x.ask();
+    const first = x.reply(id, 'hotovo', 'decision A');
+    assert.equal(first.status, 0, first.out);
+    const firstId = /sent (\S+) \(assist\)/.exec(first.stdout)[1];
+    x.comms.expireCache(x.fx.brainB);
+    assert.match(x.fx.runB('comms.mjs', ['receive']).stdout, /decision A/);
+    x.comms.expireCache(x.fx.brainB);
+    assert.match(x.fx.runB('comms.mjs', ['list']).stdout, /no waiting messages/);
+    const late = x.fx.runB('comms.mjs', ['ack', '--id', firstId]);
+    assert.equal(late.status, 0, late.out);
+
+    const id2 = x.ask('second question');
+    assert.equal(x.reply(id2, 'otázka', 'operator decides').status, 0);
+    x.comms.expireCache(x.fx.brainB);
+    assert.equal(x.fx.runB('comms.mjs', ['receive']).status, 0);
+    x.comms.expireCache(x.fx.brainB);
+    assert.match(x.fx.runB('comms.mjs', ['list']).stdout, /1 waiting/);
+  } finally { await x.done(); }
+});
+
 test('sender side: the mail line names the interim state, the timer is re-armed for a state check (otázka 4 h, doubling) and the final reply clears it', { skip }, async () => {
   const x = await exchange();
   try {

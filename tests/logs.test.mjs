@@ -11,6 +11,36 @@ const logView = (fx, name) => { const l = readLog(fx.brain, name, { rotationDays
 
 const policy = loadPolicy(null);
 
+// P-030: a sequence counts distinct sessions and only the maximal one is reported.
+const flushSeq = (fx, session, runs) => {
+  for (const commands of runs) bufferAppend(fx.brain, session, { kind: 'cmd', commands });
+  const r = fx.run('log.mjs', ['flush', '--session', session]);
+  assert.equal(r.status, 0, r.out);
+  return r.out.split('\n').filter((l) => l.startsWith('sequence '));
+};
+
+test('P-030: repeats inside one session are one routine; three sessions reach the threshold', () => {
+  const fx = setup();
+  try {
+    const step = ['npm ci', 'npm test'];
+    assert.deepEqual(flushSeq(fx, 's1', [step, ['x'], step, ['x'], step, ['x'], step]), []);
+    assert.deepEqual(flushSeq(fx, 's2', [step]), []);
+    assert.equal(flushSeq(fx, 's3', [step]).length, 1);
+  } finally { fx.cleanup(); }
+});
+
+test('P-030: only the maximal sequence is reported, not its sub-sequences', () => {
+  const fx = setup();
+  try {
+    const run = ['git fetch', 'git rebase', 'npm test'];
+    flushSeq(fx, 's1', [run]);
+    flushSeq(fx, 's2', [run]);
+    const signals = flushSeq(fx, 's3', [run]);
+    assert.equal(signals.length, 1, signals.join('\n'));
+    assert.match(signals[0], /^sequence git-fetch\+git-rebase\+npm-test 3x:/);
+  } finally { fx.cleanup(); }
+});
+
 test('normalization: program + first subcommand, compound commands split, read-only commands skipped', () => {
   assert.deepEqual(normalizeCommand('git fetch origin && git rebase -i origin/main && npm test -- --watch', policy), ['git fetch', 'git rebase', 'npm test']);
   assert.deepEqual(normalizeCommand('NODE_ENV=test node bin/x.mjs --flag | head -3', policy), ['node x.mjs', 'head']);
@@ -86,6 +116,23 @@ test('P-030: quoted text, heredoc bodies and reading commands are not sequence s
   // shell keywords are syntax, text filters only read (Bob 2026-11-03: `for+echo`, `tr+echo` proposed as skills)
   assert.deepEqual(steps('for f in a b; do echo $f; npm test; done'), ['npm test']);
   assert.deepEqual(steps('if [ -f x ]; then rm x; fi; while read l; do printf "%s" $l | cut -c1-5 | tr a b; done < f'), ['rm']);
+});
+
+// Audit 2.3a: Stop commits the log locally; push waits for the next brain write or logs.stop_push_minutes.
+test('Stop commits logs locally and pushes only when the oldest unpushed commit is older than logs.stop_push_minutes', () => {
+  const fx = setup();
+  try {
+    const bash = (s) => fx.hook('post-tool-use.mjs', { session_id: s, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_response: { stdout: 'ok', stderr: '' } });
+    const ahead = () => Number(fx.git(fx.brain, 'rev-list', '--count', 'origin/main..HEAD'));
+    bash('p1'); bash('p1');
+    assert.deepEqual(fx.hook('stop.mjs', { session_id: 'p1' }).json, {});
+    assert.match(fx.git(fx.brain, 'log', '--format=%s', '-1'), /logs flush p1$/);
+    assert.equal(ahead(), 1, 'Stop leaves the log commit local');
+    fs.writeFileSync(path.join(fx.brain, 'policy.json'), JSON.stringify({ logs: { stop_push_minutes: 0 } }));
+    bash('p2'); bash('p2');
+    fx.hook('stop.mjs', { session_id: 'p2' });
+    assert.equal(ahead(), 0, 'with the interval elapsed Stop pushes');
+  } finally { fx.cleanup(); }
 });
 
 test('sequence normalization skips shell groups and keeps the program of $(...) assignments', async () => {

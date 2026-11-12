@@ -9,7 +9,7 @@
 //   comms.mjs ack --id <id>[,<id>]                      message stops waiting
 //   comms.mjs message --id <id>                         state of a message you sent, without its body: pickup, answer state
 //   comms.mjs settle --id <id>[,<id>]                   picked assist answered another way (no reply --reply-to)
-//   comms.mjs send --level blocker|steer|assist (--to [<project>/]<topic> | --to @<persona>/main) (--text "..." | --file <path>) [--ttl 5m|30m] [--from <held topic>] [--cancels <id>]
+//   comms.mjs send --level blocker|steer|assist (--to [<project>/]<topic> | --to @<persona>/main) (--text "..." | --file <path>) [--ttl 5m|30m] [--from <held topic>] [--cancels <id>] [--key <key>]
 //   comms.mjs send --reply-to <id> --state hotovo|otázka|čakám [--wait-for "<what>"] [--text ...]
 //                                                       reply with its state (P-061): one final `hotovo` per message, a reply is never answered
 //                                                       by a reply; --cancels <id> on a new message withdraws your own final reply <id>
@@ -272,11 +272,14 @@ function cmdSend(ctx) {
   const replyState = args.state === true || args.state === undefined ? null : String(args.state);
   const waitFor = args['wait-for'] === true || args['wait-for'] === undefined ? null : String(args['wait-for']).trim();
   const cancels = args.cancels === true || args.cancels === undefined ? null : String(args.cancels);
+  // --key: a repeated message with the same key replaces the sender's unpicked one (audit 2.4: a cron sent one blocker every 15 min).
+  const key = args.key === true || args.key === undefined || !String(args.key).trim() ? null : String(args.key).trim();
   if (replyTo) {
     if (!STATES.includes(replyState)) fail(`--state is required with --reply-to: ${STATES.join('|')} (hotovo: the final answer, facts only, one per message; otázka: the decision is your operator's, the sender waits; čakám: you wait for an event, name it with --wait-for; P-061)`);
     if (replyState === 'čakám' && !waitFor) fail('--state čakám needs --wait-for "<what>": the event you wait for (worker, build, other mail); being busy is not a state, the pickup already shows it (P-061)');
     if (replyState !== 'čakám' && waitFor) fail('--wait-for belongs to --state čakám only');
     if (cancels) fail('--cancels belongs to a new message (--level, --to), not to a reply');
+    if (key) fail('--key belongs to a new message (--level, --to), not to a reply');
     // P-061 (fáza 2): `hotovo` is true only when the operator spoke after the question. The previous turn of this thread ended
     // `Stav: otázka` and this turn was not started by the operator (mail bell, keepalive, timer): the true state is `otázka`.
     if (replyState === 'hotovo' && ctx.brainDir && ctx.thread && !inSubagent()) {
@@ -324,6 +327,7 @@ function cmdSend(ctx) {
   // TTL is the pickup deadline (service defaults and maxima: blocker 5m, steer 5m, assist 30m; a shorter --ttl only).
   if (args.ttl !== undefined && args.ttl !== true) clientArgs.push('--ttl', String(args.ttl));
   if (cancels) clientArgs.push('--cancels', cancels);
+  if (key) clientArgs.push('--supersede-key', key);
   const from = fromTopic(ctx, replyTo);
   if (from) clientArgs.push('--from-project', s.project, '--from-topic', from);
   const res = runClient(ctx, clientArgs, { input: String(text) });
