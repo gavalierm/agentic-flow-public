@@ -44,12 +44,82 @@ function tokens(segment) {
  * asked the operator), and a `/** comment` inside it is no path (alice 2026-11-08: it matched a refused temp file and
  * locked the write to scratch/ the refusal named). A body fed to a shell (`bash <<EOF`, `ssh host <<EOF`) is executed and stays.
  */
-const SHELL_RUNNERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ssh', 'sudo', 'su', 'eval', 'xargs', 'env', 'nohup', 'time']);
+const SHELL_BINS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh']);
+const STRING_RUNNERS = new Set(['ssh', 'su', 'eval', 'watch']);
+// Programs that run the next program: `sudo git commit -m "x"` runs git, `timeout 5 bash -c "x"` runs a shell.
+const WRAPPERS = new Set(['sudo', 'doas', 'env', 'nohup', 'time', 'timeout', 'nice', 'ionice', 'setsid', 'stdbuf', 'command', 'exec', 'xargs', 'flock', 'then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{']);
+// Wrapper options that take a separate value: `sudo -u root bash -c "x"` still runs a shell.
+const WRAPPER_VALUED = {
+  sudo: ['-u', '-g', '-h', '-p', '-C', '-D', '-R', '-T', '-U', '-r', '-t'], doas: ['-u', '-C'], env: ['-u', '-C', '-S'],
+  timeout: ['-s', '-k'], nice: ['-n'], ionice: ['-c', '-n', '-p'], stdbuf: ['-i', '-o', '-e'], flock: ['-w', '-E'],
+  xargs: ['-I', '-n', '-P', '-L', '-d', '-E', '-s', '-a', '-l'],
+};
+/**
+ * Does this command (its words, quoted arguments as placeholders) hand its quoted text or heredoc body to a shell?
+ * True for a shell with -c or reading stdin (`bash -c "x"`, `bash - <<EOF`), for ssh/su/eval/watch, also behind wrappers
+ * (`sudo bash <<EOF`, `timeout 5 sh -c "x"`, `FOO=1 bash <<EOF`, `then bash -c "x"`). False for a shell that runs a script file
+ * (`sh run.sh -m "x"`), for `sudo tee f <<EOF`, `env A=1 git commit -m "x"`, `xargs echo "x"`: their text is data (alice 2026-11-12:
+ * `sh prove-commit.sh … -m "…chmod -R … sudo …"` asked the operator).
+ */
+export function runsText(words) {
+  const w = words.map((x) => x.replace(/^\(+/, '')).filter((x) => x && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(x));
+  let wrapper = null;
+  for (let i = 0; i < w.length; i++) {
+    const prog = w[i].split('/').pop();
+    if (wrapper && WRAPPER_VALUED[wrapper]?.includes(w[i])) { i++; continue; }
+    if (WRAPPERS.has(prog)) wrapper = prog;
+    if (STRING_RUNNERS.has(prog)) return true;
+    if (SHELL_BINS.has(prog)) {
+      for (let j = i + 1; j < w.length; j++) {
+        if (/^-[A-Za-z]*c[A-Za-z]*$/.test(w[j])) return true;
+        if (/^\d*[<>]/.test(w[j])) { if (/^\d*[<>]+&?$/.test(w[j])) j++; continue; }
+        if (w[j].startsWith('-') && w[j] !== '--') continue;
+        return false;
+      }
+      return true;
+    }
+    if (!WRAPPERS.has(prog) && !(i > 0 && (w[i].startsWith('-') || /^\d+(\.\d+)?[smhd]?$|^\{\}$/.test(w[i])))) return false;
+  }
+  return false;
+}
+/**
+ * Heredoc bodies removed (the command line with `<<DELIM` stays); the one implementation every heredoc removal uses
+ * (maskShell, withoutDataHeredocs, readParts, foregroundWait). The delimiter is any shell word, not only an identifier:
+ * `<<'END-OF-BRIEF'`, `<<'.'`, `<<\EOF`, `<<"EOF 2"`. `<<<` is a here-string, not a heredoc. An unterminated heredoc keeps
+ * its text (the shell would fail on it). `keep(head, line)` (head = text before `<<` on its line, line = from `<<` to the
+ * end of the line) returns true for a body that stays, e.g. one given to a shell.
+ */
+export function stripHeredocs(command, keep = null) {
+  command = String(command);
+  const re = /(?<!<)<<(?!<)-?[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([^\s'"<>|;&()\\]+))[^\n]*\n/g;
+  let out = '';
+  let pos = 0;
+  let m;
+  while ((m = re.exec(command))) {
+    const delim = m[1] ?? m[2] ?? m[3];
+    const bodyStart = m.index + m[0].length;
+    const lines = command.slice(bodyStart).split('\n');
+    let off = 0;
+    let endAt = -1;
+    for (const line of lines) {
+      if (line.trim() === delim) { endAt = bodyStart + off + line.length; break; }
+      off += line.length + 1;
+    }
+    if (endAt < 0) continue;
+    if (keep && keep(command.slice(command.lastIndexOf('\n', m.index - 1) + 1, m.index), m[0].slice(0, -1))) { re.lastIndex = endAt; continue; }
+    out += command.slice(pos, bodyStart - 1);
+    pos = endAt;
+    re.lastIndex = pos;
+  }
+  return out + command.slice(pos);
+}
+/** Does the heredoc whose line is `head<<…` get a shell (or a command with -c, ssh, eval: runsText) or is it piped into one? */
+export function heredocRuns(head, line) {
+  const words = head.split(/&&|\|\||;|\|/).pop().trim().split(/\s+/).filter(Boolean);
+  return runsText(words) || /\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b/.test(line.replace(/^<<-?[ \t]*(?:'[^'\n]+'|"[^"\n]+"|\\?[^\s'"<>|;&()\\]+)/, ''));
+}
 export function withoutDataHeredocs(command) {
-  return String(command).replace(/([^\n]*?)<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2[^\n]*\n[\s\S]*?\n\s*\3\s*(?=\n|$)/g, (m, head) => {
-    const prog = head.split(/&&|\|\||;|\|/).pop().trim().split(/\s+/)[0]?.split('/').pop();
-    return SHELL_RUNNERS.has(prog) ? m : m.split('\n')[0];
-  });
+  return stripHeredocs(command, heredocRuns);
 }
 
 export function segments(cmd) {
@@ -240,6 +310,10 @@ export function guardConfigWrite(projectDir, absPaths) {
 export function gitHookBypass(command) {
   const cmd = String(command || '');
   if (/\bgit\b[^;&|\n]*\b(commit|push|merge|am|rebase|cherry-pick)\b[^;&|\n]*\s--no-verify\b/.test(cmd)) return '--no-verify';
-  if (/\bgit\b[^;&|\n]*(core\.hooksPath(=|[ \t]+[^\s;&|-])|--unset(-all)?[ \t]+core\.hooksPath)/.test(cmd)) return 'core.hooksPath';
+  // A repo-relative path (`git config core.hooksPath .githooks`) turns the repo's own hooks ON; /dev/null, an absolute path,
+  // `..` or --unset turn them off (alice 2026-11-02/03: `git config core.hooksPath .githooks` asked the operator).
+  const set = /\bgit\b[^;&|\n]*core\.hooksPath(?:=|[ \t]+)([^\s;&|-][^\s;&|]*)/.exec(cmd);
+  if (set && !/^(?!\.\.?(\/|$))(?!.*\/\.\.(\/|$))[\w.][\w.\/-]*$/.test(set[1].replace(/^['"]|['"]$/g, ''))) return 'core.hooksPath';
+  if (/\bgit\b[^;&|\n]*--unset(-all)?[ \t]+core\.hooksPath/.test(cmd)) return 'core.hooksPath';
   return null;
 }

@@ -133,3 +133,15 @@ test('P-053: workers default to the cheap model from policy; other env keys are 
     assert.match(text, new RegExp(`^model: ${policy.subagents.default_model}$`, 'm'), `${a}.md model equals policy default`);
   }
 });
+
+// Harness audit 2026-11-12: the tracked .claude/settings.json of this repo kept the native deny of v0.8.8 (Edit(~/.claude/**),
+// Edit(.claude/skills/**)) after D-0011 removed it from the adapter. Every clone and worktree of the repo inherits the file,
+// so the harness refused sed/cp/mkdir/redirects there with "blocked by a deny rule" and no hook decision. The tracked file
+// must equal what the adapter generates today. The public copy carries no .claude/ (publish rules): nothing to compare there.
+const trackedSettings = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '.claude', 'settings.json');
+test('tracked .claude/settings.json of the repo carries the permissions the adapter generates (no stale native deny)', { skip: !fs.existsSync(trackedSettings) && 'no .claude/settings.json in this copy' }, () => {
+  const file = trackedSettings;
+  const tracked = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(tracked.permissions.deny, undefined, 'native deny was removed by D-0011');
+  assert.deepEqual(tracked.permissions, claudeSettings(loadPolicy(null), null).permissions);
+});

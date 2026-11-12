@@ -112,3 +112,15 @@ test('domain move: the write hook asks the operator before a move, the plan runs
     assert.equal(decision('git log --grep domain-move.mjs; echo domain-move.mjs'), null);
   } finally { fx.cleanup(); }
 });
+
+// Audit "false approvals" 2026-11-12: domain-move.mjs without a domain argument only prints its usage and moves nothing; it asked anyway.
+test('domain move: the script without a domain argument (usage only) asks nothing', () => {
+  const fx = setup();
+  try {
+    const decision = (command) => fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }).json.hookSpecificOutput?.permissionDecision || null;
+    assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs'), null);
+    assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs finish'), null);
+    assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs --to /x'), null);
+    assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs ~/agentic/Carol --to /x'), 'ask');
+  } finally { fx.cleanup(); }
+});

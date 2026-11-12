@@ -239,3 +239,18 @@ test('hook: a write refused outside the project does not lock reading other targ
     assert.equal(analyze('Bash', { command: `for s in a b; do grep -c x ${skills}/a/SKILL.md; done` }, fx.root).write, false, 'for/do/done are shell keywords, not writing programs');
   } finally { fx.cleanup(); }
 });
+
+// Audit 2026-11-12 (other part): `git config core.hooksPath .githooks` (turns the repo hooks on) asked as a hook bypass.
+test('gitHookBypass: a repo-relative core.hooksPath switches the repo hooks on, /dev/null, absolute, .. and --unset switch them off', () => {
+  assert.equal(gitHookBypass('cd agent-playbook && git config core.hooksPath .githooks'), null);
+  assert.equal(gitHookBypass('git config core.hooksPath .husky/_'), null);
+  assert.equal(gitHookBypass('git -c core.hooksPath=.githooks commit -m y'), null);
+  assert.equal(gitHookBypass('git config core.hooksPath /dev/null'), 'core.hooksPath');
+  assert.equal(gitHookBypass('git -c core.hooksPath=/dev/null rm -rq bin'), 'core.hooksPath');
+  assert.equal(gitHookBypass('git config core.hooksPath ../empty'), 'core.hooksPath');
+  assert.equal(gitHookBypass('git config core.hooksPath hooks/../../empty'), 'core.hooksPath');
+  assert.equal(gitHookBypass('git config core.hooksPath /tmp/none'), 'core.hooksPath');
+  assert.equal(gitHookBypass('git config core.hooksPath ""'), 'core.hooksPath');
+  assert.equal(gitHookBypass('git config --unset core.hooksPath'), 'core.hooksPath');
+  assert.equal(gitHookBypass('git config core.hooksPath'), null);
+});

@@ -2,10 +2,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { setup } from './helpers.mjs';
-import { accountEmailCall, foregroundWait, gitBashPath, recursiveModeChange, shellWriteTargets } from '../hooks/pre-tool-use.mjs';
+import { accountEmailCall, bashTargets, executedText, forcedAddIgnored, foregroundWait, gitBashPath, gitWriteDirs, historyOperation, maskShell, recursiveModeChange, stripHeredocs, shellWriteTargets } from '../hooks/pre-tool-use.mjs';
+import { runsText, withoutDataHeredocs } from '../scripts/bypass.mjs';
+import { inPlaceEdits } from '../scripts/own-files.mjs';
 
 const MAIL = 'owner@example.test';
 
@@ -365,4 +368,224 @@ test('account email: the hook denies the first call and lets the same call throu
     const again = fx.hook('pre-tool-use.mjs', call, { env: { CLAUDE_CONFIG_DIR: cfg } });
     assert.doesNotMatch(JSON.stringify(again.json), /account email/);
   } finally { fx.cleanup(); }
+});
+
+// Audit "false approvals" 2026-11-12 (heredoc part): quoted text and heredoc bodies are data unless a shell gets them.
+test('executedText: quoted text after a script runner or wrapper is data, a shell behind a wrapper still runs it', () => {
+  const s = '/p/scratch';
+  const ask = ['git reset --hard', 'git push --force'];
+  const hist = (c) => historyOperation(executedText(c).replace(/\s+/g, ' '), ask);
+  // data: alice 2026-11-12 09:37, sh prove-commit.sh ... -m "...chmod -R ... sudo bash -c ..." asked the operator
+  assert.equal(recursiveModeChange('sh .claude/skills/fix/prove-commit.sh ../flow t.mjs -m "fix: chmod -R 755 text"', '/', s), null);
+  assert.equal(recursiveModeChange("bash scratch/s.sh --x 'chown -R u .'", '/', s), null);
+  assert.equal(recursiveModeChange('sudo git commit -m "chmod -R 755 x"', '/', s), null);
+  assert.equal(hist('env A=1 git commit -m "git reset --hard"'), null);
+  assert.equal(hist('nohup node x.mjs --text "git push --force" &'), null);
+  assert.equal(hist('time node x.mjs "git reset --hard"'), null);
+  assert.equal(hist('ls | xargs echo "git reset --hard"'), null);
+  assert.equal(hist("bash scripts/run.sh <<'EOF'\ngit reset --hard is text\nEOF"), null, 'script reads the body as data');
+  assert.equal(hist("sudo tee /etc/x <<'EOF'\ngit reset --hard\nEOF"), null);
+  // delimiter with - or .: still a data heredoc
+  assert.equal(hist("cat > f <<'END-OF-TEXT'\ngit reset --hard\nEND-OF-TEXT"), null);
+  assert.equal(recursiveModeChange("cat > f <<'EOF.md'\nchmod -R 777 /srv\nEOF.md", '/', s), null);
+  // executed: a shell behind a wrapper, keyword or assignment
+  assert.ok(recursiveModeChange('timeout 5 bash -c "chmod -R 777 /srv"', '/', s));
+  assert.ok(recursiveModeChange("nice -n 5 bash -c 'chmod -R 777 /srv'", '/', s));
+  assert.ok(recursiveModeChange("if true; then bash -c 'chmod -R 777 /srv'; fi", '/', s));
+  assert.ok(recursiveModeChange("ls | xargs -I{} sh -c 'chmod -R 777 /srv'", '/', s));
+  assert.ok(recursiveModeChange("X=1 bash <<'EOF'\nchmod -R 777 /srv\nEOF", '/', s));
+  assert.ok(recursiveModeChange("timeout 5 bash <<'EOF'\nchmod -R 777 /srv\nEOF", '/', s));
+  assert.ok(hist('sudo sh -c "git reset --hard"'));
+  assert.ok(hist("ssh host <<EOF\ngit reset --hard\nEOF"));
+  assert.ok(hist("cat <<EOF | bash\ngit reset --hard\nEOF"), 'a body piped into a shell runs');
+});
+
+test('runsText: shell with -c or stdin, ssh/eval, behind wrappers; not a script file', () => {
+  assert.equal(runsText(['sh', 'run.sh', '-m', 'Q']), false);
+  assert.equal(runsText(['bash', '-c', 'Q']), true);
+  assert.equal(runsText(['bash', '-lc', 'Q']), true);
+  assert.equal(runsText(['bash', '-']), true);
+  assert.equal(runsText(['timeout', '5', 'sh', '-c', 'Q']), true);
+  assert.equal(runsText(['ssh', 'host']), true);
+  assert.equal(runsText(['git', 'commit', '-m', 'Q']), false);
+  // a wrapper option with a value does not hide the shell behind it
+  assert.equal(runsText(['sudo', '-u', 'root', 'bash', '-c', 'Q']), true);
+  assert.equal(runsText(['timeout', '-s', 'KILL', '5', 'sh', '-c', 'Q']), true);
+  assert.equal(runsText(['sudo', '-u', 'root', 'git', 'commit', '-m', 'Q']), false);
+  assert.ok(withoutDataHeredocs("bash <<'EOF'\nx\nEOF").includes('x'));
+  assert.ok(!withoutDataHeredocs("cat > f <<'EOF'\nx\nEOF").includes('x'));
+});
+
+test('P-061: foregroundWait: the words watch/until/while in other words, escaped backticks and a dry run are no wait', () => {
+  assert.equal(foregroundWait('for f in post-tool-watch reminder-handover; do echo $f; done'), null, 'post-tool-watch is a name');
+  assert.equal(foregroundWait('git log --oneline -- hooks/post-tool-watch.mjs'), null);
+  assert.equal(foregroundWait('git log --until=2026-11-01 --oneline | head -3; sleep 2'), null, '--until is an option');
+  assert.equal(foregroundWait('claude send "run \\`sleep 120\\` now"'), null, 'escaped backticks are text');
+  assert.equal(foregroundWait('grep -c "sleep 60" f'), null, '-c of grep is no shell');
+  assert.equal(foregroundWait('git commit -c HEAD -m "sleep 60"'), null);
+  assert.equal(foregroundWait("cat > f <<'END-OF'\nsleep 60\nEND-OF"), null);
+  assert.equal(foregroundWait('watch ls'), 'watch');
+  assert.equal(foregroundWait('echo "x `sleep 60`"'), 'sleep 60', 'a real command substitution stays');
+  assert.equal(foregroundWait("bash <<'EOF'\nsleep 60\nEOF"), 'sleep 60', 'heredoc given to a shell runs');
+  assert.equal(foregroundWait("ssh host <<EOF\nsleep 60\nEOF"), 'sleep 60');
+  assert.equal(foregroundWait('ok=1; while true; do sleep 2; done'), 'loop with sleep');
+});
+
+test('forcedAddIgnored: a dry run (-n) of git add -f touches nothing and does not deny', () => {
+  const fx = setup();
+  try {
+    fs.mkdirSync(path.join(fx.project, 'sk'), { recursive: true });
+    fs.writeFileSync(path.join(fx.project, '.gitignore'), 'sk/ig.txt\n');
+    fs.writeFileSync(path.join(fx.project, 'sk/ig.txt'), 'x');
+    fs.writeFileSync(path.join(fx.project, 'sk/ok.txt'), 'x');
+    assert.ok(forcedAddIgnored('git add -f sk', fx.project), 'control: forced add of a folder with ignored files denies');
+    assert.equal(forcedAddIgnored('git add -n -f sk', fx.project), null);
+    assert.equal(forcedAddIgnored('git add --dry-run --force sk', fx.project), null);
+  } finally { fx.cleanup(); }
+});
+
+// Audit "false approvals" 2026-11-12 (truth part): `git tag --sort=-creatordate | head -3` in a foreign topic_owned repo was denied as a change.
+test('git tag listing and stash list are no repository change (topic_owned false deny)', () => {
+  const cwd = '/x/repo';
+  assert.deepEqual(gitWriteDirs('git tag --sort=-creatordate | head -3', cwd), []);
+  assert.deepEqual(gitWriteDirs('git tag -l "v0.*"', cwd), []);
+  assert.deepEqual(gitWriteDirs('git tag', cwd), []);
+  assert.deepEqual(gitWriteDirs('git stash list', cwd), []);
+  assert.deepEqual(gitWriteDirs('git tag v1.0.0', cwd), [cwd]);
+  assert.deepEqual(gitWriteDirs('git tag -d v1.0.0', cwd), [cwd]);
+  assert.deepEqual(gitWriteDirs('git stash', cwd), [cwd]);
+  assert.deepEqual(gitWriteDirs('git tag -l --sort=x && git commit -m a', cwd), [cwd]);
+});
+
+// Audit "false approvals" 2026-11-12 (P-018 part): `git clean -nd` (a dry run in a flag cluster) asked as a history rewrite.
+test('a dry-run git clean in a flag cluster is no history rewrite (P-018)', () => {
+  const asks = ['git reset --hard', 'git clean', 'git push --force', 'git branch -D'];
+  const except = ['git restore --staged', 'git clean -n', 'git clean --dry-run'];
+  const op = (c) => historyOperation(executedText(c).replace(/\s+/g, ' '), asks, except);
+  for (const c of ['git clean -nd', 'git clean -ndx', 'git clean -dn', 'git clean -n -d', 'git clean --dry-run -d']) assert.equal(op(c), null, c);
+  for (const c of ['git clean -fd', 'git clean -d', 'git clean -nd && git clean -fd']) assert.ok(op(c), c);
+});
+
+// Audit 2026-11-12 (P-018 part): a heredoc body with a delimiter like END-X or a comment held commands and redirects that were not there.
+test('heredoc bodies with any delimiter and comments are no commands or redirects (P-018)', () => {
+  for (const delim of ["'END-X'", "'EOF'", '"E_1"', '\\EOF', "'a.b'"]) {
+    const bare = delim.replace(/['"\\]/g, '');
+    const cmd = `cat > note.txt <<${delim}\nrm a b c d e f\necho z > victim\n${bare}\nls`;
+    assert.deepEqual(bashTargets(cmd, '/w'), ['/w/note.txt'], delim);
+  }
+  assert.deepEqual(bashTargets('cat <<< "x" > out.txt', '/w'), ['/w/out.txt']);
+  assert.deepEqual(bashTargets("ls # then rm a > b\necho don't\nrm c", '/w'), ['/w/c']);
+  assert.equal(maskShell("echo 'a # b' # c").trim(), "echo 'a\u0005#\u0005b'");
+});
+
+// Audit 2026-11-12 (P-018 part): `rm -f x 2> /dev/null`, `cp -t dst a b`, `>>` and one file named six times asked as an overwrite of many files.
+test('redirect operands, -t, appends and repeated targets are no overwrites of many files (P-018)', () => {
+  assert.deepEqual(bashTargets('rm -f x 2> /dev/null', '/w'), ['/w/x']);
+  assert.deepEqual(bashTargets('rm -f x > /dev/null', '/w'), ['/w/x']);
+  assert.deepEqual(bashTargets('cp -t dst a b', '/w'), ['/w/dst/a', '/w/dst/b']);
+  assert.deepEqual(bashTargets('cp --target-directory=dst a b', '/w'), ['/w/dst/a', '/w/dst/b']);
+  assert.deepEqual(bashTargets('mv -t dst a b', '/w').filter((t) => t.includes('/dst/')), ['/w/dst/a', '/w/dst/b']);
+  assert.deepEqual(bashTargets('cp -a src/. dst/', '/w'), []);
+  assert.deepEqual(bashTargets('echo 1 >> log; echo 2 > out', '/w', { skipAppend: true }), ['/w/out']);
+  const fx = setup();
+  try {
+    for (const f of ['u1', 'u2', 'u3', 'u4']) fs.writeFileSync(path.join(fx.project, f), 'x\n');
+    fs.mkdirSync(path.join(fx.project, 'dst'));
+    const decision = (command) => fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }).json.hookSpecificOutput?.permissionDecision;
+    // appending to a file the thread did not make loses nothing; one file named six times is one file
+    assert.notEqual(decision('echo more >> u1'), 'ask');
+    assert.notEqual(decision('echo 1 >> u2; echo 2 >> u2; echo 3 >> u2; echo 4 >> u2; echo 5 >> u2; echo 6 >> u2'), 'ask');
+    assert.notEqual(decision('cp -t dst README.md u3'), 'ask');
+    assert.notEqual(decision('rm -f nothere 2> /dev/null'), 'ask');
+    assert.notEqual(decision('cp -a src/. dst/'), 'ask');
+    // the cleanup of what the thread made with mkdir, touch and tee is its own
+    assert.notEqual(decision('mkdir -p made/sub && touch made/sub/f && touch t1'), 'ask');
+    fs.mkdirSync(path.join(fx.project, 'made', 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(fx.project, 'made', 'sub', 'f'), '');
+    fs.writeFileSync(path.join(fx.project, 't1'), '');
+    assert.notEqual(decision('rm -rf made'), 'ask');
+    assert.notEqual(decision('rm t1'), 'ask');
+    // overwriting a file the thread did not make still asks
+    assert.equal(decision('echo new > u4'), 'ask');
+    assert.equal(decision('rm u3'), 'ask');
+  } finally { fx.cleanup(); }
+});
+
+const W = (c) => shellWriteTargets(c, '/w', { HOME: '/h' }).map((t) => t.path);
+
+// Audit "false approvals" 2026-11-12 (write part): a heredoc with delimiter END-OF-BRIEF, '.' or \EOF was not removed and `cp a /tmp/b` in its text asked about /tmp.
+test('text in a heredoc with any delimiter is no command or path', () => {
+  assert.deepEqual(W("cat <<'END-OF-BRIEF'\ncp a /tmp/b\ntee /tmp/z\nEND-OF-BRIEF"), []);
+  assert.deepEqual(W("cat > /w/f <<'.'\ncp a /tmp/b\n."), ['/w/f']);
+  assert.deepEqual(W('cat > /w/f <<\\EOF\ncp a /tmp/b\nEOF'), ['/w/f']);
+  assert.deepEqual(W('cat > /w/f <<"EOF 2"\ntee /tmp/b\nEOF 2'), ['/w/f']);
+  assert.equal(stripHeredocs('cat <<< "x" > f'), 'cat <<< "x" > f');
+});
+
+// Audit 2026-11-12 (write part): `git commit -m x # note > /tmp/x` took the comment for a redirect to /tmp/x.
+test('a shell comment is no command', () => {
+  assert.deepEqual(W('git commit -m x # note > /tmp/x'), []);
+  assert.deepEqual(W('ls # rm /tmp/x'), []);
+  assert.ok(!maskShell('ls # rm /tmp/x').includes('/tmp/x'));
+});
+
+// Audit 2026-11-12 (write part): `grep -- --output /etc`, `tar -czf a -C /etc`, `touch -r /etc/hosts f`, `mktemp -u`, `curl -o -` and `tee >(cmd)` asked about a write outside the project.
+test('options of read-only commands are data, not output files', () => {
+  for (const c of [
+    'grep -rn -- "--output" /etc/x', 'grep -rn -e "--log-file" /etc/nginx', 'echo --output /etc/x', 'ls -o /etc',
+    'rg -n -- --prefix /usr/local/lib/x', 'tar -czf /w/a.tgz -C /etc ssh', 'tar -tf a.tar -C /srv', 'unzip -l a.zip -d /srv',
+    'git archive --prefix=/x/ -o /w/a.tar HEAD', 'npm ls --prefix /usr/local', 'npm run test --prefix /srv/x', 'rsync -o /etc/hosts ./h',
+    'touch -r /etc/hosts /w/f', 'touch -d "2020-01-01" /w/f', 'mktemp -u', 'curl -sS -o - https://x', 'sshfs -o ro,reconnect h:/d /w/m',
+    'cat f | tee >(wc -l) > /dev/null', 'sed -nE "s/a/b/p" /etc/hosts',
+  ]) assert.deepEqual(W(c).filter((p) => !p.startsWith('/w/')), [], c);
+});
+
+// Audit 2026-11-12 (write part): `timeout 5 curl -o /srv/x` and `sudo -u root cp a /etc/b` hid the real program from the write check; `timeout 5 ls -o /etc` asked as a write.
+test('wrapped programs are looked through', () => {
+  assert.deepEqual(W('timeout 5 curl -o /srv/x https://x'), ['/srv/x']);
+  assert.deepEqual(W('sudo -u root cp a /etc/b'), ['/etc/b']);
+  assert.deepEqual(W('env -u X cp a /etc/b'), ['/etc/b']);
+  assert.deepEqual(W('xargs -I{} cp {} /etc/'), ['/etc']);
+  assert.deepEqual(W('timeout 5 ls -o /etc'), []);
+});
+
+// Audit 2026-11-12 (write part): control for the above, real writes still count as targets.
+test('real writes stay targets', () => {
+  assert.deepEqual(W('tar -xf a.tar -C /srv/x'), ['/srv/x']);
+  assert.deepEqual(W('unzip a.zip -d /srv/x'), ['/srv/x']);
+  assert.deepEqual(W('npm install --prefix /srv/x'), ['/srv/x']);
+  assert.deepEqual(W('mktemp /srv/x.XXXXXX'), ['/srv/x.XXXXXX']);
+  assert.deepEqual(W('sort -o /srv/out in'), ['/srv/out']);
+  assert.deepEqual(W('curl -o /srv/out https://x'), ['/srv/out']);
+});
+
+// Audit 2026-11-12 (write part): `perl -MFile::Basename -e ... /etc/hosts` asked as an in-place edit (-M is a module, not -i).
+test('perl -M is a module, not an in-place edit', () => {
+  assert.deepEqual(inPlaceEdits(['perl', '-MFile::Basename', '-e', 'print 1', '/etc/hosts']), []);
+  assert.deepEqual(inPlaceEdits(['perl', '-Mstrict', '-ne', 'print', '/etc/hosts']), []);
+  assert.deepEqual(inPlaceEdits(['perl', '-pi', '-e', 's/a/b/', '/etc/hosts']), ['/etc/hosts']);
+  assert.deepEqual(inPlaceEdits(['sed', '-i', 's/a/b/', '/etc/hosts']), ['/etc/hosts']);
+});
+
+// Audit 2026-11-12 (other part): skarper 2026-11-10, `rm docs/firma/x.md && rmdir docs/firma docs` asked because rmdir counted as a removal of content.
+test('rmdir of a folder holding an untracked file asks nothing (it cannot remove content); rm of the file still asks', () => {
+  const fx = setup();
+  try {
+    fs.mkdirSync(path.join(fx.project, 'docs', 'firma'), { recursive: true });
+    fs.writeFileSync(path.join(fx.project, 'docs', 'firma', 'a.md'), 'x\n');
+    const ask = (command) => fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }).json.hookSpecificOutput?.permissionDecision;
+    assert.equal(ask('rmdir docs/firma docs'), undefined);
+    assert.equal(ask('rm docs/firma/a.md'), 'ask', 'a foreign untracked file still asks');
+    assert.equal(ask('rm -r docs && rmdir docs'), 'ask');
+  } finally { fx.cleanup(); }
+});
+
+// Audit 2026-11-12 (other part): `export TMPDIR=scratch/tmp; mkdir -p $TMPDIR` asked as a write into the system /tmp, because
+// expandTemp replaced $TMPDIR before the assignment in the same command was applied.
+test('$TMPDIR assigned in the same command is that value, not the system temp dir', () => {
+  const W2 = (c) => shellWriteTargets(c, '/w', { HOME: '/h' }).map((t) => t.path);
+  assert.deepEqual(W2('export TMPDIR=/w/scratch/t; mkdir -p $TMPDIR'), ['/w/scratch/t']);
+  assert.deepEqual(W2('TMP=scratch/t && mkdir -p ${TMP}/a'), ['/w/scratch/t/a']);
+  assert.deepEqual(W2('mkdir -p $TMPDIR/a'), [path.join(os.tmpdir(), 'a')], 'control: an unassigned $TMPDIR is still the system temp dir');
+  assert.deepEqual(W2('export TMPDIR=/w/s; mkdir -p $TEMP/a'), [path.join(os.tmpdir(), 'a')], 'only the variable assigned is replaced');
 });

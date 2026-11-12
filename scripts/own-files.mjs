@@ -83,7 +83,7 @@ export function settleOwn(ctx, files) {
 export function inPlaceEdits(words) {
   const prog = words[0]?.split('/').pop();
   if (prog !== 'sed' && prog !== 'perl') return [];
-  if (!words.some((w) => /^-[a-zA-Z]*i/.test(w) || w.startsWith('--in-place'))) return [];
+  if (!words.some((w) => /^-(?![MmIdDe])[0-9a-zA-Z]*i/.test(w) || w.startsWith('--in-place'))) return [];
   const positional = [];
   let hasScript = false;
   for (let i = 1; i < words.length; i++) {

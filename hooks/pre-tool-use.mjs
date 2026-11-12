@@ -18,7 +18,7 @@ import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell } from 
 import { catalogPreTool } from '../scripts/catalog/pretool.mjs';
 import { bigWriteDeny } from '../scripts/materialy.mjs';
 import { logDecision } from '../scripts/denials.mjs';
-import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, segments, stateDenials, transcriptDenials, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
+import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, heredocRuns, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-052', 'P-054', 'P-055'] };
 
@@ -72,8 +72,7 @@ function rememberCreated(ctx, abs) {
 }
 
 /** Data heredocs (scripts/bypass.mjs): bodies stored or read, not executed. */
-const SHELL_RUNNERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ssh', 'sudo', 'su', 'eval', 'xargs', 'env', 'nohup', 'time']);
-export { withoutDataHeredocs };
+export { withoutDataHeredocs, stripHeredocs };
 
 /**
  * The executed part of a command for the history check: data heredocs dropped, and quoted arguments of programs that
@@ -85,9 +84,8 @@ export function executedText(command) {
   const held = withoutDataHeredocs(command).replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, (q) => `\u0006${quoted.push(q) - 1}\u0006`);
   const out = [];
   for (const seg of held.split(/(\s*(?:&&|\|\||;|\n|\|)\s*)/)) {
-    const words = seg.trim().split(/\s+/).filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
-    const prog = (words[0] || '').replace(/^\(+/, '').split('/').pop();
-    out.push(seg.replace(/\u0006(\d+)\u0006/g, (m, i) => (SHELL_RUNNERS.has(prog) ? quoted[i] : 'Q')));
+    const runs = runsText(seg.trim().split(/\s+/));
+    out.push(seg.replace(/\u0006(\d+)\u0006/g, (m, i) => (runs ? quoted[i] : 'Q')));
   }
   return out.join('');
 }
@@ -96,8 +94,11 @@ export function executedText(command) {
 export function historyOperation(normalized, asks, except = []) {
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const hit = (a) => new RegExp(`(^|[\\s;&|("'])${esc(a)}(?=\\s|$|[;&|)"'])`).test(normalized);
+  // `git clean -nd`, `-ndx`, `-dn`: a dry run in a flag cluster lists files and removes nothing (the listed `git clean -n` is only the bare flag).
+  const dryRunOnly = (a) => a === 'git clean' && [...normalized.matchAll(/(?:^|[\s;&|("'])git clean((?:\s+-[^\s;&|)"']+)*)/g)]
+    .every((m) => m[1].split(/\s+/).some((f) => f === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/.test(f)));
   if (except.some(hit)) return null;
-  return asks.find(hit) || null;
+  return asks.find((a) => hit(a) && !dryRunOnly(a)) || null;
 }
 
 /** Directory of the code copies of topics next to the project (P-036). */
@@ -167,16 +168,52 @@ export function expandAssigned(command) {
  */
 export function expandTemp(command, tmp = os.tmpdir()) {
   const dir = String(tmp).replace(/ /g, MASK[' ']);
+  // A variable the command assigns itself (`export TMPDIR=scratch; mkdir -p $TMPDIR`) is left to expandAssigned, which expands it to that value.
+  const own = new Set([...String(command).matchAll(/(?:^|[\s;&|(])(?:export\s+)?(TMPDIR|TEMP|TMP)=/gi)].map((m) => m[1].toUpperCase()));
   return String(command)
-    .replace(/\$(?:\{(?:TMPDIR|TEMP|TMP)\}|(?:TMPDIR|TEMP|TMP)\b)|\$env:(?:TEMP|TMP)\b|%(?:TEMP|TMP)%|\[(?:System\.)?IO\.Path\]::GetTemp(?:Path|FileName)\(\)/gi, dir)
-    .replace(/\$\(\s*mktemp\b(?![^)]*(?:\s-p\b|--tmpdir=))[^)]*\)|`\s*mktemp\b(?![^`]*(?:\s-p\b|--tmpdir=))[^`]*`/g, `${dir}/mktemp`);
+    .replace(/\$(?:\{(TMPDIR|TEMP|TMP)\}|(TMPDIR|TEMP|TMP)\b)/gi, (m, a, b) => (own.has((a || b).toUpperCase()) ? m : dir))
+    .replace(/\$env:(?:TEMP|TMP)\b|%(?:TEMP|TMP)%|\[(?:System\.)?IO\.Path\]::GetTemp(?:Path|FileName)\(\)/gi, dir)
+    .replace(/\$\(\s*mktemp\b([^)]*)\)|`\s*mktemp\b([^`]*)`/g, (m, a, b) => {
+      const args = a ?? b ?? '';
+      if (/\s-p\b|--tmpdir=/.test(args)) return m;
+      return mktempTemplate(args) || `${dir}/mktemp`;
+    });
+}
+/**
+ * `mktemp scratch/x.XXXXXX` (a template and no -t) creates the file where the template says, relative to the cwd, not in
+ * the system temp dir; only a bare `mktemp`, `mktemp -d` or `mktemp -t …` uses TMPDIR. Returns the template or null.
+ */
+export function mktempTemplate(args) {
+  const words = String(args).trim().split(/\s+/).filter(Boolean);
+  if (words.some((w) => /^-[a-zA-Z]*t[a-zA-Z]*$/.test(w) || w === '--tmpdir')) return null;
+  const t = words.find((w) => !w.startsWith('-'));
+  return t && !/[$`'"()]/.test(t) ? t : null;
+}
+
+/** Comments removed (`# note > file`, an apostrophe in a comment no longer pairs with a later quote): `#` at the start of a word outside quotes. */
+export function stripComments(cmd) {
+  let out = '', q = null, i = 0;
+  while (i < cmd.length) {
+    const c = cmd[i];
+    if (q) {
+      out += c;
+      if (c === '\\' && q !== "'") { out += cmd[i + 1] ?? ''; i += 2; continue; }
+      if (c === (q === '"' ? '"' : "'")) q = null;
+      i++; continue;
+    }
+    if (c === '\\') { out += c + (cmd[i + 1] ?? ''); i += 2; continue; }
+    if (c === "'" || c === '"') { q = c; out += c; i++; continue; }
+    if (c === '#' && (i === 0 || /[\s;&|(]/.test(cmd[i - 1]))) { while (i < cmd.length && cmd[i] !== '\n') i++; continue; }
+    out += c; i++;
+  }
+  return out;
 }
 
 /** Heredoc bodies removed, operators and spaces inside quotes masked, so only real shell syntax is parsed. */
 export function maskShell(command) {
   let cmd = expandAssigned(expandTemp(String(command)));
-  cmd = cmd.replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n\s*\2\s*(?=\n|$)/g, (m) => m.split('\n')[0]);
-  return cmd.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, (q) => q.replace(/[>;&| ]/g, (c) => MASK[c]));
+  cmd = stripHeredocs(cmd);
+  return stripComments(cmd).replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, (q) => q.replace(/[>;&| ]/g, (c) => MASK[c]));
 }
 export const unmask = (s) => s.replace(/[\u0001-\u0005]/g, (c) => UNMASK[c]).replace(/^['"]|['"]$/g, '');
 
@@ -265,7 +302,7 @@ export function grepNoFilename(command) {
   return null;
 }
 
-export function bashTargets(command, cwd = process.cwd()) {
+export function bashTargets(command, cwd = process.cwd(), { skipRmdir = false, skipAppend = false } = {}) {
   const targets = [];
   let base = cwd;
   const home = process.env.HOME || '';
@@ -274,26 +311,42 @@ export function bashTargets(command, cwd = process.cwd()) {
     const words = part.trim().split(/\s+/).filter(Boolean);
     const lead = leadOf(words);
     const prog = words[lead]?.split('/').pop();
-    const args = words.slice(lead + 1).filter((w) => !w.startsWith('-') && !/^['"]?[$<>|(`]/.test(w) && !/^[0-9]*>/.test(w));
+    // A redirect written with a space (`rm x 2> /dev/null`, `cp a b > log`) takes the next word as its file, not as an argument.
+    const operands = [];
+    for (let i = lead + 1; i < words.length; i++) {
+      if (/^[0-9&]*>>?&?$|^[0-9]*<{1,3}$/.test(words[i])) { i++; continue; }
+      operands.push(words[i]);
+    }
+    const args = operands.filter((w) => !w.startsWith('-') && !/^['"]?[$<>|(`]/.test(w) && !/^[0-9]*>/.test(w));
     if (prog === 'cd') {
       if (args[0] && !/[$`]/.test(args[0])) base = abs(unmask(args[0]));
       continue;
     }
     // cp/mv into a directory overwrite <dir>/<source name>, not the directory (Bob 2026-11-01: `sudo cp $F /var/backups/`
     // asked as an overwrite of /var/backups); a source in a variable has no known name, so it adds no target.
-    const intoDir = (dest, sources) => {
+    // A source `dir/.` (the contents of dir) has no name either: the files inside are not known here.
+    const intoDir = (dest, sources, forceDir = false) => {
       const d = abs(unmask(dest));
-      let isDir = dest.endsWith('/');
+      let isDir = forceDir || dest.endsWith('/');
       try { isDir ||= fs.statSync(d).isDirectory(); } catch { /* new path */ }
-      return isDir ? sources.map((w) => path.join(d, path.basename(unmask(w)))) : [d];
+      return isDir ? sources.map((w) => path.basename(unmask(w))).filter((n) => n && n !== '.' && n !== '..').map((n) => path.join(d, n)) : [d];
     };
-    if (['rm', 'rmdir', 'truncate', 'shred'].includes(prog)) targets.push(...args.map((w) => abs(unmask(w))));
-    if (prog === 'mv' && args.length > 1) targets.push(...args.slice(0, -1).map((w) => abs(unmask(w))), ...intoDir(args[args.length - 1], args.slice(0, -1)));
+    // `-t DIR` / `--target-directory=DIR`: the directory is named by the option, every operand is a source (`cp -t dst a b`
+    // asked as an overwrite of b).
+    let tDir = null;
+    const tOpt = operands.findIndex((w) => /^-[a-zA-Z]*t$/.test(w) || w === '--target-directory');
+    const tEq = operands.find((w) => w.startsWith('--target-directory='));
+    if (tEq) tDir = tEq.slice('--target-directory='.length);
+    else if (tOpt >= 0 && operands[tOpt + 1]) tDir = operands[tOpt + 1];
+    const sources = tDir ? (() => { const k = args.indexOf(tDir); return k >= 0 ? [...args.slice(0, k), ...args.slice(k + 1)] : args; })() : args.slice(0, -1);
+    if (['rm', ...(skipRmdir ? [] : ['rmdir']), 'truncate', 'shred'].includes(prog)) targets.push(...args.map((w) => abs(unmask(w))));
+    if (prog === 'mv' && (tDir || args.length > 1)) targets.push(...sources.map((w) => abs(unmask(w))), ...intoDir(tDir || args[args.length - 1], sources, Boolean(tDir)));
     else if (prog === 'mv') targets.push(...args.map((w) => abs(unmask(w))));
-    if (prog === 'cp' && args.length > 1) targets.push(...intoDir(args[args.length - 1], args.slice(0, -1)));
-    for (const m of part.matchAll(/(?:^|\s)>{1,2}\s*(\S+)/g)) {
-      const target = unmask(m[1]);
-      if (!/^(&|\/dev\/|\$)/.test(target)) targets.push(abs(target));
+    if (prog === 'cp' && (tDir || args.length > 1)) targets.push(...intoDir(tDir || args[args.length - 1], sources, Boolean(tDir)));
+    for (const m of part.matchAll(/(?:^|\s)(>{1,2})\s*(\S+)/g)) {
+      const target = unmask(m[2]);
+      if (skipAppend && m[1] === '>>') continue;
+      if (!/^(&|\/dev\/|\$|\()/.test(target)) targets.push(abs(target)); // `>(cmd)` is a process substitution
     }
   }
   return targets;
@@ -314,7 +367,7 @@ export function leadOf(words) {
 // Programs whose `-o` is no output file: the logical OR in find and test/[ (alice 2026-11-04: `find . -path ./.git -prune
 // -o -type f` was denied as a write to `-type`), "only matching" in grep and rg (a worker's `grep -o '<regex>'` was denied
 // as a write to the regex and P-054 then locked the inventory, agentic-flow-public#11), an option or format elsewhere.
-const OR_O_PROGS = new Set(['find', 'test', '[', '[[', 'grep', 'egrep', 'fgrep', 'zgrep', 'rg', 'ag', 'git', 'ssh', 'scp', 'sftp', 'set', 'ps', 'pgrep', 'mount', 'lsblk', 'findmnt', 'join', 'ip']);
+const OR_O_PROGS = new Set(['find', 'test', '[', '[[', 'grep', 'egrep', 'fgrep', 'zgrep', 'rg', 'ag', 'git', 'ssh', 'scp', 'sftp', 'set', 'ps', 'pgrep', 'mount', 'lsblk', 'findmnt', 'join', 'ip', 'install', 'rsync', 'sshfs', 'fusermount', 'journalctl', 'lsof', 'xargs']);
 // PowerShell write cmdlets and their aliases (Windows agent, alice 2026-11-07: `Set-Content -Path $env:TEMP\a.ps1` was no
 // write). The target is -Path/-FilePath/-LiteralPath, for copy/move -Destination, else the first (copy/move: second) positional.
 const PS_WRITE = /^(set-content|add-content|out-file|new-item|export-csv|export-clixml|sc|ac|ni)$/i;
@@ -348,6 +401,40 @@ const OUTPUT_TABLE = {
   unzip: ['-d'], '7z': ['-o'], tar: ['-C', '--directory'], gh: ['-O', '--output', '-D', '--dir'], yt: ['-o'], 'yt-dlp': ['-o', '--output', '-P', '--paths'],
   ffmpeg: [], jq: [], openssl: ['-out'], base64: ['-o'], magick: [], convert: [], dot: ['-o'], plantuml: ['-o'], mmdc: ['-o', '--output'],
 };
+// Programs that only read or print: an option-like word in their arguments is data (`grep -- --output /etc`, `echo --out x`,
+// `ls -o /etc` where -o is "no group"), never an output file. `install -o` is the owner.
+const NO_OUTPUT_PROGS = new Set(['grep', 'egrep', 'fgrep', 'zgrep', 'rg', 'ag', 'echo', 'printf', 'cat', 'ls', 'head', 'tail', 'wc', 'nm', 'objdump', 'readelf', 'strings', 'stat', 'du', 'diff', 'cmp', 'man', 'which', 'cpio']);
+// `npm --prefix <dir>` is the project the command runs in; it is a write target only where the command installs there.
+const NPM_INSTALLERS = new Set(['install', 'i', 'add', 'ci', 'link', 'ln', 'update', 'up', 'upgrade', 'uninstall', 'remove', 'rm', 'r', 'un', 'unlink', 'dedupe', 'prune', 'rebuild', 'init', 'create']);
+const NPM_VALUE_OPTS = new Set(['--prefix', '--dir', '-C', '--registry', '--cache', '--userconfig', '--workspace', '-w', '--loglevel']);
+// Programs that run another program given in their arguments: `timeout 5 curl -o x`, `sudo -u root cp a b`, `xargs -I{} cp {} d`.
+// Value = options that take a separate value; `positional` = words after the options that are not the program (timeout's duration).
+const WRAPPERS = {
+  sudo: { valued: ['-u', '-g', '-h', '-p', '-C', '-D', '-R', '-T', '-U', '-r', '-t', '--user', '--group', '--host', '--prompt', '--chdir'] },
+  env: { valued: ['-u', '-C', '-S', '--unset', '--chdir', '--split-string'], assigns: true },
+  timeout: { valued: ['-s', '-k', '--signal', '--kill-after'], positional: 1 },
+  nice: { valued: ['-n', '--adjustment'] }, ionice: { valued: ['-c', '-n', '-p', '-P', '-u', '--class', '--classdata'] },
+  stdbuf: { valued: ['-i', '-o', '-e'] }, nohup: { valued: [] }, setsid: { valued: [] }, time: { valued: [] },
+  xargs: { valued: ['-I', '-n', '-P', '-L', '-d', '-E', '-s', '-a', '-l', '-e', '--max-args', '--max-procs', '--delimiter', '--arg-file'] },
+};
+/** Index of the program a wrapper chain runs (`timeout 5 nice -n 5 curl …` -> curl). */
+function skipWrappers(words, start) {
+  let i = start;
+  for (let guard = 0; guard < 8; guard++) {
+    const spec = Object.hasOwn(WRAPPERS, String(words[i]?.text || '').split('/').pop()) ? WRAPPERS[String(words[i].text).split('/').pop()] : null;
+    if (!spec || !words[i + 1]) return i;
+    i++;
+    while (words[i]) {
+      const t = words[i].text;
+      if (spec.assigns && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) { i++; continue; }
+      if (t === '--') { i++; break; }
+      if (!t.startsWith('-') || t === '-') break;
+      i += spec.valued.includes(t) ? 2 : 1;
+    }
+    i += spec.positional || 0;
+  }
+  return i;
+}
 const OUTPUT_GUESS = /^--(out|output|outdir|out-dir|output-dir|outfile|out-file|output-file|dest|destination|target-dir|log-file|cache-dir|prefix)$/i;
 // Runners whose next word is the program: `npx wrangler …`, `pnpm exec tsc …`, `python3 -m pip …`.
 const RUNNERS = { npx: 1, bunx: 1, pnpx: 1, uvx: 1, 'pnpm exec': 2, 'pnpm dlx': 2, 'npm exec': 2, 'yarn dlx': 2, 'python -m': 2, 'python3 -m': 2 };
@@ -355,15 +442,22 @@ const looksLikePath = (v, abs) => /[/\\~]/.test(v) || /^\.\.?$/.test(v) || /\.[A
 
 /**
  * The command runs bin/domain-move.mjs without --dry (the script itself, not its name in a quoted text: the hook asked
- * at a handover whose --task named the script, operator 2026-11-09).
+ * at a handover whose --task named the script, operator 2026-11-09). Without a domain argument the script only prints its usage
+ * and changes nothing (`domain-move.mjs`, `domain-move.mjs finish`, `domain-move.mjs --to X`): no ask.
  */
 export function runsDomainMove(command) {
   return parse(String(command || '')).some((seg) => {
     const words = seg.words.map((w) => w.text);
     const i = programIndex(seg.words);
     const prog = String(words[i] || '').split(/[\\/]/).pop();
-    const script = /^(node|nodejs|bun)(\.exe)?$/.test(prog) ? words.slice(i + 1).find((w) => !w.startsWith('-')) : words[i];
-    return /(^|[\\/])domain-move\.mjs$/.test(script || '') && !words.includes('--dry');
+    const at = /^(node|nodejs|bun)(\.exe)?$/.test(prog) ? words.findIndex((w, k) => k > i && !w.startsWith('-')) : i;
+    if (!/(^|[\\/])domain-move\.mjs$/.test(words[at] || '') || words.includes('--dry')) return false;
+    const operands = [];
+    for (let k = at + 1; k < words.length; k++) {
+      if (words[k] === '--to') k++;
+      else if (!words[k].startsWith('-')) operands.push(words[k]);
+    }
+    return operands.length > (operands[0] === 'finish' ? 1 : 0);
   });
 }
 
@@ -376,11 +470,14 @@ export function shellWriteTargets(command, cwd = process.cwd(), env = process.en
   const add = (w, sure = true) => {
     // the temp dir expanded by expandTemp keeps its spaces masked so it stays one word
     const v = (typeof w === 'string' ? w : w && !w.dynamic ? w.text : '').replace(/[\u0001-\u0005]/g, (c) => UNMASK[c]) || null;
-    if (v && !/^\/dev\//.test(v) && !/^&/.test(v)) found.push({ path: abs(v), sure });
+    if (v && v !== '-' && !/^\/dev\//.test(v) && !/^[&(]/.test(v)) found.push({ path: abs(v), sure });
   };
   for (const seg of parse(expandAssigned(expandTemp(String(command))))) {
     const words = seg.words;
     let lead = programIndex(words);
+    // programIndex stops at the options of sudo/env (`sudo -u root cp a b`): the wrapper chain is walked from there.
+    if (lead > 0 && words[lead]?.text.startsWith('-') && /^(sudo|env)$/.test(words[lead - 1].text)) lead--;
+    lead = skipWrappers(words, lead);
     const name = (w) => String(w?.text || '').split(/[\\/]/).pop().replace(/\.exe$/i, '');
     let prog = name(words[lead]);
     const two = `${prog} ${words[lead + 1]?.text || ''}`;
@@ -397,7 +494,8 @@ export function shellWriteTargets(command, cwd = process.cwd(), env = process.en
     for (let i = 0; i < rest.length; i++) {
       const t = rest[i].text;
       if (t === '--') { positional.push(...rest.slice(i + 1)); break; }
-      if (t.startsWith('-') && t.length > 1) { if (prog === 'mkdir' && (t === '-m' || t === '--mode')) i++; continue; }
+      // values of options that are no path to create: mkdir -m MODE, touch -r REF / -d DATE / -t STAMP (`touch -r /etc/hosts f` only reads /etc/hosts)
+      if (t.startsWith('-') && t.length > 1) { if ((prog === 'mkdir' && (t === '-m' || t === '--mode')) || (prog === 'touch' && ['-r', '-d', '-t', '--reference', '--date'].includes(t))) i++; continue; }
       positional.push(rest[i]);
     }
     if (['cp', 'mv', 'ln', 'install', 'rsync'].includes(prog)) {
@@ -410,16 +508,34 @@ export function shellWriteTargets(command, cwd = process.cwd(), env = process.en
     if (prog === 'tee' || prog === 'mkdir' || prog === 'touch') positional.forEach((w) => add(w));
     if (prog !== 'cp' && prog !== 'mv') psWriteTargets(rest.map((w) => w.text), prog).forEach((w) => add(psValue(w)));
     // A bare `mktemp` / `New-TemporaryFile` creates the file in the system temp dir (`$(mktemp)` is expanded by expandTemp).
-    if ((prog === 'mktemp' && !rest.some((w) => w.text === '-p' || w.text.startsWith('--tmpdir='))) || /^new-temporaryfile$/i.test(prog)) found.push({ path: path.join(os.tmpdir(), 'mktemp'), sure: true });
-    const known = Object.hasOwn(OUTPUT_TABLE, prog) ? OUTPUT_TABLE[prog] : null;
+    // With a template and no -t the file is created where the template says (`mktemp scratch/x.XXXXXX`).
+    if (prog === 'mktemp' && !rest.some((w) => /^(-[a-zA-Z]*u[a-zA-Z]*|--dry-run)$/.test(w.text)) && !rest.some((w) => w.text === '-p' || w.text.startsWith('--tmpdir='))) {
+      const tpl = mktempTemplate(rest.map((w) => w.text).join(' '));
+      if (tpl) add(tpl); else found.push({ path: path.join(os.tmpdir(), 'mktemp'), sure: true });
+    } else if (/^new-temporaryfile$/i.test(prog)) found.push({ path: path.join(os.tmpdir(), 'mktemp'), sure: true });
+    let known = Object.hasOwn(OUTPUT_TABLE, prog) ? OUTPUT_TABLE[prog] : null;
+    // tar -C and unzip -d name the target only where the archive is extracted; `tar -czf a.tgz -C /etc ssh` and `tar -tf` read.
+    if (prog === 'tar' && !rest.some((w, i) => /^--(extract|get)$/.test(w.text) || /^-[A-Za-z]*x/.test(w.text) || (i === 0 && /^[A-Za-z]*x/.test(w.text)))) known = [];
+    if (prog === 'unzip' && rest.some((w) => /^-[a-zA-Z]*[lptvZ]/.test(w.text))) known = [];
+    if ((prog === 'npm' || prog === 'pnpm') && known) {
+      let sub = null;
+      for (let i = 0; i < rest.length && !sub; i++) { if (NPM_VALUE_OPTS.has(rest[i].text)) i++; else if (!rest[i].text.startsWith('-')) sub = rest[i].text; }
+      if (sub && !NPM_INSTALLERS.has(sub)) known = [];
+    }
+    if (NO_OUTPUT_PROGS.has(prog)) continue;
     for (let i = 0; i < rest.length; i++) {
       const t = rest[i].text;
+      if (t === '--') break; // after it every word is an argument: `grep -- --output /etc`
+      // an option name written in quotes is text for the program (`grep -e "--log-file" /etc/nginx`), not an option
+      if (/^['"]/.test(rest[i].raw) && t.startsWith('-')) continue;
       const eq = t.match(/^(--?[A-Za-z][\w-]*)=(.*)$/);
       const opt = eq ? eq[1] : t;
       const value = eq ? (rest[i].dynamic ? null : eq[2]) : rest[i + 1];
       if (value == null || (!eq && !rest[i + 1])) continue;
       if (known) { if (known.includes(opt)) add(value); continue; }
       if (OR_O_PROGS.has(prog) && opt === '-o') continue;
+      // `git archive --prefix=x/` is a path inside the archive; `./configure --prefix=/usr` only records where `make install` goes
+      if (opt === '--prefix' && ((prog === 'git' && !rest.some((w) => w.text === 'checkout-index')) || prog === 'configure')) continue;
       if (opt === '-o' || OUTPUT_GUESS.test(opt)) {
         const v = typeof value === 'string' ? value : value.dynamic ? null : value.text;
         // `NAME=value` sets an option, it is no path: `apt-get -o Dir::Etc::sourcelist=/etc/…` asked the operator about
@@ -520,10 +636,7 @@ const DOCS_REF = /([^\s'"=:;|&<>()]*docs)\/?(?=[\s'"*;|&<>()]|$)/g;
 const CODE_RUNNERS = new Set(['node', 'python', 'python3', 'perl', 'ruby', 'deno', 'bun']);
 const TEXT_ONLY = new Set(['echo', 'printf']);
 function readParts(command) {
-  const noData = String(command).replace(/([^\n]*?)<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2[^\n]*\n[\s\S]*?\n\s*\3\s*(?=\n|$)/g, (m, head) => {
-    const prog = head.split(/&&|\|\||;|\|/).pop().trim().split(/\s+/)[0]?.split('/').pop();
-    return CODE_RUNNERS.has(prog) || prog === 'sh' || prog === 'bash' ? m : withoutDataHeredocs(m);
-  });
+  const noData = stripHeredocs(command, (head, line) => CODE_RUNNERS.has(head.split(/&&|\|\||;|\|/).pop().trim().split(/\s+/)[0]?.split('/').pop()) || heredocRuns(head, line));
   return segments(noData).filter((seg) => {
     const prog = (seg.trim().split(/\s+/).filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w))[0] || '').replace(/^\(+/, '').split('/').pop();
     return !TEXT_ONLY.has(prog);
@@ -722,18 +835,18 @@ const WAIT_UNIT = { '': 1, s: 1, m: 60, h: 3600, d: 86400 };
  * Returns the reason or null.
  */
 export function foregroundWait(command) {
-  let cmd = String(command).replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n\s*\2\s*(?=\n|$)/g, (m) => m.split('\n')[0]);
-  cmd = cmd.replace(/(-c|\beval|\bssh\s+(?:-\S+\s+)*\S+|\bwatch(?:\s+-\S+)*)?(\s*)('[^']*'|"(?:[^"\\]|\\.)*")/g, (all, runs, sp, str) => {
+  let cmd = withoutDataHeredocs(command);
+  cmd = cmd.replace(/((?<![\w.\/-])(?:(?:ba|z|da|k)?sh)(?:\s+-[A-Za-z]+)*?\s+-[A-Za-z]*c|\beval|\bssh\s+(?:-\S+\s+)*\S+|(?<![\w.\/-])watch(?:\s+-\S+)*)?(\s*)('[^']*'|"(?:[^"\\]|\\.)*")/g, (all, runs, sp, str) => {
     if (runs) return all;
-    if (str[0] === '"' && /\$\(|`/.test(str)) return all;
+    if (str[0] === '"' && /\$\(|`/.test(str.replace(/\\./g, ''))) return all;
     return `${sp}''`;
   });
   // A loop sent to the background (its `done`, with the redirects, is followed by a single &) or run under `timeout N` with N <= 10 s is no
   // foreground wait (audit 2.5: pilot wake loop, 4 of 20 denials); the loop in front of a ; or && stays one.
   cmd = cmd.replace(/\b(?:until|while)\b(?:(?!\bdone\b)[\s\S])*\bdone\b['"]?(?:\s*\d*>>?&?\s*[^\s&;|)]+)*\s*&(?!&)/g, '');
   cmd = cmd.replace(/\btimeout\s+(?:-\S+\s+)*(\d+(?:\.\d+)?)([smhd]?)\s+\S+\s+(?:-c\s+)?('[^']*'|"(?:[^"\\]|\\.)*")/g, (all, n, u) => (Number(n) * WAIT_UNIT[u] <= 10 ? '' : all));
-  if (/\b(until|while)\b[\s\S]*\bsleep\b/.test(cmd)) return 'loop with sleep';
-  if (/\bwatch\s+(-\S+\s+)*\S/.test(cmd)) return 'watch';
+  if (/(?:^|[;&|({\n'"`]|\b(?:then|do|else)\b)\s*(?:until|while)\b[\s\S]*\bsleep\b/.test(cmd)) return 'loop with sleep';
+  if (/(?<![\w.\/-])watch\s+(-\S+\s+)*\S/.test(cmd)) return 'watch';
   for (const m of cmd.matchAll(/\bsleep\s+(\d+(?:\.\d+)?)([smhd]?)\b/g)) {
     if (Number(m[1]) * WAIT_UNIT[m[2]] > 10) return `sleep ${m[1]}${m[2]}`;
   }
@@ -804,6 +917,16 @@ export function topicOwnedCheck(ctx, absPaths) {
 }
 
 const GIT_WRITES = new Set(['commit', 'push', 'merge', 'tag', 'rebase', 'cherry-pick', 'am', 'revert', 'apply', 'reset', 'checkout', 'switch', 'stash', 'restore']);
+// Read-only forms of write subcommands: `git tag` / `git tag -l|--sort=...|--contains X` list tags, `git stash list|show`
+// list stashes (audit 2026-11-12: `git tag --sort=-creatordate | head -3` in a foreign topic_owned repo was denied as a change).
+export function gitReadOnlyForm(w) {
+  const pipe = w.findIndex((x) => /^[|>&]/.test(x));
+  const rest = (pipe < 0 ? w : w.slice(0, pipe)).slice(1);
+  if (w[0] === 'stash') return ['list', 'show'].includes(rest[0]);
+  if (w[0] !== 'tag') return false;
+  if (rest.some((x) => /^-[dafsum]$|^--(delete|annotate|force|sign|message|file)/.test(x))) return false;
+  return rest.every((x) => /^-(l|n\d*|i)$|^--(list|sort|contains|no-contains|merged|no-merged|points-at|format|column|no-column|ignore-case|omit-empty|color|no-color)(=|$)/.test(x) || !x.startsWith('-')) && (rest.length === 0 || rest[0].startsWith('-'));
+}
 /** Repositories a shell command changes through git (`git [-C dir] commit|push|...`, also after `cd dir`). */
 export function gitWriteDirs(command, cwd = process.cwd()) {
   const dirs = [];
@@ -823,7 +946,7 @@ export function gitWriteDirs(command, cwd = process.cwd()) {
     while (i < w.length && w[i].startsWith('-')) {
       if (w[i] === '-C' && w[i + 1]) { dir = abs(dir, w[i + 1]); i += 2; } else if (w[i] === '-c') i += 2; else i++;
     }
-    if (GIT_WRITES.has(w[i])) dirs.push(dir);
+    if (GIT_WRITES.has(w[i]) && !gitReadOnlyForm(w.slice(i))) dirs.push(dir);
   }
   return dirs;
 }
@@ -848,6 +971,7 @@ export function forcedAddIgnored(command, cwd = process.cwd()) {
     }
     if (w[i] !== 'add') continue;
     const rest = w.slice(i + 1);
+    if (rest.some((x) => x === '-n' || x === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/.test(x))) continue;
     if (!rest.some((x) => x === '-f' || x === '--force' || /^-[a-zA-Z]*f[a-zA-Z]*$/.test(x))) continue;
     const specs = rest.filter((x) => !x.startsWith('-'));
     const wide = specs.filter((x) => /[*?[]/.test(x) || (() => { try { return fs.statSync(abs(dir, x)).isDirectory(); } catch { return false; } })());
@@ -1219,11 +1343,14 @@ function pathChecks(input, ctx, cwd) {
     const hookSkip = gitHookBypass(executedText(cmd));
     if (hookSkip) return permissionOutput('ask', `git with ${hookSkip} runs past the git hooks that guard brain and repos (brain pre-commit, repo checks); the operator confirms it (P-054)`);
     const isCreated = (t) => created.has(t) || [...created].some((c) => isInside(c, t));
-    const dangerous = targets.filter((t) => !isCreated(t) && fs.existsSync(t) && !ownWork(ctx, t) && classifyTarget(t).dangerous);
+    // Appending (`>>`) loses nothing, rmdir removes only an empty directory (skarper 2026-11-10: `rm docs/firma/x.md && rmdir docs/firma docs` asked)
+    // and the same file named twice is one file: none of them asks as an overwrite of many files.
+    const overwritten = [...new Set(bashTargets(cmd, cwd, { skipRmdir: true, skipAppend: true }))];
+    const dangerous = overwritten.filter((t) => !isCreated(t) && fs.existsSync(t) && !ownWork(ctx, t) && classifyTarget(t).dangerous);
     const thr = policy.destructive || {};
     // The threshold counts files the command changes or removes: not the ones it creates, not missing ones and not the
     // thread's own work files (6 files in scratch/wt asked and waited 6 896 s for the operator, audit M2 2026-11-11).
-    const changed = targets.filter((t) => !isCreated(t) && fs.existsSync(t) && !ownWork(ctx, t));
+    const changed = overwritten.filter((t) => !isCreated(t) && fs.existsSync(t) && !ownWork(ctx, t));
     if (changed.length > (thr.files_threshold ?? 5)) {
       return permissionOutput('ask', `operation on ${changed.length} files (> ${thr.files_threshold}); confirm the exact target list with the operator (P-018)`);
     }
@@ -1232,7 +1359,15 @@ function pathChecks(input, ctx, cwd) {
     }
     // A file this command creates (redirect, cp to a new target) is the thread's own: removing a stray one later needs
     // no confirmation (operator 2026-11-01: a file born by mistake is cleaned up, P-018).
-    for (const t of targets) if (!fs.existsSync(t) && !isInside(path.join(ctx.projectDir, SCRATCH_DIR), t)) rememberCreated(ctx, t);
+    // The same for what mkdir, touch and tee create, and for the new directories above a new file: `mkdir -p d/sub && cp a d/sub/f`
+    // is cleaned up by `rm -rf d` without asking (the thread made all of d).
+    const born = [...targets, ...shellWriteTargets(cmd, cwd).filter((w) => w.sure).map((w) => w.path)].filter((t) => !fs.existsSync(t));
+    for (const t of new Set(born)) {
+      if (isInside(path.join(ctx.projectDir, SCRATCH_DIR), t)) continue;
+      let top = t;
+      while (!fs.existsSync(path.dirname(top)) && path.dirname(top) !== top) top = path.dirname(top);
+      rememberCreated(ctx, top);
+    }
     // A tracked clean file this command changes becomes the thread's own edit (hash recorded by PostToolUse).
     claimOwn(ctx, [...targets, ...edits].filter((t) => fs.existsSync(t) && !ownWork(ctx, t) && classifyTarget(t).reason === 'tracked and clean'));
     const grepHint = grepNoFilename(cmd);
