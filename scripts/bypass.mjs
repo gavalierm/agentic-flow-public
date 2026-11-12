@@ -253,10 +253,9 @@ function resultText(c) {
   return '';
 }
 
-/** Harness permission refusals of this turn, read from the session transcript. Without a turn start the last operator prompt bounds it. */
-export function transcriptDenials(transcriptPath, since = '') {
-  if (!transcriptPath) return [];
-  let text = '';
+/** The last TRANSCRIPT_TAIL bytes of the session transcript, or null. */
+function transcriptTail(transcriptPath) {
+  if (!transcriptPath) return null;
   try {
     const size = fs.statSync(transcriptPath).size;
     const fd = fs.openSync(transcriptPath, 'r');
@@ -264,8 +263,49 @@ export function transcriptDenials(transcriptPath, since = '') {
     const buf = Buffer.alloc(len);
     fs.readSync(fd, buf, 0, len, size - len);
     fs.closeSync(fd);
-    text = buf.toString('utf8');
-  } catch { return []; }
+    return buf.toString('utf8');
+  } catch { return null; }
+}
+
+/** Waits until the session transcript holds the tool call `toolUseId`, at most `timeoutMs` (P-061, flow-public#32 pilot: the
+ * harness appended the turn text and the dialog call 20 ms after PreToolUse had read the transcript, so the plan was not seen).
+ * Entries are appended in order, so the text written before the call is there too. Returns whether the call was seen. */
+export function awaitTranscriptToolUse(transcriptPath, toolUseId, timeoutMs = 2000) {
+  if (!transcriptPath || !toolUseId) return false;
+  const needle = JSON.stringify(String(toolUseId));
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  const start = Date.now();
+  for (;;) {
+    if (transcriptTail(transcriptPath)?.includes(needle)) return true;
+    if (Date.now() - start >= timeoutMs) return false;
+    Atomics.wait(pause, 0, 0, 50);
+  }
+}
+
+/** The text the main agent wrote in this turn so far (P-061, flow-public#32: an open dialog covers it). Without a turn start the last operator prompt bounds it. */
+export function transcriptTurnText(transcriptPath, since = '') {
+  const text = transcriptTail(transcriptPath);
+  if (!text) return '';
+  let parts = [];
+  for (const line of text.split('\n')) {
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    const content = e?.message?.content;
+    if (e.type === 'user' && !e.isMeta && !(Array.isArray(content) && content.some((c) => c?.type === 'tool_result'))) {
+      if (!since) parts = [];
+      continue;
+    }
+    if (e.type !== 'assistant' || e.isSidechain || !Array.isArray(content)) continue;
+    if (since && e.timestamp && e.timestamp < since) continue;
+    for (const c of content) if (c?.type === 'text' && typeof c.text === 'string') parts.push(c.text);
+  }
+  return parts.join('\n');
+}
+
+/** Harness permission refusals of this turn, read from the session transcript. Without a turn start the last operator prompt bounds it. */
+export function transcriptDenials(transcriptPath, since = '') {
+  const text = transcriptTail(transcriptPath);
+  if (!text) return [];
   const uses = new Map();
   let out = [];
   for (const line of text.split('\n')) {

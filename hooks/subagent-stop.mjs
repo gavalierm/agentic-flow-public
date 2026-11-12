@@ -1,6 +1,9 @@
 #!/usr/bin/env node
-// SubagentStop: the worker result must contain a "Failures" section (P-028). The triage subagent is removed (2026-11-02):
+// SubagentStop: the worker result must contain a "Failures" section (P-028), and "Failures: none" must not hide a failed
+// source call in the worker transcript (flow-public#34). The triage subagent is removed (2026-11-02):
 // the main agent reads the mechanical lines `<id> <category>` itself (P-044).
+import fs from 'node:fs';
+import path from 'node:path';
 import { readHookInput, emit, isMain } from '../scripts/hooks-io.mjs';
 import { loadPolicy, loadContext } from '../scripts/config.mjs';
 import { logDecision } from '../scripts/denials.mjs';
@@ -21,6 +24,51 @@ export function failuresText(text) {
   if (!m) return '';
   const rest = s.slice(m.index + m[0].length).replace(/^[ \t:*\u2014\u2013-]*/, '').trim();
   return /^none\b/i.test(rest) ? '' : rest;
+}
+
+// Tools that read a source (web, MCP): a failed call there is a source not read, not a fact not found (flow-public#34: a
+// worker reported sources it could not read as missing, with "Failures: none"). Bash is left out: grep without a match
+// also ends with a non-zero exit code.
+const SOURCE_TOOL = /^(WebFetch|WebSearch|mcp__.+)$/;
+const TRANSCRIPT_MAX = 8 * 1024 * 1024;
+
+/** The worker's own transcript: `agent_transcript_path`, else `<session>/subagents/agent-<id>.jsonl` next to the main transcript. */
+export function agentTranscriptPath(input) {
+  if (input.agent_transcript_path) return input.agent_transcript_path;
+  if (!input.transcript_path || !input.session_id || !input.agent_id) return null;
+  return path.join(path.dirname(input.transcript_path), input.session_id, 'subagents', `agent-${input.agent_id}.jsonl`);
+}
+
+/** Failed calls of source tools in a worker transcript (its last 8 MB): [{ tool, target, error }] (flow-public#34). */
+export function failedSourceCalls(file) {
+  let text = '';
+  try {
+    const size = fs.statSync(file).size;
+    const len = Math.min(size, TRANSCRIPT_MAX);
+    const buf = Buffer.alloc(len);
+    const fd = fs.openSync(file, 'r');
+    try { fs.readSync(fd, buf, 0, len, size - len); } finally { fs.closeSync(fd); }
+    text = buf.toString('utf8');
+  } catch { return []; }
+  const calls = new Map();
+  const failed = [];
+  for (const line of text.split('\n')) {
+    if (!line.includes('tool_use')) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    const content = entry?.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const c of content) {
+      if (c?.type === 'tool_use' && SOURCE_TOOL.test(String(c.name || ''))) calls.set(c.id, c);
+      else if (c?.type === 'tool_result' && c.is_error === true && calls.has(c.tool_use_id)) {
+        const use = calls.get(c.tool_use_id);
+        const body = typeof c.content === 'string' ? c.content : Array.isArray(c.content) ? c.content.map((x) => x?.text || '').join(' ') : '';
+        const target = use.input?.url || use.input?.query || Object.values(use.input || {}).find((v) => typeof v === 'string') || '';
+        failed.push({ tool: use.name, target: String(target).slice(0, 120), error: body.replace(/\s+/g, ' ').trim().slice(0, 120) });
+      }
+    }
+  }
+  return failed;
 }
 
 /** One failures.log line in the shape the PostToolUse log uses: `<time> <agent> <session> <command> :: <error>` (error list reads field 2). */
@@ -53,6 +101,11 @@ export function run(input, policy = loadPolicy(null)) {
   const limit = policy.limits?.worker_result_chars ?? 3000;
   const errors = [];
   if (!hasFailuresSection(text)) errors.push('the result must end with a section "Failures: <what failed and what finally worked>" (write "Failures: none" if nothing failed), P-028');
+  if (hasFailuresSection(text) && !failuresText(text)) {
+    const file = agentTranscriptPath(input);
+    const failed = file ? failedSourceCalls(file) : [];
+    if (failed.length) errors.push(`${failed.length} source call(s) failed (${failed.slice(0, 3).map((f) => `${f.tool} ${f.target}: ${f.error}`).join('; ')}), yet the result says "Failures: none": a source not read (error, blocked, empty or cut page) is a failure, list it under Failures and in the conclusion tell sources not read apart from facts not found (P-028, flow-public#34)`);
+  }
   if (text.length > limit) errors.push(`the result has ${text.length} chars, the limit is ${limit} (P-027): keep the conclusion and its sources (paths, lines, commands), drop raw content and repeated detail`);
   if (!errors.length) return {};
   return { decision: 'block', reason: `Return the result again: ${errors.join('; ')}.` };

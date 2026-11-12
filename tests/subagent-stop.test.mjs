@@ -6,8 +6,32 @@ import { run, hasFailuresSection, failuresText } from '../hooks/subagent-stop.mj
 import { loadPolicy } from '../scripts/config.mjs';
 import { checkResult } from '../bin/delegate.mjs';
 import { setup } from './helpers.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const policy = loadPolicy(null);
+
+test('P-028, flow-public#34: a failed source call (web, MCP) with "Failures: none" blocks; listed failures, Bash errors and no transcript pass', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-substop-'));
+  try {
+    const file = path.join(dir, 'agent.jsonl');
+    const use = (id, name, input) => JSON.stringify({ type: 'assistant', isSidechain: true, message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } });
+    const result = (id, content, is_error) => JSON.stringify({ type: 'user', isSidechain: true, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error }] } });
+    fs.writeFileSync(file, [use('w1', 'WebFetch', { url: 'https://example.test/a', prompt: 'x' }), result('w1', 'Request failed with status code 403', true), use('b1', 'Bash', { command: 'grep x y' }), result('b1', 'Exit code 1', true), use('w2', 'WebFetch', { url: 'https://example.test/b' }), result('w2', 'page text', false)].join('\n') + '\n');
+    const none = { agent_type: 'workflow:worker', agent_id: 'a1', last_assistant_message: 'Pobočka X sa nenašla.\n\nFailures: none' };
+    const blocked = run({ ...none, agent_transcript_path: file }, policy);
+    assert.equal(blocked.decision, 'block');
+    assert.match(blocked.reason, /1 source call\(s\) failed \(WebFetch https:\/\/example\.test\/a: Request failed with status code 403\).*not read apart from facts not found/);
+    assert.deepEqual(run({ ...none, last_assistant_message: 'Zdroj A sa nepodarilo prečítať.\n\nFailures: WebFetch A -> 403', agent_transcript_path: file }, policy), {});
+    assert.deepEqual(run(none, policy), {}, 'no transcript, nothing to check');
+    fs.mkdirSync(path.join(dir, 's1', 'subagents'), { recursive: true });
+    fs.copyFileSync(file, path.join(dir, 's1', 'subagents', 'agent-a1.jsonl'));
+    assert.equal(run({ ...none, session_id: 's1', transcript_path: path.join(dir, 's1.jsonl') }, policy).decision, 'block', 'the transcript next to the session when the input has no agent_transcript_path');
+    fs.writeFileSync(file, [use('b1', 'Bash', { command: 'grep x y' }), result('b1', 'Exit code 1', true), use('m1', 'mcp__gsc__query', { site: 's' }), result('m1', 'rows', false)].join('\n') + '\n');
+    assert.deepEqual(run({ ...none, agent_transcript_path: file }, policy), {}, 'a Bash exit code and a source that was read are no unread source');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('P-028: missing Failures blocks the subagent; present section, exempt agents and stop_hook_active pass', () => {
   const blocked = run({ agent_id: 'x', agent_type: 'workflow:worker', last_assistant_message: 'All done.', stop_hook_active: false }, policy);

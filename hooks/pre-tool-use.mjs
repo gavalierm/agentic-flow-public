@@ -18,7 +18,7 @@ import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell } from 
 import { catalogPreTool } from '../scripts/catalog/pretool.mjs';
 import { bigWriteDeny } from '../scripts/materialy.mjs';
 import { logDecision } from '../scripts/denials.mjs';
-import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
+import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, transcriptTurnText, awaitTranscriptToolUse, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-052', 'P-054', 'P-055'] };
 
@@ -930,12 +930,6 @@ export function harnessScratchpadTarget(abs, sessionId, ctx, env = process.env) 
 }
 
 /**
- * Topic-owned code (policy `topic_owned`: { "<path relative to the project>": "<topic>" }, P-012, P-036): changes in a
- * listed repo (and its topic copies) belong to one topic; a thread that does not hold it sends the work as mail and does
- * not change, commit or release that code itself (2026-11-02: a repo-cleanup thread changed the workflow and asked the
- * operator for a release; the routing rule was text only). Returns the deny reason or null.
- */
-/**
  * `<repo>/agentic/` of a domain repo (or of its topic worktree) is written only by save (P-013, D-0002): format checks,
  * dedup and the commit into the repo happen there. Also keeps topicOwnedCheck from reading a knowledge save as code.
  */
@@ -948,17 +942,32 @@ export function repoKnowledgeWrite(ctx, absPaths) {
   return null;
 }
 
+/**
+ * Topic-owned code (policy `topic_owned`: { "<path relative to the project>": "<topic>" | ["<topic>", ...] }, P-012,
+ * P-036): changes in a listed repo (and its topic copies) belong to the listed topics; a thread that holds none of them
+ * sends the work as mail and does not change, commit or release that code itself (2026-11-02: a repo-cleanup thread
+ * changed the workflow and asked the operator for a release; the routing rule was text only). A list lets several
+ * topics own one repo, the holder of any of them passes (2026-11-12: development and issue handling of the workflow).
+ * The mail route names the topic alone: a project folder name is no mail address (2026-11-12: such a mail was held as
+ * a new topic). Returns the deny reason or null.
+ */
 export function topicOwnedCheck(ctx, absPaths) {
   const owned = ctx.policy?.topic_owned || {};
   if (!ctx.brainDir || !absPaths.length) return null;
-  for (const [rel, topic] of Object.entries(owned)) {
+  for (const [rel, value] of Object.entries(owned)) {
+    const ids = (Array.isArray(value) ? value : [value]).filter((x) => typeof x === 'string' && x);
+    if (!ids.length) continue;
     const root = path.resolve(ctx.projectDir, rel);
     const wt = ctx.domain ? path.join(ctx.domain.root, WORKTREES_DIR, path.basename(root)) : null;
     if (!absPaths.some((p) => isInside(root, p) || isInside(`${root}-topics`, p) || (wt && isInside(wt, p)))) continue;
-    const t = readTopics(ctx.brainDir).find((x) => x.id === topic);
-    if (ctx.thread && t?.holder?.thread === ctx.thread) continue;
-    const state = !t ? 'not open: open it with workflow:topic' : t.holder?.thread ? `held by thread ${t.holder.thread}` : 'not held: claim it with workflow:topic if this thread is to do the work';
-    return `changes in ${rel} belong to topic ${topic} (${state}); this thread does not hold it, so it does not change, commit or release that code: send the work as mail (comms send --level assist --to ${ctx.projectName}/${topic} --text "..."), the holder fixes, tests and releases it (P-012, policy topic_owned)`;
+    const all = readTopics(ctx.brainDir);
+    const listed = ids.map((id) => ({ id, t: all.find((x) => x.id === id) }));
+    if (ctx.thread && listed.some(({ t }) => t?.holder?.thread === ctx.thread)) continue;
+    const state = (t) => !t ? 'not open: open it with workflow:topic' : t.holder?.thread ? `held by thread ${t.holder.thread}` : 'not held: claim it with workflow:topic if this thread is to do the work';
+    const names = listed.map(({ id, t }) => `${id} (${state(t)})`).join(', ');
+    const to = (listed.find(({ t }) => t?.holder?.thread) || listed[0]).id;
+    const holds = listed.length > 1 ? 'holds none of them' : 'does not hold it';
+    return `changes in ${rel} belong to topic${listed.length > 1 ? 's' : ''} ${names}; this thread ${holds}, so it does not change, commit or release that code: send the work as mail (comms send --level assist --to ${to} --text "..."; the topic of this project, the folder name is no mail address), the holder fixes, tests and releases it (P-012, policy topic_owned)`;
   }
   return null;
 }
@@ -1104,6 +1113,16 @@ export function pluginScopeCall(command) {
 /** The question texts of an AskUserQuestion call (kept until the dialog is answered, P-059). */
 export const dialogQuestions = (toolInput) => (Array.isArray(toolInput?.questions) ? toolInput.questions : []).map((x) => (typeof x === 'string' ? x : x?.question)).filter(Boolean);
 
+/** All the text an AskUserQuestion dialog shows: the questions, the option labels, descriptions and previews. */
+export const dialogText = (toolInput) => (Array.isArray(toolInput?.questions) ? toolInput.questions : [])
+  .flatMap((q) => (typeof q === 'string' ? [q] : [q?.question, ...(Array.isArray(q?.options) ? q.options.flatMap((o) => [o?.label, o?.description, o?.preview]) : [])]))
+  .filter((s) => typeof s === 'string' && s.trim()).join('\n');
+
+// P-061 (flow-public#32): a turn that wrote this much text before the dialog, with a dialog that shows less than the minimum.
+export const LONG_TURN_TEXT = 1200;
+export const MIN_DIALOG_TEXT = 200;
+export const THIN_DIALOG_REASON = (written, shown) => `this turn wrote ${written} characters of text before the dialog, the dialog shows only ${shown}: while it is open the operator may not see the text of the turn (T3 shows the dialog in place of the composer, on the phone over the thread), so they decide without the plan or proposal you wrote. Put into the dialog what the operator decides about: the content in short in the question (what the plan does, 1–3 sentences), in each option's description what it does, a longer text (the plan, a draft) in the option's preview (markdown). Then ask again; a repeat passes (P-061)`;
+
 export function run(input) {
   const ctx = loadContext({ requireBrain: false });
   const tool = input.tool_name;
@@ -1125,7 +1144,20 @@ export function run(input) {
       writeThreadState(ctx.brainDir, ctx.thread, { ...before, repeat_denied_at: turnKey });
       return permissionOutput('deny', REPEATED_QUESTION_REASON(old, q.replace(/\s+/g, ' ').trim()));
     }
-    const st = { ...readThreadState(ctx.brainDir, ctx.thread), dialog_at: new Date().toISOString(), dialog_questions: dialogQuestions(toolInput) };
+    // P-061 (flow-public#32): an open dialog covers the text of the turn, so a dialog about a long plan written as text was
+    // answered blind ("I have not seen it yet"): a dialog that shows little of it is refused once per turn; a repeat passes.
+    // The harness appends the turn text after PreToolUse starts (pilot: 20 ms after the hook read it), so the check waits
+    // until the transcript holds this call; only a thin dialog waits.
+    const shown = dialogText(toolInput).length;
+    if (before.thin_dialog_denied_at !== turnKey && shown < MIN_DIALOG_TEXT) {
+      awaitTranscriptToolUse(input.transcript_path, input.tool_use_id);
+      const written = transcriptTurnText(input.transcript_path, before.turn_started_at || '').trim().length;
+      if (written >= LONG_TURN_TEXT) {
+        writeThreadState(ctx.brainDir, ctx.thread, { ...before, thin_dialog_denied_at: turnKey });
+        return permissionOutput('deny', THIN_DIALOG_REASON(written, shown));
+      }
+    }
+    const st ={ ...readThreadState(ctx.brainDir, ctx.thread), dialog_at: new Date().toISOString(), dialog_questions: dialogQuestions(toolInput) };
     writeThreadState(ctx.brainDir, ctx.thread, st);
     // P-061 (V1): the dialog holds the turn, so the thread cannot pick up mail: the open turn record in the mail says it waits for
     // the operator (PostToolUse clears it); mail then answers a sender `otázka` instead of "no reply".

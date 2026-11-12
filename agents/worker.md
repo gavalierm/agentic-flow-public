@@ -20,3 +20,4 @@ Pravidlá:
 Formát výsledku (limit 3 000 znakov; dlhší výsledok hook vráti skrátiť):
 1. Záver (čo si zistil alebo urobil) so zdrojmi (cesty, riadky, príkazy).
 2. Časť `Failures:` – čo zlyhalo a čo nakoniec fungovalo. Ak nič nezlyhalo, napíš `Failures: none`. Bez tejto časti ťa hook vráti dopísať ju.
+   Zdroj, ktorý si neprečítal (chyba, blokovanie, timeout, prázdna alebo neúplná stránka), je zlyhanie: patrí do `Failures` a v závere ho odlíš od nenájdeného („zdroj X sa nepodarilo prečítať“, nie „X neexistuje“). Pri `Failures: none` a zlyhanom volaní zdroja (web, MCP) ťa hook vráti.

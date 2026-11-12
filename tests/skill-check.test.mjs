@@ -67,6 +67,9 @@ test('save skill: a broken skill is not saved; operator skill: cosmetic edit pas
     r = fx.run('save.mjs', ['skill', 'deploy', '--sed', 's/npm test/npm run lint/', '--approved', 'áno, lint']);
     assert.equal(r.status, 0, r.out);
     assert.match(fx.read('skills/operator/deploy/SKILL.md'), /npm run lint/);
+    r = fx.run('save.mjs', ['skill', 'deploy', '--sed', 's/run lint/run check/', '--sed', 's/git push origin dev/git push origin main/', '--approved', 'áno']);
+    assert.equal(r.status, 0, r.out);
+    assert.match(fx.read('skills/operator/deploy/SKILL.md'), /npm run check`, potom `git push origin main/, 'every --sed applies, in order (2026-11-12: only the last one did)');
   } finally { fx.cleanup(); }
 });
 

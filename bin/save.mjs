@@ -5,7 +5,7 @@
 //   save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y [--supersedes D-0001]
 //   save.mjs rule <name> --content "..." (--enforced-by <file>[:<symbol>][,...] | --unenforced "<why code cannot check it>") [--title "..."] | --remove --reason "..."
 //   save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local] [--title "..."]
-//   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]'] [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
+//   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]' ...] [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
 //   save.mjs handover <topic> (--task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>)
 //   save.mjs docs [--message "..."]   persona only: commits the files written directly into docs/ (P-024)
 //   memory, decision, skill: --repo [<name>] writes into <repo>/agentic/ of the domain (bare: the session repo); --brain "<why>" keeps a repo's record in brain
@@ -35,6 +35,9 @@ import { skillSources, PROJECT_KNOWLEDGE, REPO_HANDOVER, domainRepos, repoByName
 import { checkSkill, meaningDiff } from '../scripts/skill-check.mjs';
 
 const args = parseArgs(process.argv.slice(2));
+// Every --sed applies, in order: parseArgs keeps only the last value of a repeated option (2026-11-12: two --sed in one
+// call changed only the second text and reported the skill as edited).
+const SEDS = process.argv.slice(2).flatMap((a, i, all) => (a === '--sed' && all[i + 1] !== undefined && !/^--[a-z]/i.test(all[i + 1]) ? [all[i + 1]] : a.startsWith('--sed=') ? [a.slice(6)] : []));
 const [category, ...rest] = args._;
 const out = (s) => process.stdout.write(s + '\n');
 const toPosixPath = (p) => String(p).replace(/\\/g, '/');
@@ -446,7 +449,7 @@ function saveSkill(ctx) {
   if (inRepo) fail(`skill ${name} exists in repo ${inRepo.repo} (${inRepo.path}): one skill name per domain, skills-sync deploys both; save it with --repo ${inRepo.repo}`);
   const origin = args.origin || 'error';
   if (!['error', 'routine'].includes(origin)) fail('origin must be error | routine (P-032)');
-  const sed = args.sed === undefined ? null : String(args.sed);
+  const sed = args.sed === undefined ? null : SEDS.length ? SEDS : [String(args.sed)];
   if (sed !== null && (args.content !== undefined || args.replace)) fail('--sed edits the existing body; do not combine it with --content or --replace');
   if (sed === null && args.content === undefined) fail('--content required (or --sed s/<pattern>/<replacement>/ to edit an existing skill)');
   const skills = readSkills(ctx.brainDir);
@@ -461,7 +464,7 @@ function saveSkill(ctx) {
     if (args.description) data.description = args.description;
     // --replace: the refactored whole body replaces the old one; --sed: in-place edit, frontmatter kept.
     if (sed === null && !args.replace) requireRefactor(hit.skillName, rel, parsed.body);
-    const body = sed !== null ? applySed(parsed.body, sed) : `${String(args.content).trim()}\n`;
+    const body = sed !== null ? sed.reduce((b, e) => applySed(b, e), parsed.body) : `${String(args.content).trim()}\n`;
     const next = serializeFrontmatter(data, body);
     // P-032 (operator 2026-11-07): an operator skill changes without approval only when its meaning stays (cosmetic
     // edit, refactor); a change of meaning is reported to the operator and saved with --approved after their yes.
@@ -536,7 +539,7 @@ function saveRepoSkill(ctx, repo, name) {
   }
   const origin = args.origin || 'error';
   if (!['error', 'routine'].includes(origin)) fail('origin must be error | routine (P-032)');
-  const sed = args.sed === undefined ? null : String(args.sed);
+  const sed = args.sed === undefined ? null : SEDS.length ? SEDS : [String(args.sed)];
   if (sed !== null && (args.content !== undefined || args.replace)) fail('--sed edits the existing body; do not combine it with --content or --replace');
   if (sed === null && args.content === undefined) fail('--content required (or --sed s/<pattern>/<replacement>/ to edit an existing skill)');
   let text;
@@ -545,7 +548,7 @@ function saveRepoSkill(ctx, repo, name) {
     const data = { ...parsed.data, aliases: [...new Set([...asList(parsed.data.aliases), ...asList(args.aliases)])], updated: today() };
     if (args.description) data.description = args.description;
     if (sed === null && !args.replace) requireRefactor(name, hit.path, parsed.body);
-    const body = sed !== null ? applySed(parsed.body, sed) : `${String(args.content).trim()}\n`;
+    const body = sed !== null ? sed.reduce((b, e) => applySed(b, e), parsed.body) : `${String(args.content).trim()}\n`;
     text = serializeFrontmatter(data, body);
   } else {
     if (sed !== null) fail(`--sed: skill ${name} does not exist in repo ${repo}`);
