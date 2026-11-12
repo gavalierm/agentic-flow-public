@@ -118,8 +118,11 @@ function strayEntries(top) {
   return r.stdout.split('\0').filter((e) => /^(\?\?|!!) /.test(e)).map((e) => path.resolve(top, e.slice(3).replace(/\/$/, '')));
 }
 
-/** PreToolUse (shell): remember the dirty tracked files of each repo under dirs, keyed by the tool call. */
-export function snapshotShell(ctx, id, dirs) {
+/**
+ * PreToolUse (shell): remember the dirty tracked files of each repo under dirs, keyed by the tool call; births are files
+ * that do not exist yet and that the command may create outside those repos (thread state of a test sender).
+ */
+export function snapshotShell(ctx, id, dirs, births = []) {
   const edits = ownEdits(ctx);
   if (!edits || !id) return;
   const tops = [...new Set(dirs.map((d) => fs.existsSync(d) && git(['rev-parse', '--show-toplevel'], { cwd: d })).filter((r) => r && r.ok).map((r) => r.stdout))];
@@ -131,7 +134,7 @@ export function snapshotShell(ctx, id, dirs) {
   }
   const state = readThreadState(ctx.brainDir, ctx.thread);
   const before = Object.entries(state.shell_before || {}).slice(-(SHELL_LIMIT - 1));
-  writeThreadState(ctx.brainDir, ctx.thread, { ...state, shell_before: { ...Object.fromEntries(before), [id]: { tops, dirty, strays } } });
+  writeThreadState(ctx.brainDir, ctx.thread, { ...state, shell_before: { ...Object.fromEntries(before), [id]: { tops, dirty, strays, births } } });
 }
 
 /** PostToolUse (shell): files the command changed from clean, or changed further while own, become own edits. */
@@ -149,7 +152,8 @@ export function settleShell(ctx, id) {
     }
   }
   const had = new Set(snap.strays || []);
-  const born = snap.strays ? snap.tops.flatMap((top) => strayEntries(top) || []).filter((abs) => !had.has(abs) && !inWorkScratch(abs)) : [];
+  const born = [...(snap.strays ? snap.tops.flatMap((top) => strayEntries(top) || []).filter((abs) => !had.has(abs) && !inWorkScratch(abs)) : []),
+    ...(snap.births || []).filter((abs) => fs.existsSync(abs))];
   const created = [...(state.created_files || []).filter((f) => !born.includes(f)), ...born].slice(-CREATED_LIMIT);
   const { [id]: _, ...rest } = state.shell_before;
   writeThreadState(ctx.brainDir, ctx.thread, { ...state, shell_before: rest, created_files: created });

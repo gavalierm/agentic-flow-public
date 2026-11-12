@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
-import { loadContext, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR } from '../scripts/config.mjs';
+import { loadContext, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR, resolveBrain, threadStateFile } from '../scripts/config.mjs';
 import { git, isInside, toPosix } from '../scripts/util.mjs';
 import { parse, programIndex } from '../scripts/shell-parse.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
@@ -627,6 +627,30 @@ export function shellDirs(command, cwd) {
   return [...new Set(dirs)];
 }
 
+/**
+ * Thread state files a workflow script of this command creates for another thread id it names (`WORKFLOW_THREAD_ID=<id>`,
+ * in the brain of `WORKFLOW_PROJECT_DIR` or of cwd), when they do not exist yet: a test sender of this thread, so removing
+ * it later is cleaning up after itself (P-018; alice 2026-11-12: `rm` of the pilot's local/threads/pilot-test-sender.json
+ * asked the operator and waited 3.6 h overnight: the pilot brain is another repo and its local/ is ignored as a whole).
+ */
+export function threadStateBirths(command, cwd, self) {
+  const value = (part, name) => {
+    const m = part.match(new RegExp(`(?:^|\\s)${name}=(?:"([^"$\`]+)"|'([^']+)'|([^\\s;&|$\`'"()<>]+))`));
+    return m ? m[1] || m[2] || m[3] : null;
+  };
+  const out = new Set();
+  for (const part of expandAssigned(command).split(/\s*(?:&&|\|\||;|\n|\|)\s*/)) {
+    const id = value(part, 'WORKFLOW_THREAD_ID');
+    if (!id || id === self) continue;
+    const dir = value(part, 'WORKFLOW_PROJECT_DIR');
+    const info = resolveBrain(dir ? path.resolve(cwd, dir.replace(/^~(?=\/|$)/, os.homedir())) : cwd);
+    if (!info?.brain) continue;
+    const file = threadStateFile(info.brain, id);
+    if (!fs.existsSync(file)) out.add(file);
+  }
+  return [...out];
+}
+
 /** Targets the thread may change without asking: work files in a scratch/ and its own edits (P-018, P-052). */
 function ownWork(ctx, abs) {
   return isInside(path.join(ctx.projectDir, SCRATCH_DIR), abs) || inWorkScratch(abs) || ownedEdit(ctx, abs);
@@ -1130,7 +1154,7 @@ function pathChecks(input, ctx, cwd) {
 
   if (tool === 'Bash' || tool === 'PowerShell') {
     const cmd = String(toolInput.command || '');
-    snapshotShell(ctx, input.tool_use_id, shellDirs(cmd, cwd));
+    snapshotShell(ctx, input.tool_use_id, shellDirs(cmd, cwd), threadStateBirths(cmd, cwd, ctx.thread));
     const cat = catalogCheck(input, ctx, cwd);
     if (cat?.deny) return permissionOutput('deny', cat.deny);
     const targets = bashTargets(cmd, cwd);

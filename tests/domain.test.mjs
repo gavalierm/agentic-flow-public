@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
 import { shellWrites, shellWriteTargets } from '../hooks/pre-tool-use.mjs';
-import { resolveDomain, allowOutside } from '../scripts/config.mjs';
+import { resolveDomain, allowOutside, threadStateFile } from '../scripts/config.mjs';
 
 const decision = (r) => r.json.hookSpecificOutput?.permissionDecision || null;
 const reason = (r) => r.json.hookSpecificOutput?.permissionDecisionReason || '';
@@ -111,6 +111,31 @@ test('P-018: a directory a shell command creates (program side effect) is the th
     r = fx.hook('pre-tool-use.mjs', call('t3', 'rm -rf notes'));
     assert.equal(decision(r), 'ask', 'untracked data the thread did not make still asks');
   } finally { fx.cleanup(); }
+});
+
+test('P-018: thread state a workflow script of the command creates for another thread id is the thread\'s own (alice 2026-11-12: pilot-test-sender.json waited 3.6 h overnight)', () => {
+  // The pilot is another project with its own brain, outside the domain but allowed (alice: allow_outside ~/agentic).
+  const pilot = setup({ brainName: 'pilot-brain' });
+  const d = domainFx([pilot.root]);
+  const fx = d.fx;
+  try {
+    const call = (id, command) => ({ tool_name: 'Bash', tool_use_id: id, tool_input: { command } });
+    const file = threadStateFile(pilot.brain, 'test-sender');
+    const run = call('t1', `P=${pilot.project}; cd $P && for n in 1 2; do WORKFLOW_PROJECT_DIR=$P WORKFLOW_THREAD_ID=test-sender node bin/comms.mjs send --level assist --to x --text "t $n"; done`);
+    fx.hook('pre-tool-use.mjs', run);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '{}');
+    fx.hook('post-tool-use.mjs', run);
+    let r = fx.hook('pre-tool-use.mjs', call('t2', `rm -f ${file}`));
+    assert.equal(decision(r), null, JSON.stringify(r.json));
+    const other = threadStateFile(pilot.brain, 'other');
+    fs.writeFileSync(other, '{}');
+    const run2 = call('t3', `WORKFLOW_PROJECT_DIR=${pilot.project} WORKFLOW_THREAD_ID=other node bin/comms.mjs list`);
+    fx.hook('pre-tool-use.mjs', run2);
+    fx.hook('post-tool-use.mjs', run2);
+    r = fx.hook('pre-tool-use.mjs', call('t4', `rm -f ${other}`));
+    assert.equal(decision(r), 'ask', 'state of a thread that existed before the command still asks');
+  } finally { d.cleanup(); pilot.cleanup(); }
 });
 
 test('shellWrites: output options, redirects, cp/mv/tee/mkdir targets; devices and reads are not writes', () => {
