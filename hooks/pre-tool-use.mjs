@@ -17,7 +17,7 @@ import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell } from 
 import { catalogPreTool } from '../scripts/catalog/pretool.mjs';
 import { bigWriteDeny } from '../scripts/materialy.mjs';
 import { logDecision } from '../scripts/denials.mjs';
-import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, transcriptTurnText, awaitTranscriptToolUse, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
+import { analyze, bypassOf, bypassReason, callKey, closedTargets, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, openByAnswers, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, transcriptTurnText, turnLifts, awaitTranscriptToolUse, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-052', 'P-054', 'P-055'] };
 
@@ -1091,8 +1091,38 @@ export const dialogText = (toolInput) => (Array.isArray(toolInput?.questions) ? 
 export const LONG_TURN_TEXT = 1200;
 export const MIN_DIALOG_TEXT = 200;
 export const MIN_ANSWER_TEXT = 80;
-export const UNANSWERED_DIALOG_REASON = (written) => `the operator started this turn with a question and the turn has written only ${written} characters of text before this dialog: while it is open the operator may not see the thread (T3 shows the dialog in place of the composer, on the phone over the thread), so they would decide about your proposal without your answer. Write the answer to the question in the reply text first, then ask about the proposal in the dialog, with what it decides about in the question. A clarifying question you need before any answer: ask the same dialog again, a repeat passes (P-061, P-063)`;
+export const UNANSWERED_DIALOG_REASON = (written) => `the operator started this turn with a question and the turn has written only ${written} characters of text before this dialog: while it is open the operator may not see the thread (T3 shows the dialog in place of the composer, on the phone over the thread), so they would decide about your proposal without your answer. Write the answer to the question in the reply text first, then ask about the proposal in the dialog: start its question with the answer in one sentence (the open dialog covers the text) and say what it decides about. A clarifying question you need before any answer: ask the same dialog again, a repeat passes (P-061, P-063)`;
 export const THIN_DIALOG_REASON = (written, shown) => `this turn wrote ${written} characters of text before the dialog, the dialog shows only ${shown}: while it is open the operator may not see the text of the turn (T3 shows the dialog in place of the composer, on the phone over the thread), so they decide without the plan or proposal you wrote. Put into the dialog what the operator decides about: the content in short in the question (what the plan does, 1–3 sentences), in each option's description what it does, a longer text (the plan, a draft) in the option's preview (markdown). Then ask again; a repeat passes (P-061)`;
+
+// flow-public#45: a dialog right after the operator's answer covers the thread again before the operator sees what the answer did.
+export const CHAINED_DIALOG_REASON = (written) => `the operator answered a dialog in this turn and the turn has written only ${written} characters of text since: this dialog would cover the thread again (T3 shows the dialog in place of the composer, on the phone over the thread), so the operator would not see what the answer decided. Write in the reply text what the answer decided and what you did with it, then ask; put all remaining items into this one dialog (up to 4 questions) instead of one dialog after another. A follow-up the answer itself needs: ask the same dialog again, a repeat passes (P-061, flow-public#45)`;
+
+// flow-public#43: a permission rule refused a compound command (`cd <project> && mkdir -p scratch/s && cp <deployed skill>
+// scratch/s/ && diff scratch/s/x <brain copy>`) and every path it named counted as a refused write, so a later script that
+// only read the deployed file and wrote scratch/ was locked. The harness does not say which path the rule hit: a rule
+// refusal of a shell command locks the paths the command writes; one without a recognised write target keeps all its paths.
+function ruleWrites(d, cwd) {
+  if (!d.rule || d.paths || !(d.tool === 'Bash' || d.tool === 'PowerShell')) return d;
+  const cmd = String(d.input?.command || '');
+  const paths = [...new Set([...shellWrites(cmd, cwd), ...bashEdits(cmd, cwd), ...bashTargets(cmd, cwd)].map((p) => path.resolve(cwd, p)))].filter((p) => !p.startsWith('/dev/'));
+  return paths.length ? { ...d, paths, write: true } : d;
+}
+
+/** P-054: the refusals of this turn that still lock: workflow hooks (thread state), the harness and permission rules (session
+ * transcript); a dialog answer of the operator after a refusal that names its target and allows it opens it (flow-public#46). */
+export function turnDenials(state, transcriptPath, cwd, anchors = []) {
+  const all = [...(state ? stateDenials(state) : []), ...transcriptDenials(transcriptPath, state?.turn_started_at || '').map((d) => ruleWrites(d, cwd))];
+  return openByAnswers(all, state ? turnLifts(state) : [], cwd, anchors);
+}
+
+/** flow-public#46: a compaction inside a turn drops which targets the turn refused, while the refusals still lock; the context after it lists them. */
+export function closedTargetsNote(ctx, input) {
+  if (!ctx.brainDir || !ctx.thread) return null;
+  const cwd = gitBashPath(input.cwd || process.cwd());
+  const anchors = [cwd, ctx.projectDir, os.homedir()];
+  const closed = closedTargets(turnDenials(readThreadState(ctx.brainDir, ctx.thread), input.transcript_path, cwd, anchors), cwd, anchors, (p) => ownWork(ctx, p));
+  return closed.length ? `refused in this turn (P-054): ${closed.join(', ')}; reaching them another way is a bypass; an answer of the operator in a dialog that names the target and allows it opens it (flow-public#46)` : null;
+}
 
 export function run(input) {
   const ctx = loadContext({ requireBrain: false });
@@ -1137,6 +1167,18 @@ export function run(input) {
       if (written < MIN_ANSWER_TEXT) {
         writeThreadState(ctx.brainDir, ctx.thread, { ...before, unanswered_dialog_denied_at: turnKey });
         return permissionOutput('deny', UNANSWERED_DIALOG_REASON(written));
+      }
+    }
+    // flow-public#45: the operator answered a dialog and the next dialog opened at once: it covered the thread again, so the
+    // operator did not see what the answer decided. Refused once per answer while the turn has written almost no text since
+    // the answer; a repeat passes (a follow-up the answer itself needs).
+    const answeredAt = before.dialog_answered_at && (!before.turn_started_at || before.dialog_answered_at >= before.turn_started_at) ? before.dialog_answered_at : '';
+    if (answeredAt && before.chained_dialog_denied_at !== answeredAt && input.transcript_path && fs.existsSync(input.transcript_path)) {
+      awaitTranscriptToolUse(input.transcript_path, input.tool_use_id);
+      const written = transcriptTurnText(input.transcript_path, answeredAt).trim().length;
+      if (written < MIN_ANSWER_TEXT) {
+        writeThreadState(ctx.brainDir, ctx.thread, { ...before, chained_dialog_denied_at: answeredAt });
+        return permissionOutput('deny', CHAINED_DIALOG_REASON(written));
       }
     }
     const st ={ ...readThreadState(ctx.brainDir, ctx.thread), dialog_at: new Date().toISOString(), dialog_questions: dialogQuestions(toolInput) };
@@ -1210,17 +1252,7 @@ export function run(input) {
   // A refusal that names save.mjs as the way (P-013 single writer) does not lock a call that runs save.mjs: it is the
   // way, not a bypass (alice 2026-11-08: a refused Edit of a repo record locked the save.mjs call the refusal named).
   const viaSave = (tool === 'Bash' || tool === 'PowerShell') && executedScripts(String(toolInput.command || '')).some((e) => /(^|[\\/])bin[\\/]save\.mjs$/.test(e.script));
-  // flow-public#43: a permission rule refused a compound command (`cd <project> && mkdir -p scratch/s && cp <deployed skill>
-  // scratch/s/ && diff scratch/s/x <brain copy>`) and every path it named counted as a refused write, so a later script that
-  // only read the deployed file and wrote scratch/ was locked. The harness does not say which path the rule hit: a rule
-  // refusal of a shell command locks the paths the command writes; one without a recognised write target keeps all its paths.
-  const ruleWrites = (d) => {
-    if (!d.rule || d.paths || !(d.tool === 'Bash' || d.tool === 'PowerShell')) return d;
-    const cmd = String(d.input?.command || '');
-    const paths = [...new Set([...shellWrites(cmd, cwd), ...bashEdits(cmd, cwd), ...bashTargets(cmd, cwd)].map((p) => path.resolve(cwd, p)))].filter((p) => !p.startsWith('/dev/'));
-    return paths.length ? { ...d, paths, write: true } : d;
-  };
-  const denials = [...(state ? stateDenials(state) : []), ...transcriptDenials(input.transcript_path, state?.turn_started_at || '').map(ruleWrites)]
+  const denials = turnDenials(state, input.transcript_path, cwd, anchors)
     .filter((d) => !(viaSave && /\bsave\b|save\.mjs/.test(String(d.reason || ''))));
   const bypass = denials.length ? bypassOf({ tool, toolInput, cwd, anchors, denials, own: (p) => ownWork(ctx, p) }) : null;
   if (bypass) return permissionOutput('deny', bypassReason(bypass, cwd));

@@ -202,6 +202,22 @@ test('Stop: "<project> / bez témy" in a reply blocks once unless it ends with t
   } finally { fx.cleanup(); }
 });
 
+// Pilot 2026-11-12: the operator chose "Bez témy" in the topic dialog and Stop asked for the topic again (D-0010).
+test('Stop: after the operator chose "Bez témy" in the dialog, "<project> / bez témy" passes without the topic question (P-050, D-0010)', () => {
+  const fx = setup();
+  try {
+    const project = path.basename(fx.project);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'kto si' });
+    const q = 'Aká bude téma?';
+    const pt = fx.hook('post-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: q, options: [{ label: 'web – Web' }, { label: 'Bez témy' }] }] }, tool_response: { answers: { [q]: 'Bez témy' } } });
+    // Pilot 2026-11-13: the verbatim status block led the reply to ask the answered topic question again; the line after the answer says how to start.
+    const said = pt.json?.hookSpecificOutput?.additionalContext || '';
+    assert.ok(said.includes(`the operator chose "Bez témy": start the final reply with the line "${project} / bez témy" alone, without the list of topics and without "Aká bude téma?"`), said);
+    const r = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: `${project} / bez témy\n\nDostupné témy:\n- web – Web\n\nSom agent tohto projektu.\n\nStav: hotovo` }).json;
+    assert.equal(r.decision, undefined, r.reason);
+  } finally { fx.cleanup(); }
+});
+
 test('Stop: a thread without a topic asking the operator for one gets no auto timer; with a topic it does (flow-public#1)', () => {
   const fx = setup();
   try {

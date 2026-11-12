@@ -105,7 +105,7 @@ test('wake bell: triage only with new mail, else one line ending the turn; a quo
 
 test('no reply / undelivered: one line from message --id, no triage instruction, P-047 locks; outage -> line without detail', async () => {
   const fx = stubbed({
-    messages: [{ id: 'x1', level: 'assist' }],
+    messages: [{ id: 'x1', level: 'blocker' }],
     message: {
       m1: { id: 'm1', state: 'pending', level: 'assist', project: 'project', topic: 'beta', to: 'project/beta', outcome: 'expired', replied: false, ttl_s: 14400 },
       m2: { id: 'm2', state: 'pending', level: 'blocker', to: 'thread:t7', outcome: 'undelivered', replied: false, undelivered_holder: 't7', undelivered_reason: 'thread archived' },
@@ -127,9 +127,9 @@ test('no reply / undelivered: one line from message --id, no triage instruction,
     r = fx.hook('user-prompt-submit.mjs', { prompt: 'undelivered m2' });
     assert.equal(r.context.split('\n').at(-1), `message m2 (blocker → thread:t7): undelivered (recipient thread t7 thread archived)${ACTIONS}`);
 
-    // The mail line held back in those turns comes with the next operator prompt.
+    // The mail line held back in those turns comes with the next operator prompt (a blocker passes the discussion, D-0022).
     r = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    assert.match(r.context, /mail: 1 waiting: x1 assist/);
+    assert.match(r.context, /mail: 1 waiting: x1 blocker/);
     assert.equal(fx.state().turn_source, 'operator');
 
     fx.stub.set({ down: true });

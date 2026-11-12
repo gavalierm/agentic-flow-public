@@ -2,6 +2,7 @@
 // Stub of the agentic-comms client for workflow tests (WORKFLOW_COMMS_CLIENT). State in STUB_COMMS_STATE (JSON):
 //   { messages: [{ id, level, ... }], ids: true|false (server lists ids, default true), down: bool,
 //     turn: 'ok'|'unknown'|'old' (old: no opened_at, --opened-at is an unknown option), opened_at: '<iso>' (answer of open),
+//     turn_unknown: ['<option>', ...] (turn options an older client refuses as unknown, e.g. 'discussion'),
 //     message: { <id>: { ...GET /message fields } }
 //     register_fail: true (register-topic exits 2: comms unavailable), by_topic: true (count with --topic lists only the
 //     messages of that topic, thread-only count lists none), wake: { running, ... } (count field of comms >= 0.4.6),
@@ -59,6 +60,10 @@ switch (cmd) {
     print({ id: state.send_id || 'm-sent', state: 'pending', expires_at: opt('ttl') ? '2026-11-01T12:30:00.000Z' : null }); break;
   case 'turn':
     if (state.turn === 'unknown') { process.stderr.write('unknown command: turn\n'); process.exit(1); }
+    {
+      const unknown = (state.turn_unknown || []).find((k) => argv.includes(`--${k}`));
+      if (unknown) { process.stderr.write(JSON.stringify({ error: `neznáma voľba --${unknown}` }) + '\n'); process.exit(1); }
+    }
     if (state.turn === 'old') {
       if (argv.includes('--opened-at')) { process.stderr.write(JSON.stringify({ error: 'neznáma voľba --opened-at' }) + '\n'); process.exit(1); }
       print({ ok: true, state: opt('state') });

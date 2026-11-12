@@ -12,6 +12,8 @@ const MAX_DENIALS = 20;
 const TRANSCRIPT_TAIL = 2 * 1024 * 1024;
 /** Harness wording of a permission refusal (rule, dialog answered "no"); a workflow hook denial is recorded in thread state. */
 export const HARNESS_DENIAL = /has been denied|doesn't want to proceed|tool use was rejected|denied by the user|user rejected/i;
+// flow-public#47: the text of a workflow hook refusal in the transcript (a harness without `permissionDecision.source`).
+export const HOOK_REFUSAL = /^\s*[A-Za-z]+:\S+ hook (error|denied)/;
 const SHELLS = ['Bash', 'PowerShell', 'Monitor'];
 const INTERPRETERS = new Set(['node', 'sh', 'bash', 'zsh', 'dash', 'python', 'python3', 'pwsh', 'powershell', 'deno', 'bun', 'ruby', 'perl', 'env', 'sudo', 'nice', 'timeout', 'xargs']);
 const READ_PROGRAMS = new Set(['cat', 'head', 'tail', 'less', 'more', 'ls', 'stat', 'file', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'echo', 'printf', 'true', 'test', '[', 'pwd', 'which', 'type', 'realpath', 'readlink', 'basename', 'dirname', 'du', 'df', 'tree', 'diff', 'cmp', 'md5sum', 'sha1sum', 'sha256sum', 'jq', 'sort', 'uniq', 'cut', 'tr', 'nl', 'column', 'get-content', 'get-childitem', 'select-string', 'test-path', 'cd', 'set-location']);
@@ -326,11 +328,15 @@ export function transcriptDenials(transcriptPath, since = '') {
     // A permission rule of the settings (`permissionDecision.source` config) is no operator decision: it reads a `sed -n`
     // or a `cp` source as a write and resolves relative paths from the session folder, so it locks like a workflow hook
     // refusal, not like the operator in the dialog (11 of 14 locks were false, audit M2 2026-11-11).
+    // flow-public#47: a workflow hook refusal is in the thread state (withDenial) with its own lock. Its text quotes the earlier
+    // refusal ("… has been denied"), so read as a refusal of the operator it locked every path of the refused call again,
+    // reads too: one refused bypass closed the folder of a deployed skill for the rest of the turn.
+    if (e.permissionDecision?.source === 'hook') continue;
     const rule = e.permissionDecision?.source === 'config';
     for (const r of results) {
       const use = uses.get(r.tool_use_id);
       const msg = resultText(r);
-      if (use && r.is_error && HARNESS_DENIAL.test(msg)) out.push({ ...use, key: callKey(use.tool, use.input), reason: msg.split('\n')[0].slice(0, 160), harness: !rule, rule });
+      if (use && r.is_error && HARNESS_DENIAL.test(msg) && !HOOK_REFUSAL.test(msg)) out.push({ ...use, key: callKey(use.tool, use.input), reason: msg.split('\n')[0].slice(0, 160), harness: !rule, rule, at: e.timestamp || '' });
     }
   }
   return out;
@@ -361,10 +367,60 @@ export function bypassOf({ tool, toolInput = {}, cwd = process.cwd(), anchors = 
   return null;
 }
 
+// flow-public#46: an answer that keeps the target closed (the operator refused in the dialog).
+export const REFUSING_ANSWER = /^\s*(nie\b|no\b|ne\b|neschv|zamiet|nepovo|nechaj|ponechaj|zru[sš]|stop\b|deny|don'?t|reject|cancel)/i;
+
+/** flow-public#46: the operator's answers in dialogs of this turn (question and answer), kept by PostToolUse. */
+export function turnLifts(state = {}) {
+  const since = state.turn_started_at || '';
+  return (Array.isArray(state.dialog_lifts) ? state.dialog_lifts : []).filter((l) => l && typeof l.text === 'string' && (!since || l.at >= since));
+}
+
+/** flow-public#46: keeps an answer of the operator that does not refuse; a later call may then reach the targets it names. */
+export function withLift(state, question, answer, at = new Date().toISOString()) {
+  const a = String(answer || '').trim();
+  if (!a || REFUSING_ANSWER.test(a)) return state;
+  return { ...state, dialog_lifts: [...turnLifts(state), { at, text: `${question}\n${a}` }].slice(-10) };
+}
+
+/** Whether the text names the path: absolute, relative to cwd or by its file name, as a whole word. */
+function namesPath(text, p, cwd) {
+  const names = [toPosix(p), toPosix(path.relative(cwd, p)), path.basename(p)].filter((n) => n && n.length >= 3 && n !== '..');
+  return names.some((n) => new RegExp('(^|[^\\w.-])' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\w-])').test(toPosix(text)));
+}
+
+/**
+ * flow-public#46: the lock text tells the agent to ask the operator in a dialog when the work needs the target, but the
+ * answer opened nothing until the next prompt. An answer given after a refusal whose question or answer names a refused
+ * path, and that does not refuse, opens that path for the rest of the turn; the other paths of the refusal stay closed.
+ */
+export function openByAnswers(denials, lifts, cwd, anchors = []) {
+  if (!lifts.length) return denials;
+  return denials.flatMap((d) => {
+    const after = lifts.filter((l) => l.at >= (d.at || ''));
+    if (!after.length) return [d];
+    const prev = d.paths ? { paths: d.paths, write: d.write } : analyze(d.tool, d.input || {}, cwd, anchors);
+    const paths = prev.paths.filter((p) => !after.some((l) => namesPath(l.text, p, cwd)));
+    if (paths.length === prev.paths.length) return [d];
+    return paths.length ? [{ ...d, paths, write: prev.write }] : [];
+  });
+}
+
+/** flow-public#46: the targets the refusals of this turn keep closed, relative to cwd (the context after a compaction lists them). */
+export function closedTargets(denials, cwd, anchors = [], own = () => false) {
+  const out = new Set();
+  for (const d of denials) {
+    const prev = d.paths ? { paths: d.paths, write: d.write } : analyze(d.tool, d.input || {}, cwd, anchors);
+    if (!d.harness && !prev.write) continue;
+    for (const p of prev.paths) if (!own(p)) out.add(toPosix(path.relative(cwd, p)) || '.');
+  }
+  return [...out];
+}
+
 export function bypassReason(hit, cwd) {
   const rel = toPosix(path.relative(cwd, hit.path)) || '.';
   const why = String(hit.denial.reason || '').replace(/\s+/g, ' ').slice(0, 120);
-  return `this call reaches ${rel}, which a ${hit.denial.tool} call refused earlier in this turn also reached (${why}); reaching it another way is a bypass (P-054): this target stays closed for the rest of this turn. Write the refused command and its message in the result, and do the work that does not need the target. A refusal by the operator in the dialog is the operator's decision: when the work needs the target, ask whether to allow it with AskUserQuestion. A workflow hook refusal names its own way: use that way; a permission rule of the settings refused a write: write a work file in scratch/ or use the way the workflow names (save.mjs). The lock ends with this turn: when the work still needs the target, save the step with save handover --next, arm a waker (<plugin>/bin/timer.mjs --in 1m --then "<step>") and end with Stav: čakám (na nový ťah: <step>); the new turn has the target open. Not Stav: hotovo with an undone step and not "napíš pokračuj": the operator is no waker (P-061, P-026)`;
+  return `this call reaches ${rel}, which a ${hit.denial.tool} call refused earlier in this turn also reached (${why}); reaching it another way is a bypass (P-054): this target stays closed for the rest of this turn. Write the refused command and its message in the result, and do the work that does not need the target. A refusal by the operator in the dialog is the operator's decision: when the work needs the target, ask whether to allow it with AskUserQuestion, naming the target in the question: an answer that allows it opens the target for the rest of this turn (flow-public#46). A workflow hook refusal names its own way: use that way; a permission rule of the settings refused a write: write a work file in scratch/ or use the way the workflow names (save.mjs). The lock ends with this turn: when the work still needs the target, save the step with save handover --next, arm a waker (<plugin>/bin/timer.mjs --in 1m --then "<step>") and end with Stav: čakám (na nový ťah: <step>); the new turn has the target open. Not Stav: hotovo with an undone step and not "napíš pokračuj": the operator is no waker (P-061, P-026)`;
 }
 
 /** Files that set what the workflow enforces (hooks, permissions, plugins): a change goes past the operator (P-054). */

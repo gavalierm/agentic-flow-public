@@ -14,6 +14,7 @@ import { pinClone, pinFile, readPins, newerThanPin } from '../scripts/update.mjs
 import { PLUGIN_ROOT } from '../scripts/util.mjs';
 import { ensureLineEndings } from '../scripts/eol.mjs';
 import { catalogBoot } from '../scripts/catalog/hooks.mjs';
+import { closedTargetsNote } from './pre-tool-use.mjs';
 
 export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '9500 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038', 'P-050'] };
 
@@ -40,7 +41,9 @@ export function run(input) {
   if (ctx.brainDir && ctx.thread) {
     try { const w = installedWorkflow(); writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), plugin_sha: w.sha, plugin_version: w.version, read_budget: null, ...(catalog.stateHash ? { catalog_boot_hash: catalog.stateHash } : {}) }); } catch { /* state is best effort */ }
   }
-  return contextOutput('SessionStart', boot.text);
+  // flow-public#46: a compaction inside a turn drops which targets the turn refused; the refusals still lock (P-054).
+  const closed = input.source === 'compact' ? closedTargetsNote(ctx, input) : null;
+  return contextOutput('SessionStart', closed ? `${boot.text}\n${closed}` : boot.text);
 }
 
 /**

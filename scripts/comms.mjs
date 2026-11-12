@@ -241,6 +241,39 @@ export function mailCount(ctx, held = []) {
   return out;
 }
 
+/** Levels an open discussion with the operator holds back (D-0015, D-0022): a blocker and every reply pass. */
+export const DISCUSSION_HELD_LEVELS = ['steer', 'assist'];
+
+/**
+ * The running turn of the thread discusses with the operator (D-0015): `discussion` of the thread state, written by the
+ * prompt hook (turnDiscussion). A state without it (written before) is no discussion: the hooks show the mail as before.
+ */
+export function discussionOpen(state) {
+  return !!state && state.discussion === true;
+}
+
+/**
+ * Discussion of a turn that starts now (prompt hook, D-0015): the operator started it or the last turn ended `Stav: otázka`;
+ * an interrupted turn resumed by keepalive keeps its own. The AskUserQuestion dialog is the mail's `waiting_operator`.
+ */
+export function turnDiscussion(turnSource, prior = null, kind = null) {
+  if (turnSource === 'operator' || prior?.last_end_state === 'otázka') return true;
+  return kind === 'keepalive' && prior?.discussion === true;
+}
+
+/**
+ * The mail a discussing thread is told about (D-0022): steer and assist wait for the end of the discussion, a blocker and
+ * a reply pass. Mail without listing items (older server) only tells its blockers apart, so only they are kept.
+ */
+export function discussionMail(mail) {
+  if (!mail || !mail.count) return mail;
+  const all = Array.isArray(mail.items) ? mail.items : [];
+  const items = all.filter((it) => !DISCUSSION_HELD_LEVELS.includes(categoryOf(it)));
+  const unlisted = Math.max(0, (mail.blockers || 0) - all.filter((it) => it.level === 'blocker').length);
+  const count = items.length + unlisted;
+  return { ...mail, items, count, blockers: items.filter((it) => it.level === 'blocker').length + unlisted, steers: items.filter((it) => it.level === 'steer').length, held_back: mail.count - count };
+}
+
 export function formatMail(mail) {
   let s = `mail: ${mail.unknown && !mail.count ? '?' : mail.count}`;
   if (mail.blockers) s += ` (${mail.blockers} blocker)`;
@@ -268,15 +301,20 @@ export function mailNoticeLine(mail, max = 10) {
   return `mail: ${mail.count} waiting: ${shown.join(', ')}${more}`;
 }
 
+/** Options of `comms turn` an older client may not know (dropped one by one when the client names it). */
+const TURN_OPTIONAL = ['--discussion', '--opened-at', '--resume-at'];
+
 /**
  * Turn record for keepalive (P-043): `open` at the prompt, `closed` at Stop. The thread travels as `--thread` (runClient);
  * machine and holder mode come from holder.json of the first held topic (as registerTopic), else this machine.
  * `open` answers `turn.opened_at` (kept in the thread state as `turn_opened_at`); `closed` sends it back as `--opened-at`
  * so the service ignores a Stop of an older turn (`stale: true`). The client queues a `closed` in its outbox during an
- * outage (`queued: true`); `open` is never queued. An older client without `--opened-at` (usage error) gets the call again
- * without it. Never throws.
+ * outage (`queued: true`); `open` is never queued. `discussion` (boolean, D-0015): `--discussion open|closed`, the thread
+ * discusses with the operator, so the mail holds back steer and assist rings and answers their senders `otázka`. An older
+ * client without `--opened-at`, `--resume-at` or `--discussion` (usage error naming it) gets the call again without it.
+ * Never throws.
  */
-export function recordTurn(ctx, state, held = [], { openedAt = null, next = null, resumeAt = null } = {}) {
+export function recordTurn(ctx, state, held = [], { openedAt = null, next = null, resumeAt = null, discussion = null } = {}) {
   try {
     const s = commsSettings(ctx);
     if (!s.enabled || !ctx.thread) return { ok: false, skipped: true };
@@ -291,11 +329,18 @@ export function recordTurn(ctx, state, held = [], { openedAt = null, next = null
     if (state === 'closed' && next) args.push('--next', String(next).slice(0, 300));
     // P-061: the thread timer; wake rings the thread at resume_at with the next step.
     if (state === 'closed' && next && resumeAt) args.push('--resume-at', String(resumeAt));
-    const withOpened = state === 'closed' && openedAt ? [...args, '--opened-at', String(openedAt)] : args;
-    let res = runClient(ctx, withOpened, { timeoutMs });
-    if (!res.ok && res.code === 1 && withOpened !== args && /opened-at/.test(String(res.error || ''))) res = runClient(ctx, args, { timeoutMs });
-    // An older mail client without --resume-at: the step still goes (rung after the usual delay).
-    if (!res.ok && res.code === 1 && resumeAt && /resume-at/.test(String(res.error || ''))) res = runClient(ctx, withOpened.filter((a, i, all) => a !== '--resume-at' && all[i - 1] !== '--resume-at'), { timeoutMs });
+    if (state === 'closed' && openedAt) args.push('--opened-at', String(openedAt));
+    if (typeof discussion === 'boolean') args.push('--discussion', discussion ? 'open' : 'closed');
+    let call = args;
+    let res = runClient(ctx, call, { timeoutMs });
+    // An older mail client refuses a newer option (usage error naming it): the call goes again without it. Without
+    // --resume-at the step is rung after the usual delay; without --discussion the mail rings as before.
+    for (let tries = 0; !res.ok && res.code === 1 && tries < TURN_OPTIONAL.length; tries++) {
+      const flag = TURN_OPTIONAL.find((f) => call.includes(f) && String(res.error || '').includes(f.slice(2)));
+      if (!flag) break;
+      call = call.filter((a, i, all) => a !== flag && all[i - 1] !== flag);
+      res = runClient(ctx, call, { timeoutMs });
+    }
     if (res.ok && res.data && res.data.ok === false) return { ok: false, ...res.data };
     return res.ok ? { ok: true, ...(res.data || {}) } : { ok: false, unavailable: !!res.unavailable, error: res.error };
   } catch (err) {

@@ -17,6 +17,7 @@ Pravidlá:
 - Textový súbor (výťah, poznámky, medzivýsledok) zapisuj nástrojom Write, nie heredoc, echo ani printf v shelli: apostrof alebo úvodzovka v texte ukončí reťazec a príkaz skončí chybou (kód 2).
 - Keď Glob nič nenájde, skús ten istý vzor malými písmenami, až potom tvrď, že súbor nie je. V `rg` je `-h` pomocník (nie bez názvov súborov ako v grep); bez názvov súborov píš `rg --no-filename`.
 - Použi skilly pribalené v zadaní; sú to overené postupy a poučenia z predchádzajúcich chýb.
+- Zdroj, ktorý zlyhá (403, timeout, blokovanie), nie je koniec úlohy: skús ho raz inou cestou, ktorú zadanie nezakazuje (iná adresa zdroja, `curl -sL` cez Bash), potom ho uveď vo `Failures` a pokračuj ďalšími zdrojmi. Nie vzdať celú úlohu po prvom zlyhanom zdroji, lebo zber z webu skončil po prvej odpovedi 403 (flow-public#48).
 - Nič neoznačuj za hotové alebo funkčné bez jedného pozorovania výsledku.
 
 Formát výsledku (limit 3 000 znakov; dlhší výsledok hook vráti skrátiť):

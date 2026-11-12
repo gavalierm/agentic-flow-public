@@ -223,6 +223,66 @@ test('hook: a permission rule refusal of a shell command locks what the command 
   } finally { fx.cleanup(); }
 });
 
+// flow-public#46: the operator refused a write in the permission dialog, then allowed it in AskUserQuestion; the target stayed
+// closed until the next prompt, and after a compaction the context did not say which targets were closed.
+test('hook: an operator answer in a dialog that names the refused target and allows it opens it; "Nie" and another question keep it closed, and a compaction lists it (flow-public#46)', () => {
+  const run = (question, answer) => {
+    const fx = setup();
+    try {
+      const dep = path.join(fx.project, 'deployed', 'run.mjs');
+      fs.mkdirSync(path.dirname(dep), { recursive: true });
+      fs.writeFileSync(dep, 'x');
+      const t = path.join(fx.root, 's.jsonl');
+      const lines = [
+        { type: 'user', timestamp: new Date(Date.now() - 2000).toISOString(), message: { content: 'go' } },
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'u1', name: 'Write', input: { file_path: dep, content: 'y' } }] } },
+        { type: 'user', timestamp: new Date(Date.now() - 1000).toISOString(), message: { content: [{ type: 'tool_result', tool_use_id: 'u1', is_error: true, content: "The user doesn't want to proceed with this tool use. The tool use was rejected." }] } },
+      ];
+      fs.writeFileSync(t, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+      const P054 = /bypass \(P-054\)/;
+      const sed = () => P054.test(JSON.stringify(fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', transcript_path: t, tool_input: { command: `sed -i s/x/y/ ${dep}` } }).json || {}));
+      const locked = sed();
+      if (question) fx.hook('post-tool-use.mjs', { hook_event_name: 'PostToolUse', tool_name: 'AskUserQuestion', tool_input: { questions: [{ question, options: [{ label: 'Áno' }, { label: 'Nie' }] }] }, tool_response: { answers: { [question]: answer } } });
+      return { locked, after: sed(), compact: fx.hook('session-start.mjs', { source: 'compact', transcript_path: t }).context };
+    } finally { fx.cleanup(); }
+  };
+  const allowed = run('Povolíš zápis do deployed/run.mjs?', 'Áno');
+  assert.equal(allowed.locked, true, 'the refused target written another way is a bypass');
+  assert.equal(allowed.after, false, 'the answer that allows the named target opens it');
+  assert.doesNotMatch(allowed.compact, /refused in this turn/);
+  assert.equal(run('Mám prepísať run.mjs?', 'Áno, prepíš').after, false, 'the file name names it too');
+  const refused = run('Povolíš zápis do deployed/run.mjs?', 'Nie');
+  assert.equal(refused.after, true, 'a refusing answer keeps it closed');
+  assert.match(refused.compact, /refused in this turn \(P-054\): deployed\/run\.mjs; reaching them another way is a bypass/);
+  assert.equal(run('Pokračovať vo vydaní?', 'Áno').after, true, 'a question that does not name the target keeps it closed');
+});
+
+// flow-public#47: a refused bypass quoted the earlier refusal ("has been denied") and counted as a new refusal of the operator.
+test('hook: a workflow hook refusal in the transcript is no refusal of the operator: a later read of its paths is not locked (flow-public#47)', () => {
+  for (const marked of [true, false]) {
+    const fx = setup();
+    try {
+      const dep = path.join(fx.project, 'deployed', 'run.mjs');
+      fs.mkdirSync(path.dirname(dep), { recursive: true });
+      fs.writeFileSync(dep, 'x');
+      const t = path.join(fx.root, 's.jsonl');
+      const refused = { type: 'user', timestamp: new Date(Date.now() - 1000).toISOString(), message: { content: [{ type: 'tool_result', tool_use_id: 'u1', is_error: true, content: `PreToolUse:Bash hook error: this call reaches ${dep}, which a Bash call refused earlier in this turn also reached (Permission to use Bash has been denied.)` }] } };
+      if (marked) refused.permissionDecision = { decision: 'reject', source: 'hook', reasonType: 'hook', reasonCode: 'hook:PreToolUse' };
+      const lines = [
+        { type: 'user', timestamp: new Date(Date.now() - 2000).toISOString(), message: { content: 'go' } },
+        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'u1', name: 'Bash', input: { command: `cat ${dep}` } }] } },
+        refused,
+      ];
+      fs.writeFileSync(t, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+      const why = marked ? 'permissionDecision.source hook' : 'the hook text without the marker';
+      assert.deepEqual(transcriptDenials(t), [], why);
+      // another read of the same path (the same call again is a retry, no bypass)
+      const r = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', transcript_path: t, tool_input: { command: `head -5 ${dep}` } });
+      assert.doesNotMatch(JSON.stringify(r.json || {}), /bypass \(P-054\)/, why);
+    } finally { fx.cleanup(); }
+  }
+});
+
 test('hook: settings that enforce the workflow and git past its hooks ask the operator', () => {
   const fx = setup();
   try {

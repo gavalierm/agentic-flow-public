@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { setup } from './helpers.mjs';
 import { dialogText, LONG_TURN_TEXT, MIN_DIALOG_TEXT } from '../hooks/pre-tool-use.mjs';
 import { transcriptTurnText } from '../scripts/bypass.mjs';
+import { readThreadState } from '../scripts/config.mjs';
 
 const THIN = /the dialog shows only \d+[^]*P-061/;
 const reasonOf = (r) => r.json.hookSpecificOutput?.permissionDecisionReason || '';
@@ -91,6 +92,33 @@ test('AskUserQuestion in a question turn before the answer is written: refused o
     assert.doesNotMatch(reasonOf(ask(t)), UNANSWERED, 'the answer is written before the dialog');
     t = turn('pridaj presmerovanie na /novy', '');
     assert.doesNotMatch(reasonOf(ask(t)), UNANSWERED, 'an instruction turn');
+  } finally { fx.cleanup(); }
+});
+
+// flow-public#45: the operator answered a dialog and the next dialog opened at once, covering what the answer decided.
+test('AskUserQuestion right after an answered dialog: refused once per answer until the turn writes what the answer decided; a repeat passes (flow-public#45)', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    const CHAINED = /answered a dialog in this turn[^]*flow-public#45/;
+    const NEXT = { questions: [{ question: 'Vydať opravu hneď?', options: [{ label: 'Áno' }, { label: 'Nie' }] }] };
+    const LAST = { questions: [{ question: 'Nasadiť aj do projektov?', options: [{ label: 'Áno' }, { label: 'Nie' }] }] };
+    const ask = (dialog, transcript_path) => fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: dialog, transcript_path });
+    const answer = (dialog, label) => fx.hook('post-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: dialog, tool_response: { answers: { [dialog.questions[0].question]: label } } });
+    fx.hook('user-prompt-submit.mjs', { prompt: 'priprav zber' });
+    const ts = readThreadState(fx.brain, fx.thread).turn_started_at;
+    const before = [line('user', 'priprav zber', ts), line('assistant', [{ type: 'text', text: 'Plán zberu je pripravený, kroky sú v materiáloch. '.repeat(3) }], ts)];
+    let t = transcript(fx, before);
+    assert.doesNotMatch(reasonOf(ask(RICH_DIALOG, t)), CHAINED, 'no answer in this turn yet');
+    answer(RICH_DIALOG, 'Zber pobočiek');
+    const first = ask(NEXT, t);
+    assert.equal(first.json.hookSpecificOutput?.permissionDecision, 'deny', first.out);
+    assert.match(reasonOf(first), CHAINED);
+    assert.doesNotMatch(reasonOf(ask(NEXT, t)), CHAINED, 'a repeat passes');
+    answer(NEXT, 'Áno');
+    const later = new Date(Date.parse(readThreadState(fx.brain, fx.thread).dialog_answered_at) + 1000).toISOString();
+    t = transcript(fx, [...before, line('assistant', [{ type: 'text', text: 'Oprava je vydaná: testy prešli, stable je prepnutý a verejná kópia je bez úniku. Nasadenie do projektov ostáva na rozhodnutie.' }], later)]);
+    assert.doesNotMatch(reasonOf(ask(LAST, t)), CHAINED, 'the turn wrote what the answer decided');
   } finally { fx.cleanup(); }
 });
 

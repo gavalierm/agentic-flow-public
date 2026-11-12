@@ -49,6 +49,9 @@ function askedThenBell(x) {
   const stop = x.fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Návrh je hotový.\n\n**Otázky na operátora:** Variant A alebo B? Odporúčam A.\n\nStav: otázka' });
   assert.equal(stop.json?.decision, undefined, stop.out);
   assert.equal(x.a().last_end_state, 'otázka');
+  // D-0022: the discussion goes on after the question, so the bell is a blocker (a steer or assist waits for its end).
+  const blocker = x.fx.runB('comms.mjs', ['send', '--level', 'blocker', '--to', 'project/alpha', '--text', 'ping']);
+  assert.equal(blocker.status, 0, blocker.out);
   x.fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
   assert.equal(x.a().turn_source, 'wake');
   return id;

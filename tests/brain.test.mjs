@@ -7,6 +7,17 @@ import { spawnSync } from 'node:child_process';
 import { setup, memoryRecord } from './helpers.mjs';
 import { PLUGIN_ROOT } from '../scripts/util.mjs';
 
+// flow-public#49: semicolons inside the sentences of items made the handover too long twice; the refusal names the items per option.
+test('save handover over the line limit names the items per option and that a ";" inside an item starts a new one (flow-public#49)', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'hl', '--subject', 'HL']).status, 0);
+    const r = fx.run('save.mjs', ['handover', 'hl', '--task', 'T', '--done', 'oprava hotová; test prešiel; vydané; nasadené; issue zavreté; pilot uprataný', '--files', 'a; b', '--next', 'n']);
+    assert.notEqual(r.status, 0, r.out);
+    assert.match(r.out, /items: --done 6, --files 2, --questions 0; a ";" inside the text of an item starts a new item: write "," there \(flow-public#49\)/);
+  } finally { fx.cleanup(); }
+});
+
 test('write commits with the script tag and pushes to origin', () => {
   const fx = setup();
   try {

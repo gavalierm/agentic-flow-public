@@ -93,13 +93,13 @@ test('status line: counts mail of the held topic, lists mail IDs once per change
     assert.equal(r.context, 'thread a1 | topic alpha (working, mode operator) | mail: 0');
 
     // A message arrives; the next prompt sees it at once (pilot 2026-11-02: a cached 0 hid the mail of a bell turn).
-    const sent = comms.cli(['send', '--project', 'project', '--topic', 'alpha', '--level', 'assist', '--text', 'fyi: schema changed'], 'bob');
+    const sent = comms.cli(['send', '--project', 'project', '--topic', 'alpha', '--level', 'blocker', '--text', 'fyi: schema changed'], 'bob');
     assert.equal(sent.code, 0, sent.out);
     r = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     const lines = r.context.split('\n');
     assert.equal(lines.length, 2);
-    assert.equal(lines[0], 'thread a1 | topic alpha (working, mode operator) | mail: 1');
-    assert.match(lines[1], /^mail: 1 waiting: \S+ assist$/);
+    assert.equal(lines[0], 'thread a1 | topic alpha (working, mode operator) | mail: 1 (1 blocker)');
+    assert.match(lines[1], /^mail: 1 waiting: \S+ blocker$/);
     assert.doesNotMatch(r.context, /schema changed/, 'never the text');
     assert.equal(state().mail_signaled, 1);
 
@@ -107,12 +107,11 @@ test('status line: counts mail of the held topic, lists mail IDs once per change
     r = fx.hook('user-prompt-submit.mjs', { prompt: 'pokračuj' });
     assert.equal(r.context, '');
 
-    // Blocker arrives: count changes, instruction again, blocker shown in the status line.
-    assert.equal(comms.cli(['send', '--project', 'project', '--topic', 'alpha', '--level', 'blocker', '--text', 'cannot continue'], 'bob').code, 0);
+    // An assist arrives while the operator discusses (an operator turn, D-0015, D-0022): the prompt does not show it.
+    assert.equal(comms.cli(['send', '--project', 'project', '--topic', 'alpha', '--level', 'assist', '--text', 'cannot continue'], 'bob').code, 0);
     comms.expireCache(fx.brain);
     r = fx.hook('user-prompt-submit.mjs', { prompt: 'pokračuj' });
-    assert.equal(r.context.split('\n')[0], 'thread a1 | topic alpha (working, mode operator) | mail: 2 (1 blocker)');
-    assert.match(r.context.split('\n')[1], /^mail: 2 waiting: \S+ (assist|blocker), \S+ (assist|blocker)$/);
+    assert.equal(r.context, '', 'the assist waits for the end of the discussion');
 
     // Session start carries the same line and the instruction as part of item 3.
     const boot = fx.hook('session-start.mjs', { source: 'resume' });
@@ -123,20 +122,21 @@ test('status line: counts mail of the held topic, lists mail IDs once per change
     assert.equal(r.context.split('\n').length, 2);
     assert.match(r.context.split('\n')[1], /^turn started by a message \(wake\): mail: 2 waiting: .*; read a body with comms receive --id <id>; .*\(P-047\)$/);
 
-    // Outage: last known count stays, "comms unavailable" once, no new attempt before 60 s, turn not slowed.
+    // Outage: last known count stays (in the operator's discussion without the assist), "comms unavailable" once, no new
+    // attempt before 60 s, turn not slowed.
     await comms.stop();
     comms.expireCache(fx.brain);
     let t = Date.now();
     r = fx.hook('user-prompt-submit.mjs', { prompt: 'pokračuj' });
     assert.ok(Date.now() - t < 2500, 'hook within the 2 s budget');
-    assert.equal(r.context.split('\n')[0], 'thread a1 | topic alpha (working, mode operator) | mail: 2 (1 blocker) (comms unavailable)');
+    assert.equal(r.context.split('\n')[0], 'thread a1 | topic alpha (working, mode operator) | mail: 1 (1 blocker) (comms unavailable)');
     const cacheFile = path.join(fx.brain, 'local', 'comms', 'count-cache.json');
     const failedAt = Object.values(JSON.parse(fs.readFileSync(cacheFile, 'utf8')))[0].failed_at;
     assert.ok(failedAt);
     t = Date.now();
     r = fx.hook('user-prompt-submit.mjs', { prompt: 'pokračuj' });
     assert.ok(Date.now() - t < 1500);
-    assert.equal(r.context, 'thread a1 | topic alpha (working, mode operator) | mail: 2 (1 blocker)', 'reported once, served from cache');
+    assert.equal(r.context, 'thread a1 | topic alpha (working, mode operator) | mail: 1 (1 blocker)', 'reported once, served from cache');
     assert.equal(Object.values(JSON.parse(fs.readFileSync(cacheFile, 'utf8')))[0].failed_at, failedAt, 'no retry before 60 s');
   } finally {
     await comms.stop();

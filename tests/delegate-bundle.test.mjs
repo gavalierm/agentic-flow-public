@@ -22,6 +22,22 @@ test('prepare --task-file reads the brief from a file; a missing file is refused
   } finally { fx.cleanup(); }
 });
 
+// flow-public#48: the brief forbade reading the project's files and the source list was a file of the project.
+test('prepare refuses a brief that forbids reading files and names a file; a ban without a named file or on the rest passes; a failed source is no end (flow-public#48)', () => {
+  const fx = setup();
+  try {
+    let r = fx.run('delegate.mjs', ['prepare', '--task', 'Zober zoznam webov z docs/zdroje.md a zisti ceny. Nečítaj súbory projektu.']);
+    assert.notEqual(r.status, 0, r.out);
+    assert.match(r.stderr, /forbids reading files[^]*docs\/zdroje\.md[^]*flow-public#48/);
+    r = fx.run('delegate.mjs', ['prepare', '--task', 'Zisti ceny z webov výrobcov. Nečítaj súbory projektu.']);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.stdout, /Zdroj, ktorý zlyhá \(403, timeout, blokovanie\), nie je koniec úlohy/);
+    r = fx.run('delegate.mjs', ['prepare', '--task', 'Prečítaj docs/zdroje.md a zisti ceny; iné súbory projektu nečítaj.']);
+    assert.equal(r.status, 0, r.out);
+    assert.match(fs.readFileSync(path.join(import.meta.dirname, '..', 'agents/worker.md'), 'utf8'), /nie je koniec úlohy[^]*flow-public#48/);
+  } finally { fx.cleanup(); }
+});
+
 const skill = (name, description, aliases = []) => ({ skillName: name, description, aliases, path: `skills/operator/${name}/SKILL.md` });
 
 test('one shared word is not a match; a selected skill needs at least two meaningful task words', () => {

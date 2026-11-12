@@ -55,7 +55,7 @@ export const LEGACY_HEADING_REASON = `the reply uses the old heading **Operátor
 export const EMPTY_SECTION_REASON = (heading) => `the reply has the heading ${heading} with no item: omit a section that has nothing in it, and write it only with items "- [ ] <…>" (P-061)`;
 // flow-public#35: PreToolUse refused the dialog of this turn as a repeat and the agent asked in text: a repeat of the dialog passes.
 export const DIALOG_AFTER_REPEAT = 'the dialog was refused in this turn as a repeat of an answered question: when his decision does not cover this step (a serious step, another scope), ask the same dialog again now, the repeat passes; when it covers the step, act on it and end without the question (P-059)';
-export const DIALOG_REASON = `the reply asks the operator in text, which is lost in the thread among other turns: ask the one decision only the operator has with AskUserQuestion now (your recommended option first, what it decides about in the dialog: the open dialog covers the text of the turn), so T3 shows the thread as "Awaiting Input"; after the answer continue the work. The items under the operator headings stay in the reply; the dialog asks the first one (P-061, operator 2026-11-08). ${STATES_HELP}`;
+export const DIALOG_REASON = `the reply asks the operator in text, which is lost in the thread among other turns: ask the one decision only the operator has with AskUserQuestion now (your recommended option first, what it decides about in the dialog: the open dialog covers the text of the turn), so T3 shows the thread as "Awaiting Input"; after the answer continue the work. The items under the operator headings stay in the reply; the dialog asks the first one, the further ones in the same dialog (up to 4 questions): a second dialog right after the answer covers the thread again (P-061, operator 2026-11-08, flow-public#45). ${STATES_HELP}`;
 // P-050 (operator 2026-11-08): "Chcem riešiť tému predaja pneumatík" got "<project> / bez témy" as the first reply and the work
 // went on without a topic; the status block of a thread without a topic is only for a topic that stays unknown.
 export const STALE_STATUS_REASON = (project, id) => `the reply shows "${project} / bez témy", but this thread holds topic ${id}: start the reply with "${project} / ${id}", without the list of topics and without the topic question (P-050)`;
@@ -130,7 +130,9 @@ export function run(input) {
     // not hold yet) and closes it again with the step and time this Stop sent last (P-061).
     const close = ({ next, resumeAt }) => {
       if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_close: { next: next || null, resume_at: resumeAt || null } });
-      return recordTurn(ctx, 'closed', held, { openedAt, next, resumeAt });
+      // D-0015, D-0022: a turn ending `otázka` keeps the discussion with the operator open (steer/assist still wait);
+      // `hotovo` or `čakám` closes it and the mail rings what it held back.
+      return recordTurn(ctx, 'closed', held, { openedAt, next, resumeAt, discussion: reply.state === 'otázka' });
     };
     closeTurn = () => {
       // The state this turn ended with: `comms send --reply-to --state hotovo` refuses it in a turn the operator did not start
@@ -227,7 +229,8 @@ export function run(input) {
     // A harness that sends no reply text (field missing) cannot be checked; an empty reply is no state.
     if (typeof msg !== 'string') violation = null;
     else if (noTopicBlock && held.length) violation = STALE_STATUS_REASON(ctx.projectName, held[0].id);
-    else if (noTopicBlock && !topicStart) violation = NO_TOPIC_REASON(ctx.projectName);
+    // Pilot 2026-11-12: the operator chose "Bez témy" in the topic dialog and the hook asked for the topic again (D-0010).
+    else if (noTopicBlock && !topicStart && !turnState.no_topic_chosen_at) violation = NO_TOPIC_REASON(ctx.projectName);
     else if (!reply.state) violation = NO_STATE_REASON;
     else if (reply.legacyOperator) violation = LEGACY_HEADING_REASON;
     else if (reply.emptySection) violation = EMPTY_SECTION_REASON(reply.emptySection);

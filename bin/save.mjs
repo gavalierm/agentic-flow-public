@@ -664,6 +664,8 @@ function saveHandover(ctx) {
   // Limits and the reminder need no remote state: refuse before the first fetch (53 limit refusals paid a whole sync cycle).
   const content = args.file ? fs.readFileSync(args.file, 'utf8') : renderHandover({ task: args.task, done: args.done, next: args.next, files: args.files, questions: args.questions });
   const errors = checkHandover(content, ctx.policy.limits.handover_lines);
+  // flow-public#49: a "; " inside the sentence of an item split it into two lines and the refusal came twice: name the items per option.
+  if (!args.file && errors.some((e) => /lines, limit/.test(e))) errors.push(`items: ${['done', 'files', 'questions'].map((k) => `--${k} ${String(args[k] ?? '').split(/\s*;\s*|\n/).filter((s) => s.trim()).length}`).join(', ')}; a ";" inside the text of an item starts a new item: write "," there (flow-public#49)`);
   if (errors.length) fail(errors.join('\n'));
   const reminder = ctx.thread ? reminderStep(handoverNextStep(content)) : null;
   if (reminder && !armedSchedule(readThreadState(ctx.brainDir, ctx.thread))) fail(REMINDER_REFUSAL(reminder));

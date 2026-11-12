@@ -63,6 +63,17 @@ export function checkResult(text, limit) {
   return errors;
 }
 
+// flow-public#48: a brief forbade reading the project's files and named the source list the worker had to read in one, so the
+// worker could not use it. A ban on reading files in a brief that names a file is refused; a ban on the rest passes.
+const READ_BAN = /(ne[čc][ií]taj|nesmie[sš]?\s+[čc][ií]ta[tť]|zak[aá]zan[eé]\s+[čc][ií]ta[tť]|do not read|don'?t read|never read|must not read)[^.\n]{0,40}?\b(s[uú]bor\w*|files?|projekt\w*|project|repo\w*)/i;
+const NAMED_FILE = /(^|[\s`'"(])((\.{1,2}\/|\/|~\/)?[\w.-]+\/)*[\w-]+\.(md|csv|tsv|txt|json|jsonl|ya?ml|xml|html?|xlsx?|pdf)\b/i;
+export function readBanConflict(task) {
+  const text = String(task || '');
+  const ban = text.match(READ_BAN);
+  const file = text.match(NAMED_FILE);
+  return ban && file ? { ban: ban[0].trim(), file: file[0].trim().replace(/^[`'"(]/, '') } : null;
+}
+
 if (process.argv[1]?.endsWith('delegate.mjs')) try {
   const ctx = loadContext({ project: args.project, requireBrain: cmd === 'prepare' });
   if (cmd === 'prepare') {
@@ -70,6 +81,8 @@ if (process.argv[1]?.endsWith('delegate.mjs')) try {
     const task = args['task-file'] ? readText(path.resolve(String(args['task-file']))) : args.task;
     if (args['task-file'] && task === null) fail(`task file not found: ${args['task-file']}`);
     if (!task || task === true) fail('usage: delegate.mjs prepare --task "..." | --task-file <file>');
+    const conflict = readBanConflict(task);
+    if (conflict) fail(`the brief forbids reading files ("${conflict.ban}") and names ${conflict.file}: the worker needs the files the brief names (a source list, an input), so allow reading them and forbid only the rest (flow-public#48)`);
     const limit = ctx.policy.limits.worker_result_chars;
     const { bundled, listed } = bundleSkills(ctx.brainDir, readSkills(ctx.brainDir), String(task), {
       minMatches: ctx.policy.limits.worker_skill_min_matches ?? STRONG_MATCHES,
@@ -77,7 +90,7 @@ if (process.argv[1]?.endsWith('delegate.mjs')) try {
     });
     const parts = [];
     parts.push('## Zadanie', String(task).trim(), '');
-    parts.push('## Pravidlá výsledku', `- Vráť záver so zdrojmi, najviac ${limit} znakov; nie surový obsah.`, '- Nezapisuj do brain, nedrž tému, nekomunikuj s operátorom; výsledok vráť rodičovi (P-025).', '- Kód meň iba v kópii témy, ak ju zadanie uvádza.', `- Pracovné súbory (pokusy, klon, medzivýsledky) iba do ${toPosixPath(path.join(ctx.projectDir, 'scratch'))}/, nikdy /tmp ani ~ (P-052).`, '- Výsledok MUSÍ končiť časťou "Failures: čo zlyhalo a čo nakoniec fungovalo" (alebo "Failures: none").', '');
+    parts.push('## Pravidlá výsledku', `- Vráť záver so zdrojmi, najviac ${limit} znakov; nie surový obsah.`, '- Nezapisuj do brain, nedrž tému, nekomunikuj s operátorom; výsledok vráť rodičovi (P-025).', '- Kód meň iba v kópii témy, ak ju zadanie uvádza.', '- Zdroj, ktorý zlyhá (403, timeout, blokovanie), nie je koniec úlohy: skús ho raz inou cestou, ktorú zadanie nezakazuje (iná adresa zdroja, `curl -sL` cez Bash), potom ho uveď vo Failures a pokračuj ďalšími zdrojmi.', `- Pracovné súbory (pokusy, klon, medzivýsledky) iba do ${toPosixPath(path.join(ctx.projectDir, 'scratch'))}/, nikdy /tmp ani ~ (P-052).`, '- Výsledok MUSÍ končiť časťou "Failures: čo zlyhalo a čo nakoniec fungovalo" (alebo "Failures: none").', '');
     if (bundled.length) {
       parts.push('## Pribalené skilly');
       for (const { skill, body } of bundled) parts.push(`### ${skill.skillName} (${skill.path})`, body, '');

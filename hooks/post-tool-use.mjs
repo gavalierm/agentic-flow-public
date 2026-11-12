@@ -6,8 +6,9 @@
 import { readHookInput, emit, isMain, contextOutput } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { withAnswered } from '../scripts/protocol.mjs';
+import { withLift } from '../scripts/bypass.mjs';
 import { bufferAppend, normalizeCommand } from '../scripts/logs.mjs';
-import { mailCount, recordWaitingOperator } from '../scripts/comms.mjs';
+import { mailCount, recordWaitingOperator, discussionOpen, discussionMail } from '../scripts/comms.mjs';
 import { mailboxTopics } from '../scripts/topic.mjs';
 import path from 'node:path';
 import { settleOwn, settleShell } from '../scripts/own-files.mjs';
@@ -57,13 +58,15 @@ export function watchLine(items = [], seen = []) {
   return { line, seen: [...seen, ...fresh.map((it) => it.id)].slice(-200) };
 }
 
-/** Watch for the main thread: throttled, announced once per message, silent on an outage (P-041). */
+/** Watch for the main thread: throttled, announced once per message, silent on an outage (P-041); in a discussion with the operator only blockers and replies (D-0022). */
 export function watch(ctx, input, now = Date.now()) {
   if (input.agent_id || input.agent_type || !ctx.brainDir || !ctx.thread) return null;
   const state = readThreadState(ctx.brainDir, ctx.thread);
   if (now - (state.watch_at || 0) < WATCH_INTERVAL_MS) return null;
   const upd = updateNotice(state);
-  const mail = mailCount(ctx, mailboxTopics(ctx));
+  const counted = mailCount(ctx, mailboxTopics(ctx));
+  // D-0015, D-0022: a discussion with the operator is told only of a blocker; steer and assist wait for its end (not seen).
+  const mail = discussionOpen(state) ? discussionMail(counted) : counted;
   writeThreadState(ctx.brainDir, ctx.thread, { ...state, ...(upd?.patch || {}), watch_at: now });
   const lines = upd?.line ? [upd.line.replace('changed rules follow in full', 'changed rules come with the next prompt')] : [];
   const res = mail.available ? watchLine(mail.items || [], state.watch_seen || []) : null;
@@ -127,9 +130,15 @@ export function changedFiles(input) {
   return [];
 }
 
+// P-050 (pilot 2026-11-12): the operator chose to go on without a topic in the topic dialog.
+const NO_TOPIC_ANSWER = /^\s*(bez\s+t[ée]my|no topic|without (a )?topic)\b/i;
+// Pilot 2026-11-13: the status block says to copy it verbatim, so the reply after "Bez témy" asked the topic question again and Stop refused it.
+export const NO_TOPIC_CHOSEN_LINE = (project) => `the operator chose "Bez témy": start the final reply with the line "${project} / bez témy" alone, without the list of topics and without "Aká bude téma?" (the operator answered it), and set the state by what remains (P-050, D-0010)`;
+
 export function run(input, now = Date.now()) {
   const ctx = loadContext({ requireBrain: false });
   if (!ctx.brainDir) return {};
+  let noTopicLine = null;
   // P-061 (V1): the operator answered (or dismissed) the dialog: the open turn no longer waits for the operator.
   if ((input.tool_name === 'AskUserQuestion') && !input.agent_id && ctx.thread) recordWaitingOperator(ctx, false, readThreadState(ctx.brainDir, ctx.thread).turn_opened_at ?? null);
   // P-059: the answered dialog question stands for further steps of its kind (the input's questions, else those PreToolUse kept).
@@ -143,7 +152,13 @@ export function run(input, now = Date.now()) {
     // D-0011: an answer in this turn lets done --topic close the topic also in a turn started by a message.
     // P-063: the operator's answer in the dialog decides the next step, so the turn is no longer only his question.
     const answeredNow = items.length ? { dialog_answered_at: new Date(now).toISOString(), turn_intent: null } : {};
-    writeThreadState(ctx.brainDir, ctx.thread, { ...withAnswered(st, items), dialog_questions: [], ...answeredNow });
+    // flow-public#46: an answer that allows a target the question names opens it for the rest of the turn (P-054).
+    const answerOf = (q) => (answers && typeof answers === 'object' ? String(answers[q] ?? '') : '');
+    const lifted = items.reduce((s, q) => withLift(s, q, answerOf(q), new Date(now).toISOString()), withAnswered(st, items));
+    // P-050: "Bez témy" chosen in the dialog is the operator's decision; Stop does not ask for the topic again (D-0010).
+    const noTopic = items.some((q) => NO_TOPIC_ANSWER.test(answerOf(q))) ? { no_topic_chosen_at: new Date(now).toISOString() } : {};
+    writeThreadState(ctx.brainDir, ctx.thread, { ...lifted, dialog_questions: [], ...answeredNow, ...noTopic });
+    if (noTopic.no_topic_chosen_at) noTopicLine = NO_TOPIC_CHOSEN_LINE(ctx.projectName || '<project>');
   }
   settleOwn(ctx, changedFiles(input));
   if (input.tool_name === 'Bash' || input.tool_name === 'PowerShell') settleShell(ctx, input.tool_use_id);
@@ -151,7 +166,7 @@ export function run(input, now = Date.now()) {
   if (entry) bufferAppend(ctx.brainDir, input.session_id, entry);
   // P-061: a waker armed by this call (background task or agent, scheduler, mail) lets the turn end waiting.
   if (!input.agent_id && ctx.thread) recordWaker(ctx.brainDir, ctx.thread, wakerFromTool(input, now));
-  const lines = [readBudget(ctx, input), watch(ctx, input, now)].filter(Boolean);
+  const lines = [noTopicLine, readBudget(ctx, input), watch(ctx, input, now)].filter(Boolean);
   return lines.length ? contextOutput('PostToolUse', lines.join('\n')) : {};
 }
 

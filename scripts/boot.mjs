@@ -7,7 +7,7 @@ import { WORKFLOW_CONFIG, SCRATCH_DIR, readThreadState, writeThreadState } from 
 import { assembleRules } from './rules.mjs';
 import { buildIndexes, topicLine } from './index.mjs';
 import { heldTopics, mailboxTopics } from './topic.mjs';
-import { mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics, isMainTopic, noticesCount } from './comms.mjs';
+import { mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics, isMainTopic, noticesCount, discussionMail } from './comms.mjs';
 import { syncBrainSkills } from './skills-sync.mjs';
 import { gitAccessProblem } from './brain.mjs';
 import { readTopics } from './records.mjs';
@@ -15,13 +15,17 @@ import { sessionKnowledgeSources, skillSources, KNOWLEDGE_KINDS, REPO_HANDOVER }
 
 export const BOOT_MARKERS = ['## Pravidlá', '## Stav vlákna', '## Index pamäte', '## Index rozhodnutí', '## Otvorené témy', '## Workflow'];
 
-/** Status line (P-023 e) plus the data behind it: held topics, mail count (with the listing items, P-044). */
-export function statusInfo(ctx) {
+/**
+ * Status line (P-023 e) plus the data behind it: held topics, mail count (with the listing items, P-044). `discussion`
+ * (D-0015, D-0022): the thread discusses with the operator, so waiting steer and assist are left out until it ends.
+ */
+export function statusInfo(ctx, { discussion = false } = {}) {
   const held = ctx.brainDir ? heldTopics(ctx.brainDir, ctx.thread) : [];
   const topic = held.length ? `${held[0].id} (${held[0].state || 'working'}, mode ${held[0].holder?.mode || 'operator'})` : '- (none)';
   // Mailboxes as in comms list/receive: held topics and free-point topics (P-044).
   const mailTopics = ctx.brainDir ? mailboxTopics(ctx) : [];
-  const mail = mailCount(ctx, mailTopics);
+  const counted = mailCount(ctx, mailTopics);
+  const mail = discussion ? discussionMail(counted) : counted;
   // Open notices of the instance, in the persona main thread only (D-0011: 41 open, none decided, nobody saw them).
   const notices = held.some(isMainTopic) && mail.available ? noticesCount(ctx) : null;
   const thread = ctx.thread || '- (no stable id: start via thread.mjs or T3; topics cannot be claimed)';

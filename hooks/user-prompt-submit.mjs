@@ -8,7 +8,7 @@ import { loadContext, readThreadState, writeThreadState } from '../scripts/confi
 import { withAnswered } from '../scripts/protocol.mjs';
 import { statusInfo, rulesHash, rulesSections, changedRules, BOOT_MARKERS } from '../scripts/boot.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
-import { recordTurn, runClient, mailNoticeLine, isMainTopic } from '../scripts/comms.mjs';
+import { recordTurn, runClient, mailNoticeLine, isMainTopic, turnDiscussion } from '../scripts/comms.mjs';
 import { waitOnlyStep, setTimer, untilMet, withoutMailWaker, AUTO_TIMER_MS } from '../scripts/waker.mjs';
 import { readReports } from '../scripts/report.mjs';
 import { PLUGIN_ROOT, toPosix } from '../scripts/util.mjs';
@@ -124,7 +124,11 @@ export function run(input) {
   const parsed = parsePrompt(input.prompt, ctx.policy);
   const kind = parsed.kind;
   const messageBell = kind === 'no-reply' || kind === 'undelivered';
-  const info = statusInfo(ctx);
+  const turnSource = (kind === 'keepalive' || kind === 'continue') ? 'keepalive' : (kind === 'wake' || messageBell) ? 'wake' : 'operator';
+  // D-0015, D-0022: a discussion with the operator (the operator started this turn, or the last turn ended `otázka`) gets
+  // no steer/assist lines; a blocker passes. The mail learns it with the turn record and holds back those rings.
+  const discussion = ctx.brainDir && ctx.thread ? turnDiscussion(turnSource, readThreadState(ctx.brainDir, ctx.thread), kind) : turnSource === 'operator';
+  const info = statusInfo(ctx, { discussion });
   const lines = [];
   const extras = [];
   let state = null;
@@ -141,7 +145,7 @@ export function run(input) {
   if (!state || info.line !== state.last_status || BELLS.includes(kind)) lines.push(info.line);
   // Turn record for keepalive (P-043); an outage never blocks the prompt. `opened_at` of the record goes back with `closed`
   // at Stop so a late Stop cannot close a newer turn (older server: no opened_at, closed as before).
-  const opened = recordTurn(ctx, 'open', info.held);
+  const opened = recordTurn(ctx, 'open', info.held, { discussion });
   const openedAt = opened?.ok ? opened.turn?.opened_at ?? null : null;
   // P-061 (audit 2026-11-11, M1): a turn that is only protocol ends here without a model call. The turn opened above (wake
   // rings an idle thread again only after a turn opened) is closed with the step and time the last Stop sent; without them
@@ -149,7 +153,7 @@ export function run(input) {
   const lastClose = state?.last_close || (state?.timer ? { next: state.timer.then, resume_at: state.timer.at } : null);
   const quietEnd = (reason, close) => {
     writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_close: { next: close.next ?? null, resume_at: close.resume_at ?? null } });
-    recordTurn(ctx, 'closed', info.held, { openedAt, next: close.next ?? null, resumeAt: close.resume_at ?? null });
+    recordTurn(ctx, 'closed', info.held, { openedAt, next: close.next ?? null, resumeAt: close.resume_at ?? null, discussion });
     return { decision: 'block', reason };
   };
   if (kind === 'wake' && state && lastClose && !(info.mail.count > 0) && !info.mail.unknown) return quietEnd('wake: no new mail, the turn ended without a model call (P-061)', lastClose);
@@ -240,14 +244,13 @@ export function run(input) {
   // (rules hash), not at every update (tokens, operator 2026-11-03).
   const upd = state ? updateNotice(state) : null;
   if (upd?.line) extras.unshift(upd.line);
-  const turnSource = (kind === 'keepalive' || kind === 'continue') ? 'keepalive' : (kind === 'wake' || messageBell) ? 'wake' : 'operator';
   // P-063 (agentic-flow-public#30): the operator asked what something is and the agent changed a live configuration. A turn
   // the operator starts with a question gets its first side effect refused once by PreToolUse (questionSideEffect).
   const turnIntent = turnSource === 'operator' && kind === null && isQuestionPrompt(input.prompt, ctx.policy) ? 'question' : null;
   if (turnIntent) extras.push('the operator asks (question, explanation, check) and gives no instruction to change: answer it and propose a change, do not make it; the first write or change in this turn is refused once (P-063)');
   // P-059: the operator started this turn: the questions the last reply ended with are answered (a bell does not answer them).
   const answered = state && turnSource === 'operator' && state.last_questions?.length ? { ...withAnswered(state, state.last_questions, state.turn_started_at || new Date(Date.now() - 1).toISOString()), last_questions: [] } : state;
-  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...answered, ...keepTimer, ...mailSpent, ...(upd?.patch || {}), turn_started_at: new Date().toISOString(), ...(title?.patch || {}), turn_source: turnSource, turn_intent: turnIntent, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
+  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...answered, ...keepTimer, ...mailSpent, ...(upd?.patch || {}), turn_started_at: new Date().toISOString(), ...(title?.patch || {}), turn_source: turnSource, discussion, turn_intent: turnIntent, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
   if (extras.length) lines.push(extras.join('; '));
   const limited = enforceLines(lines.join('\n'), ctx.policy?.limits?.hook_signal_lines ?? 2);
   // Nothing new: empty context (contextOutput leaves additionalContext out).
