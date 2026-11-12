@@ -1,6 +1,6 @@
 {
   "name": "agentic-flow",
-  "version": "0.9.74",
+  "version": "0.9.75",
   "private": true,
   "type": "module",
   "description": "Agentic workflow plugin for Claude Code (plugin name: workflow). No runtime dependencies.",

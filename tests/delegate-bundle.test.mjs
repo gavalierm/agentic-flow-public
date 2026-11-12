@@ -83,3 +83,11 @@ test('worker rules: write text with Write, retry Glob in lower case, rg --no-fil
   const skill = read('skills/delegate/SKILL.md');
   assert.match(skill, /Zákaz v zadaní daj s náhradou \(čím to urobiť\).*flow-public#42/);
 });
+
+// flow-public#51: a worker on Windows ran `rg` in Git Bash (not installed) and `python3` (the Microsoft Store alias), then filled counts in by hand.
+test('worker rules: content search by the Grep tool, rg in the shell only when command -v finds it, node instead of python3 (flow-public#51)', () => {
+  const worker = fs.readFileSync(path.join(import.meta.dirname, '..', 'agents/worker.md'), 'utf8');
+  assert.match(worker, /Obsah hľadaj nástrojom Grep[^\n]*`command -v rg`[^\n]*flow-public#51/);
+  assert.match(worker, /skriptom `node`[^\n]*nie `python3`[^\n]*flow-public#51/);
+  assert.doesNotMatch(worker, /`git grep` \(v repe\) alebo `rg`/);
+});
