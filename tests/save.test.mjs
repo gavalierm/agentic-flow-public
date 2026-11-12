@@ -76,6 +76,21 @@ test('skill: new agentic skill carries origin; second save refactors it; operato
   } finally { fx.cleanup(); }
 });
 
+test('skill: a description with quotes and backslashes stays the same over repeated edits (2026-11-12: it grew to 30 backslashes)', () => {
+  const fx = setup();
+  try {
+    const desc = '"Použi pred testom": cesta C:\\pilot';
+    assert.equal(fx.run('save.mjs', ['skill', 'x-pilot', '--description', desc, '--content', 'krok 1\nnie bez kroku 1, lebo pilot', '--origin', 'error']).status, 0);
+    for (const n of [2, 3]) {
+      const r = fx.run('save.mjs', ['skill', 'x-pilot', '--sed', `s/krok \\d/krok ${n}/`]);
+      assert.equal(r.status, 0, r.out);
+    }
+    const s = parseFrontmatter(fx.read('skills/agentic/x-pilot/SKILL.md'));
+    assert.equal(s.data.description, desc);
+    assert.match(s.body, /krok 3/);
+  } finally { fx.cleanup(); }
+});
+
 test('exception: immutable refused, written per layer; rule saved; handover only by holder and within 15 lines', () => {
   const fx = setup();
   try {

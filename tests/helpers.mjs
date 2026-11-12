@@ -69,7 +69,7 @@ export function setup({ thread = 'a1', remote = true, second = false, brainName 
       });
     },
     hook(name, input, opts = {}) {
-      const res = spawnSync(process.execPath, [HOOK(name)], { cwd: opts.cwd || project, env: { ...env, CLAUDE_PROJECT_DIR: opts.cwd || project, ...(opts.env || {}) }, encoding: 'utf8', input: JSON.stringify({ session_id: 's1', cwd: opts.cwd || project, ...input }) });
+      const res = spawnSync(process.execPath, [HOOK(name), ...(opts.args || [])], { cwd: opts.cwd || project, env: { ...env, CLAUDE_PROJECT_DIR: opts.cwd || project, ...(opts.env || {}) }, encoding: 'utf8', input: JSON.stringify({ session_id: 's1', cwd: opts.cwd || project, ...input }) });
       let json = {};
       try { json = JSON.parse(res.stdout.trim() || '{}'); } catch { json = { raw: res.stdout }; }
       return { status: res.status, json, stderr: res.stderr, context: json.hookSpecificOutput?.additionalContext || '' };

@@ -21,7 +21,7 @@ import { loadContext, inSubagent, readThreadState, writeThreadState } from '../s
 import { commsSettings, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, categoryLabel, LEVELS, dropNoticesCache } from '../scripts/comms.mjs';
 import { readTopic, mailboxTopics, heldTopics, heldBy } from '../scripts/topic.mjs';
 import { readHolder, isHolderOf } from '../scripts/brain.mjs';
-import { setTimer, clearTimer, activeTimer, validWaker, TIMER_CMD, REPLY_WINDOW_MS, REPLY_STATE_TIMER_MS } from '../scripts/waker.mjs';
+import { setTimer, clearTimer, activeTimer, validWaker, withoutMailWaker, TIMER_CMD, REPLY_WINDOW_MS, REPLY_STATE_TIMER_MS } from '../scripts/waker.mjs';
 import { STATES } from '../scripts/protocol.mjs';
 
 const FINAL_STATE = STATES[0];
@@ -109,15 +109,14 @@ function armStateTimer(ctx, id, replyState, waitFor = null) {
   return timer;
 }
 
-/** The exchange about `id` is closed (final reply): its timer and its doubling record are spent. */
+/** The exchange about `id` is closed (final reply): its timer, its doubling record and its mail waker are spent. */
 function closeReplyWait(ctx, id) {
   const state = readThreadState(ctx.brainDir, ctx.thread);
   if (state.timer?.for === id) clearTimer(ctx.brainDir, ctx.thread);
   const after = readThreadState(ctx.brainDir, ctx.thread);
-  if (after.reply_wait?.[id]) {
-    const { [id]: gone, ...rest } = after.reply_wait;
-    writeThreadState(ctx.brainDir, ctx.thread, { ...after, reply_wait: rest });
-  }
+  const { [id]: gone, ...rest } = after.reply_wait || {};
+  const wakers = withoutMailWaker(after.wakers, id);
+  if (gone || wakers.length !== (after.wakers || []).length) writeThreadState(ctx.brainDir, ctx.thread, { ...after, reply_wait: rest, wakers });
 }
 
 /**

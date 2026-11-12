@@ -6,10 +6,10 @@
 import { readHookInput, emit, contextOutput, isMain, enforceLines } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { withAnswered } from '../scripts/protocol.mjs';
-import { statusInfo, rulesHash, BOOT_MARKERS } from '../scripts/boot.mjs';
+import { statusInfo, rulesHash, rulesSections, changedRules, BOOT_MARKERS } from '../scripts/boot.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { recordTurn, runClient, mailNoticeLine, isMainTopic } from '../scripts/comms.mjs';
-import { waitOnlyStep } from '../scripts/waker.mjs';
+import { waitOnlyStep, setTimer, untilMet, withoutMailWaker, AUTO_TIMER_MS } from '../scripts/waker.mjs';
 import { readReports } from '../scripts/report.mjs';
 import { PLUGIN_ROOT, toPosix } from '../scripts/util.mjs';
 import { threadTitleSignal } from '../scripts/thread-title.mjs';
@@ -84,6 +84,11 @@ export function messageBellLine(kind, id, data) {
     // P-061 (V1, phase 2): the recipient's turn waits for its operator's dialog and could not pick up; the mail answered for it.
     return `${head}: reply otázka (the recipient's operator decides; its thread waits for the dialog): do not resend, promote or ask your operator the same; check the state later with comms message --id ${id} (P-061)`;
   }
+  if (kind === 'no-reply' && d.state === 'held') {
+    // Held by the server: no thread receives the address (no such topic, or a private one); the operator has a notice to
+    // route it. A blocker sent there again only waited again (audit pilot 2026-11-12).
+    return `${head}: no reply, held: no thread receives ${d.to || 'this address'} (no such topic, or a private one) and the operator has a notice to route it: do not send there again or promote it; address an existing topic or @<persona>/main, or ask the operator (P-045)`;
+  }
   if (kind === 'no-reply') {
     const ttl = formatTtl(d.ttl_s);
     return `${head}: no reply${ttl ? ` within ${ttl}` : ''}${P047_ACTIONS}`;
@@ -118,6 +123,16 @@ export function run(input) {
   // at Stop so a late Stop cannot close a newer turn (older server: no opened_at, closed as before).
   const opened = recordTurn(ctx, 'open', info.held);
   const openedAt = opened?.ok ? opened.turn?.opened_at ?? null : null;
+  // P-061 (audit 2026-11-11, M1): a turn that is only protocol ends here without a model call. The turn opened above (wake
+  // rings an idle thread again only after a turn opened) is closed with the step and time the last Stop sent; without them
+  // (a state from before) the turn runs, a close without its resume time would drop the thread timer.
+  const lastClose = state?.last_close || (state?.timer ? { next: state.timer.then, resume_at: state.timer.at } : null);
+  const quietEnd = (reason, close) => {
+    writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_close: { next: close.next ?? null, resume_at: close.resume_at ?? null } });
+    recordTurn(ctx, 'closed', info.held, { openedAt, next: close.next ?? null, resumeAt: close.resume_at ?? null });
+    return { decision: 'block', reason };
+  };
+  if (kind === 'wake' && state && lastClose && !(info.mail.count > 0) && !info.mail.unknown) return quietEnd('wake: no new mail, the turn ended without a model call (P-061)', lastClose);
   if (kind === 'wake') {
     // The mail lines name the waiting ids; the body is read only with `comms receive --id <id>` (P-044). No waiting mail:
     // the bell was already handled, end the turn. Mail not checked (outage) is not "no new mail" (P-041).
@@ -136,13 +151,29 @@ export function run(input) {
   }
   // P-061: the thread timer fired (the wake module rang at resume_at): its step comes first; the timer is spent.
   const timer = state?.timer && Date.parse(state.timer.at) <= Date.now() + 90_000 ? state.timer : null;
+  // P-061: a timer with a condition (timer.mjs --until) is checked here by code: not met before its deadline -> re-armed and
+  // the turn ends without a model call (22 of 44 timer turns only saw the same state, audit 2026-11-11).
+  let rearmed = null;
+  let untilLine = null;
+  if (kind === 'continue' && timer?.until && state) {
+    const dl = Date.parse(timer.deadline || '') || 0;
+    const met = untilMet(timer.until, ctx.projectDir || process.cwd());
+    if (met === false && Date.now() < dl) {
+      rearmed = setTimer(ctx.brainDir, ctx.thread, { delayMs: Math.min(timer.every_ms || AUTO_TIMER_MS, dl - Date.now()), then: timer.then, reason: timer.reason || null, forId: timer.for || null, until: timer.until, deadline: timer.deadline, everyMs: timer.every_ms });
+      if (!(info.mail.count > 0)) return quietEnd(`timer: its condition does not hold yet (${timer.until}); next check ${rearmed.at}, without a model turn (P-061)`, { next: rearmed.then, resume_at: rearmed.at });
+    }
+    untilLine = rearmed ? `timer: its condition does not hold yet (${timer.until}), the next check is at ${rearmed.at}; mail waits: handle it (P-061)`
+      : met ? `timer fired, its condition holds (${timer.until}): ${timer.then}; do it now (P-061)`
+        : met === null ? `timer fired, its condition could not run here (${timer.until}): check it yourself, then: ${timer.then} (P-061)`
+          : `timer deadline ${timer.deadline} passed, its condition still does not hold (${timer.until}): ${timer.then}; decide now (P-061)`;
+  }
   // A paused topic (snooze): its end rings the thread once; an operator prompt with work on it resumes it.
   const paused = (info.held || []).find((t) => t.state === 'paused');
   const snoozeEnded = paused && kind === 'continue' && !timer && paused.paused_until && Date.parse(paused.paused_until) <= Date.now() + 90_000;
   const idle = (info.held || []).find((t) => !isMainTopic(t) && t.state !== 'paused' && waitOnlyStep(t.next));
   if (paused && !snoozeEnded && !BELLS.includes(kind)) extras.push(`topic ${paused.id} is paused${paused.paused_until ? ` until ${paused.paused_until}` : ''}: work the operator gives on it starts with topic.mjs resume ${paused.id}`);
   if (snoozeEnded) extras.unshift(`pause of topic ${paused.id} ended: run topic.mjs resume ${paused.id}, then continue from handover (P-026)`);
-  else if (kind === 'continue' && timer) extras.unshift(`timer fired (set ${timer.set_at}): ${timer.then}; do it now, the work never stops (P-061)`);
+  else if (kind === 'continue' && timer) extras.unshift(untilLine || `timer fired (set ${timer.set_at}): ${timer.then}; do it now, the work never stops (P-061)`);
   else if (kind === 'continue' && paused && !idle && !(info.held || []).some((t) => !isMainTopic(t) && t.state !== 'paused' && t.next)) extras.unshift(`topic ${paused.id} is still paused${paused.paused_until ? ` until ${paused.paused_until}` : ''}: nothing to do, end the turn with only "Stav: čakám (na koniec pauzy témy ${paused.id})" (P-061)`);
   else if (kind === 'continue' && idle) extras.unshift(`idle check: the next step of topic ${idle.id} only waits ("${waitOnlyStep(idle.next)}"): check whether it happened (mail, topic state); if nothing changed, end the turn with only "Stav: čakám (na <what the step waits for>)" (P-061)`);
   else if (kind === 'continue') extras.unshift('turn ended with a next step in the handover: do that step now (P-026); end only with a true state line (P-061)');
@@ -157,22 +188,34 @@ export function run(input) {
   const signaled = state?.mail_signaled ?? 0;
   // A no-reply/undelivered turn does not show the mail: the lines wait for the next prompt (mail_signaled unchanged).
   if (kind !== 'wake' && !messageBell && info.mail.count > 0 && (kind === 'nudge' || info.mail.count !== signaled)) extras.unshift(mailNoticeLine(info.mail));
-  // P-021: rules changed during the session (workflow, brain rules or exceptions) -> the current rules once, in full.
+  // P-021: rules changed during the session (workflow, brain rules or exceptions) -> once, the changed sections.
+  // Only the changed sections: 43 of 50 full re-injections arrived as a 2 KB preview, over the 10 000 chars of one hook
+  // output (audit 2026-11-11); a state without section hashes (a session begun before) gets the rules in full once.
   let rulesBlock = '';
   let hash = state?.rules_hash ?? null;
-  if (state && hash) {
+  let sections = state?.rules_sections ?? null;
+  if (state && (hash || state.rules_hook)) {
     const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code' });
     const now = rulesHash(rules.text);
-    if (now !== hash) {
-      rulesBlock = `\n${BOOT_MARKERS[0]} Platné pravidlá od tohto ťahu (nahrádzajú pravidlá zo začiatku session):\n${rules.text.trim()}`;
-      hash = now;
+    if (hash && now !== hash) {
+      const diff = sections ? changedRules(rules.text, sections) : null;
+      rulesBlock = diff
+        ? `\n${BOOT_MARKERS[0]}: zmenené od tohto ťahu (nahrádzajú tie isté odseky zo začiatku session, ostatné platia ďalej${diff.removed.length ? `; zrušené: ${diff.removed.join('; ')}` : ''})${diff.changed.length ? `:\n${diff.changed.join('\n')}` : ''}`
+        : `\n${BOOT_MARKERS[0]} Platné pravidlá od tohto ťahu (nahrádzajú pravidlá zo začiatku session):\n${rules.text.trim()}`;
     }
+    // No hash after a Claude Code resume: session-start-rules.mjs brought the current rules (Codex keeps no hash, rules_hook false).
+    if ((!hash && state.rules_hook) || (hash && now !== hash)) { hash = now; sections = rulesSections(rules.text); }
   }
   // P-036: thread title follows the topic (not in bell turns, they handle one thing).
   const title = !BELLS.includes(kind) ? threadTitleSignal(ctx, info.held, state) : null;
   if (title?.line) extras.push(title.line);
-  // Timer spent when it fired, or replaced by the operator's prompt (the operator is here); mail bells keep it.
-  const keepTimer = state?.timer && !(kind === 'continue' && timer) && (BELLS.includes(kind) || kind === 'nudge') ? { timer: state.timer } : { timer: undefined };
+  // Timer spent when it fired; an operator prompt keeps it until Stop, which spends it when that turn ends without "čakám"
+  // (12 of 59 timers were dropped by an operator prompt, audit 2026-11-11). A no-reply/undelivered bell of the message a
+  // reply-window timer waits for is that timer's event: spent, else it rang once more for a settled message (pilot 2026-11-12);
+  // so is the mail waker of that message, else it kept Stop from arming the timer of a later "čakám" for 2 h.
+  const bellSpent = messageBell && !!state?.timer?.for && state.timer.for === parsed.id;
+  const mailSpent = messageBell && (state?.wakers || []).some((w) => w.kind === 'mail' && w.for === parsed.id) ? { wakers: withoutMailWaker(state.wakers, parsed.id) } : {};
+  const keepTimer = rearmed ? { timer: rearmed } : state?.timer && !(kind === 'continue' && timer) && !bellSpent ? { timer: state.timer } : { timer: undefined };
   // P-021: the installed workflow changed during the session: one line; the rules come above only when their text changed
   // (rules hash), not at every update (tokens, operator 2026-11-03).
   const upd = state ? updateNotice(state) : null;
@@ -180,7 +223,7 @@ export function run(input) {
   const turnSource = (kind === 'keepalive' || kind === 'continue') ? 'keepalive' : (kind === 'wake' || messageBell) ? 'wake' : 'operator';
   // P-059: the operator started this turn: the questions the last reply ended with are answered (a bell does not answer them).
   const answered = state && turnSource === 'operator' && state.last_questions?.length ? { ...withAnswered(state, state.last_questions, state.turn_started_at || new Date(Date.now() - 1).toISOString()), last_questions: [] } : state;
-  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...answered, ...keepTimer, ...(upd?.patch || {}), turn_started_at: new Date().toISOString(), ...(title?.patch || {}), turn_source: turnSource, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash });
+  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...answered, ...keepTimer, ...mailSpent, ...(upd?.patch || {}), turn_started_at: new Date().toISOString(), ...(title?.patch || {}), turn_source: turnSource, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
   if (extras.length) lines.push(extras.join('; '));
   const limited = enforceLines(lines.join('\n'), ctx.policy?.limits?.hook_signal_lines ?? 2);
   // Nothing new: empty context (contextOutput leaves additionalContext out).

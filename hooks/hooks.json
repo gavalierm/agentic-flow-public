@@ -4,7 +4,9 @@
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs"], "timeout": 60 }
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs"], "timeout": 60 },
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start-rules.mjs", "1"], "timeout": 30 },
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start-rules.mjs", "2"], "timeout": 30 }
         ]
       }
     ],

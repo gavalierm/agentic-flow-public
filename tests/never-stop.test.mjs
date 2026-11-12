@@ -30,6 +30,7 @@ test('waitOnlyStep, parseDelay, wakerFromTool', () => {
   assert.equal(wakerFromTool({ tool_name: 'Bash', tool_input: { command: 'npm test' } }, now), null);
   assert.equal(wakerFromTool({ tool_name: 'mcp__t3-code__schedule_task', tool_input: {} }, now).kind, 'scheduler');
   assert.equal(wakerFromTool({ tool_name: 'Bash', tool_input: { command: 'node bin/comms.mjs send --level blocker --to x --text y' }, tool_response: { stdout: 'sent m1' } }, now).kind, 'mail');
+  assert.equal(wakerFromTool({ tool_name: 'Bash', tool_input: { command: 'node bin/comms.mjs send --level assist --to x --text y' }, tool_response: { stdout: 'sent m1 (assist)' } }, now).for, 'm1', 'the mail waker names its message');
   assert.equal(wakerFromTool({ tool_name: 'Bash', tool_input: { command: 'node bin/comms.mjs send --reply-to m1 --text y' }, tool_response: { stdout: 'sent m2' } }, now), null, 'a reply wakes nobody');
   const st = { turn_started_at: '2026-11-03T10:00:00Z', wakers: [{ kind: 'background', at: '2026-11-03T09:00:00Z', until: '2026-11-03T09:30:00Z' }] };
   assert.equal(validWaker(st, now), null, 'a waker from an earlier turn that ran out does not count');
@@ -53,24 +54,32 @@ test('waker: a harness schedule stays a waker in later turns until removed; a on
   } finally { fx.cleanup(); }
 });
 
-test('Stop: "Stav: čakám" without a waker blocks once; ending anyway arms the timer; a timer lets it pass', () => {
+test('Stop: "Stav: čakám" without a waker passes and code arms the timer with the wait target; an operator prompt keeps a timer until Stop', () => {
   const fx = setup();
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
     const msg = 'Poslal som otázku Carol.\n\nStav: čakám (na odpoveď Carol)';
-    assert.match(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.reason, /no waker is armed/);
-    assert.equal(stateOf(fx).timer, undefined, 'a blocked stop arms nothing');
-    // Ending anyway never leaves the thread idle: code arms the timer, silently (P-061).
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: msg }).json.decision, undefined);
+    // No block (7 of 8 such blocks only led to timer.mjs, audit 2026-11-11): the thread is never left idle, code arms the timer.
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.decision, undefined);
     const st = stateOf(fx);
     assert.ok(activeTimer(st), 'the Stop hook armed the timer itself');
     assert.equal(st.timer.auto, true);
+    assert.match(st.timer.then, /Stav: čakám \(na odpoveď Carol\)" without a waker: check it now/, 'the timer carries the wait target');
     assert.equal(st.auto_timer_n, 1);
-    // A timer armed in the turn lets the waiting end pass.
+    // An operator prompt keeps the timer (12 of 59 timers were dropped by one, audit 2026-11-11); its auto timer is spent at Stop.
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    assert.equal(stateOf(fx).timer, undefined, 'an operator prompt clears the timer');
+    assert.ok(stateOf(fx).timer, 'an operator prompt keeps the timer until Stop');
+    // A timer armed in the turn lets the waiting end pass and stays.
     setTimer(fx.brain, fx.thread, { delayMs: 30 * 60_000, then: 'check the reply' });
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.decision, undefined);
+    assert.equal(stateOf(fx).timer.then, 'check the reply', 'a timer set in this turn is not spent');
+    // The next operator turn ends without čakám: the timer is spent; a turn ending čakám keeps the agent's own timer.
+    fx.hook('user-prompt-submit.mjs', { prompt: 'ešte toto' });
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.decision, undefined);
+    assert.equal(stateOf(fx).timer.then, 'check the reply', 'čakám keeps the agent timer');
+    fx.hook('user-prompt-submit.mjs', { prompt: 'a toto' });
+    fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Hotové.\n\nStav: hotovo' });
+    assert.equal(stateOf(fx).timer, undefined, 'an operator turn ending without čakám spends the timer');
     // A bell turn is held to the protocol too: a promise is no state (bob 2026-11-08).
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     const f = path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`);

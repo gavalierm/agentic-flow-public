@@ -88,7 +88,7 @@ Hodnoty určil agent (operátor delegoval rozhodnutie, 2026-10-31). Sú to vých
 | Stavový riadok vlákna | 1 riadok | P-021, P-023 | identita, téma, počet správ |
 | Zoznam otvorených tém | najviac 10 riadkov | P-011, P-021, P-022 | viac súbežných tém naraz je signál na upratanie |
 | Popis skillu | najviac 300 znakov | P-022 | popis je trigger, nie návod |
-| Štartovací kontext bez zoznamu skillov | najviac 15 000 znakov | P-022 | súčet položiek z P-021 s rezervou |
+| Štartovací kontext bez zoznamu skillov | najviac 9 500 znakov na výstup hooku, pravidlá v častiach do 9 000 | P-022 | harness z jedného výstupu hooku vloží najviac 10 000 znakov, väčší iba ako náhľad 2 KB |
 | Zoznam skillov (súčet popisov) | najviac 6 000 znakov | P-022 | zhruba 20 skillov |
 | Handover | najviac 15 riadkov | P-011 | už určené v P-011 |
 | Signál hooku počas session | najviac 2 riadky | P-023 | už určené v P-023 |

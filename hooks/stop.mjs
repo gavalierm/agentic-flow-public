@@ -25,12 +25,15 @@ import { heldTopics } from '../scripts/topic.mjs';
 import { parseReply, repeatsAnswered, REPEATED_QUESTION_REASON } from '../scripts/protocol.mjs';
 export { REPEATED_QUESTION_REASON };
 import { TOPIC_QUESTION } from '../scripts/boot.mjs';
-import { waitOnlyStep, validWaker, activeTimer, setTimer, AUTO_TIMER_MS, AUTO_TIMER_MAX_MS, OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS, IDLE_RING_MS } from '../scripts/waker.mjs';
+import { waitOnlyStep, validWaker, activeTimer, setTimer, clearTimer, AUTO_TIMER_MS, AUTO_TIMER_MAX_MS, OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS, IDLE_RING_MS } from '../scripts/waker.mjs';
 
 export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to next prompt); 1 block reason', principles: ['P-003', 'P-026', 'P-030', 'P-040', 'P-042', 'P-043', 'P-061'] };
 
 // A recommended option is chosen only inside the asked work: an offered change the operator did not ask for waits for them (flow-public#25).
 export const AUTO_TIMER_THEN = 'the last turn ended waiting without a timer: continue the asked work now; decide with your recommended option, except an offered change the operator did not ask for: that waits for their answer (P-061, P-002)';
+// "Stav: čakám" without a waker is not blocked: the timer carries what the turn waits for (7 of 8 such blocks only led to
+// timer.mjs, audit 2026-11-11).
+export const WAIT_TIMER_THEN = (what) => `the last turn ended "Stav: čakám (${String(what).replace(/\s+/g, ' ').trim().slice(0, 120)})" without a waker: check it now; if it came, continue the work; if not, end with the same state, the timer comes back later (P-061)`;
 
 // T3 shows the operator only the last message of a turn and folds the earlier ones under "Worked for …": a note written
 // after a block hid the answer (operator 2026-11-03: "the payload I want is hidden, I get the operational message").
@@ -54,7 +57,6 @@ export const DIALOG_REASON = `the reply asks the operator in text, which is lost
 export const STALE_STATUS_REASON = (project, id) => `the reply shows "${project} / bez témy", but this thread holds topic ${id}: start the reply with "${project} / ${id}", without the list of topics and without the topic question (P-050)`;
 export const NO_TOPIC_REASON = (project) => `the reply shows "${project} / bez témy" and goes on without a topic: if the operator's prompt names the topic or starts work, claim it or create it now (topic.mjs create <id> --subject "<subject>" claims it, skill workflow:topic) and start the reply with "${project} / <id>"; if the topic is unknown or you only propose one (the prompt asks for a proposal or says to change nothing), do not create it: end with "**Otázky na operátora:** Aká bude téma? (návrh: <id>)", the same question in AskUserQuestion, and "Stav: otázka" (P-050)`;
 export const NO_WAIT_TARGET_REASON = `the reply declares "Stav: čakám" but not what it waits for: write the state line as "Stav: čakám (na <what>)", e.g. "Stav: čakám (na výsledok pracovníka)" (P-061, operator 2026-11-08)`;
-export const NO_WAKER_REASON = `the reply declares "Stav: čakám" but no waker is armed: arm one now (<plugin>/bin/timer.mjs --in <min>m --then "<step>", mail with a deadline, run_in_background, schedule_task) or do the work. The operator is no waker: a decision of theirs is "Stav: otázka" (P-061)`;
 export const NEXT_STEP_REASON = (topic, next) => `the reply declares "Stav: hotovo", but the handover of topic ${topic} has a next step: "${next}". Do it now in this turn. If it waits for an event, arm a waker and declare "Stav: čakám (na <what>)"; if it needs the operator, ask with AskUserQuestion; if it is done, save the handover without it (P-061, P-026)`;
 
 // Words that admit a mistake (sk, cs, en). `\b` is ASCII-only, so letter boundaries use \p{L}.
@@ -120,13 +122,19 @@ export function run(input) {
     // IDLE_RING_MS.length times per step; then the thread rests until mail or the operator wakes it.
     idleWait = work ? waitOnlyStep(work.next) : null;
     const snooze = !work && held.find((t) => t.state === 'paused' && t.paused_until && Date.parse(t.paused_until) > Date.now());
+    // The prompt hook ends a turn that is only protocol without a model call (wake without mail, a timer whose condition does
+    // not hold yet) and closes it again with the step and time this Stop sent last (P-061).
+    const close = ({ next, resumeAt }) => {
+      if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_close: { next: next || null, resume_at: resumeAt || null } });
+      return recordTurn(ctx, 'closed', held, { openedAt, next, resumeAt });
+    };
     closeTurn = () => {
       // The state this turn ended with: `comms send --reply-to --state hotovo` refuses it in a turn the operator did not start
       // when the previous turn ended `otázka` (P-061, phase 2).
       if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_end_state: reply.state || null, last_questions: reply.state === 'otázka' ? (reply.questions || []).slice(0, 5).map((q) => q.replace(/\s+/g, ' ').trim().slice(0, 300)) : [] });
       const st = ctx.brainDir ? readThreadState(ctx.brainDir, ctx.thread) : {};
       const timer = activeTimer(st);
-      if (!timer && snooze) return recordTurn(ctx, 'closed', held, { openedAt, next: `pause of topic ${snooze.id} ended: run topic.mjs resume ${snooze.id}, then continue from handover`, resumeAt: snooze.paused_until });
+      if (!timer && snooze) return close({ next: `pause of topic ${snooze.id} ended: run topic.mjs resume ${snooze.id}, then continue from handover`, resumeAt: snooze.paused_until });
       // An armed waker (schedule, background task, mail) rings the thread itself: no continue bell on top of it
       // (2026-11-03: rung 2 min after arming the check for 06:00, only to say there is nothing to do).
       const armed = !timer && validWaker(st);
@@ -135,9 +143,9 @@ export function run(input) {
         const n = st.idle_ring?.key === key && st.turn_source !== 'operator' ? Number(st.idle_ring.n || 0) : 0;
         if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), idle_ring: { key, n: n + 1 } });
         const due = IDLE_RING_MS[n];
-        return recordTurn(ctx, 'closed', held, { openedAt, next: due ? work.next : null, resumeAt: due ? new Date(Date.now() + due).toISOString() : null });
+        return close({ next: due ? work.next : null, resumeAt: due ? new Date(Date.now() + due).toISOString() : null });
       }
-      recordTurn(ctx, 'closed', held, { openedAt, next: timer?.then || (toOperator || armed ? null : work?.next) || null, resumeAt: timer?.at || null });
+      close({ next: timer?.then || (toOperator || armed ? null : work?.next) || null, resumeAt: timer?.at || null });
     };
   }
   // The turn is closed only when the stop really ends it: a blocked stop keeps the agent working, so the record stays open
@@ -190,7 +198,11 @@ export function run(input) {
       const queued = st.pending_signals || [];
       if (!queued.includes(line)) writeThreadState(ctx.brainDir, ctx.thread, { ...st, pending_signals: [...queued, line].slice(-(ctx.policy.limits?.hook_signal_lines ?? 2)) });
     }
-    const waker = validWaker(readThreadState(ctx.brainDir, ctx.thread));
+    // A timer outlives an operator prompt (12 of 59 timers were dropped by one, audit 2026-11-11) and is spent here, when that
+    // turn ends without "čakám"; an auto timer of code is always spent then, the turn arms its own wait.
+    const before = readThreadState(ctx.brainDir, ctx.thread);
+    const spent = !!before.timer && before.turn_source === 'operator' && !(before.turn_started_at && before.timer.set_at >= before.turn_started_at) && (before.timer.auto || reply.state !== 'čakám');
+    const waker = validWaker(spent ? { ...before, timer: undefined } : before);
     const paused = held.some((t) => t.state === 'paused') && !work;
     // A dialog asked in this turn (PreToolUse keeps the time) that failed or was declined leaves the text question as fallback.
     const turnState = readThreadState(ctx.brainDir, ctx.thread);
@@ -216,13 +228,13 @@ export function run(input) {
     else if (reply.state === 'otázka' && !reply.question) violation = NO_QUESTION_REASON;
     else if (repeated) violation = repeated;
     else if (reply.state === 'čakám' && !reply.waitFor) violation = NO_WAIT_TARGET_REASON;
-    else if (reply.state === 'čakám' && !waker && !idleWait && !paused) violation = NO_WAKER_REASON;
     else if (reply.state === 'hotovo' && work && !idleWait && !waker) violation = NEXT_STEP_REASON(work.id, work.next);
     // Trust, T3 project and welcome thread that project.mjs could not do without the `t3` CLI (skipped by hand, 2026-11-08).
     const t3Left = input.stop_hook_active ? null : pendingT3Line(readThreadState(ctx.brainDir, ctx.thread).t3_pending);
     const reasons = [!input.stop_hook_active && violation, t3Left].filter(Boolean);
     if (reasons.length) return end({ decision: 'block', reason: reasons.join('\n') });
-    // Ending without a true state keeps the loop alive: code arms the thread timer, no note about it (P-061). The start
+    if (spent) clearTimer(ctx.brainDir, ctx.thread);
+    // Ending waiting without a waker, or without a true state, keeps the loop alive: code arms the thread timer, no note about it (P-061). The start
     // question of a thread without a topic (which topic?) gets none: a timer turn told to "decide with your recommended option"
     // would pick the topic itself (flow-public#1). An unfinished step under "hotovo" gets the continue ring in closeTurn.
     if (!topicStart && !waker && !paused && !idleWait && (reply.state !== 'hotovo' || toOperator)) {
@@ -230,7 +242,7 @@ export function run(input) {
       const n = Number(st.auto_timer_n || 0);
       // Waiting on the operator rings in hours (operator 2026-11-03), waiting on a job in minutes.
       const [base, max] = toOperator ? [OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS] : [AUTO_TIMER_MS, AUTO_TIMER_MAX_MS];
-      setTimer(ctx.brainDir, ctx.thread, { delayMs: Math.min(base * 2 ** n, max), then: AUTO_TIMER_THEN, auto: true });
+      setTimer(ctx.brainDir, ctx.thread, { delayMs: Math.min(base * 2 ** n, max), then: reply.state === 'čakám' && reply.waitFor ? WAIT_TIMER_THEN(reply.waitFor) : AUTO_TIMER_THEN, auto: true });
       writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), auto_timer_n: n + 1 });
     }
   }

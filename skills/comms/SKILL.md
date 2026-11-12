@@ -39,7 +39,7 @@ Téme, ktorú drží toto vlákno, sa neposiela: správa by zobudila teba, prác
 - Výpadok pošty: `send` uloží správu do `<brain>/local/outbox/` a odošle ju pri ďalšom úspešnom volaní. Stavový riadok a riadok po nástroji ukážu výpadok raz; nad rámec toho nič.
 - Riadok po nástroji „mail waiting: <id> blocker|steer“ oznámi nový blocker alebo steer raz; telo čítaj cez `receive --id <id>`; pri `steer` riadok pripomenie úpravu práce a pokračovanie.
 - Zvonček je iba presný celý prompt (napr. `you have mail in topic alpha`); prompt operátora, ktorý zvonček cituje, je bežný prompt operátora.
-- Ťah „you have mail in topic …“ bez čakajúcej pošty: hook dá riadok „wake: no new mail; end the turn with only your state line“ – ukonči ťah iba riadkom stavu (`Stav: hotovo`, pri ďalšom kroku handoveru ho urob; P-061).
+- Ťah „you have mail in topic …“ bez čakajúcej pošty ukončí hook sám, bez volania modelu; keď dá riadok „wake: no new mail; end the turn with only your state line“, ukonči ťah iba riadkom stavu (`Stav: hotovo`, pri ďalšom kroku handoveru ho urob; P-061).
 - Stavový riadok `| wake: off`: budenie tohto stroja nebeží, zvončeky neprídu. Daj operátorovi položku `- [ ] spusti node <klon agentic-comms>/bin/wake.mjs install --instance <meno>` pod `**Úlohy pre operátora:**` so `Stav: otázka` (P-061); sám ho nespúšťaj (služba stroja patrí operátorovi).
 - Ak hook dá riadok „wake: mail unavailable (comms unavailable)“ alebo stavový riadok ukáže `mail: ?`, pošta nebola overená: nehovor „žiadna nová pošta“. Keď služba beží, spusti `comms.mjs count`, inak ukonči ťah riadkom stavu (P-061).
 - V ťahu spustenom zvončekom (budenie, „no reply“, „undelivered“) smieš čítať, odpovedať a `ack`; prevzatie témy, `done --topic` a zmena pravidiel sú zamknuté (P-047).

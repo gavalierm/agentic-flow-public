@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
+import { readThreadState, writeThreadState } from '../scripts/config.mjs';
 
 test('status line is exactly one line with the fixed template', () => {
   const fx = setup();
@@ -44,19 +45,28 @@ test('error and save phrases add one hint line referencing the skill, never cont
   } finally { fx.cleanup(); }
 });
 
-test('rules changed during the session are injected once, in full; unchanged rules are not repeated (P-021)', () => {
+test('rules changed during the session: once, only the changed sections and the removed headings; unchanged rules not repeated (P-021)', () => {
   const fx = setup();
   try {
     fx.hook('session-start.mjs', { source: 'startup' });
     let r = fx.hook('user-prompt-submit.mjs', { prompt: 'ahoj' });
-    assert.doesNotMatch(r.context, /Platné pravidlá od tohto ťahu/);
+    assert.doesNotMatch(r.context, /od tohto ťahu/);
     fs.mkdirSync(path.join(fx.brain, 'rules'), { recursive: true });
-    fs.writeFileSync(path.join(fx.brain, 'rules', 'x.md'), '---\nkey: rule-x\ntitle: x\n---\nNové pravidlo projektu X.\n');
+    fs.writeFileSync(path.join(fx.brain, 'rules', 'x.md'), '---\nkey: rule-x\ntitle: Pravidlo X\n---\nNové pravidlo projektu X.\n');
     r = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    assert.match(r.context, /Platné pravidlá od tohto ťahu/);
+    assert.match(r.context, /## Pravidlá: zmenené od tohto ťahu/);
     assert.match(r.context, /Nové pravidlo projektu X\./);
+    assert.doesNotMatch(r.context, /### P-001/, 'unchanged sections are not repeated');
+    assert.ok(r.context.length < 10000, r.context.length);
     assert.doesNotMatch(r.context, /verzi|v[0-9]+\./i, 'no version talk');
     r = fx.hook('user-prompt-submit.mjs', { prompt: 'ešte' });
-    assert.doesNotMatch(r.context, /Platné pravidlá od tohto ťahu/, 'only once');
+    assert.doesNotMatch(r.context, /od tohto ťahu/, 'only once');
+    fs.rmSync(path.join(fx.brain, 'rules', 'x.md'));
+    r = fx.hook('user-prompt-submit.mjs', { prompt: 'a teraz' });
+    assert.match(r.context, /zrušené: [^\n]*Pravidlo X/);
+    // A state recorded before the section hashes gets the rules in full once.
+    writeThreadState(fx.brain, 'a1', { ...readThreadState(fx.brain, 'a1'), rules_hash: 'old', rules_sections: null });
+    r = fx.hook('user-prompt-submit.mjs', { prompt: 'znova' });
+    assert.match(r.context, /Platné pravidlá od tohto ťahu[^\n]*\n[\s\S]*### P-001/);
   } finally { fx.cleanup(); }
 });

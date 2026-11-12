@@ -1,10 +1,12 @@
 // Work never stops (P-061, operator 2026-11-03/08): no message, question or event stops the work; it may only be deferred
-// to a set time. A turn that declares "Stav: čakám" needs a real waker armed by code: the thread timer (bin/timer.mjs,
+// to a set time. A turn that declares "Stav: čakám" is rung again by a waker armed by code: the thread timer (bin/timer.mjs,
 // rung by the wake module through the closed turn's resume_at), a background task or agent (the harness re-invokes the
-// thread), a harness scheduler (schedule_task, CronCreate, ScheduleWakeup), or mail sent with a pickup deadline. The Stop
-// hook blocks such an end without one and, if the agent ends anyway, arms the timer itself, so no thread is left idle.
+// thread), a harness scheduler (schedule_task, CronCreate, ScheduleWakeup), or mail sent with a pickup deadline. Without one
+// the Stop hook arms the timer itself with the wait target, no block: 7 of 8 such blocks only led to timer.mjs (audit
+// 2026-11-11). A timer with a condition (--until) is checked by the prompt hook without a model call until it holds.
 // The reply is never read as prose here (scripts/protocol.mjs reads its state line); only the handover's next step is.
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { readThreadState, writeThreadState } from './config.mjs';
 import { PLUGIN_ROOT } from './util.mjs';
 
@@ -103,7 +105,9 @@ export function wakerFromTool(input, now = Date.now()) {
   if (tool === 'CronDelete') return { kind: 'scheduler', id: ti.id || null, remove: true, at };
   if (tool === 'ScheduleWakeup' && Number(ti.delaySeconds) > 0) return { kind: 'scheduler', at, until: new Date(now + Math.max(BACKGROUND_WAKER_MS, Number(ti.delaySeconds) * 1000 + 15 * 60_000)).toISOString() };
   if (/(^|__)(t3_background_wait|delegate_task)$/.test(tool) || ['ScheduleWakeup', 'Monitor'].includes(tool)) return bg('scheduler');
-  if ((tool === 'Bash' || tool === 'PowerShell') && /comms\.mjs\s+send\b/.test(String(ti.command || '')) && !/--reply-to/.test(String(ti.command || '')) && /(^|\n)sent \S+/.test(respText)) return bg('mail');
+  // The mail waker names its message: the final reply or the no-reply/undelivered bell of it spends it (withoutMailWaker).
+  const sent = /(^|\n)sent (\S+)/.exec(respText)?.[2];
+  if ((tool === 'Bash' || tool === 'PowerShell') && /comms\.mjs\s+send\b/.test(String(ti.command || '')) && !/--reply-to/.test(String(ti.command || '')) && sent) return { ...bg('mail'), for: sent };
   return null;
 }
 
@@ -146,6 +150,10 @@ export function validWaker(state, now = Date.now()) {
   return (state?.wakers || []).find((w) => w.recurring || Date.parse(w.at) >= started || (w.until && Date.parse(w.until) > now)) || null;
 }
 
+/** Wakers without the mail waker of message `id`: its final reply or its no-reply/undelivered bell spends it (pilot 2026-11-12:
+ * left for 2 h after the no-reply bell, it kept Stop from arming the timer of a later "Stav: čakám (na …)"). */
+export const withoutMailWaker = (wakers, id) => (wakers || []).filter((w) => !(w.kind === 'mail' && id && w.for === id));
+
 export function recordWaker(brainDir, thread, waker) {
   if (!brainDir || !thread || !waker) return;
   const state = readThreadState(brainDir, thread);
@@ -157,12 +165,24 @@ export function recordWaker(brainDir, thread, waker) {
 }
 
 /** Set the thread timer: the wake module rings the thread at `at` with the step `then` (via the closed turn, P-061). */
-export function setTimer(brainDir, thread, { delayMs, then, reason = null, auto = false, forId = null }, now = Date.now()) {
+export function setTimer(brainDir, thread, { delayMs, then, reason = null, auto = false, forId = null, until = null, deadline = null, everyMs = null }, now = Date.now()) {
   const ms = Math.min(Math.max(delayMs, TIMER_MIN_MS), TIMER_MAX_MS);
   const state = readThreadState(brainDir, thread);
-  const timer = { at: new Date(now + ms).toISOString(), then: String(then || '').slice(0, 300), set_at: new Date(now).toISOString(), ...(reason ? { reason } : {}), ...(auto ? { auto: true } : {}), ...(forId ? { for: forId } : {}) };
+  // A condition (--until): the prompt hook runs it at `at` and rings the model only when it holds or `deadline` passed.
+  const cond = until ? { until: String(until).slice(0, 300), deadline, every_ms: everyMs || ms } : {};
+  const timer = { at: new Date(now + ms).toISOString(), then: String(then || '').slice(0, 300), set_at: new Date(now).toISOString(), ...(reason ? { reason } : {}), ...(auto ? { auto: true } : {}), ...(forId ? { for: forId } : {}), ...cond };
   writeThreadState(brainDir, thread, { ...state, timer, ...(auto ? {} : { auto_timer_n: 0 }) });
   return timer;
+}
+
+/** The prompt hook runs the condition within its 15 s (hooks.json); a slower check counts as not met yet. */
+export const UNTIL_TIMEOUT_MS = 8000;
+
+/** The condition of a timer holds (exit 0): true, false (also on timeout), or null when it cannot run (no shell). */
+export function untilMet(cmd, cwd) {
+  const r = spawnSync('sh', ['-c', String(cmd)], { cwd, timeout: UNTIL_TIMEOUT_MS, killSignal: 'SIGKILL', stdio: 'ignore' });
+  if (r.error && r.error.code !== 'ETIMEDOUT') return null;
+  return r.status === 0;
 }
 
 export function clearTimer(brainDir, thread) {
@@ -173,4 +193,3 @@ export function clearTimer(brainDir, thread) {
   return true;
 }
 
-export const WAIT_REASON = (what) => `the reply ${what} but no waker is armed: work must never stop (P-061). Either continue the work now (decide with your recommended option and say it; the operator may override later), or arm a real timer before ending: ${TIMER_CMD} --in <minutes>m --then "<the step to do when it fires>" (or mail with a deadline, a background task, schedule_task). Writing "čakám" without a timer is forbidden`;

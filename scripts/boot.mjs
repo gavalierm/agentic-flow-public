@@ -60,14 +60,84 @@ export function rulesHash(text) {
   return createHash('sha1').update(String(text || '')).digest('hex').slice(0, 16);
 }
 
-export function buildBootContext(ctx, { source = 'startup', harness = 'claude-code', includeRules = true, t3Note = null, catalogLines = [] } = {}) {
+/** Chars of one rules part: the harness keeps at most 10 000 chars of one hook output in the context (audit 2026-11-11). */
+export const RULES_PART_CHARS = 9000;
+/** Entries of session-start-rules.mjs in hooks.json (parts 1 and 2). */
+export const RULES_HOOK_PARTS = 2;
+
+function ruleSections(text) {
+  return String(text || '').trim().split(/\n(?=#{1,3} )/).map((s) => s.replace(/\s+$/, '')).filter(Boolean);
+}
+
+/** The rules cut only at headings into parts of at most `max` chars, in order; a section over `max` is a part of its own. */
+export function rulesParts(text, max = RULES_PART_CHARS) {
+  const parts = [];
+  let cur = '';
+  for (const s of ruleSections(text)) {
+    if (cur && cur.length + 1 + s.length > max) { parts.push(cur); cur = s; } else cur = cur ? `${cur}\n${s}` : s;
+  }
+  if (cur) parts.push(cur);
+  return parts;
+}
+
+/** Hash of every rules section by its heading line, so a change during a session re-injects only the changed sections. */
+export function rulesSections(text) {
+  const out = {};
+  for (const s of ruleSections(text)) out[s.split('\n', 1)[0]] = rulesHash(s);
+  return out;
+}
+
+/** Sections new or changed against `prev` (rulesSections of the injected rules) and the headings no longer present. */
+export function changedRules(text, prev) {
+  const seen = new Set();
+  const changed = [];
+  for (const s of ruleSections(text)) {
+    const key = s.split('\n', 1)[0];
+    seen.add(key);
+    if (prev[key] !== rulesHash(s)) changed.push(s);
+  }
+  return { changed, removed: Object.keys(prev).filter((k) => !seen.has(k)).map((k) => k.replace(/^#+ /, '')) };
+}
+
+const BOOT_STAMPS = ['local', 'boot'];
+const bootStamp = (brainDir, sessionId) => path.join(brainDir, ...BOOT_STAMPS, `${encodeURIComponent(sessionId)}.json`);
+
+/** session-start.mjs after the brain pull (P-040): the rules hook running at the same time reads the rules after it. */
+export function stampBootPull(brainDir, sessionId, now = Date.now()) {
+  if (!brainDir || !sessionId) return;
+  try {
+    const dir = path.join(brainDir, ...BOOT_STAMPS);
+    fs.mkdirSync(dir, { recursive: true });
+    for (const f of fs.readdirSync(dir)) {
+      try { if (now - fs.statSync(path.join(dir, f)).mtimeMs > 86_400_000) fs.rmSync(path.join(dir, f), { force: true }); } catch { /* gone */ }
+    }
+    fs.writeFileSync(bootStamp(brainDir, sessionId), JSON.stringify({ at: new Date(now).toISOString() }));
+  } catch { /* best effort: the rules hook waits at most maxMs */ }
+}
+
+/** Wait (synchronously, at most `maxMs`) for the pull stamp of this boot; a stamp older than `since` is an earlier boot. */
+export function waitBootPull(brainDir, sessionId, { since = Date.now() - 30_000, maxMs = 10_000 } = {}) {
+  if (!brainDir || !sessionId) return false;
+  const end = Date.now() + maxMs;
+  const cell = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    try { if (fs.statSync(bootStamp(brainDir, sessionId)).mtimeMs >= since) return true; } catch { /* not yet */ }
+    if (Date.now() >= end) return false;
+    Atomics.wait(cell, 0, 0, 50);
+  }
+}
+
+// `rulesHook`: item 1 comes from session-start-rules.mjs (Claude Code); the hash is recorded, on resume it is left as it is.
+export function buildBootContext(ctx, { source = 'startup', harness = 'claude-code', includeRules = true, rulesHook = false, t3Note = null, catalogLines = [] } = {}) {
   const limits = ctx.policy?.limits || {};
   const notices = [];
   const parts = [];
 
   // 1. rules + applied exceptions
   const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness });
-  if (includeRules) parts.push(`${BOOT_MARKERS[0]}\n${rules.text.trim()}`);
+  if (includeRules && !rulesHook) parts.push(`${BOOT_MARKERS[0]}\n${rules.text.trim()}`);
+  // On resume the rules hook injects nothing when a hash is recorded, so the hash stays that of the rules in the transcript.
+  const recordRules = includeRules && !(rulesHook && source === 'resume');
   if (rules.overLimit.length) notices.push(`limit: ${rules.overLimit.join('; ')} (P-022)`);
 
   // 3. status line (+ the waiting mail as mechanical lines, P-044; + handover of the held topic after compaction, P-026)
@@ -81,13 +151,13 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   if (ctx.thread) status += `\n${statusBlockInstruction(operatorStatus(ctx, info), !info.held.length, ctx.projectName)}`;
   if (ctx.brainDir && ctx.thread) {
     const state = readThreadState(ctx.brainDir, ctx.thread);
-    writeThreadState(ctx.brainDir, ctx.thread, { ...state, turn_source: 'operator', session_source: source, mail_signaled: info.mail.count, last_status: info.line, rules_hash: includeRules ? rulesHash(rules.text) : state.rules_hash ?? null });
+    writeThreadState(ctx.brainDir, ctx.thread, { ...state, turn_source: 'operator', session_source: source, mail_signaled: info.mail.count, last_status: info.line, rules_hash: recordRules ? rulesHash(rules.text) : state.rules_hash ?? null, rules_sections: recordRules ? rulesSections(rules.text) : state.rules_sections ?? null, rules_hook: rulesHook });
     registerHeldTopics(ctx, info);
   }
   if (source === 'compact' && ctx.brainDir) {
     // The compaction summary is no source of rules (agentic-flow-public#18: a thread begun before a migration took the
     // rules of the old brain from its summary as valid and passed its own script default off as the operator's rule).
-    status += `\nPo kompakcii (P-019): pravidlá, výnimky a pokyny platia iba z tohto bloku, z brainu (find) a z handoveru; pravidlo, hodnota alebo pokyn iba zo zhrnutia (stará pamäť, iný brain, archív migrácie) je nepotvrdený: over ho alebo sa spýtaj operátora; vlastnú hodnotu nevydávaj za pokyn operátora`;
+    status += `\nPo kompakcii (P-019): pravidlá, výnimky a pokyny platia iba z kontextu tohto štartu („## Pravidlá“ a tento blok), z brainu (find) a z handoveru; pravidlo, hodnota alebo pokyn iba zo zhrnutia (stará pamäť, iný brain, archív migrácie) je nepotvrdený: over ho alebo sa spýtaj operátora; vlastnú hodnotu nevydávaj za pokyn operátora`;
     const held = info.held;
     if (held.length && held[0].handover) status += `\nHandover (primárny podklad, P-026):\n${held[0].handover.trim().replace(/^## /gm, '### ')}`;
   }
@@ -138,9 +208,9 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   parts.push(`${BOOT_MARKERS[5]}\n${version.join('\n')}`);
 
   let text = parts.join('\n\n') + '\n';
-  const limit = limits.boot_context_chars ?? 15000;
+  const limit = limits.boot_context_chars ?? 9500;
   const overLimit = text.length > limit;
-  if (overLimit) text += `\nlimit: boot context ${text.length} chars > ${limit}; nothing was trimmed, shorten rules or run consolidate (P-022)\n`;
+  if (overLimit) text += `\nlimit: boot context ${text.length} chars > ${limit}; nothing was trimmed (the harness shows a hook output over 10 000 chars only as a 2 KB preview), shorten rules or run consolidate (P-022)\n`;
   return { text, chars: text.length, overLimit, notices, rules, source, status: operatorStatus(ctx, info) };
 }
 

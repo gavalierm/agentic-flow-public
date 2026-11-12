@@ -8,6 +8,7 @@ import path from 'node:path';
 import { setup, PLUGIN_ROOT } from './helpers.mjs';
 import { classifyPrompt, parsePrompt, messageBellLine } from '../hooks/user-prompt-submit.mjs';
 import { proposalKey } from '../scripts/logs.mjs';
+import { setTimer, recordWaker, wakerFromTool } from '../scripts/waker.mjs';
 
 const STUB = path.join(PLUGIN_ROOT, 'tests', 'fixtures', 'comms-stub.mjs');
 const policy = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'policy', 'policy.json'), 'utf8'));
@@ -332,4 +333,117 @@ test('classifyPrompt: a misreading of the operator is checked before error and r
   assert.equal(classifyPrompt('zle si pochopil zadanie', policy), 'misread', 'not error: „zle si pochopil“ holds „zle si“');
   assert.equal(classifyPrompt('roky realizácií tam nechcem', policy), 'reject');
   assert.equal(classifyPrompt('to je chyba', policy), 'error');
+});
+
+test('no reply / undelivered of the message a reply-window timer waits for spends that timer; another message keeps it (pilot 2026-11-12)', () => {
+  const fx = stubbed({ messages: [], message: { m1: { id: 'm1', state: 'held', level: 'assist', to: 'project/nikto', outcome: 'expired', replied: false, ttl_s: 60 } } });
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'pošli to' });
+    setTimer(fx.brain, fx.thread, { delayMs: 60 * 60_000, then: 'check the reply to m9', forId: 'm9' });
+    fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m1' });
+    assert.equal(fx.state().timer.for, 'm9', 'a bell of another message keeps the timer');
+    setTimer(fx.brain, fx.thread, { delayMs: 60 * 60_000, then: 'check the reply to m1', forId: 'm1' });
+    const r = fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m1' });
+    assert.match(r.context, /no reply, held/);
+    assert.equal(fx.state().timer, undefined, 'its own bell spent the reply-window timer');
+    setTimer(fx.brain, fx.thread, { delayMs: 60 * 60_000, then: 'check the reply to m1', forId: 'm1' });
+    fx.hook('user-prompt-submit.mjs', { prompt: 'undelivered m1' });
+    assert.equal(fx.state().timer, undefined, 'undelivered too');
+  } finally { fx.cleanup(); }
+});
+
+test('no reply of a message spends its mail waker: a later "čakám" gets the timer with its wait target; another message keeps its waker (pilot 2026-11-12)', () => {
+  const fx = stubbed({ messages: [], message: { m1: { id: 'm1', state: 'held', level: 'assist', to: 'project/nikto', outcome: 'expired', replied: false, ttl_s: 60 } } });
+  const sent = (id) => recordWaker(fx.brain, fx.thread, wakerFromTool({ tool_name: 'Bash', tool_input: { command: 'node bin/comms.mjs send --level assist --to project/nikto --text y' }, tool_response: { stdout: `sent ${id} (assist)` } }));
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'pošli to' });
+    sent('m1');
+    fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m1' });
+    assert.deepEqual(fx.state().wakers, [], 'its own bell spent the mail waker');
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Správa ostáva pozdržaná.\n\nStav: čakám (na súbor scratch/done)' }).json.decision, undefined);
+    const t = fx.state().timer;
+    assert.ok(t?.auto, 'Stop armed the timer');
+    assert.match(t.then, /"Stav: čakám \(na súbor scratch\/done\)" without a waker: check it now/);
+    sent('m9');
+    fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m1' });
+    assert.deepEqual(fx.state().wakers.map((w) => w.for), ['m9'], 'a bell of another message keeps its waker');
+  } finally { fx.cleanup(); }
+});
+
+test('wake without new mail after a closed turn ends without a model call; the turn closes again with the last step and time (P-061)', () => {
+  const fx = stubbed({ messages: [] });
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
+    setTimer(fx.brain, fx.thread, { delayMs: 30 * 60_000, then: 'check the build' });
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Build beží.\n\nStav: čakám (na build)' }).json.decision, undefined);
+    const at = fx.state().timer.at;
+    assert.deepEqual(fx.state().last_close, { next: 'check the build', resume_at: at });
+    fx.stub.reset();
+    const r = fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
+    assert.equal(r.json.decision, 'block');
+    assert.match(r.json.reason, /no new mail, the turn ended without a model call/);
+    const turns = fx.stub.calls('turn');
+    assert.deepEqual(turns.map((a) => val(a, 'state')), ['open', 'closed'], 'opened (new mail rings again) and closed');
+    assert.equal(val(turns[1], 'next'), 'check the build');
+    assert.equal(val(turns[1], 'resume-at'), at, 'the pending timer ring is kept');
+    assert.equal(fx.state().timer.at, at, 'the timer stays');
+    // New mail: the wake turn runs.
+    fx.stub.set({ messages: [{ id: 'm1', level: 'blocker' }] });
+    fs.rmSync(path.join(fx.brain, 'local', 'comms'), { recursive: true, force: true });
+    assert.equal(fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' }).json.decision, undefined);
+  } finally { fx.cleanup(); }
+});
+
+test('no reply to a held message: no resend or promotion; an existing topic, @<persona>/main or the operator (P-045)', () => {
+  const line = messageBellLine('no-reply', 'm9', { state: 'held', level: 'blocker', to: 'p/nowhere', ttl_s: 900 });
+  assert.match(line, /^message m9 \(blocker → p\/nowhere\): no reply, held: no thread receives p\/nowhere .*do not send there again or promote it/);
+  assert.doesNotMatch(line, /promote to blocker/);
+  assert.equal(messageBellLine('no-reply', 'm8', { state: 'pending', level: 'assist', to: 'p/t' }), `message m8 (assist → p/t): no reply${ACTIONS}`);
+});
+
+test('timer with a condition: code checks it without a model turn until it holds or the deadline passes (P-061)', () => {
+  const fx = stubbed({ messages: [] });
+  const file = path.join(fx.brain, 'local', 'threads', 'a1.json');
+  const due = (patch = {}) => { const s = fx.state(); fs.writeFileSync(file, JSON.stringify({ ...s, timer: { ...s.timer, at: new Date(Date.now() - 1000).toISOString(), ...patch } })); };
+  const ring = () => fx.hook('user-prompt-submit.mjs', { prompt: policy.prompt.continue_template });
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
+    const flag = path.join(fx.project, 'scratch', 'done.flag');
+    const check = `test -f ${flag}`;
+    assert.notEqual(fx.run('timer.mjs', ['--in', '5m', '--then', 'deploy', '--until', check]).status, 0, '--until needs --deadline');
+    const refused = fx.run('timer.mjs', ['--in', '5m', '--then', 'x', '--until', `echo x > ${path.join(fx.brain, 'memory', 'x.md')}`, '--deadline', '2h']);
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.out, /--until refused/, 'the check passes the guard of a Bash call');
+    const set = fx.run('timer.mjs', ['--in', '5m', '--then', 'deploy', '--until', check, '--deadline', '2h']);
+    assert.equal(set.status, 0, set.out);
+    // Not met: re-armed, the turn ends without a model call, closed with the next check.
+    due();
+    fx.stub.reset();
+    let r = ring();
+    assert.equal(r.json.decision, 'block');
+    assert.match(r.json.reason, /condition does not hold yet/);
+    const next = fx.state().timer;
+    assert.ok(Date.parse(next.at) > Date.now() + 4 * 60_000, 're-armed for the next check');
+    assert.equal(next.until, check);
+    assert.equal(val(fx.stub.calls('turn').at(-1), 'resume-at'), next.at);
+    // Met: the turn runs with the step; the timer is spent.
+    fs.mkdirSync(path.dirname(flag), { recursive: true });
+    fs.writeFileSync(flag, '');
+    due();
+    r = ring();
+    assert.equal(r.json.decision, undefined);
+    assert.match(r.context, /timer fired, its condition holds \(test -f .*done\.flag\): deploy; do it now/);
+    assert.equal(fx.state().timer, undefined, 'spent');
+    // Deadline passed and still not met: the turn runs and decides.
+    fs.rmSync(flag);
+    assert.equal(fx.run('timer.mjs', ['--in', '5m', '--then', 'deploy', '--until', check, '--deadline', '2h']).status, 0);
+    due({ deadline: new Date(Date.now() - 1000).toISOString() });
+    r = ring();
+    assert.equal(r.json.decision, undefined);
+    assert.match(r.context, /timer deadline .* passed, its condition still does not hold .*: deploy; decide now/);
+  } finally { fx.cleanup(); }
 });

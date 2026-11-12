@@ -36,7 +36,12 @@ export function parseFrontmatter(text) {
 }
 
 function unquote(v) {
-  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) return v.slice(1, -1);
+  // A double-quoted value is what quoteIfNeeded wrote (JSON.stringify): parse it back, else every save escaped its quotes
+  // and backslashes once more (a skill description grew to 30 backslashes and over the length limit, 2026-11-12).
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
+    try { return JSON.parse(v); } catch { return v.slice(1, -1); }
+  }
+  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) return v.slice(1, -1);
   return v;
 }
 

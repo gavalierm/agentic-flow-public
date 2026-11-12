@@ -20,7 +20,7 @@ test('boot: one line per source with counts and the find command; scan happens i
     assert.match(lines[0], /^katalóg data: 2 súborov \(csv 1, text 1\)/);
     assert.match(lines[0], /hľadaj: node \S+\/bin\/catalog\.mjs find <slová> \(nikdy ls\/grep po zdroji\)/);
     assert.ok(lines[0].length <= 220);
-    assert.ok(r.context.length <= 15000);
+    assert.ok(r.context.length <= 9500);
     assert.equal(fx.indexRows().length, 2, 'the hook scanned');
     assert.doesNotMatch(lines[0], /objednavky|readme/, 'no file names in the boot text');
     // more sources: still at most two lines

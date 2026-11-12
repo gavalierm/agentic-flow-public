@@ -8,7 +8,7 @@
     "status_line_lines": 1,
     "open_topics_lines": 10,
     "skill_description_chars": 300,
-    "boot_context_chars": 15000,
+    "boot_context_chars": 9500,
     "skills_list_chars": 6000,
     "handover_lines": 15,
     "repo_handover_lines": 150,

@@ -130,6 +130,7 @@ test('sender side: the mail line names the interim state, the timer is re-armed 
   const x = await exchange();
   try {
     const id = x.ask();
+    patchState(x.fx.brainB, 'b2', { wakers: [{ kind: 'mail', at: new Date().toISOString(), until: new Date(Date.now() + 2 * 3600_000).toISOString(), for: id }] });
     const armed = x.b().timer;
     assert.equal(armed.for, id);
     assert.ok(Date.parse(armed.at) - Date.now() <= REPLY_WINDOW_MS.assist, 'reply window after sending the assist');
@@ -174,6 +175,7 @@ test('sender side: the mail line names the interim state, the timer is re-armed 
     x.fx.runB('comms.mjs', ['receive', '--id', rid3]);
     assert.equal(x.b().timer, undefined, 'the final reply clears the timer');
     assert.deepEqual(x.b().reply_wait, {});
+    assert.deepEqual(x.b().wakers, [], 'and spends the mail waker of the message (pilot 2026-11-12)');
   } finally { await x.done(); }
 });
 

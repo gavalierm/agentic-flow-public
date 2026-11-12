@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// SessionStart (startup, resume, clear, compact): boot sequence P-021 items 1, 3-7. Output class: boot context, limit 15 000 chars.
+// SessionStart (startup, resume, clear, compact): boot sequence P-021 items 3-7, item 1 (rules) in session-start-rules.mjs.
+// Output class: boot context, limit 9 500 chars (the harness keeps at most 10 000 chars of one hook output, audit 2026-11-11).
 import fs from 'node:fs';
 import path from 'node:path';
 import { readHookInput, emit, contextOutput, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { buildBootContext } from '../scripts/boot.mjs';
+import { buildBootContext, stampBootPull } from '../scripts/boot.mjs';
 import { readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { installedWorkflow } from '../scripts/update-notice.mjs';
 import { handleT3Session } from '../scripts/t3-clear.mjs';
@@ -14,7 +15,7 @@ import { PLUGIN_ROOT } from '../scripts/util.mjs';
 import { ensureLineEndings } from '../scripts/eol.mjs';
 import { catalogBoot } from '../scripts/catalog/hooks.mjs';
 
-export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '15000 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038', 'P-050'] };
+export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '9500 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038', 'P-050'] };
 
 export function run(input) {
   let ctx;
@@ -29,10 +30,11 @@ export function run(input) {
   if (pull?.pulled) {
     try { ctx = loadContext({ project: ctx.projectDir, requireBrain: false }); } catch { /* keep the context loaded before the pull */ }
   }
+  stampBootPull(ctx.brainDir, input.session_id);
   const notes = [brainPullNote(pull), pinWorkflow(ctx), projectLineEndings(ctx), t3Session(ctx, input)].filter(Boolean);
   // Catalog of project data: scan within its budget before the boot text; it never fails the boot and does nothing without a source.
   const catalog = catalogBoot(ctx, { source: input.source || 'startup', state: ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : null });
-  const boot = buildBootContext(ctx, { source: input.source || 'startup', t3Note: notes.length ? notes.join('\n') : null, catalogLines: catalog.lines });
+  const boot = buildBootContext(ctx, { source: input.source || 'startup', rulesHook: true, t3Note: notes.length ? notes.join('\n') : null, catalogLines: catalog.lines });
   // P-021: the revision this session loaded; the prompt and tool hooks announce a later update once. P-001: a new or
   // compacted context starts with an empty read budget (post-tool-use readNudge).
   if (ctx.brainDir && ctx.thread) {

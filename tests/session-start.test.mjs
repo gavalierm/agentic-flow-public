@@ -4,25 +4,86 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setup, initProject, cleanEnv } from './helpers.mjs';
-import { BOOT_MARKERS } from '../scripts/boot.mjs';
-import { readThreadState } from '../scripts/config.mjs';
+import { BOOT_MARKERS, RULES_PART_CHARS, rulesParts, changedRules, rulesSections, stampBootPull, waitBootPull } from '../scripts/boot.mjs';
+import { readThreadState, writeThreadState } from '../scripts/config.mjs';
+
+const ITEMS = BOOT_MARKERS.slice(1);
+const rulesHook = (fx, source, part = 1) => fx.hook('session-start-rules.mjs', { source }, { args: [String(part)] });
 
 function headings(text) {
   return text.split('\n').filter((l) => l.startsWith('## '));
 }
 
-test('startup: items 1, 3-7 in order, nothing else, under 15 000 chars, version line present', () => {
+test('startup: items 3-7 in order under 9 500 chars; item 1 from the rules hook in parts under 10 000 chars (P-021)', () => {
   const fx = setup();
   try {
     const r = fx.hook('session-start.mjs', { source: 'startup' });
     assert.equal(r.status, 0, r.stderr);
-    assert.deepEqual(headings(r.context), BOOT_MARKERS);
-    assert.ok(r.context.length <= 15000);
+    assert.deepEqual(headings(r.context), ITEMS);
+    assert.ok(r.context.length <= 9500, r.context.length);
     assert.doesNotMatch(r.context, /limit: boot context/);
     assert.match(r.context, /\nthread a1 \| topic - \(none\) \| mail: 0\n/);
     assert.match(r.context, /\nworkflow [0-9a-f]{7,}/);
-    assert.match(r.context, /### P-001/);
-    assert.match(r.context, /Výnimky: žiadne/);
+    assert.doesNotMatch(r.context, /### P-001/, 'the rules come from their own hook');
+    const parts = [1, 2].map((p) => rulesHook(fx, 'startup', p)).map((x) => { assert.equal(x.status, 0, x.stderr); return x.context; }).filter(Boolean);
+    assert.ok(parts.length >= 1);
+    for (const c of parts) {
+      assert.ok(c.startsWith(BOOT_MARKERS[0]), c.slice(0, 40));
+      assert.ok(c.length <= RULES_PART_CHARS + 100, c.length);
+    }
+    const all = parts.join('\n');
+    assert.match(all, /### P-001/);
+    assert.match(all, /Výnimky: žiadne/);
+    const st = readThreadState(fx.brain, 'a1');
+    assert.ok(st.rules_hash && st.rules_sections && st.rules_hook, 'the main hook records the hash and the sections');
+  } finally { fx.cleanup(); }
+});
+
+test('rules parts cut only at headings, in order, each within the limit; a changed section is found by its heading', () => {
+  const text = ['# R\nintro', '### A\n' + 'a'.repeat(30), '### B\n' + 'b'.repeat(30), '### C\n' + 'c'.repeat(80)].join('\n');
+  const parts = rulesParts(text, 60);
+  assert.deepEqual(parts.map((p) => p.split('\n')[0]), ['# R', '### B', '### C']);
+  assert.equal(parts.join('\n'), text, 'nothing lost or reordered');
+  assert.ok(parts.slice(0, 2).every((p) => p.length <= 60), 'a section over the limit is a part of its own');
+  const prev = rulesSections(text);
+  const next = text.replace('b'.repeat(30), 'B changed').replace(/\n### C\nc+/, '');
+  const diff = changedRules(next, prev);
+  assert.deepEqual(diff.changed, ['### B\nB changed']);
+  assert.deepEqual(diff.removed, ['C']);
+});
+
+test('resume: a recorded hash means the transcript has the rules, nothing is injected and the hash stays; without one they come once', () => {
+  const fx = setup();
+  try {
+    // A session begun before the split has no hash: the resume carries the rules and the prompt hook records them.
+    fx.hook('session-start.mjs', { source: 'resume' });
+    assert.equal(readThreadState(fx.brain, 'a1').rules_hash ?? null, null);
+    assert.match(rulesHook(fx, 'resume').context, /### P-001/);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'ahoj' });
+    const st = readThreadState(fx.brain, 'a1');
+    assert.ok(st.rules_hash && st.rules_sections, 'recorded after the resume');
+    fx.hook('session-start.mjs', { source: 'resume' });
+    assert.equal(readThreadState(fx.brain, 'a1').rules_hash, st.rules_hash);
+    assert.equal(rulesHook(fx, 'resume').context, '');
+    // Codex keeps no hash (rules_hook false): the prompt hook records none, as before.
+    writeThreadState(fx.brain, 'a1', { ...readThreadState(fx.brain, 'a1'), rules_hash: null, rules_sections: null, rules_hook: false });
+    fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+    assert.equal(readThreadState(fx.brain, 'a1').rules_hash ?? null, null);
+  } finally { fx.cleanup(); }
+});
+
+test('the rules hook waits for the pull stamp of this boot, an old stamp is an earlier boot', () => {
+  const fx = setup();
+  try {
+    let t = Date.now();
+    assert.equal(waitBootPull(fx.brain, 's9', { maxMs: 100 }), false);
+    assert.ok(Date.now() - t >= 90 && Date.now() - t < 2000, 'bounded wait');
+    stampBootPull(fx.brain, 's9');
+    t = Date.now();
+    assert.equal(waitBootPull(fx.brain, 's9', { maxMs: 5000 }), true);
+    assert.ok(Date.now() - t < 1000, 'no wait once stamped');
+    assert.equal(waitBootPull(fx.brain, 's9', { since: Date.now() + 60_000, maxMs: 100 }), false);
+    assert.equal(fx.git(fx.brain, 'status', '--porcelain'), '', 'the stamp is local, not brain data');
   } finally { fx.cleanup(); }
 });
 
@@ -38,10 +99,11 @@ test('resume and clear keep the same thread id; compact adds the handover of the
       assert.doesNotMatch(r.context, /Po kompakcii \(P-019\)/);
     }
     const c = fx.hook('session-start.mjs', { source: 'compact' });
-    assert.match(c.context, /Po kompakcii \(P-019\): pravidlá, výnimky a pokyny platia iba z tohto bloku/, 'the summary is no source of rules (agentic-flow-public#18)');
+    assert.match(c.context, /Po kompakcii \(P-019\): pravidlá, výnimky a pokyny platia iba z kontextu tohto štartu/, 'the summary is no source of rules (agentic-flow-public#18)');
+    assert.match(rulesHook(fx, 'compact').context, /### P-001/, 'the rules come again after a compaction');
     assert.match(c.context, /Handover \(primárny podklad, P-026\):\n### Zadanie\nDo the thing/);
     assert.match(c.context, /open: work \(working, a1, next: step 2\)/);
-    assert.deepEqual(headings(c.context), BOOT_MARKERS);
+    assert.deepEqual(headings(c.context), ITEMS);
   } finally { fx.cleanup(); }
 });
 
@@ -52,7 +114,7 @@ test('no brain configured (optional, P-024): notice without a brain-init proposa
     initProject(plain);
     fs.rmSync(path.join(plain, '.workflow.json'));
     const r = fx.hook('session-start.mjs', { source: 'startup' }, { cwd: plain });
-    assert.deepEqual(headings(r.context), BOOT_MARKERS);
+    assert.deepEqual(headings(r.context), ITEMS);
     assert.match(r.context, /brain: none \(optional, P-024\)/);
     assert.doesNotMatch(r.context, /brain-init/);
   } finally { fx.cleanup(); }
@@ -64,7 +126,7 @@ test('missing brain: one notice line proposing brain-init, nothing created', () 
     const lonely = path.join(fx.root, 'lonely');
     initProject(lonely, { brainRel: '../no-brain' });
     const r = fx.hook('session-start.mjs', { source: 'startup' }, { cwd: lonely });
-    assert.deepEqual(headings(r.context), BOOT_MARKERS);
+    assert.deepEqual(headings(r.context), ITEMS);
     assert.match(r.context, /brain not found at \.\.\/no-brain; propose: node <plugin>\/bin\/brain-init\.mjs \.\.\/no-brain/);
     assert.ok(!fs.existsSync(path.join(fx.root, 'no-brain')));
     assert.match(r.context, /thread a1 \| topic - \(none\) \| mail: 0/);
@@ -96,7 +158,7 @@ test('oversized rules are reported at start and never trimmed', () => {
     const r = fx.hook('session-start.mjs', { source: 'startup' });
     assert.match(r.context, /limit: rules \d+ chars > 500/);
     assert.match(r.context, /limit: boot context \d+ chars > 1000; nothing was trimmed/);
-    assert.match(r.context, /### P-047/);
+    assert.match([1, 2].map((p) => rulesHook(fx, 'startup', p).context).join('\n'), /### P-047/);
   } finally { fx.cleanup(); }
 });
 

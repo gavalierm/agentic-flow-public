@@ -117,7 +117,7 @@ test('Stop: a step written as prose or an Operátor item under "hotovo" blocks o
     const r2 = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: item });
     assert.equal(r2.json.decision, 'block');
     assert.match(r2.json.reason, /under \*\*Otázky na operátora:\*\* \/ \*\*Úlohy pre operátora:\*\* but declares "Stav: hotovo".*Stav: otázka/s);
-    assert.match(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: item.replace('Stav: hotovo', 'Stav: čakám (na odpoveď)') }).json.reason, /no waker is armed/, 'čakám may carry an operator item; it needs a waker (D-0011)');
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: item.replace('Stav: hotovo', 'Stav: čakám (na odpoveď)') }).json.decision, undefined, 'čakám may carry an operator item (D-0011)');
     // Ending anyway: the item still waits on the operator, so the thread gets the operator timer, in hours.
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: item }).json.decision, undefined);
     const t = stateOf(fx).timer;
