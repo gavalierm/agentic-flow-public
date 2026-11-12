@@ -251,6 +251,10 @@ test('recursive chown/chmod asks, also inside sudo bash -c; absolute scratch pat
   assert.equal(recursiveModeChange('chown u:u /srv/u/.git/config', '/', s), null, 'one file is not recursive');
   assert.equal(recursiveModeChange('chmod -R u+w /p/scratch/clone', '/', s), null);
   assert.equal(recursiveModeChange('grep -R chown src', '/', s), null);
+  // alice 2026-11-12: a brief written by a heredoc named `chmod -R` and the operator had to approve it
+  assert.equal(recursiveModeChange("cat > t.txt <<'EOF'\nnapr. chmod -R v scratch\nEOF\nls", '/', s), null, 'data heredoc is no command');
+  assert.equal(recursiveModeChange('git commit -m "ask on chmod -R 755 ."', '/', s), null, 'quoted message is no command');
+  assert.ok(recursiveModeChange("bash <<'EOF'\nchmod -R 755 /srv\nEOF", '/', s), 'heredoc given to a shell runs');
 });
 
 // P-061: an agent that waits arms a waker; foreground waiting is denied (Bob 2026-11-01 waited on the operator).

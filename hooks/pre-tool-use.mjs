@@ -192,12 +192,15 @@ export const unmask = (s) => s.replace(/[\u0001-\u0005]/g, (c) => UNMASK[c]).rep
 export function recursiveModeChange(command, cwd, scratchDir) {
   const re = /(^|[\s;&|('"`])(chown|chgrp|chmod|setfacl)\s+([^;&|\n'"`)]*)/g;
   const hits = [];
-  for (let m; (m = re.exec(String(command || ''))); ) {
+  // Only executed text: a brief written by `cat > f <<'EOF'` that named `chmod -R` asked the operator (alice 2026-11-12).
+  // Quoted text given to a shell (`sudo bash -c '…'`) still runs.
+  const text = executedText(command || '');
+  for (let m; (m = re.exec(text)); ) {
     const words = m[3].trim().split(/\s+/).filter(Boolean);
     if (!words.some((w) => /^-[a-zA-Z]*R[a-zA-Z]*$/.test(w) || w === '--recursive')) continue;
     const args = words.filter((w) => !w.startsWith('-'));
     const paths = args.slice(1); // the first is the owner, mode or ACL spec
-    const cd = /(^|[\s;&|('"`])(cd|pushd)\s/.test(String(command));
+    const cd = /(^|[\s;&|('"`])(cd|pushd)\s/.test(text);
     const safe = paths.length && !cd && paths.every((p) => path.isAbsolute(p) && isInside(scratchDir, p));
     if (!safe) hits.push(`${m[2]} ${words.join(' ')}`.trim());
   }
