@@ -221,6 +221,9 @@
     "undelivered_template": "undelivered",
     "keepalive_template": "turn interrupted, continue from handover",
     "continue_template": "turn ended with a next step, continue from handover",
-    "nudge_prompts": ["up", "?", "check", "ckeck"]
+    "nudge_prompts": ["up", "?", "check", "ckeck"],
+    "question_starts": ["čo", "prečo", "ako", "kde", "kedy", "kto", "ktorý", "ktorá", "ktoré", "koľko", "aký", "aká", "aké", "načo", "zisti", "over", "skontroluj", "preskúmaj", "analyzuj", "porovnaj", "what", "why", "how", "where", "when", "who", "which", "check", "investigate"],
+    "question_phrases": ["vysvetli", "chcem pochopiť", "chcem vedieť", "chcem rozumieť", "nerozumiem", "čo znamená", "explain", "i want to understand", "what does", "find out"],
+    "action_words": ["urob", "urobiť", "sprav", "spraviť", "oprav", "opraviť", "zmeň", "zmeniť", "nastav", "nastaviť", "pridaj", "pridať", "zmaž", "zmazať", "vymaž", "vymazať", "odstráň", "odstrániť", "vytvor", "vytvoriť", "založ", "založiť", "spusti", "spustiť", "nasaď", "nasadiť", "uprav", "upraviť", "pošli", "poslať", "ulož", "uložiť", "presuň", "presunúť", "premenuj", "premenovať", "zapíš", "zapísať", "nahraď", "nahradiť", "prepíš", "prepísať", "zlúč", "zlúčiť", "vydaj", "vydať", "nainštaluj", "nainštalovať", "reštartuj", "reštartovať", "zastav", "zastaviť", "vypni", "vypnúť", "zapni", "zapnúť", "pokračuj", "pokračovať", "dokonči", "dokončiť", "implementuj", "implementovať", "doplň", "doplniť", "aplikuj", "aplikovať", "zruš", "zrušiť", "použi", "použiť", "skús", "daj", "môžeš", "mohol by si", "mohla by si", "vieš", "prosím", "fix", "change", "add", "delete", "remove", "create", "run", "update", "write", "make", "move", "rename", "send", "save", "apply", "install", "deploy", "release", "commit", "push", "merge", "implement", "use", "try", "set up", "please", "can you", "could you", "would you", "go ahead", "do it"]
   }
 }

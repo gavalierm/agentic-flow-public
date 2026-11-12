@@ -57,6 +57,26 @@ export function parsePrompt(prompt, policy) {
   return { kind: null };
 }
 
+const plain = (s) => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+const wordsRe = (list) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${list.map((w) => escapeRe(plain(w).trim()).replace(/ /g, '\\s+')).join('|')})(?![\\p{L}\\p{N}])`, 'u');
+
+/**
+ * P-063 (agentic-flow-public#30): the operator asks (a question, an explanation, a check) and gives no instruction to
+ * change. A word of `prompt.action_words` (an imperative, a request „môžeš“, „please“) makes it an instruction; otherwise a
+ * question mark, a first word of `prompt.question_starts` or a phrase of `prompt.question_phrases` makes it a question.
+ * Pasted material, code blocks and links are not the operator's own words. Only a backstop for common wording (P-063).
+ */
+export function isQuestionPrompt(prompt, policy) {
+  const cfg = policy?.prompt || {};
+  const list = (k) => (Array.isArray(cfg[k]) ? cfg[k] : []).filter((w) => String(w || '').trim());
+  const own = plain(String(prompt || '').replace(/<pasted_content\b[^>]*>[\s\S]*?<\/pasted_content[^>]*>/gi, ' ').replace(/```[\s\S]*?```/g, ' ').replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, ' ')).trim();
+  if (!own) return false;
+  if (list('action_words').length && wordsRe(list('action_words')).test(own)) return false;
+  const first = (own.match(/[\p{L}\p{N}]+/u) || [''])[0];
+  return own.includes('?') || list('question_starts').some((w) => plain(w).trim() === first)
+    || (list('question_phrases').length > 0 && wordsRe(list('question_phrases')).test(own));
+}
+
 export function classifyPrompt(prompt, policy) {
   return parsePrompt(prompt, policy).kind;
 }
@@ -221,9 +241,13 @@ export function run(input) {
   const upd = state ? updateNotice(state) : null;
   if (upd?.line) extras.unshift(upd.line);
   const turnSource = (kind === 'keepalive' || kind === 'continue') ? 'keepalive' : (kind === 'wake' || messageBell) ? 'wake' : 'operator';
+  // P-063 (agentic-flow-public#30): the operator asked what something is and the agent changed a live configuration. A turn
+  // the operator starts with a question gets its first side effect refused once by PreToolUse (questionSideEffect).
+  const turnIntent = turnSource === 'operator' && kind === null && isQuestionPrompt(input.prompt, ctx.policy) ? 'question' : null;
+  if (turnIntent) extras.push('the operator asks (question, explanation, check) and gives no instruction to change: answer it and propose a change, do not make it; the first write or change in this turn is refused once (P-063)');
   // P-059: the operator started this turn: the questions the last reply ended with are answered (a bell does not answer them).
   const answered = state && turnSource === 'operator' && state.last_questions?.length ? { ...withAnswered(state, state.last_questions, state.turn_started_at || new Date(Date.now() - 1).toISOString()), last_questions: [] } : state;
-  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...answered, ...keepTimer, ...mailSpent, ...(upd?.patch || {}), turn_started_at: new Date().toISOString(), ...(title?.patch || {}), turn_source: turnSource, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
+  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...answered, ...keepTimer, ...mailSpent, ...(upd?.patch || {}), turn_started_at: new Date().toISOString(), ...(title?.patch || {}), turn_source: turnSource, turn_intent: turnIntent, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
   if (extras.length) lines.push(extras.join('; '));
   const limited = enforceLines(lines.join('\n'), ctx.policy?.limits?.hook_signal_lines ?? 2);
   // Nothing new: empty context (contextOutput leaves additionalContext out).

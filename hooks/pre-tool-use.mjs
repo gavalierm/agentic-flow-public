@@ -832,6 +832,49 @@ export function deniedTool(toolName, denied = []) {
   return denied.find((d) => t === d || t.endsWith(`__${d}`)) || null;
 }
 
+/**
+ * Words of an MCP tool name (the part after the last `__`, split at `_` or `-`) that change something outside: a click or
+ * typing on a page, mail, a calendar, a document, a deployment. hooks.json routes MCP tools holding one of them here.
+ */
+export const MCP_WRITE_VERBS = ['act', 'click', 'type', 'fill', 'form', 'submit', 'create', 'update', 'delete', 'remove', 'send', 'post', 'write', 'set', 'apply', 'upload', 'trash', 'edit', 'patch', 'insert', 'replace', 'move', 'press', 'select', 'drag', 'evaluate', 'javascript', 'reply', 'forward', 'label', 'mark', 'share', 'copy', 'rename', 'run', 'execute', 'batch', 'key', 'respond', 'merge', 'commit', 'push', 'deploy', 'publish', 'computer'];
+const MCP_WRITE = new RegExp(`(?:^|_)(?:${MCP_WRITE_VERBS.join('|')})(?:_|$)`);
+// A tool with an `action` field: a reading action (a screenshot, a list) changes nothing, an acting one (a click, typing,
+// a rename) does, any other action is judged by the tool name; not the action alone, because t3_thread_update with
+// action "rename" passed a question turn (pilot 2026-11-12).
+const ACTING = /click|type|key|drag|fill|submit|press|select|upload/;
+const READING = /^(?:screenshot|zoom|scroll|mouse_move|cursor_position|wait|read|get|list|show|status|find|search|query|snapshot|describe)(?:_|$)/;
+
+/**
+ * P-063 (agentic-flow-public#30): what this call changes beyond the work files, or null: a file tool or a shell write
+ * outside a scratch/, a git write, an MCP tool that acts. Workflow scripts (save.mjs, comms.mjs, timer.mjs) are no shell
+ * writes here, so the writes the workflow orders (handover, logs, mail) stay open (P-002).
+ */
+export function questionSideEffect(tool, toolInput = {}, cwd = process.cwd(), ctx = {}, sessionId = '') {
+  const work = (abs) => toPosix(abs).startsWith('/dev/') || (ctx.projectDir && isInside(path.join(ctx.projectDir, SCRATCH_DIR), abs)) || inWorkScratch(abs);
+  const shown = (abs) => toPosix((ctx.projectDir && insideProject(ctx, abs) && path.relative(ctx.projectDir, abs)) || abs);
+  const name = String(tool || '');
+  if (FILE_TOOLS.includes(name)) {
+    const t = targetOf(name, toolInput);
+    if (!t) return null;
+    const abs = path.resolve(cwd, gitBashPath(t));
+    return work(abs) || (ctx.projectDir && harnessScratchpadTarget(abs, sessionId, ctx)) ? null : `${name} ${shown(abs)}`;
+  }
+  if (name === 'Bash' || name === 'PowerShell') {
+    const cmd = String(toolInput.command || '');
+    const hit = [...shellWrites(cmd, cwd), ...bashEdits(cmd, cwd), ...bashTargets(cmd, cwd), ...gitWriteDirs(cmd, cwd)].map((p) => path.resolve(cwd, p)).find((p) => !work(p));
+    return hit ? `${name} writing ${shown(hit)}` : null;
+  }
+  if (name.startsWith('mcp__')) {
+    const short = name.slice(name.lastIndexOf('__') + 2).toLowerCase().replace(/-/g, '_');
+    const act = typeof toolInput.action === 'string' ? toolInput.action.toLowerCase() : null;
+    if (act && READING.test(act)) return null;
+    if ((act && (ACTING.test(act) || MCP_WRITE.test(act))) || MCP_WRITE.test(short)) return `${short}${act ? ` (${act})` : ''}`;
+  }
+  return null;
+}
+
+export const QUESTION_TURN_REASON = (what) => `the operator started this turn with a question (an explanation, a check), not an instruction to change, and ${what} changes something: answer the question first, and propose the change with what it would do; make it only when the operator asks for it. A guess or a hedge in the question („asi“, „maybe“) is no instruction. If the prompt does ask for this change, run the same call again: it passes, this refusal comes once per turn (P-063, P-002)`;
+
 const WAIT_UNIT = { '': 1, s: 1, m: 60, h: 3600, d: 86400 };
 /**
  * P-061: a foreground command that waits for an event (sleep > 10 s, a loop that sleeps, watch) keeps the turn open
@@ -1092,6 +1135,18 @@ export function run(input) {
   // P-055: work for another agent goes through mail, never straight into its thread.
   const denied = deniedTool(tool, policy.harness?.denied_tools || []);
   if (denied) return permissionOutput('deny', `${denied} is not used to hand work to another agent: it has no reply path and wakes nobody; send mail (comms send --level blocker|assist --to @<persona>/main or [<project>/]<topic>), the answer comes as --reply-to and wakes you (P-055)`);
+
+  // P-063 (agentic-flow-public#30): a turn the operator started with a question (UserPromptSubmit turn_intent) gives no
+  // instruction to change: its first side effect is refused once per turn; a second call passes (the prompt did ask for it).
+  if (!input.agent_id && !input.agent_type && ctx.brainDir && ctx.thread) {
+    const st = readThreadState(ctx.brainDir, ctx.thread);
+    const turnKey = st.turn_started_at || 'turn';
+    const what = st.turn_intent === 'question' && st.question_denied_at !== turnKey ? questionSideEffect(tool, toolInput, cwd, ctx, input.session_id) : null;
+    if (what) {
+      writeThreadState(ctx.brainDir, ctx.thread, { ...st, question_denied_at: turnKey });
+      return permissionOutput('deny', QUESTION_TURN_REASON(what));
+    }
+  }
 
   if (ctx.thread && accountEmailCall(tool, toolInput, accountEmail())) {
     const key = crypto.createHash('sha1').update(JSON.stringify(toolInput)).digest('hex').slice(0, 16);

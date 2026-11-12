@@ -19,7 +19,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor|WebFetch|WebSearch|Agent|Task|AskUserQuestion|mcp__.*__t3_thread_send",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|PowerShell|Monitor|WebFetch|WebSearch|Agent|Task|AskUserQuestion|mcp__.*__t3_thread_send|mcp__.*__(.*[_-])?(act|click|type|fill|form|submit|create|update|delete|remove|send|post|write|set|apply|upload|trash|edit|patch|insert|replace|move|press|select|drag|evaluate|javascript|reply|forward|label|mark|share|copy|rename|run|execute|batch|key|respond|merge|commit|push|deploy|publish|computer)([_-].*)?",
         "hooks": [
           { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use.mjs"], "timeout": 15 }
         ]

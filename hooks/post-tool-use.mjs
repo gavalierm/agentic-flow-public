@@ -141,7 +141,8 @@ export function run(input, now = Date.now()) {
     const asked = given.length ? given : st.dialog_questions || [];
     const items = answers && typeof answers === 'object' ? asked.filter((q) => String(answers[q] ?? '').trim()) : asked;
     // D-0011: an answer in this turn lets done --topic close the topic also in a turn started by a message.
-    const answeredNow = items.length ? { dialog_answered_at: new Date(now).toISOString() } : {};
+    // P-063: the operator's answer in the dialog decides the next step, so the turn is no longer only his question.
+    const answeredNow = items.length ? { dialog_answered_at: new Date(now).toISOString(), turn_intent: null } : {};
     writeThreadState(ctx.brainDir, ctx.thread, { ...withAnswered(st, items), dialog_questions: [], ...answeredNow });
   }
   settleOwn(ctx, changedFiles(input));
