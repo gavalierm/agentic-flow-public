@@ -419,7 +419,9 @@ export function shellWriteTargets(command, cwd = process.cwd(), env = process.en
       if (OR_O_PROGS.has(prog) && opt === '-o') continue;
       if (opt === '-o' || OUTPUT_GUESS.test(opt)) {
         const v = typeof value === 'string' ? value : value.dynamic ? null : value.text;
-        if (v && looksLikePath(v, abs)) add(v, false);
+        // `NAME=value` sets an option, it is no path: `apt-get -o Dir::Etc::sourcelist=/etc/…` asked the operator about
+        // `/tmp/Dir::Etc::…` (bob 2026-11-12).
+        if (v && !/^[^/\\=]+=/.test(v) && looksLikePath(v, abs)) add(v, false);
       }
     }
   }

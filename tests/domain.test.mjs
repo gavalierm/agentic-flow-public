@@ -313,6 +313,9 @@ test('shellWriteTargets: quotes, heredocs and substitutions; known and guessed o
   assert.deepEqual(w('pandoc a.md -o ~/doc.pdf'), [{ path: '/h/doc.pdf', sure: true }]);
   assert.deepEqual(w('mytool -o /etc/out.bin'), [{ path: '/etc/out.bin', sure: false }], 'unknown program: a guess');
   assert.deepEqual(w('mytool -o verbose'), [], 'a value that does not look like a path is no write');
+  // bob 2026-11-12: `-o NAME=value` sets an option; the guess asked the operator about /tmp/Dir::Etc::sourcelist=/etc/…
+  assert.deepEqual(w('sudo apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/n.sources -o Dir::Etc::sourceparts=-'), [], 'apt-get -o sets an option');
+  assert.deepEqual(w('sshfs -o IdentityFile=/h/.ssh/id host:/ /mnt/x'), [], '-o NAME=/path of an unknown program is no write');
   assert.deepEqual(w('pnpm exec tsc --outDir=/x/o'), [{ path: '/x/o', sure: true }], 'runner resolved to the program');
   assert.deepEqual(w('mkdir -p -m 755 /x/n'), [{ path: '/x/n', sure: true }], 'mkdir -m takes a value');
   assert.deepEqual(w('cp -t /x/d a b'), [{ path: '/x/d', sure: true }]);
