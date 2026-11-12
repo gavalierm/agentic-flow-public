@@ -91,27 +91,59 @@ export function runsText(words) {
  */
 export function stripHeredocs(command, keep = null) {
   command = String(command);
-  const re = /(?<!<)<<(?!<)-?[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([^\s'"<>|;&()\\]+))[^\n]*\n/g;
   let out = '';
   let pos = 0;
+  for (const d of heredocs(command)) {
+    if (keep && keep(d.head, d.line)) continue;
+    out += command.slice(pos, d.bodyStart - 1);
+    pos = d.endAt;
+  }
+  return out + command.slice(pos);
+}
+/** The terminated heredocs of a command: head (text before `<<` on its line), line (`<<` to the end of the line), body bounds. */
+function heredocs(command) {
+  const re = /(?<!<)<<(?!<)-?[ \t]*(?:'([^'\n]+)'|"([^"\n]+)"|\\?([^\s'"<>|;&()\\]+))[^\n]*\n/g;
+  const found = [];
   let m;
   while ((m = re.exec(command))) {
     const delim = m[1] ?? m[2] ?? m[3];
     const bodyStart = m.index + m[0].length;
-    const lines = command.slice(bodyStart).split('\n');
     let off = 0;
     let endAt = -1;
-    for (const line of lines) {
+    for (const line of command.slice(bodyStart).split('\n')) {
       if (line.trim() === delim) { endAt = bodyStart + off + line.length; break; }
       off += line.length + 1;
     }
     if (endAt < 0) continue;
-    if (keep && keep(command.slice(command.lastIndexOf('\n', m.index - 1) + 1, m.index), m[0].slice(0, -1))) { re.lastIndex = endAt; continue; }
-    out += command.slice(pos, bodyStart - 1);
-    pos = endAt;
-    re.lastIndex = pos;
+    found.push({ head: command.slice(command.lastIndexOf('\n', m.index - 1) + 1, m.index), line: m[0].slice(0, -1), bodyStart, bodyEnd: bodyStart + off, endAt });
+    re.lastIndex = endAt;
   }
-  return out + command.slice(pos);
+  return found;
+}
+/**
+ * Shell text the command runs on this machine: the quoted arguments of `bash -c`, `sudo sh -c`, `eval`, `su -c` and heredoc
+ * bodies given to a shell. The write checks read it like the command itself (alice 2026-11-12: `bash -c 'echo x > /etc/x'`
+ * and `bash <<EOF` with a redirect into /etc were no write). Not ssh: its text runs on another host.
+ */
+export function innerShellTexts(command) {
+  const cmd = String(command);
+  const remote = (words) => words.some((w) => w.split('/').pop() === 'ssh');
+  const texts = [];
+  for (const d of heredocs(cmd)) {
+    const words = d.head.split(/&&|\|\||;|\|/).pop().trim().split(/\s+/).filter(Boolean);
+    if (heredocRuns(d.head, d.line) && !remote(words) && !/\|\s*ssh\b/.test(d.line)) texts.push(cmd.slice(d.bodyStart, d.bodyEnd));
+  }
+  const quoted = [];
+  const held = stripHeredocs(cmd).replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, (q) => `\u0006${quoted.push(q) - 1}\u0006`);
+  for (const seg of held.split(/\s*(?:&&|\|\||;|\n|\|)\s*/)) {
+    const words = seg.trim().split(/\s+/).filter(Boolean);
+    if (!runsText(words) || remote(words)) continue;
+    for (const m of seg.matchAll(/\u0006(\d+)\u0006/g)) {
+      const q = quoted[m[1]];
+      texts.push(q[0] === "'" ? q.slice(1, -1) : q.slice(1, -1).replace(/\\(["\\$`])/g, '$1'));
+    }
+  }
+  return texts;
 }
 /** Does the heredoc whose line is `head<<…` get a shell (or a command with -c, ssh, eval: runsText) or is it piped into one? */
 export function heredocRuns(head, line) {

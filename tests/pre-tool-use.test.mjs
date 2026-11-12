@@ -416,6 +416,22 @@ test('runsText: shell with -c or stdin, ssh/eval, behind wrappers; not a script 
   assert.ok(!withoutDataHeredocs("cat > f <<'EOF'\nx\nEOF").includes('x'));
 });
 
+// alice 2026-11-12: a write inside text given to a local shell was no write (`bash -c 'echo x > /etc/x'`, `bash <<EOF` into /etc)
+test('write checks read the text a local shell runs; not ssh text, a data heredoc or a quoted message', () => {
+  const cwd = '/p';
+  const w = (c) => shellWriteTargets(c, cwd).map((t) => t.path);
+  assert.deepEqual(w("bash -c 'echo x > /etc/x'"), ['/etc/x']);
+  assert.deepEqual(w("sudo -u root sh -c \"cp a /etc/y\""), ['/etc/y']);
+  assert.deepEqual(w("bash <<'EOF'\necho x > /etc/z\nEOF"), ['/etc/z']);
+  assert.deepEqual(w("cat <<'EOF' | sudo sh\ntee /etc/v < x\nEOF"), ['/etc/v']);
+  assert.deepEqual(bashTargets("bash -c 'rm /srv/a'", cwd), ['/srv/a']);
+  assert.deepEqual(w("ssh host 'echo x > /etc/x'"), [], 'ssh text runs on another host');
+  assert.deepEqual(w("ssh host <<'EOF'\necho x > /etc/x\nEOF"), []);
+  assert.deepEqual(w("cat > f.txt <<'EOF'\necho x > /etc/x\nEOF"), ['/p/f.txt'], 'a data heredoc is no command');
+  assert.deepEqual(w('sh run.sh -m "echo x > /etc/x"'), [], 'a message to a script is no command');
+  assert.deepEqual(bashTargets('git commit -m "rm /srv/a"', cwd), []);
+});
+
 test('P-061: foregroundWait: the words watch/until/while in other words, escaped backticks and a dry run are no wait', () => {
   assert.equal(foregroundWait('for f in post-tool-watch reminder-handover; do echo $f; done'), null, 'post-tool-watch is a name');
   assert.equal(foregroundWait('git log --oneline -- hooks/post-tool-watch.mjs'), null);

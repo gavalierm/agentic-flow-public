@@ -18,7 +18,7 @@ import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell } from 
 import { catalogPreTool } from '../scripts/catalog/pretool.mjs';
 import { bigWriteDeny } from '../scripts/materialy.mjs';
 import { logDecision } from '../scripts/denials.mjs';
-import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, heredocRuns, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
+import { analyze, bypassOf, bypassReason, callKey, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-052', 'P-054', 'P-055'] };
 
@@ -349,6 +349,8 @@ export function bashTargets(command, cwd = process.cwd(), { skipRmdir = false, s
       if (!/^(&|\/dev\/|\$|\()/.test(target)) targets.push(abs(target)); // `>(cmd)` is a process substitution
     }
   }
+  // text the command gives a local shell (`bash -c 'rm f'`, `sudo sh <<EOF`) removes and overwrites like the command itself
+  for (const t of innerShellTexts(command)) targets.push(...bashTargets(t, cwd, { skipRmdir, skipAppend }));
   return targets;
 }
 
@@ -544,6 +546,8 @@ export function shellWriteTargets(command, cwd = process.cwd(), env = process.en
       }
     }
   }
+  // text the command gives a local shell (`bash -c '…'`, `sudo sh <<EOF`) writes like the command itself
+  for (const t of innerShellTexts(command)) found.push(...shellWriteTargets(t, cwd, env));
   const seen = new Map();
   for (const f of found) seen.set(f.path, (seen.get(f.path) || false) || f.sure);
   return [...seen].map(([p, sure]) => ({ path: p, sure }));
