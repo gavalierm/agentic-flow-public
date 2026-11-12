@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// PreToolUse: topic-owned code (P-012), secrets outside local/, brain protection (P-013, persona P-024), dangerous targets (P-018), work files outside the project (P-052), subagent limits incl. mail (P-025), decision binding (P-031), agent-to-agent channel (P-055), foreground waiting (P-061). Output: deny/ask or 1 line (c).
+// PreToolUse: secrets outside local/, brain protection (P-013, persona P-024), dangerous targets (P-018), work files outside the project (P-052), subagent limits incl. mail (P-025), decision binding (P-031), agent-to-agent channel (P-055), foreground waiting (P-061). Output: deny/ask or 1 line (c).
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -10,7 +10,6 @@ import { git, isInside, toPosix } from '../scripts/util.mjs';
 import { parse, programIndex } from '../scripts/shell-parse.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
 import { SUBAGENT_ALLOWED, recordWaitingOperator } from '../scripts/comms.mjs';
-import { readTopics } from '../scripts/records.mjs';
 import { repeatsAnswered, REPEATED_QUESTION_REASON } from '../scripts/protocol.mjs';
 import { knowledgeDirOf, PROJECT_KNOWLEDGE } from '../scripts/repo-knowledge.mjs';
 import { findSecret } from '../scripts/secrets.mjs';
@@ -931,7 +930,7 @@ export function harnessScratchpadTarget(abs, sessionId, ctx, env = process.env) 
 
 /**
  * `<repo>/agentic/` of a domain repo (or of its topic worktree) is written only by save (P-013, D-0002): format checks,
- * dedup and the commit into the repo happen there. Also keeps topicOwnedCheck from reading a knowledge save as code.
+ * dedup and the commit into the repo happen there.
  */
 export function repoKnowledgeWrite(ctx, absPaths) {
   if (!ctx.domain) return null;
@@ -942,39 +941,9 @@ export function repoKnowledgeWrite(ctx, absPaths) {
   return null;
 }
 
-/**
- * Topic-owned code (policy `topic_owned`: { "<path relative to the project>": "<topic>" | ["<topic>", ...] }, P-012,
- * P-036): changes in a listed repo (and its topic copies) belong to the listed topics; a thread that holds none of them
- * sends the work as mail and does not change, commit or release that code itself (2026-11-02: a repo-cleanup thread
- * changed the workflow and asked the operator for a release; the routing rule was text only). A list lets several
- * topics own one repo, the holder of any of them passes (2026-11-12: development and issue handling of the workflow).
- * The mail route names the topic alone: a project folder name is no mail address (2026-11-12: such a mail was held as
- * a new topic). Returns the deny reason or null.
- */
-export function topicOwnedCheck(ctx, absPaths) {
-  const owned = ctx.policy?.topic_owned || {};
-  if (!ctx.brainDir || !absPaths.length) return null;
-  for (const [rel, value] of Object.entries(owned)) {
-    const ids = (Array.isArray(value) ? value : [value]).filter((x) => typeof x === 'string' && x);
-    if (!ids.length) continue;
-    const root = path.resolve(ctx.projectDir, rel);
-    const wt = ctx.domain ? path.join(ctx.domain.root, WORKTREES_DIR, path.basename(root)) : null;
-    if (!absPaths.some((p) => isInside(root, p) || isInside(`${root}-topics`, p) || (wt && isInside(wt, p)))) continue;
-    const all = readTopics(ctx.brainDir);
-    const listed = ids.map((id) => ({ id, t: all.find((x) => x.id === id) }));
-    if (ctx.thread && listed.some(({ t }) => t?.holder?.thread === ctx.thread)) continue;
-    const state = (t) => !t ? 'not open: open it with workflow:topic' : t.holder?.thread ? `held by thread ${t.holder.thread}` : 'not held: claim it with workflow:topic if this thread is to do the work';
-    const names = listed.map(({ id, t }) => `${id} (${state(t)})`).join(', ');
-    const to = (listed.find(({ t }) => t?.holder?.thread) || listed[0]).id;
-    const holds = listed.length > 1 ? 'holds none of them' : 'does not hold it';
-    return `changes in ${rel} belong to topic${listed.length > 1 ? 's' : ''} ${names}; this thread ${holds}, so it does not change, commit or release that code: send the work as mail (comms send --level assist --to ${to} --text "..."; the topic of this project, the folder name is no mail address), the holder fixes, tests and releases it (P-012, policy topic_owned)`;
-  }
-  return null;
-}
-
 const GIT_WRITES = new Set(['commit', 'push', 'merge', 'tag', 'rebase', 'cherry-pick', 'am', 'revert', 'apply', 'reset', 'checkout', 'switch', 'stash', 'restore']);
 // Read-only forms of write subcommands: `git tag` / `git tag -l|--sort=...|--contains X` list tags, `git stash list|show`
-// list stashes (audit 2026-11-12: `git tag --sort=-creatordate | head -3` in a foreign topic_owned repo was denied as a change).
+// list stashes (audit 2026-11-12: `git tag --sort=-creatordate | head -3` was denied as a change).
 export function gitReadOnlyForm(w) {
   const pipe = w.findIndex((x) => /^[|>&]/.test(x));
   const rest = (pipe < 0 ? w : w.slice(0, pipe)).slice(1);
@@ -1121,6 +1090,8 @@ export const dialogText = (toolInput) => (Array.isArray(toolInput?.questions) ? 
 // P-061 (flow-public#32): a turn that wrote this much text before the dialog, with a dialog that shows less than the minimum.
 export const LONG_TURN_TEXT = 1200;
 export const MIN_DIALOG_TEXT = 200;
+export const MIN_ANSWER_TEXT = 80;
+export const UNANSWERED_DIALOG_REASON = (written) => `the operator started this turn with a question and the turn has written only ${written} characters of text before this dialog: while it is open the operator may not see the thread (T3 shows the dialog in place of the composer, on the phone over the thread), so they would decide about your proposal without your answer. Write the answer to the question in the reply text first, then ask about the proposal in the dialog, with what it decides about in the question. A clarifying question you need before any answer: ask the same dialog again, a repeat passes (P-061, P-063)`;
 export const THIN_DIALOG_REASON = (written, shown) => `this turn wrote ${written} characters of text before the dialog, the dialog shows only ${shown}: while it is open the operator may not see the text of the turn (T3 shows the dialog in place of the composer, on the phone over the thread), so they decide without the plan or proposal you wrote. Put into the dialog what the operator decides about: the content in short in the question (what the plan does, 1–3 sentences), in each option's description what it does, a longer text (the plan, a draft) in the option's preview (markdown). Then ask again; a repeat passes (P-061)`;
 
 export function run(input) {
@@ -1155,6 +1126,17 @@ export function run(input) {
       if (written >= LONG_TURN_TEXT) {
         writeThreadState(ctx.brainDir, ctx.thread, { ...before, thin_dialog_denied_at: turnKey });
         return permissionOutput('deny', THIN_DIALOG_REASON(written, shown));
+      }
+    }
+    // flow-public#44: in a turn the operator started with a question, a dialog about a proposal opened before the answer
+    // left the operator with the proposal and no answer: refused once per turn while the turn has written almost no text;
+    // a repeat passes (a clarifying question asked first). Without a transcript there is nothing to measure.
+    if (before.turn_intent === 'question' && before.unanswered_dialog_denied_at !== turnKey && input.transcript_path && fs.existsSync(input.transcript_path)) {
+      awaitTranscriptToolUse(input.transcript_path, input.tool_use_id);
+      const written = transcriptTurnText(input.transcript_path, before.turn_started_at || '').trim().length;
+      if (written < MIN_ANSWER_TEXT) {
+        writeThreadState(ctx.brainDir, ctx.thread, { ...before, unanswered_dialog_denied_at: turnKey });
+        return permissionOutput('deny', UNANSWERED_DIALOG_REASON(written));
       }
     }
     const st ={ ...readThreadState(ctx.brainDir, ctx.thread), dialog_at: new Date().toISOString(), dialog_questions: dialogQuestions(toolInput) };
@@ -1228,7 +1210,17 @@ export function run(input) {
   // A refusal that names save.mjs as the way (P-013 single writer) does not lock a call that runs save.mjs: it is the
   // way, not a bypass (alice 2026-11-08: a refused Edit of a repo record locked the save.mjs call the refusal named).
   const viaSave = (tool === 'Bash' || tool === 'PowerShell') && executedScripts(String(toolInput.command || '')).some((e) => /(^|[\\/])bin[\\/]save\.mjs$/.test(e.script));
-  const denials = [...(state ? stateDenials(state) : []), ...transcriptDenials(input.transcript_path, state?.turn_started_at || '')]
+  // flow-public#43: a permission rule refused a compound command (`cd <project> && mkdir -p scratch/s && cp <deployed skill>
+  // scratch/s/ && diff scratch/s/x <brain copy>`) and every path it named counted as a refused write, so a later script that
+  // only read the deployed file and wrote scratch/ was locked. The harness does not say which path the rule hit: a rule
+  // refusal of a shell command locks the paths the command writes; one without a recognised write target keeps all its paths.
+  const ruleWrites = (d) => {
+    if (!d.rule || d.paths || !(d.tool === 'Bash' || d.tool === 'PowerShell')) return d;
+    const cmd = String(d.input?.command || '');
+    const paths = [...new Set([...shellWrites(cmd, cwd), ...bashEdits(cmd, cwd), ...bashTargets(cmd, cwd)].map((p) => path.resolve(cwd, p)))].filter((p) => !p.startsWith('/dev/'));
+    return paths.length ? { ...d, paths, write: true } : d;
+  };
+  const denials = [...(state ? stateDenials(state) : []), ...transcriptDenials(input.transcript_path, state?.turn_started_at || '').map(ruleWrites)]
     .filter((d) => !(viaSave && /\bsave\b|save\.mjs/.test(String(d.reason || ''))));
   const bypass = denials.length ? bypassOf({ tool, toolInput, cwd, anchors, denials, own: (p) => ownWork(ctx, p) }) : null;
   if (bypass) return permissionOutput('deny', bypassReason(bypass, cwd));
@@ -1311,8 +1303,6 @@ function pathChecks(input, ctx, cwd) {
     }
     const knowledge = repoKnowledgeWrite(ctx, [abs]);
     if (knowledge) return permissionOutput('deny', knowledge);
-    const owned = topicOwnedCheck(ctx, [abs]);
-    if (owned) return permissionOutput('deny', owned);
     const written = [toolInput.content, toolInput.new_string, ...(toolInput.edits || []).map((e) => e.new_string), toolInput.new_source].filter((v) => typeof v === 'string').join('\n');
     const secret = secretOutsideLocal(ctx, [abs], written);
     if (secret) return permissionOutput('deny', secret);
@@ -1382,8 +1372,6 @@ function pathChecks(input, ctx, cwd) {
     const strayFile = (t) => fs.existsSync(t) && !fs.statSync(t).isDirectory() && ['untracked', 'ignored by git'].includes(classifyTarget(t).reason);
     const knowledge = repoKnowledgeWrite(ctx, [...targets, ...edits, ...shellWrites(cmd, cwd)].filter((t) => !strayFile(t)));
     if (knowledge) return permissionOutput('deny', knowledge);
-    const owned = topicOwnedCheck(ctx, [...targets, ...edits, ...gitWriteDirs(cmd, cwd)]);
-    if (owned) return permissionOutput('deny', owned);
     const secret = secretOutsideLocal(ctx, targets, cmd);
     if (secret) return permissionOutput('deny', secret);
     const claudeMd = claudeMdWrite(ctx, [...targets, ...edits].filter(() => !/^\s*(git\s+)?rm\s/.test(executedText(cmd))));

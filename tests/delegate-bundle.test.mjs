@@ -5,6 +5,22 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as delegate from '../bin/delegate.mjs';
+import { setup } from './helpers.mjs';
+
+test('prepare --task-file reads the brief from a file; a missing file is refused (flow-public#38)', () => {
+  const fx = setup();
+  try {
+    const file = path.join(fx.project, 'scratch', 'brief.md');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'Zisti verziu nástroja X\nv dvoch zdrojoch.\n');
+    let r = fx.run('delegate.mjs', ['prepare', '--task-file', file]);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.stdout, /## Zadanie\nZisti verziu nástroja X\nv dvoch zdrojoch\.\n/);
+    r = fx.run('delegate.mjs', ['prepare', '--task-file', path.join(fx.project, 'scratch', 'none.md')]);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /task file not found/);
+  } finally { fx.cleanup(); }
+});
 
 const skill = (name, description, aliases = []) => ({ skillName: name, description, aliases, path: `skills/operator/${name}/SKILL.md` });
 
@@ -38,4 +54,16 @@ test('bundleSkills puts full text only for strong matches while under the size l
     assert.deepEqual(all.bundled.map((b) => b.skill.skillName), ['alpha', 'beta']);
     assert.deepEqual(all.listed.map((s) => s.skillName), ['gamma']);
   } finally { fs.rmSync(brain, { recursive: true, force: true }); }
+});
+
+// flow-public#42: workers wrote extracts by a shell heredoc with an apostrophe in Slovak text (exit 2), a Glob pattern
+// in capitals missed lower-case file names and `rg -h` printed the help; the brief only forbade, without a substitute.
+test('worker rules: write text with Write, retry Glob in lower case, rg --no-filename; a brief gives a substitute for a ban (flow-public#42)', () => {
+  const read = (rel) => fs.readFileSync(path.join(import.meta.dirname, '..', rel), 'utf8');
+  const worker = read('agents/worker.md');
+  assert.match(worker, /zapisuj nástrojom Write, nie heredoc, echo ani printf v shelli/);
+  assert.match(worker, /Keď Glob nič nenájde, skús ten istý vzor malými písmenami/);
+  assert.match(worker, /V `rg` je `-h` pomocník .*`rg --no-filename`/);
+  const skill = read('skills/delegate/SKILL.md');
+  assert.match(skill, /Zákaz v zadaní daj s náhradou \(čím to urobiť\).*flow-public#42/);
 });

@@ -69,6 +69,31 @@ test('AskUserQuestion after a long plan written as text: a dialog that shows lit
   } finally { fx.cleanup(); }
 });
 
+// flow-public#44: the operator asked a question, the agent opened a dialog about a proposal before writing the answer, and the
+// operator saw only the proposal.
+test('AskUserQuestion in a question turn before the answer is written: refused once; a repeat, a dialog after the answer and an instruction turn pass (flow-public#44)', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    const UNANSWERED = /would decide about your proposal without your answer[^]*P-061/;
+    const ask = (transcript_path) => fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: RICH_DIALOG, transcript_path });
+    const turn = (prompt, text) => {
+      fx.hook('user-prompt-submit.mjs', { prompt });
+      const at = new Date(Date.now() + 1000).toISOString();
+      return transcript(fx, [line('assistant', [{ type: 'text', text: 'stará odpoveď '.repeat(20) }], '2020-01-01T00:00:00.000Z'), line('user', prompt, at), ...(text ? [line('assistant', [{ type: 'text', text }], at)] : [])]);
+    };
+    let t = turn('Prečo vlákno neodpovedalo na poštu?', '');
+    const first = ask(t);
+    assert.equal(first.json.hookSpecificOutput?.permissionDecision, 'deny', first.out);
+    assert.match(reasonOf(first), UNANSWERED);
+    assert.doesNotMatch(reasonOf(ask(t)), UNANSWERED, 'once per turn: the repeat passes');
+    t = turn('Prečo vlákno neodpovedalo na poštu?', 'Vlákno neodpovedalo, lebo jeho ťah držal dialóg operátora a pošta počkala na koniec ťahu; správa ostala prevzatá.');
+    assert.doesNotMatch(reasonOf(ask(t)), UNANSWERED, 'the answer is written before the dialog');
+    t = turn('pridaj presmerovanie na /novy', '');
+    assert.doesNotMatch(reasonOf(ask(t)), UNANSWERED, 'an instruction turn');
+  } finally { fx.cleanup(); }
+});
+
 test('AskUserQuestion: the turn text reaches the transcript after PreToolUse starts, the check waits for this call (P-061, flow-public#32 pilot)', () => {
   const fx = setup();
   try {

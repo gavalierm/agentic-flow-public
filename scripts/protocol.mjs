@@ -15,16 +15,23 @@ export const STATES = ['hotovo', 'otázka', 'čakám'];
 // in a thread (an item of a reply that ended `otázka`, a dialog question) are kept in `answered_questions` ({q, at}, newest last).
 export const ANSWERED_MAX = 20;
 const plain = (s) => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-const CONSENT_KIND = /\b(pozri|pozret|potvrd|schval|suhlas|mozem|nasadi|zluci)/;
+// The consent kind is the step asked for: review, approve, deploy, merge ("môžem" names no step). A question repeats an answered
+// one of this kind only when both are short and ask for the same step: a longer question carries its own proposal and repeats
+// only by subject (2026-11-12: "Kedy mám schválené návrhy implementovať" and design proposals ending "Súhlasíš?" or "Urobiť to
+// tak?" were refused as repeats of the audit question R1 about merging into main).
+const CONSENT_STEPS = { review: /\b(pozri|pozret)/, approve: /\b(potvrd|schval|suhlas)/, deploy: /\bnasadi/, merge: /\bzluci/ };
+const CONSENT_MAX_WORDS = 30;
+const consentSteps = (p) => ((p.match(/[a-z0-9]+/g) || []).length <= CONSENT_MAX_WORDS ? Object.keys(CONSENT_STEPS).filter((k) => CONSENT_STEPS[k].test(p)) : []);
 const stems = (s) => [...new Set((plain(s).match(/[a-z0-9]{5,}/g) || []).map((w) => w.slice(0, 5)))];
-/** The answered question (text) the new item repeats, or null: both of the consent/review kind, or 60 % of >= 3 significant words shared. */
+/** The answered question (text) the new item repeats, or null: both short consents to the same step (review, approve, deploy, merge), or 60 % of >= 3 significant words shared. */
 export function repeatsAnswered(newItem, answered) {
   const n = plain(newItem || '');
   const words = stems(newItem || '');
+  const steps = consentSteps(n);
   for (const a of Array.isArray(answered) ? answered : []) {
     const old = typeof a === 'string' ? a : a?.q;
     if (!old) continue;
-    if (CONSENT_KIND.test(n) && CONSENT_KIND.test(plain(old))) return old;
+    if (steps.length && consentSteps(plain(old)).some((k) => steps.includes(k))) return old;
     const oldWords = new Set(stems(old));
     if (words.length >= 3 && words.filter((w) => oldWords.has(w)).length / words.length >= 0.6) return old;
   }
@@ -124,4 +131,4 @@ export function parseReply(text) {
 }
 
 /** P-059: the reason of the Stop block and of the PreToolUse denial of a dialog that repeats an answered question. */
-export const REPEATED_QUESTION_REASON = (oldItem, newItem) => `the operator already answered a question of this kind in this thread ("${String(oldItem).slice(0, 120)}"); you now ask "${String(newItem).slice(0, 120)}": his decision stands for further steps of the same kind. Act on it and report in the body what you did and what you could not verify yourself (e.g. the look in a browser); keep the question only when the step is serious (irreversible: deleting data, git history, money, a message to a third party, a secret) or his decision does not cover it, e.g. he rejected the previous version or asked for this preview (P-059)`;
+export const REPEATED_QUESTION_REASON = (oldItem, newItem) => `the operator already answered a question of this kind in this thread ("${String(oldItem).slice(0, 120)}"); you now ask "${String(newItem).slice(0, 120)}": his decision stands for further steps of the same kind. Act on it and report in the body what you did and what you could not verify yourself (e.g. the look in a browser). When the step is serious (irreversible: deleting data, git history, money, a message to a third party, a secret, a write to an external service or account: its settings, profile or data) or his decision does not cover it (another scope: he agreed to drafts without a write and this asks for the write; he rejected the previous version or asked for this preview), ask the same question again now: a repeat in this turn passes (P-059)`;

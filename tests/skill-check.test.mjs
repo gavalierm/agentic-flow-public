@@ -38,6 +38,10 @@ test('checkSkill: format, references, paths, anti-patterns, growth', () => {
     assert.ok(codes(check(skill('a', 'origin: error\n'))).includes('warn:nie-line'));
     assert.ok(codes(check(skill(['a', '## Doplnenie 1', 'b'].join('\n')))).includes('warn:growth'), 'one appended section is already a pile, not one procedure');
     assert.ok(codes(check(skill('`${CLAUDE_PLUGIN_ROOT}/bin/x.mjs`'))).includes('error:anti-pattern'));
+    // flow-public#38: a reference to a skill the project does not have is an error; without the known names (save) it is not checked.
+    f = check(skill('Text uprav podľa skillu `uprava-stylu`, nasaď skillom `deploy`.'), { known: new Set(['deploy']) });
+    assert.deepEqual(f.filter((x) => x.code === 'reference').map((x) => x.message), ['skill uprava-stylu does not exist in this project']);
+    assert.ok(!check(skill('skill `uprava-stylu`')).some((x) => x.code === 'reference'));
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
@@ -80,9 +84,13 @@ test('skill-check.mjs: report per skill, unmanaged hand-written skill, exit 1 on
     fs.writeFileSync(path.join(fx.brain, 'skills', 'agentic', 'bad', 'SKILL.md'), skill('Pozri P-999.', 'origin: routine\n', 'bad'));
     fs.mkdirSync(path.join(fx.project, '.claude', 'skills', 'mine'), { recursive: true });
     fs.writeFileSync(path.join(fx.project, '.claude', 'skills', 'mine', 'SKILL.md'), skill('ok', '', 'mine'));
+    // flow-public#38: a skill names a skill the project does not have; its brain, hand-written and workflow skills exist.
+    fs.mkdirSync(path.join(fx.brain, 'skills', 'agentic', 'ref'), { recursive: true });
+    fs.writeFileSync(path.join(fx.brain, 'skills', 'agentic', 'ref', 'SKILL.md'), skill('Text uprav skillom `uprava-stylu`; potom skill `bad`, skill `mine` a skill `save`.', 'origin: routine\n', 'ref'));
     const r = fx.run('skill-check.mjs');
     assert.equal(r.status, 1, r.out);
     assert.match(r.stdout, /bad \(agentic\): 1 error/);
+    assert.match(r.stdout, /ref \(agentic\): 1 error[^\n]*\n[^\n]*skill uprava-stylu does not exist in this project/);
     assert.match(r.stdout, /mine \(unmanaged\): 0 error, 1 warn\n {2}warn line 1 \[unmanaged\] .*skills\/operator\/mine/);
     assert.match(fx.run('consolidate.mjs', ['report']).stdout, /skill health .*bad 1e\/0w/);
   } finally { fx.cleanup(); }

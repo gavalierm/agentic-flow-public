@@ -8,7 +8,7 @@ argument-hint: "[<skill>]"
 
 Rozsah: iba skilly tohto projektu (brain `skills/operator`, `skills/agentic` a ručné skilly v `<projekt>/.claude/skills`, ktoré nie sú v brain).
 
-1. `node ${CLAUDE_PLUGIN_ROOT}/bin/skill-check.mjs [<skill>]` vypíše nálezy po skilloch: `error` (skill je pokazený: zlý formát, neexistujúca cesta, skript, `workflow:<x>` alebo `P-XXX`, stará cesta domény, zrušená úroveň pošty, doslovné `\n`) a `warn` (heuristika: antivzor, cesta iného stroja, rast doplnení, skript bez volania). `error` oprav vždy; `warn` posúď (riadok, ktorý antivzor iba menuje ako zákaz, je v poriadku).
+1. `node ${CLAUDE_PLUGIN_ROOT}/bin/skill-check.mjs [<skill>]` vypíše nálezy po skilloch: `error` (skill je pokazený: zlý formát, neexistujúca cesta, skript, `workflow:<x>`, skill `<x>`, ktorý projekt nemá, alebo `P-XXX`, stará cesta domény, zrušená úroveň pošty, doslovné `\n`) a `warn` (heuristika: antivzor, cesta iného stroja, rast doplnení, skript bez volania). `error` oprav vždy; `warn` posúď (riadok, ktorý antivzor iba menuje ako zákaz, je v poriadku).
 2. Posúď sám aj to, čo skript nevie: spúšťač (popis) menuje situáciu presne a nechytá iné; doplnenia neodporujú telu; kroky sedia s platnými pravidlami a skillmi workflow; opakovaná sekvencia príkazov patrí do skriptu skillu (P-030).
 3. Oprava podľa vlastníka:
    - `skills/agentic`: oprav hneď cez `workflow:save` (`save skill <meno> --replace --content "..."` alebo `--sed`); doplnenia zlúč do tela bez straty významu.

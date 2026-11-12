@@ -37,7 +37,9 @@ export const WAIT_TIMER_THEN = (what) => `the last turn ended "Stav: čakám (${
 
 // T3 shows the operator only the last message of a turn and folds the earlier ones under "Worked for …": a note written
 // after a block hid the answer (operator 2026-11-03: "the payload I want is hidden, I get the operational message").
-export const FINAL_REPLY = 'The operator sees only your last message of this turn (earlier ones are folded away): if your answer still stands, end with only its state line; if it changed, end with the complete corrected answer and its state line. Never write about this hook, a timer, a waker or IDs (P-061)';
+export const FINAL_REPLY = 'The operator sees only your last message of this turn (earlier ones are folded away): end with the complete answer (the result, links, items for the operator; corrected where it changed) and its state line, never with only the state line. Never write about this hook, a timer, a waker or IDs (P-061)';
+// flow-public#37: after a block the reply was only its state line and the result stayed in an earlier, folded message.
+export const STATE_ONLY_REASON = 'the last message of this turn is only its state line: the answer stayed in an earlier message the operator does not see (P-061, flow-public#37)';
 
 // flow-public#25 (2026-11-10): the operator asked how to hand a task to another agent; "do it now" made the agent create and
 // deploy a skill nobody asked for. Every "do it" here is bound to the work the operator asked for; a proposal stays an offer.
@@ -51,6 +53,8 @@ export const STEP_REASON = (step) => `the reply writes a step as prose ("${step}
 export const OPERATOR_STATE_REASON = (state, item) => `the reply lists for the operator "${item}" under **Otázky na operátora:** / **Úlohy pre operátora:** but declares "Stav: ${state}": what waits on the operator is "Stav: otázka", asked with AskUserQuestion, or "Stav: čakám (na <event>)" with a waker when the turn waits on an event and the item can wait (D-0011); if it is part of the asked work and you can do it yourself, do it and drop the item (P-061, P-058); a change the operator did not ask for stays an item, with "Stav: otázka". ${STATES_HELP}`;
 export const LEGACY_HEADING_REASON = `the reply uses the old heading **Operátor:**: split it into **Otázky na operátora:** (decisions and confirmations only the operator has, also asked with AskUserQuestion) and **Úlohy pre operátora:** (steps only the operator does: login, install, a click in a UI); omit the heading that has no item (P-061)`;
 export const EMPTY_SECTION_REASON = (heading) => `the reply has the heading ${heading} with no item: omit a section that has nothing in it, and write it only with items "- [ ] <…>" (P-061)`;
+// flow-public#35: PreToolUse refused the dialog of this turn as a repeat and the agent asked in text: a repeat of the dialog passes.
+export const DIALOG_AFTER_REPEAT = 'the dialog was refused in this turn as a repeat of an answered question: when his decision does not cover this step (a serious step, another scope), ask the same dialog again now, the repeat passes; when it covers the step, act on it and end without the question (P-059)';
 export const DIALOG_REASON = `the reply asks the operator in text, which is lost in the thread among other turns: ask the one decision only the operator has with AskUserQuestion now (your recommended option first, what it decides about in the dialog: the open dialog covers the text of the turn), so T3 shows the thread as "Awaiting Input"; after the answer continue the work. The items under the operator headings stay in the reply; the dialog asks the first one (P-061, operator 2026-11-08). ${STATES_HELP}`;
 // P-050 (operator 2026-11-08): "Chcem riešiť tému predaja pneumatík" got "<project> / bez témy" as the first reply and the work
 // went on without a topic; the status block of a thread without a topic is only for a topic that stays unknown.
@@ -131,7 +135,7 @@ export function run(input) {
     closeTurn = () => {
       // The state this turn ended with: `comms send --reply-to --state hotovo` refuses it in a turn the operator did not start
       // when the previous turn ended `otázka` (P-061, phase 2).
-      if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_end_state: reply.state || null, last_questions: reply.state === 'otázka' ? (reply.questions || []).slice(0, 5).map((q) => q.replace(/\s+/g, ' ').trim().slice(0, 300)) : [] });
+      if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_end_state: reply.state || null, last_end_at: new Date().toISOString(), last_questions: reply.state === 'otázka' ? (reply.questions || []).slice(0, 5).map((q) => q.replace(/\s+/g, ' ').trim().slice(0, 300)) : [] });
       const st = ctx.brainDir ? readThreadState(ctx.brainDir, ctx.thread) : {};
       const timer = activeTimer(st);
       if (!timer && snooze) return close({ next: `pause of topic ${snooze.id} ended: run topic.mjs resume ${snooze.id}, then continue from handover`, resumeAt: snooze.paused_until });
@@ -206,16 +210,19 @@ export function run(input) {
     const spent = !!before.timer && before.turn_source === 'operator' && !(before.turn_started_at && before.timer.set_at >= before.turn_started_at) && (before.timer.auto || reply.state !== 'čakám');
     const waker = validWaker(spent ? { ...before, timer: undefined } : before);
     const paused = held.some((t) => t.state === 'paused') && !work;
-    // A dialog asked in this turn (PreToolUse keeps the time) that failed or was declined leaves the text question as fallback.
+    // A dialog asked in this turn (PreToolUse keeps the time) that failed or was declined leaves the text question as fallback; one
+    // the operator answered does not (flow-public#35 pilot: a consent answered, the next consent asked in text ended the turn).
     const turnState = readThreadState(ctx.brainDir, ctx.thread);
-    const dialog = !!turnState.dialog_at && (!turnState.turn_started_at || turnState.dialog_at >= turnState.turn_started_at);
+    const dialog = !!turnState.dialog_at && (!turnState.turn_started_at || turnState.dialog_at >= turnState.turn_started_at) && !(turnState.dialog_answered_at && turnState.dialog_answered_at >= turnState.dialog_at);
     // The start question of a thread without a topic comes from the status block of the session start (boot.mjs).
     const topicStart = !held.length && toOperator && reply.question === TOPIC_QUESTION;
     const noTopicBlock = typeof msg === 'string' && ctx.projectName && msg.split('\n').some((l) => l.replace(/[*_`]/g, '').trim() === `${ctx.projectName} / bez témy`);
     // P-059: a question item that repeats one the operator answered earlier in the thread (an answer of this very turn is no earlier one).
     const earlier = (turnState.answered_questions || []).filter((a) => !turnState.turn_started_at || a.at < turnState.turn_started_at);
     let repeated = null;
-    if (reply.state === 'otázka' && !(turnState.repeat_denied_at && turnState.repeat_denied_at === turnState.turn_started_at)) for (const item of reply.questions || []) { const old = repeatsAnswered(item, earlier); if (old) { repeated = REPEATED_QUESTION_REASON(old, item.replace(/\s+/g, ' ').trim()); break; } }
+    // PreToolUse refused a dialog of this turn as a repeat (its key: the turn start, else 'turn'): not challenged again here.
+    const repeatDenied = !!turnState.repeat_denied_at && turnState.repeat_denied_at === (turnState.turn_started_at || 'turn');
+    if (reply.state === 'otázka' && !repeatDenied) for (const item of reply.questions || []) { const old = repeatsAnswered(item, earlier); if (old) { repeated = REPEATED_QUESTION_REASON(old, item.replace(/\s+/g, ' ').trim()); break; } }
     let violation = null;
     // A harness that sends no reply text (field missing) cannot be checked; an empty reply is no state.
     if (typeof msg !== 'string') violation = null;
@@ -226,14 +233,18 @@ export function run(input) {
     else if (reply.emptySection) violation = EMPTY_SECTION_REASON(reply.emptySection);
     else if (reply.step) violation = STEP_REASON(reply.step);
     else if (reply.operator?.length && reply.state !== 'otázka' && reply.state !== 'čakám') violation = OPERATOR_STATE_REASON(reply.state, reply.operator[0].slice(0, 120));
-    else if (reply.state === 'otázka' && !dialog && !topicStart) violation = DIALOG_REASON;
+    else if (reply.state === 'otázka' && !dialog && !topicStart) violation = repeatDenied ? `${DIALOG_AFTER_REPEAT}; ${DIALOG_REASON}` : DIALOG_REASON;
     else if (reply.state === 'otázka' && !reply.question) violation = NO_QUESTION_REASON;
     else if (repeated) violation = repeated;
     else if (reply.state === 'čakám' && !reply.waitFor) violation = NO_WAIT_TARGET_REASON;
     else if (reply.state === 'hotovo' && work && !idleWait && !waker) violation = NEXT_STEP_REASON(work.id, work.next);
     // Trust, T3 project and welcome thread that project.mjs could not do without the `t3` CLI (skipped by hand, 2026-11-08).
     const t3Left = input.stop_hook_active ? null : pendingT3Line(readThreadState(ctx.brainDir, ctx.thread).t3_pending);
-    const reasons = [!input.stop_hook_active && violation, t3Left].filter(Boolean);
+    // After a block of this turn a reply of only the state line is returned once per turn (its key: the turn start, else 'turn').
+    const turnKey = turnState.turn_started_at || 'turn';
+    const stateOnly = !!input.stop_hook_active && typeof msg === 'string' && !!reply.state && !msg.replace(/\s+$/, '').split('\n').slice(0, -1).join('').trim() && turnState.state_only_blocked_at !== turnKey;
+    if (stateOnly) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), state_only_blocked_at: turnKey });
+    const reasons = [!input.stop_hook_active && violation, stateOnly && STATE_ONLY_REASON, t3Left].filter(Boolean);
     if (reasons.length) return end({ decision: 'block', reason: reasons.join('\n') });
     if (spent) clearTimer(ctx.brainDir, ctx.thread);
     // Ending waiting without a waker, or without a true state, keeps the loop alive: code arms the thread timer, no note about it (P-061). The start

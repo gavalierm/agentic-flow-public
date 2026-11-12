@@ -15,6 +15,9 @@ const TRIGGER = /^(Použi|Použij|Use)\b/i;
 /** NIST curve names (P-256 ...) look like principle ids; they are not references (Bob 2026-11-08, DNSSEC). */
 const NIST_CURVES = new Set(['192', '224', '256', '384', '521']);
 
+/** "skill `name`", "skillom `name`" ...: a reference to another skill by its name (flow-public#38). */
+const SKILL_REF = /\bskill(?:om|u|y|ov|och|mi|e)?\s+`([a-z0-9][a-z0-9-]*)`/gi;
+
 function principleIds() {
   const dir = path.join(PLUGIN_ROOT, 'docs', 'principles');
   try { return new Set(fs.readdirSync(dir).filter((f) => /^P-\d{3}\.md$/.test(f)).map((f) => f.slice(0, 5))); } catch { return null; }
@@ -67,7 +70,7 @@ const ANTI = [
  * Check one skill. { name, dir, text, owner: operator|agentic|unmanaged, projectDir, home, limit } -> findings
  * [{ level, line, code, message }]. Pure apart from filesystem existence checks.
  */
-export function checkSkill({ name, dir, text, owner, projectDir, home = os.homedir(), limit = 300, pendingScripts = [] }) {
+export function checkSkill({ name, dir, text, owner, projectDir, home = os.homedir(), limit = 300, pendingScripts = [], known = null }) {
   const findings = [];
   const add = (level, line, code, message) => findings.push({ level, line, code, message });
   const { data, body } = parseFrontmatter(text);
@@ -99,6 +102,8 @@ export function checkSkill({ name, dir, text, owner, projectDir, home = os.homed
     if (/^nie\s/i.test(line) || /\\nnie\s/.test(line)) hasNie = true;
     if (/^nie\s/i.test(line)) return;
     for (const m of line.matchAll(/\bworkflow:([a-z][a-z0-9-]*)/g)) if (!wf.has(m[1])) add('error', n, 'reference', `workflow:${m[1]} does not exist`);
+    // flow-public#38: a project skill named a skill the project does not have and the checking worker did not load it.
+    if (known) for (const m of line.matchAll(SKILL_REF)) if (!known.has(m[1])) add('error', n, 'reference', `skill ${m[1]} does not exist in this project`);
     if (principles) for (const m of line.matchAll(/\bP-(\d{3})\b/g)) if (!NIST_CURVES.has(m[1]) && !principles.has(`P-${m[1]}`)) add('error', n, 'reference', `P-${m[1]} does not exist`);
     for (const p of pathsIn(line)) {
       const abs = expand(p, home);
@@ -141,11 +146,19 @@ export function projectSkills(ctx) {
   return out;
 }
 
+/** Skill names a project skill may refer to: its brain and hand-written skills, skills deployed into the project (also from the domain brain), workflow skills and user-level skills. */
+function knownSkillNames(ctx, skills) {
+  const dirs = (d) => { try { return fs.readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch { return []; } };
+  return new Set([...skills.map((s) => s.name), ...dirs(path.join(ctx.projectDir, PROJECT_SKILLS_DIR)), ...workflowSkillNames(), ...dirs(path.join(os.homedir(), '.claude', 'skills'))]);
+}
+
 export function checkProject(ctx, only = null) {
   const limit = ctx.policy?.limits?.skill_description_chars ?? 300;
-  return projectSkills(ctx).filter((s) => !only || s.name === only).map((s) => ({
+  const skills = projectSkills(ctx);
+  const known = knownSkillNames(ctx, skills);
+  return skills.filter((s) => !only || s.name === only).map((s) => ({
     ...s,
-    findings: checkSkill({ name: s.name, dir: s.dir, text: fs.readFileSync(s.file, 'utf8'), owner: s.owner, projectDir: ctx.projectDir, limit }),
+    findings: checkSkill({ name: s.name, dir: s.dir, text: fs.readFileSync(s.file, 'utf8'), owner: s.owner, projectDir: ctx.projectDir, limit, known }),
   }));
 }
 

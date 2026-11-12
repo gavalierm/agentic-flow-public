@@ -14,6 +14,8 @@ Pravidlá:
 - Nezapisuj do brain repozitára, nezaberaj témy, nekomunikuj s operátorom ani s inými agentmi. Výsledok vraciaš rodičovi.
 - Kód meň iba vo vlastnej kópii témy, ak ju zadanie uvádza; inak iba čítaj.
 - Veľký strom (tisíce súborov) prehľadávaj `git grep` (v repe) alebo `rg`, obmedzený na cesty a prípony zo zadania, nie `grep -r` cez celý strom: ten na veľkom repe prekročí limit príkazu (2 min) a musí sa zastaviť. Príkaz, ktorý môže bežať dlhšie, spusti na pozadí.
+- Textový súbor (výťah, poznámky, medzivýsledok) zapisuj nástrojom Write, nie heredoc, echo ani printf v shelli: apostrof alebo úvodzovka v texte ukončí reťazec a príkaz skončí chybou (kód 2).
+- Keď Glob nič nenájde, skús ten istý vzor malými písmenami, až potom tvrď, že súbor nie je. V `rg` je `-h` pomocník (nie bez názvov súborov ako v grep); bez názvov súborov píš `rg --no-filename`.
 - Použi skilly pribalené v zadaní; sú to overené postupy a poučenia z predchádzajúcich chýb.
 - Nič neoznačuj za hotové alebo funkčné bez jedného pozorovania výsledku.
 

@@ -247,6 +247,7 @@ test('AskUserQuestion: an answered question is recorded in answered_questions; o
     fx.hook('post-tool-use.mjs', input);
     assert.equal(stateOf(fx).answered_questions[0].q, 'Pozri si náhľad na tuneli a potvrď?');
     assert.ok(stateOf(fx).dialog_answered_at >= stateOf(fx).turn_started_at, 'the answer is recorded in this turn (D-0011)');
+    dialog(fx);
     assert.equal(stopOf(fx, REPEAT).decision, undefined, 'answered in this very turn');
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     dialog(fx);
@@ -275,6 +276,68 @@ test('AskUserQuestion: a dialog repeating an answered question is refused once p
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     assert.notEqual(decision(fx.hook('pre-tool-use.mjs', ask('Ktorý z dvoch účtov Cloudflare mám použiť?'))), 'deny', 'an unrelated question');
     assert.equal(decision(fx.hook('pre-tool-use.mjs', ask(B))), 'deny', 'a new turn is challenged again');
+  } finally { fx.cleanup(); }
+});
+
+// flow-public#35: consent to a write into an external account matched an answered consent to drafts without a write; the
+// PreToolUse deny did not say that the dialog asked again passes, and the Stop hook returned the text question without it.
+test('AskUserQuestion: after a refused repeat both hooks say the same dialog asked again passes (flow-public#35)', () => {
+  const fx = started();
+  try {
+    const ask = (question, answers) => ({ tool_name: 'AskUserQuestion', tool_input: { questions: [{ question }] }, ...(answers ? { tool_response: { answers } } : {}) });
+    const decision = (r) => r.json.hookSpecificOutput?.permissionDecision;
+    const DRAFTS = 'Súhlasíš s prípravou návrhov zmien firemného profilu bez zápisu do účtu?';
+    const WRITE = 'Súhlasíš so zápisom zmien firemného profilu do externého účtu?';
+    fx.hook('pre-tool-use.mjs', ask(DRAFTS));
+    fx.hook('post-tool-use.mjs', ask(DRAFTS, { [DRAFTS]: 'áno' }));
+    fx.hook('user-prompt-submit.mjs', { prompt: 'návrhy sedia' });
+    const r = fx.hook('pre-tool-use.mjs', ask(WRITE));
+    assert.equal(decision(r), 'deny', 'both of the consent kind');
+    assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /a write to an external service or account[^]*ask the same question again now: a repeat in this turn passes/);
+    const text = 'Návrhy sú hotové.\n\n**Otázky na operátora:**\n- [ ] Súhlasíš so zápisom zmien firemného profilu do externého účtu?\n\nStav: otázka';
+    const s = stopOf(fx, text);
+    assert.equal(s.decision, 'block', 'a text question is lost in the thread');
+    assert.match(s.reason, /refused in this turn as a repeat[^]*ask the same dialog again now, the repeat passes/);
+    assert.notEqual(decision(fx.hook('pre-tool-use.mjs', ask(WRITE))), 'deny', 'the dialog asked again passes');
+    assert.equal(stopOf(fx, text).decision, undefined, 'asked in the dialog');
+  } finally { fx.cleanup(); }
+});
+
+// flow-public#37: the Stop hook asked for a dialog, the reply after it was only the state line, and the result stayed in the
+// earlier, folded message: the operator did not see it.
+test('Stop: after a block of this turn a reply of only the state line is returned once; the block line asks for the complete answer (flow-public#37)', () => {
+  const fx = started();
+  try {
+    const first = stopOf(fx, 'Výsledok je v [report.md](/x/report.md).\n\n**Otázky na operátora:**\n- [ ] Zverejniť report?\n\nStav: otázka');
+    assert.equal(first.decision, 'block', 'a text question without a dialog');
+    assert.match(first.reason, /end with the complete answer[^]*never with only the state line/);
+    assert.doesNotMatch(first.reason, /end with only its state line/);
+    const s = stopOf(fx, 'Stav: hotovo', true);
+    assert.equal(s.decision, 'block', 'only the state line after a block');
+    assert.match(s.reason, /only its state line: the answer stayed in an earlier message/);
+    assert.equal(stopOf(fx, 'Stav: hotovo', true).decision, undefined, 'once per turn');
+    assert.equal(stopOf(fx, 'Výsledok je v [report.md](/x/report.md).\n\nStav: hotovo', true).decision, undefined, 'the complete answer passes');
+  } finally { fx.cleanup(); }
+});
+
+// flow-public#35 pilot: the consent to drafts was answered in the same turn, so that dialog let the text question end the turn.
+test('Stop: a dialog the operator answered in this turn is no fallback for the next question in text; a dialog closed without an answer is (flow-public#35)', () => {
+  const fx = started();
+  try {
+    const ask = (question, answers) => ({ tool_name: 'AskUserQuestion', tool_input: { questions: [{ question }] }, ...(answers ? { tool_response: { answers } } : {}) });
+    const decision = (r) => r.json.hookSpecificOutput?.permissionDecision;
+    const DRAFTS = 'Súhlasíš s prípravou návrhov zmien firemného profilu bez zápisu do účtu?';
+    const WRITE = 'Súhlasíš so zápisom zmien firemného profilu do externého účtu?';
+    const text = 'Návrhy sú hotové.\n\n**Otázky na operátora:**\n- [ ] Súhlasíš so zápisom zmien firemného profilu do externého účtu?\n\nStav: otázka';
+    fx.hook('pre-tool-use.mjs', ask(DRAFTS));
+    fx.hook('post-tool-use.mjs', ask(DRAFTS, { [DRAFTS]: 'áno' }));
+    assert.equal(decision(fx.hook('pre-tool-use.mjs', ask(WRITE))), 'deny', 'answered in this turn: the same kind');
+    const s = stopOf(fx, text);
+    assert.equal(s.decision, 'block', 'the answered dialog does not cover the text question');
+    assert.match(s.reason, /refused in this turn as a repeat[^]*ask the same dialog again now, the repeat passes/);
+    fx.hook('pre-tool-use.mjs', ask(WRITE));
+    fx.hook('post-tool-use.mjs', ask(WRITE, { [WRITE]: '' }));
+    assert.equal(stopOf(fx, text).decision, undefined, 'closed without an answer: the text question is the fallback');
   } finally { fx.cleanup(); }
 });
 
@@ -329,4 +392,17 @@ test('Stop: after an operator question a proposed change is kept as an offer, ne
 
 test('Stop: the auto timer chooses a recommended option only inside the asked work', () => {
   assert.match(AUTO_TIMER_THEN, /offered change the operator did not ask for: that waits/);
+});
+
+// 2026-11-12: three questions of workflow-dev were refused as repeats of the audit question R1 only because each held a
+// consent word (schválené, súhlasíš, zlúči). R1 below: the observed first 120 characters, the rest of the sentence illustrative.
+const R1 = 'R1 (audit workflow): Má agent zlúčiť overenú zmenu do main sám a pýtať sa iba pred nasadením na ostrý web? Na webe klienta dnes agent po overení v náhľade čaká na tvoj súhlas so zlúčením aj s nasadením, hoci zlúčenie do main je vratné a ostrý web mení až nasadenie.';
+test('repeatsAnswered: a consent word alone does not tie questions on other subjects; two short consents to the same step do', () => {
+  const answered = [{ q: R1, at: '2026-11-12T16:00:00.000Z' }];
+  assert.equal(repeatsAnswered('Kedy mám schválené návrhy implementovať (dev, testy, vydanie)?', answered), null);
+  assert.equal(repeatsAnswered('Chyba: vlákno Public issues som založil, ale pravidlo vlastníctva kódu (topic_owned) som nezmenil. Hook preto public-issues zakázal opraviť flow a poslal jeho prácu sem, kde som ju urobil. Návrh: vlastníkom agentic-flow a agentic-comms bude teraz public-issues. Súhlasíš?', answered), null);
+  assert.equal(repeatsAnswered('Workflow-dev aj public-issues dnes commitujú do agentic-flow v jednom spoločnom priečinku na vetve dev, takže si navzájom blokujú commit aj vydanie. Návrh: každá téma, ktorá mení flow, pracuje vo vlastnej kópii na vetve topic/<téma> a do dev zlúči iba hotovú a otestovanú opravu. Urobiť to tak?', answered), null);
+  const merged = [{ q: 'Môžem zlúčiť opravu menu do main?', at: '2026-11-12T16:00:00.000Z' }];
+  assert.ok(repeatsAnswered('Môžem zlúčiť opravu formulára do main?', merged), 'a short consent to the same step repeats');
+  assert.equal(repeatsAnswered('Môžem nasadiť opravu formulára na priklad.sk?', merged), null, 'another step is another decision');
 });

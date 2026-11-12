@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Support script for skill delegate (P-027, P-028): bundle brain skills whose trigger matches the task, and check a worker result.
 //   delegate.mjs prepare --task "..."             -> task block with bundled skills (paste into the Agent prompt)
+//   delegate.mjs prepare --task-file <file>       -> the same with the brief read from a file (flow-public#38)
 //   delegate.mjs check (--file <result> | --stdin) -> verifies "Failures" section and the size limit
 // Bundling (issue #28): a skill's full text goes into the brief only when at least STRONG_MATCHES meaningful task words
 // match its trigger, and only while the bundled text stays under the size limit. Weaker matches are listed by name and path.
@@ -65,14 +66,17 @@ export function checkResult(text, limit) {
 if (process.argv[1]?.endsWith('delegate.mjs')) try {
   const ctx = loadContext({ project: args.project, requireBrain: cmd === 'prepare' });
   if (cmd === 'prepare') {
-    if (!args.task) fail('usage: delegate.mjs prepare --task "..."');
+    // flow-public#38: a long brief from a file, not --task "$(cat file)".
+    const task = args['task-file'] ? readText(path.resolve(String(args['task-file']))) : args.task;
+    if (args['task-file'] && task === null) fail(`task file not found: ${args['task-file']}`);
+    if (!task || task === true) fail('usage: delegate.mjs prepare --task "..." | --task-file <file>');
     const limit = ctx.policy.limits.worker_result_chars;
-    const { bundled, listed } = bundleSkills(ctx.brainDir, readSkills(ctx.brainDir), args.task, {
+    const { bundled, listed } = bundleSkills(ctx.brainDir, readSkills(ctx.brainDir), String(task), {
       minMatches: ctx.policy.limits.worker_skill_min_matches ?? STRONG_MATCHES,
       limit: ctx.policy.limits.worker_skill_chars ?? BUNDLE_CHARS,
     });
     const parts = [];
-    parts.push('## Zadanie', String(args.task).trim(), '');
+    parts.push('## Zadanie', String(task).trim(), '');
     parts.push('## Pravidlá výsledku', `- Vráť záver so zdrojmi, najviac ${limit} znakov; nie surový obsah.`, '- Nezapisuj do brain, nedrž tému, nekomunikuj s operátorom; výsledok vráť rodičovi (P-025).', '- Kód meň iba v kópii témy, ak ju zadanie uvádza.', `- Pracovné súbory (pokusy, klon, medzivýsledky) iba do ${toPosixPath(path.join(ctx.projectDir, 'scratch'))}/, nikdy /tmp ani ~ (P-052).`, '- Výsledok MUSÍ končiť časťou "Failures: čo zlyhalo a čo nakoniec fungovalo" (alebo "Failures: none").', '');
     if (bundled.length) {
       parts.push('## Pribalené skilly');
@@ -94,7 +98,7 @@ if (process.argv[1]?.endsWith('delegate.mjs')) try {
     if (errors.length) fail(`worker result rejected:\n- ${errors.join('\n- ')}`, 2);
     out(`worker result ok (${text.length} chars); process its Failures via workflow:error`);
   } else {
-    fail('usage: delegate.mjs prepare --task "..." | check --file <result>');
+    fail('usage: delegate.mjs prepare --task "..." | prepare --task-file <file> | check --file <result>');
   }
 } catch (err) {
   fail(err.message);

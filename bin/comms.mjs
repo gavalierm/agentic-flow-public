@@ -134,7 +134,16 @@ function notePicked(ctx, messages) {
   }
   // Only mail with a reply path waits for an answer: a server event without a sender thread or source topic cannot be
   // answered (`send --reply-to` is refused), so it stayed "unanswered" forever (Bob 2026-11-03: 9 server events).
-  const add = messages.filter((m) => m.level === 'assist' && !m.reply_to && (m.thread_id || (m.from_project && m.from_topic))).map((m) => ({ id: m.id, from: m.sender || '?', topic: m.topic || null, at: nowIso() }));
+  const answerable = messages.filter((m) => !m.reply_to && (m.thread_id || (m.from_project && m.from_topic)));
+  // The reply gate after a turn that ended `otázka` needs the pick time of every answerable message, a blocker too, not only
+  // of an assist: a blocker a bell brought after that turn was refused hotovo (pilot of v0.9.73, 2026-11-12). Last 50 kept.
+  if (answerable.length) {
+    const st = readThreadState(ctx.brainDir, ctx.thread);
+    const pickedAt = { ...(st.picked_at || {}) };
+    for (const m of answerable) pickedAt[m.id] ??= nowIso();
+    writeThreadState(ctx.brainDir, ctx.thread, { ...st, picked_at: Object.fromEntries(Object.entries(pickedAt).slice(-50)) });
+  }
+  const add = answerable.filter((m) => m.level === 'assist').map((m) => ({ id: m.id, from: m.sender || '?', topic: m.topic || null, at: nowIso() }));
   if (!add.length) return;
   const state = readThreadState(ctx.brainDir, ctx.thread);
   const have = new Set((state.picked_assist || []).map((w) => w.id));
@@ -287,7 +296,11 @@ function cmdSend(ctx) {
       // The operator also speaks in a dialog of this turn (AskUserQuestion blocks until answered), e.g. in a turn a mail bell
       // started (pilot 2026-11-11): a dialog of this turn counts as the operator's answer.
       const answeredHere = !!st.dialog_at && !!st.turn_started_at && st.dialog_at >= st.turn_started_at;
-      if (st.last_end_state === 'otázka' && st.turn_source !== 'operator' && !answeredHere) fail(`--state hotovo refused: the previous turn of this thread ended "Stav: otázka" and this turn was not started by the operator (turn source ${st.turn_source || 'unknown'}), so the question is still open; the true state is otázka: send --state otázka with your recommendation (the sender waits for your operator), hotovo only after the operator answered (P-061)`);
+      // Only mail picked before the turn that ended `otázka` can be its question: a message a bell brought afterwards is
+      // answered on its own (2026-11-12: hotovo on an unrelated message was refused).
+      const pickedAt = (st.picked_assist || []).find((w) => w.id === replyTo)?.at || st.picked_at?.[replyTo];
+      const pickedLater = !!pickedAt && !!st.last_end_at && pickedAt > st.last_end_at;
+      if (st.last_end_state === 'otázka' && st.turn_source !== 'operator' && !answeredHere && !pickedLater) fail(`--state hotovo refused: the previous turn of this thread ended "Stav: otázka" and this turn was not started by the operator (turn source ${st.turn_source || 'unknown'}), so the question is still open; the true state is otázka: send --state otázka with your recommendation (the sender waits for your operator), hotovo only after the operator answered (P-061)`);
     }
     if (replyState === 'čakám' && ctx.brainDir && ctx.thread && !validWaker(readThreadState(ctx.brainDir, ctx.thread))) fail(`--state čakám without a waker in this thread: arm a timer first (${TIMER_CMD} set --in <30m|2h> --then "<step>") or start the background work, else nothing brings the final reply (P-061)`);
   } else if (replyState || waitFor) {

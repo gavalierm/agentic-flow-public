@@ -272,3 +272,32 @@ test('hotovo guard (phase 2): the operator answers a dialog in a turn a mail bel
     assert.equal(ok.status, 0, ok.stderr);
   } finally { await x.done(); }
 });
+
+test('hotovo guard (phase 2): a message picked after the turn ended "Stav: otázka" is not its question: hotovo passes, the earlier one stays refused', { skip }, async () => {
+  const x = await exchange();
+  try {
+    const id = askedThenBell(x);
+    // The bell brought an unrelated assist (2026-11-12: hotovo on it was refused).
+    const later = x.ask('unrelated: is the build green?');
+    const ok = x.reply(later, 'hotovo', 'green');
+    assert.equal(ok.status, 0, ok.stderr);
+    const bad = x.reply(id, 'hotovo', 'variant A');
+    assert.notEqual(bad.status, 0, 'the message picked before the question still waits for the operator');
+    assert.match(bad.stderr, /previous turn of this thread ended "Stav: otázka"/);
+  } finally { await x.done(); }
+});
+
+test('hotovo guard (phase 2): a blocker a bell brought after the turn ended "Stav: otázka" is not its question either: hotovo passes', { skip }, async () => {
+  const x = await exchange();
+  try {
+    const id = askedThenBell(x);
+    // Pilot of v0.9.73 (2026-11-12): only an assist had its pick time, so hotovo on a later blocker stayed refused.
+    const send = x.fx.runB('comms.mjs', ['send', '--level', 'blocker', '--to', 'project/alpha', '--text', 'unrelated: is the build green?']);
+    assert.equal(send.status, 0, send.out);
+    const later = /sent (\S+) \(blocker\)/.exec(send.stdout)[1];
+    assert.equal(x.fx.run('comms.mjs', ['receive', '--id', later]).status, 0);
+    const ok = x.reply(later, 'hotovo', 'green');
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.notEqual(x.reply(id, 'hotovo', 'variant A').status, 0, 'the assist picked before the question still waits for the operator');
+  } finally { await x.done(); }
+});

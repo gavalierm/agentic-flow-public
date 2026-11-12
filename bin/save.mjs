@@ -648,11 +648,19 @@ function saveMove(ctx) {
   if (note) out(note);
 }
 
+const HANDOVER_FIELDS = ['task', 'done', 'next', 'files', 'questions'];
+const HANDOVER_OPTIONS = [...HANDOVER_FIELDS, 'file', 'project', 'repo'];
+
 function saveHandover(ctx) {
   const repo = repoTarget(ctx);
   if (repo) return saveRepoHandover(ctx, repo);
   const [topic] = rest;
   if (!topic) fail('usage: save.mjs handover <topic> --task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>');
+  // An unknown option or no content overwrote the topic's handover with an empty one (pilot of v0.9.73, 2026-11-12:
+  // `save.mjs handover <topic> --help`): refuse before anything is written, the current handover stays.
+  const unknown = Object.keys(args).filter((k) => k !== '_' && !HANDOVER_OPTIONS.includes(k));
+  if (unknown.length) fail(`save.mjs handover: unknown option ${unknown.map((k) => `--${k}`).join(', ')}; nothing written, the current handover stays (usage: save.mjs handover <topic> --task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>)`);
+  if (!args.file && !HANDOVER_FIELDS.some((k) => typeof args[k] === 'string' && args[k].trim())) fail('save.mjs handover: no content (--task, --done, --next, --files, --questions or --file); nothing written, the current handover stays');
   // Limits and the reminder need no remote state: refuse before the first fetch (53 limit refusals paid a whole sync cycle).
   const content = args.file ? fs.readFileSync(args.file, 'utf8') : renderHandover({ task: args.task, done: args.done, next: args.next, files: args.files, questions: args.questions });
   const errors = checkHandover(content, ctx.policy.limits.handover_lines);

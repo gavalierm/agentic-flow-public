@@ -196,6 +196,33 @@ test('hook: harness refusal in the transcript blocks the same file through anoth
   } finally { fx.cleanup(); }
 });
 
+// flow-public#43: the rule refused `cd <project> && mkdir -p scratch/s && cp <deployed> scratch/s/ && diff ...`, every path
+// of the command counted as a refused write, and a script that read the deployed file and wrote scratch/ was locked.
+test('hook: a permission rule refusal of a shell command locks what the command writes, not what it only reads (flow-public#43)', () => {
+  const fx = setup();
+  try {
+    const dep = path.join(fx.project, 'deployed', 's', 'run.mjs');
+    const copy = path.join(fx.brain, 'skills', 's', 'run.mjs');
+    fs.mkdirSync(path.dirname(dep), { recursive: true });
+    fs.writeFileSync(dep, 'x');
+    const t = path.join(fx.root, 's.jsonl');
+    const refused = (id, command, at) => [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] } },
+      { type: 'user', timestamp: at, permissionDecision: { decision: 'reject', source: 'config' }, message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: 'Permission to use Bash with command cp has been denied.' }] } },
+    ];
+    const start = { type: 'user', timestamp: new Date(Date.now() - 2000).toISOString(), message: { content: 'go' } };
+    const toCopy = refused('u1', `cd ${fx.project} && mkdir -p scratch/s && cp ${dep} scratch/s/run.mjs && diff scratch/s/run.mjs ${copy}`, new Date(Date.now() - 1000).toISOString());
+    fs.writeFileSync(t, [start, ...toCopy].map((l) => JSON.stringify(l)).join('\n') + '\n');
+    const bash = (command) => JSON.stringify(fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', transcript_path: t, tool_input: { command } }).json || {});
+    const P054 = /bypass \(P-054\)/;
+    assert.doesNotMatch(bash(`python3 ${fx.project}/fix.py ${dep} ${fx.project}/scratch/s/run.mjs`), P054, 'the cp source is read, the copy goes to scratch/: the way the refusal names');
+    assert.doesNotMatch(bash(`cd ${fx.project} && git status && diff scratch/s/run.mjs ${copy}`), P054, 'git status and diff read');
+    const back = refused('u2', `cp ${fx.project}/scratch/s/run.mjs ${dep}`, new Date().toISOString());
+    fs.writeFileSync(t, [start, ...toCopy, ...back].map((l) => JSON.stringify(l)).join('\n') + '\n');
+    assert.match(bash(`sed -i s/x/y/ ${dep}`), P054, 'the refused cp target written another way stays a bypass');
+  } finally { fx.cleanup(); }
+});
+
 test('hook: settings that enforce the workflow and git past its hooks ask the operator', () => {
   const fx = setup();
   try {

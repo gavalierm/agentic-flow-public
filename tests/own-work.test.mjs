@@ -88,7 +88,7 @@ test('a file that was already dirty before the thread touched it stays protected
   } finally { fx.cleanup(); }
 });
 
-test('bashEdits: in-place edits are targets (also for topic_owned), plain sed is not', () => {
+test('bashEdits: in-place edits are targets, plain sed is not', () => {
   assert.deepEqual(bashEdits(`cd /r && sed -i "s/a b/c/" x.txt`, '/w'), ['/r/x.txt']);
   assert.deepEqual(bashEdits(`perl -pi -e 's/a/b/' y.txt z.txt`, '/w'), ['/w/y.txt', '/w/z.txt']);
   assert.deepEqual(bashEdits(`sed -i.bak -e 's/a/b/' -e 's/c/d/' q.txt`, '/w'), ['/w/q.txt']);

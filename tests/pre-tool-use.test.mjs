@@ -460,8 +460,8 @@ test('forcedAddIgnored: a dry run (-n) of git add -f touches nothing and does no
   } finally { fx.cleanup(); }
 });
 
-// Audit "false approvals" 2026-11-12 (truth part): `git tag --sort=-creatordate | head -3` in a foreign topic_owned repo was denied as a change.
-test('git tag listing and stash list are no repository change (topic_owned false deny)', () => {
+// Audit "false approvals" 2026-11-12 (truth part): `git tag --sort=-creatordate | head -3` was denied as a change.
+test('git tag listing and stash list are no repository change', () => {
   const cwd = '/x/repo';
   assert.deepEqual(gitWriteDirs('git tag --sort=-creatordate | head -3', cwd), []);
   assert.deepEqual(gitWriteDirs('git tag -l "v0.*"', cwd), []);

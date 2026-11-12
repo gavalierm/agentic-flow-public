@@ -135,6 +135,23 @@ test('exception: immutable refused, written per layer; rule saved; handover only
   } finally { fx.cleanup(); }
 });
 
+// Pilot of v0.9.73 (2026-11-12): `save.mjs handover <topic> --help` wrote an empty handover over the topic's one.
+test('handover: an unknown option or no content is refused and the current handover stays', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'hh', '--subject', 'H']).status, 0);
+    assert.equal(fx.run('save.mjs', ['handover', 'hh', '--task', 'Task', '--next', 'step two']).status, 0);
+    const before = fx.read('topics/hh/handover.md');
+    let r = fx.run('save.mjs', ['handover', 'hh', '--help']);
+    assert.equal(r.status, 1, r.out); assert.match(r.stderr, /unknown option --help; nothing written/);
+    r = fx.run('save.mjs', ['handover', 'hh', '--task', 'Task', '--nxt', 'typo']);
+    assert.equal(r.status, 1, r.out); assert.match(r.stderr, /unknown option --nxt/);
+    r = fx.run('save.mjs', ['handover', 'hh']);
+    assert.equal(r.status, 1, r.out); assert.match(r.stderr, /no content/);
+    assert.equal(fx.read('topics/hh/handover.md'), before);
+  } finally { fx.cleanup(); }
+});
+
 test('handover: over-limit content is refused before any fetch; a valid handover syncs twice, not three times', () => {
   const fx = setup();
   try {
@@ -273,12 +290,12 @@ test('rule names its enforcement: --enforced-by <file>[:<symbol>] is checked, --
     assert.notEqual(r.status, 0); assert.match(r.out, /not found/);
     r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Do src/ NESMIEŠ zapisovať bez testu.', '--enforced-by', 'hooks/pre-tool-use.mjs:noSuchSymbol']);
     assert.notEqual(r.status, 0); assert.match(r.out, /noSuchSymbol does not occur/);
-    r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Do src/ NESMIEŠ zapisovať bez testu.', '--enforced-by', 'hooks/pre-tool-use.mjs:topicOwnedCheck']);
+    r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Do src/ NESMIEŠ zapisovať bez testu.', '--enforced-by', 'hooks/pre-tool-use.mjs:repoKnowledgeWrite']);
     assert.equal(r.status, 0, r.out);
-    assert.match(fx.read('rules/gate.md'), /enforced_by: \["hooks\/pre-tool-use.mjs:topicOwnedCheck"\]|enforced_by: \[hooks\/pre-tool-use.mjs:topicOwnedCheck\]/);
+    assert.match(fx.read('rules/gate.md'), /enforced_by: \["hooks\/pre-tool-use.mjs:repoKnowledgeWrite"\]|enforced_by: \[hooks\/pre-tool-use.mjs:repoKnowledgeWrite\]/);
     r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Do src/ NESMIEŠ nič zapisovať bez testu.']);
     assert.equal(r.status, 0, r.out);
-    assert.match(fx.read('rules/gate.md'), /topicOwnedCheck/, 'a rewrite keeps the recorded enforcement');
+    assert.match(fx.read('rules/gate.md'), /repoKnowledgeWrite/, 'a rewrite keeps the recorded enforcement');
     r = fx.run('save.mjs', ['rule', 'gate', '--content', 'x', '--enforced-by', 'hooks/pre-tool-use.mjs', '--unenforced', 'both given at once here']);
     assert.notEqual(r.status, 0); assert.match(r.out, /exclude each other/);
     r = fx.run('save.mjs', ['rule', 'gate', '--content', 'Do src/ NESMIEŠ nič zapisovať bez testu.', '--unenforced', 'short']);

@@ -1,5 +1,5 @@
-// PreToolUse in code, not in text (operator 2026-11-02: "rules are unreliable, solve it in code"): topic-owned repos
-// (policy topic_owned, P-012), secrets only in local/ (P-018, P-052), an ignored leftover in a persona asks (P-018).
+// PreToolUse in code, not in text (operator 2026-11-02: "rules are unreliable, solve it in code"): the domain brain, not a
+// topic, gives the right to write its projects (D-0014), secrets only in local/ (P-018, P-052), an ignored leftover in a persona asks (P-018).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -28,45 +28,19 @@ function owned(value = 'dev-work') {
   return { fx, repo };
 }
 
-test('P-012: topic_owned: only the holder of the topic writes or commits in the owned repo; reads pass; others get the mail route', () => {
-  const { fx, repo } = owned();
-  try {
-    const other = { env: { WORKFLOW_THREAD_ID: 'b2' } };
-    let r = fx.hook('pre-tool-use.mjs', { tool_name: 'Edit', tool_input: { file_path: path.join(repo, 'a.txt'), old_string: 'a', new_string: 'b' } });
-    assert.notEqual(decision(r), 'deny', 'the holder edits');
-    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Edit', tool_input: { file_path: path.join(repo, 'a.txt'), old_string: 'a', new_string: 'b' } }, other);
-    assert.equal(decision(r), 'deny');
-    assert.match(reason(r), /belong to topic dev-work \(held by thread a1\).*comms send --level assist --to dev-work /, 'the topic alone: a project folder name is no mail address');
-    for (const command of [`git -C ${repo} commit -m x`, `cd ${repo} && git commit -am x`, `git -C ${repo} push origin dev`, `echo x > ${path.join(repo, 'b.txt')}`, `git -C ${repo} tag v1`, `sed -i 's/a/b/' ${path.join(repo, 'a.txt')}`]) {
-      r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }, other);
-      assert.equal(decision(r), 'deny', command);
-    }
-    for (const command of [`git -C ${repo} log --oneline -3`, `git -C ${repo} status`, `cat ${path.join(repo, 'a.txt')}`, `cd ${repo} && git diff`]) {
-      r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }, other);
-      assert.notEqual(decision(r), 'deny', command);
-    }
-    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: `git -C ${repo} commit -m x` } });
-    assert.notEqual(decision(r), 'deny', 'the holder commits');
-    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.project, 'x.md'), content: 'x' } }, other);
-    assert.notEqual(decision(r), 'deny', 'outside the owned repo nothing changes');
-  } finally { fx.cleanup(); }
-});
-
-test('P-012: topic_owned with a list of topics: the holder of any listed topic writes and commits, a thread holding none is denied with each topic', () => {
+test('D-0014: every thread of the domain writes and commits in a repo of the domain, whatever topic it holds; a left-over policy topic_owned is ignored', () => {
   const { fx, repo } = owned(['dev-work', 'issues']);
   try {
     const edit = { tool_name: 'Edit', tool_input: { file_path: path.join(repo, 'a.txt'), old_string: 'a', new_string: 'b' } };
-    const as = (thread) => ({ env: { WORKFLOW_THREAD_ID: thread } });
-    let r = fx.hook('pre-tool-use.mjs', edit, as('c3'));
-    assert.equal(decision(r), 'deny');
-    assert.match(reason(r), /belong to topics dev-work \(held by thread a1\), issues \(not open: open it with workflow:topic\); this thread holds none of them.*--to dev-work /);
-    assert.notEqual(decision(fx.hook('pre-tool-use.mjs', edit)), 'deny', 'the holder of the first listed topic edits');
-    r = fx.run('topic.mjs', ['create', 'issues', '--subject', 'issues', '--here', '--no-copy'], as('b2'));
-    assert.equal(r.status, 0, r.out);
-    assert.notEqual(decision(fx.hook('pre-tool-use.mjs', edit, as('b2'))), 'deny', 'the holder of the second listed topic edits');
-    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: `git -C ${repo} commit -m x` } }, as('b2'));
-    assert.notEqual(decision(r), 'deny', 'and commits');
-    assert.equal(decision(fx.hook('pre-tool-use.mjs', edit, as('d4'))), 'deny', 'a thread holding neither is denied');
+    for (const thread of ['a1', 'b2']) {
+      const as = { env: { WORKFLOW_THREAD_ID: thread } };
+      let r = fx.hook('pre-tool-use.mjs', edit, as);
+      assert.notEqual(decision(r), 'deny', `thread ${thread} edits: ${reason(r)}`);
+      for (const command of [`git -C ${repo} commit -m x`, `cd ${repo} && git commit -am x`, `git -C ${repo} push origin dev`, `echo x > ${path.join(repo, 'b.txt')}`, `git -C ${repo} tag v1`, `sed -i 's/a/b/' ${path.join(repo, 'a.txt')}`]) {
+        r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }, as);
+        assert.notEqual(decision(r), 'deny', `${thread}: ${command}: ${reason(r)}`);
+      }
+    }
   } finally { fx.cleanup(); }
 });
 
