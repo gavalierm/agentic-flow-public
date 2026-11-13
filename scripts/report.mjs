@@ -183,7 +183,8 @@ export function mailReport(ctx, text, maintainer = maintainerOf(ctx.policy), { t
   const res = runClient(ctx, ['send', '--text', '-', '--level', 'assist', '--project', to.project, '--topic', to.topic], { input: text });
   if (!res.ok) return { ok: false, why: `mail ${res.error || 'failed'}` };
   const d = res.data || {};
-  if (d.queued) return { ok: false, why: 'mail unavailable (queued in the outbox)', id: d.id };
+  // A brain without its mail key queues everything (agentic-flow-public#62: a domain brain attached without project.mjs mail).
+  if (d.queued) return { ok: false, why: `mail unavailable (queued in the outbox)${s.configFile ? '' : '; this brain has no mail key (<brain>/local/comms.json): project.mjs mail <project dir>'}`, id: d.id };
   if (d.state === 'held' && d.project_known === true && d.id) return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${to.project}/${to.topic}`, pending_topic: true, notice: d.notice_id || null };
   if (d.state === 'held') rememberUnreachable(ctx, key);
   if (d.state !== 'pending' || !d.id) return { ok: false, why: `maintainer topic ${maintainer.comms} not on this mail server (message ${d.state || '?'}${d.notice_id ? `, notice ${d.notice_id}` : ''})`, id: d.id, notice: d.state === 'held' ? d.notice_id || null : null };
@@ -193,11 +194,13 @@ export function mailReport(ctx, text, maintainer = maintainerOf(ctx.policy), { t
 const issueNumber = (url) => Number((/\/issues\/(\d+)/.exec(url) || [])[1]) || null;
 
 /** Issue in the maintainer repo with this machine's GitHub access: token file, else the gh CLI. */
-export async function issueReport(ctx, title, body, maintainer = maintainerOf(ctx.policy), env = process.env) {
+// The footer names why mail failed: "not reachable" alone hid a brain without its mail key (agentic-flow-public#62).
+export async function issueReport(ctx, title, body, maintainer = maintainerOf(ctx.policy), env = process.env, why = []) {
   const slug = repoSlug(maintainer.repo);
   if (!slug) return { ok: false, why: 'no maintainer repo configured' };
   const t = scrub(title, ctx, env).slice(0, 120);
-  const b = `${scrub(body, ctx, env)}\n\n---\nreported by error.mjs report (the maintainer topic was not reachable)`;
+  const reason = why.length ? scrub(why.join('; '), ctx, env) : 'the maintainer topic was not reachable';
+  const b = `${scrub(body, ctx, env)}\n\n---\nreported by error.mjs report (mail failed: ${reason})`;
   const tokenFile = env.WORKFLOW_GITHUB_TOKEN_FILE || DEFAULT_TOKEN_FILE;
   let token = null;
   try { token = fs.readFileSync(tokenFile, 'utf8').trim() || null; } catch { /* try gh */ }
@@ -250,7 +253,7 @@ export async function report(ctx, { text, title, fromId } = {}, env = process.en
     why.push(mail.why);
     held = mail.notice || null;
   }
-  const issue = await issueReport(ctx, title, text, m, env);
+  const issue = await issueReport(ctx, title, text, m, env, why);
   // The held copy only leaves the operator a "new topic?" notice about nothing (operator 2026-11-07: an instance asked
   // what to do with three such notices); the sender withdraws its own message, also when the report ends as a draft.
   let tail = '';

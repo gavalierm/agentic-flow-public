@@ -77,6 +77,17 @@ test('held mail and no GitHub: the held copy is discarded too, the draft keeps t
   } finally { fx.cleanup(); }
 });
 
+test('mail queued in a brain without its mail key: the line and the issue footer say why and how to fix it (flow-public#62)', () => {
+  const fx = fixture({ send_queued: true });
+  try {
+    fs.rmSync(path.join(fx.brain, 'local', 'comms.json'), { force: true });
+    const r = fx.run('error.mjs', ['report', '--text', 'chyba: q']);
+    assert.match(r.stdout, /^reported: issue .*queued in the outbox\); this brain has no mail key .*project\.mjs mail <project dir>/);
+    assert.match(fx.ghBody(), /reported by error\.mjs report \(mail failed: mail unavailable \(queued in the outbox\); this \S+ has no mail key/);
+    assert.ok(!fx.ghBody().includes('was not reachable'), fx.ghBody());
+  } finally { fx.cleanup(); }
+});
+
 test('no mail and no GitHub: NOT reported, draft for the operator', () => {
   const fx = fixture({ down: true });
   try {

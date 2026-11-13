@@ -35,3 +35,16 @@ test('verify skill: a negative claim only after every candidate, else how many o
   assert.match(skill, /iné zariadenie, prehliadač iného počítača, iný účet\) navrhni a urob až po súhlase operátora \(P-002\)/);
   assert.match(skill, /^nie „žiadny účet nemá prístup“ po skúške časti účtov, lebo .*flow-public#40/m);
 });
+
+// report-4a4caced: an agent reported a site's search positions from one live SERP snapshot as verified; Search
+// Console over 12 months refuted three of them. One sample of a variable measure is a snapshot, not a verified state.
+test('verify skill: a measure from one snapshot (SERP position, traffic) is a sample, verified only from own aggregated data (report-4a4caced)', () => {
+  const skill = read('skills/verify/SKILL.md');
+  const desc = /^description: (.*)$/m.exec(skill)?.[1] || '';
+  assert.match(desc, /meranie z jednej snímky/, 'the trigger covers a measure from one snapshot');
+  assert.ok(desc.length <= 300, `description within the skill-check limit: ${desc.length}`);
+  assert.match(skill, /je to vzorka, nie overený stav/);
+  assert.match(skill, /vlastných agregovaných dát za obdobie/);
+  assert.match(skill, /obmedzením „jedna vzorka“/);
+  assert.match(skill, /^nie pozícia z jednej snímky SERP ako overená, lebo .*report-4a4caced/m);
+});
