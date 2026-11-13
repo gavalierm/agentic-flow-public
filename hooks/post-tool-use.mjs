@@ -4,14 +4,15 @@
 // when the mail service is down (P-041). Subagents are not watched. Own edits (P-018): the content the thread left in
 // a file it changed from a clean state is recorded, so restoring it later does not ask the operator. Otherwise no output.
 import { readHookInput, emit, isMain, contextOutput } from '../scripts/hooks-io.mjs';
-import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
+import { loadContext, readThreadState, writeThreadState, SCRATCH_DIR } from '../scripts/config.mjs';
+import { isInside } from '../scripts/util.mjs';
 import { withAnswered } from '../scripts/protocol.mjs';
 import { withLift } from '../scripts/bypass.mjs';
 import { bufferAppend, normalizeCommand } from '../scripts/logs.mjs';
 import { mailCount, recordWaitingOperator, discussionOpen, discussionMail } from '../scripts/comms.mjs';
 import { mailboxTopics } from '../scripts/topic.mjs';
 import path from 'node:path';
-import { settleOwn, settleShell } from '../scripts/own-files.mjs';
+import { settleOwn, settleShell, recordScratch, inWorkScratch } from '../scripts/own-files.mjs';
 import { bashTargets, bashEdits } from './pre-tool-use.mjs';
 import { wakerFromTool, recordWaker } from '../scripts/waker.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
@@ -161,6 +162,8 @@ export function run(input, now = Date.now()) {
     if (noTopic.no_topic_chosen_at) noTopicLine = NO_TOPIC_CHOSEN_LINE(ctx.projectName || '<project>');
   }
   settleOwn(ctx, changedFiles(input));
+  // report-143e7cdb: what this thread leaves in a scratch/ is its own; another thread's recursive rm of the dir asks (P-018).
+  recordScratch(ctx, changedFiles(input), (abs) => (ctx.projectDir && isInside(path.join(ctx.projectDir, SCRATCH_DIR), abs)) || inWorkScratch(abs));
   if (input.tool_name === 'Bash' || input.tool_name === 'PowerShell') settleShell(ctx, input.tool_use_id);
   const entry = toEntry(input, ctx.policy);
   if (entry) bufferAppend(ctx.brainDir, input.session_id, entry);

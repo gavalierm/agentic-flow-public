@@ -239,3 +239,8 @@ export function saveHint(ctx, r) {
 }
 
 export const displayPath = (r) => show(r.abs);
+
+// A tombstone is a short body that only says where the record went (consolidate reports it, save memory --remove takes
+// it without an operator order: it holds no subject of its own).
+const TOMBSTONE = /presun|moved|nahraden|superseded/i;
+export const isTombstone = (body) => String(body || '').trim().length < 300 && TOMBSTONE.test(String(body || ''));

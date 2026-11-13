@@ -16,6 +16,7 @@ import { ensureLineEndings } from '../scripts/eol.mjs';
 import { catalogBoot } from '../scripts/catalog/hooks.mjs';
 import { recordAuthors, foreignRecords } from '../scripts/authors.mjs';
 import { closedTargetsNote } from './pre-tool-use.mjs';
+import { mcpEnvNote } from '../scripts/mcp-env.mjs';
 
 export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '9500 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038', 'P-050'] };
 
@@ -36,7 +37,7 @@ export function run(input) {
   // foreign project rules through the stamp, so the start costs one git log for both.
   const authors = ctx.brainDir ? recordAuthors(ctx.brainDir) : null;
   stampBootPull(ctx.brainDir, input.session_id, Date.now(), { foreign_rules: foreignRecords(authors, 'rules/') });
-  const notes = [brainPullNote(pull), pinWorkflow(ctx), projectLineEndings(ctx), t3Session(ctx, input)].filter(Boolean);
+  const notes = [brainPullNote(pull), pinWorkflow(ctx), projectLineEndings(ctx), t3Session(ctx, input), projectMcpEnv(ctx)].filter(Boolean);
   // Catalog of project data: scan within its budget before the boot text; it never fails the boot and does nothing without a source.
   const catalog = catalogBoot(ctx, { source: input.source || 'startup', state: ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : null });
   const boot = buildBootContext(ctx, { source: input.source || 'startup', rulesHook: true, t3Note: notes.length ? notes.join('\n') : null, catalogLines: catalog.lines, authors });
@@ -58,6 +59,11 @@ export function run(input) {
 export function projectLineEndings(ctx) {
   if (!ctx.projectDir || (ctx.brainDir && path.resolve(ctx.brainDir) === path.resolve(ctx.projectDir))) return null;
   try { return ensureLineEndings(ctx.projectDir); } catch (err) { return `${path.basename(ctx.projectDir)}: line endings not normalized (${err.message})`; }
+}
+
+/** `.mcp.json` servers whose `${VAR}` stays literal (scripts/mcp-env.mjs, report-ef63d010); never fails the boot. */
+export function projectMcpEnv(ctx, env = process.env) {
+  try { return mcpEnvNote(ctx.projectDir, env); } catch { return null; }
 }
 
 export function pullBrain(ctx) {

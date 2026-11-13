@@ -91,3 +91,9 @@ test('worker rules: content search by the Grep tool, rg in the shell only when c
   assert.match(worker, /skriptom `node`[^\n]*nie `python3`[^\n]*flow-public#51/);
   assert.doesNotMatch(worker, /`git grep` \(v repe\) alebo `rg`/);
 });
+
+// flow-public#58: a worker reported "WebFetch did not run" and read the web by curl only; WebFetch is a deferred tool there, loaded by ToolSearch.
+test('worker rules: load the deferred WebFetch and WebSearch by ToolSearch before reporting them unavailable (flow-public#58)', () => {
+  const worker = fs.readFileSync(path.join(import.meta.dirname, '..', 'agents/worker.md'), 'utf8');
+  assert.match(worker, /odložené nástroje[^\n]*ToolSearch \(`select:WebFetch,WebSearch`\)[^\n]*flow-public#58/);
+});

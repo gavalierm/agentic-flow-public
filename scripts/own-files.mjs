@@ -159,3 +159,37 @@ export function settleShell(ctx, id) {
   writeThreadState(ctx.brainDir, ctx.thread, { ...state, shell_before: rest, created_files: created });
   saveOwnEdits(ctx, edits);
 }
+
+// report-143e7cdb (2026-11-13): `rm -rf scratch/<dir>` of one topic removed drafts another topic had put into the same
+// directory; every scratch/ file counted as the remover's own work. Each thread records the scratch files it writes, and a
+// removal or overwrite that would hit a file another thread of the same brain recorded asks instead (P-018).
+const SCRATCH_LIMIT = 500;
+
+/** PostToolUse: existing files under a work scratch/ the tool wrote become this thread's scratch files. */
+export function recordScratch(ctx, files, inScratch = inWorkScratch) {
+  if (!ctx.brainDir || !ctx.thread) return;
+  const mine = files.map((f) => path.resolve(f)).filter((abs) => inScratch(abs) && fileHash(abs));
+  if (!mine.length) return;
+  const state = readThreadState(ctx.brainDir, ctx.thread);
+  const kept = (state.scratch_files || []).filter((f) => !mine.includes(f));
+  writeThreadState(ctx.brainDir, ctx.thread, { ...state, scratch_files: [...kept, ...mine].slice(-SCRATCH_LIMIT) });
+}
+
+/** Files at or under target that another thread of this brain recorded as its scratch files and that still exist. */
+export function foreignScratch(ctx, target) {
+  if (!ctx.brainDir || !ctx.thread) return [];
+  const dir = path.join(ctx.brainDir, 'local', 'threads');
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { return []; }
+  const abs = path.resolve(target);
+  const out = [];
+  for (const n of names) {
+    let st;
+    try { st = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')); } catch { continue; }
+    if (!st || String(st.thread) === String(ctx.thread)) continue;
+    for (const f of st.scratch_files || []) {
+      if ((f === abs || f.startsWith(abs + path.sep)) && fs.existsSync(f)) out.push({ file: f, thread: String(st.thread) });
+    }
+  }
+  return out;
+}

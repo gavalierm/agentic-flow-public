@@ -14,7 +14,7 @@ import { buildIndexes } from '../scripts/index.mjs';
 import { tokens } from '../scripts/keys.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { checkProject } from '../scripts/skill-check.mjs';
-import { machineStores, sessionStores, machineRecords, storeRecords, sameStore, subjectMatch, subjectNames, recordType, decisionRefs, refProblem, refFiles, displayPath, SUBJECT_TYPES, ID_LINE } from '../scripts/stores.mjs';
+import { machineStores, sessionStores, machineRecords, storeRecords, sameStore, subjectMatch, subjectNames, recordType, decisionRefs, refProblem, refFiles, displayPath, isTombstone, SUBJECT_TYPES, ID_LINE } from '../scripts/stores.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const out = (s) => process.stdout.write(s + '\n');
@@ -56,7 +56,6 @@ export function repoReport(ctx, brainRecords) {
   return { repos, limits, stale, both };
 }
 
-const TOMBSTONE = /presun|moved|nahraden|superseded/i;
 
 /**
  * One subject, one record (D-0028), over the stores of this session (its brain, the domain brain, the domain repos):
@@ -84,7 +83,7 @@ export function identityReport(ctx) {
         duplicates.push({ key: r.key, how, store: s.name, other: o.storeOf.name, paths: [displayPath(r), displayPath(o)] });
       }
     }
-    for (const r of recs.filter((x) => (x.kind === 'memory' || x.kind === 'decision') && String(x.body).trim().length < 300 && TOMBSTONE.test(x.body))) tombstones.push(displayPath(r));
+    for (const r of recs.filter((x) => (x.kind === 'memory' || x.kind === 'decision') && isTombstone(x.body))) tombstones.push(displayPath(r));
     for (const f of refFiles(s)) {
       for (const ref of decisionRefs(fs.readFileSync(f, 'utf8'), { skip: ID_LINE })) {
         const problem = refProblem(stores, s, ref, ctx.brainDir);
@@ -139,7 +138,7 @@ try {
     out(`stale derived (fingerprint changed, re-derive or delete): ${r.stale.length ? r.stale.join(', ') : 'none'}`);
     out(`possible duplicate subjects (merge): ${r.duplicates.length ? r.duplicates.map((d) => `${d.token}: ${d.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`same subject in another store (one subject, one record: keep one, fold the other into it): ${r.identity.duplicates.length ? r.identity.duplicates.map((d) => `${d.key} (${d.how}, ${d.store} + ${d.other}): ${d.paths.join(' + ')}`).join('; ') : 'none'}`);
-    out(`tombstones (short body pointing elsewhere: remove, the record it names holds the subject): ${r.identity.tombstones.length ? r.identity.tombstones.join(', ') : 'none'}`);
+    out(`tombstones (short body pointing elsewhere: remove it with save.mjs memory <type> <name> --remove --reason "<why>", the record it names holds the subject): ${r.identity.tombstones.length ? r.identity.tombstones.join(', ') : 'none'}`);
     out(`decision references that do not resolve (a bare D-NNNN is the own store, another store's decision is <store>/D-NNNN): ${r.identity.refs.length ? r.identity.refs.join('; ') : 'none'}`);
     out(`agentic skills sharing a tool/work token (merge only same tool): ${r.mergeable.length ? r.mergeable.map((m) => `${m.token}: ${m.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`skill health (skill-check.mjs <name> for details, skill workflow:skill-check): ${r.health.length ? r.health.map((h) => `${h.name} ${h.errors}e/${h.warns}w`).join(', ') : 'all ok'}`);

@@ -50,6 +50,18 @@ test('question turn: the first write outside scratch/ is refused once, a repeat 
   } finally { fx.cleanup(); }
 });
 
+test('question turn with a handover next step: the line keeps the step open and forbids "hotovo" (report-e2d5cf30)', () => {
+  const fx = started();
+  try {
+    assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--task', 'x', '--next', 'nasadiť zmenu']).status, 0);
+    const asked = fx.hook('user-prompt-submit.mjs', { prompt: 'aký je stav?' });
+    assert.equal(stateOf(fx).turn_intent, 'question');
+    assert.match(asked.context, /topic alpha has a next step \("nasadiť zmenu"\)[^]*do not end "Stav: hotovo"/);
+    const work = fx.hook('user-prompt-submit.mjs', { prompt: 'pridaj presmerovanie na /novy' });
+    assert.doesNotMatch(work.context || '', /has a next step \("nasadiť/, 'an instruction turn gets no such line');
+  } finally { fx.cleanup(); }
+});
+
 test('question turn: a page action and a shell write are side effects, a screenshot and a read are not; a dialog answer ends the question (P-063)', () => {
   const fx = started();
   try {

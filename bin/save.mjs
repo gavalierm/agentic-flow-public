@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Single entry point for writing knowledge (P-013, P-007, P-031, P-009, P-008, P-035, P-032, P-011).
 // The agent classifies; this script only writes in a fixed format, deduplicates via find, commits via brain.mjs, regenerates indexes.
-//   save.mjs memory <type> <name> --content "..." [--origin operator|derived|observed] [--aliases a,b] [--relates-to x,y] [--sources f1,f2] [--summary "..."] [--new]
+//   save.mjs memory <type> <name> --content "..." [--origin operator|derived|observed] [--aliases a,b] [--relates-to x,y] [--unrelate x,y] [--sources f1,f2] [--summary "..."] [--new]
 //   save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y [--supersedes D-0001]
 //   save.mjs decision --remove D-XXXX [--repo [<repo>]] --reason "operator <YYYY-MM-DD>: <why>"   only on an explicit operator order (P-008)
 //   save.mjs rule <name> [--repo [<repo>]] --content "..." (--enforced-by <file>[:<symbol>][,...] | --unenforced "<why code cannot check it>") [--title "..."] | --remove --reason "..."
@@ -37,7 +37,7 @@ import { setTopicState, readTopic } from '../scripts/topic.mjs';
 import { workflowSkillNames, PROJECT_SKILLS_DIR, syncBrainSkills } from '../scripts/skills-sync.mjs';
 import { skillSources, PROJECT_KNOWLEDGE, REPO_HANDOVER, domainRepos, repoByName, sessionRepo, singleRepoOf, nextRepoDecisionId, repoWrite, formatRepoWrite, heldRepoTopic, repoPublic } from '../scripts/repo-knowledge.mjs';
 import { checkSkill, meaningDiff } from '../scripts/skill-check.mjs';
-import { machineStores, machineRecords, targetStore, sameStore, checkDecisionRefs, decisionRefs, rewriteDecisionRefs, subjectMatch, saveHint, displayPath, refFiles, SUBJECT_TYPES, ID_LINE, lc } from '../scripts/stores.mjs';
+import { machineStores, machineRecords, targetStore, sameStore, checkDecisionRefs, decisionRefs, rewriteDecisionRefs, subjectMatch, saveHint, displayPath, refFiles, isTombstone, SUBJECT_TYPES, ID_LINE, lc } from '../scripts/stores.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 // Every --sed applies, in order: parseArgs keeps only the last value of a repeated option (2026-11-12: two --sed in one
@@ -180,7 +180,8 @@ function otherHome(ctx, matches, repo) {
 function saveMemory(ctx) {
   const [type, ...nameParts] = rest;
   const name = nameParts.join(' ');
-  if (!type || !name) fail(`usage: save.mjs memory <type> <name> --content "..." (types: ${KEY_TYPES.join(', ')})`);
+  if (!type || !name) fail(`usage: save.mjs memory <type> <name> --content "..." | --remove --reason "..." (types: ${KEY_TYPES.join(', ')})`);
+  if (args.remove) return removeMemory(ctx, type, name);
   if (args.content === undefined) fail('--content required');
   const key = makeKey(type, name);
   const origin = args.origin || 'operator';
@@ -228,13 +229,19 @@ function saveMemory(ctx) {
     const clash = machineRecords(ctx).find((r) => r.kind === 'memory' && !self(r) && [r.key, r.data?.name, ...r.aliases].filter((v) => v !== undefined && v !== null).map(lc).includes(lc(alias)));
     if (clash) fail(`--aliases ${alias}: already the key, name or alias of ${clash.key} in store ${clash.storeOf.name}: ${displayPath(clash)}; an alias names one subject only, nothing saved`);
   }
+  // --relates-to adds to the links a record has; --unrelate drops a link that no longer holds (a decision of another
+  // store named bare, a removed record): a rewrite alone kept it and consolidate kept reporting it (D-0028).
+  const linked = asList(existing?.data.relates_to);
+  const unrelate = asList(args.unrelate);
+  const absent = unrelate.filter((v) => !linked.includes(v));
+  if (absent.length) fail(`--unrelate ${absent.join(', ')}: not in relates_to of ${existing?.data.key || key} (${linked.join(', ') || 'empty'}), nothing saved`);
   const data = {
     key: existing?.data.key || key,
     type,
     name: existing?.data.name || name,
     origin,
     aliases: [...new Set([...(asList(existing?.data.aliases)), ...asList(args.aliases)])],
-    relates_to: [...new Set([...(asList(existing?.data.relates_to)), ...asList(args['relates-to'])])],
+    relates_to: [...new Set([...linked, ...asList(args['relates-to'])])].filter((v) => !unrelate.includes(v)),
     summary: args.summary || existing?.data.summary || undefined,
     created: existing?.data.created || today(),
     updated: today(),
@@ -276,6 +283,34 @@ function removeDecision(ctx) {
   const res = brainWrite(ctx, { ops: [{ path: old.path, remove: true }], message: `remove decision ${key}: ${args.reason}`, env: { [DECISION_REMOVED_ENV]: old.path } });
   finish(ctx, res, [old.path]);
   out(`decision ${key} removed; references to it elsewhere (relates_to, supersedes, commit messages) stay as they are`);
+}
+
+// A memory record leaves through save only (P-013): a duplicate folded into its home record, a tombstone, a stale derived
+// record. save had no way, and consolidate kept reporting them while the brain hook denies the shell (D-0028).
+// A record of origin operator goes only on an explicit operator order (P-009); a tombstone holds no subject of its own.
+function removeMemory(ctx, type, name) {
+  const key = makeKey(type, name);
+  if (ctx.thread && isWakeTurn(ctx.brainDir, ctx.thread) && !dialogAnsweredInTurn(ctx.brainDir, ctx.thread)) fail('memory records cannot be removed in a turn started by a message, and the operator answered no dialog in it: ask the operator with AskUserQuestion (P-047)');
+  if (!args.reason || args.reason === true) fail(`--remove needs --reason "<why>": nothing removed (${key})`);
+  const repo = repoTarget(ctx);
+  const held = repo ? heldRepoTopic(ctx, repo)?.topic || null : null;
+  const same = find(ctx.brainDir, key, ctx.domain).filter((m) => m.kind === 'memory' && m.key === key);
+  const hit = same.find((m) => (repo ? m.repo === repo && (!m.topic || m.topic === held) : !m.repo));
+  if (!hit) {
+    const other = same.find((m) => m.repo);
+    fail(`memory ${key} not found in ${repo ? `repo ${repo}` : 'brain'}${other ? `; it is in repo ${other.repo}: add --repo ${other.repo}` : ''}`);
+  }
+  const abs = path.resolve(ctx.brainDir, hit.path);
+  const { data, body } = parseFrontmatter(readText(abs, ''));
+  if (data.origin === 'operator' && !isTombstone(body) && !OPERATOR_REASON_RE.test(String(args.reason))) fail(`${key} is an operator record (origin: operator): it is removed only on an explicit operator order, --reason "operator <YYYY-MM-DD>: <why>"; otherwise rewrite it with save.mjs memory ${type} ${name} --content "..." (P-009)`);
+  // Records that still name the key (relates_to, text) are listed for the agent to change; the record of the same key in
+  // another store is that store's own record, not a reference.
+  const word = new RegExp(`(^|[^a-z0-9-])${key}([^a-z0-9-]|$)`, 'i');
+  const named = machineStores(ctx).flatMap((s) => refFiles(s)).filter((f) => path.resolve(f) !== abs && word.test(readText(f, '').replace(/^key:.*$/m, '')));
+  const message = `remove memory ${key}: ${args.reason}`;
+  if (repo) out(formatRepoWrite(repoWrite(ctx, repo, { ops: [{ path: knowledgeRel(ctx, hit.path), remove: true }], message })));
+  else finish(ctx, brainWrite(ctx, { ops: [{ path: hit.path, remove: true }], message }), [hit.path]);
+  out(`memory ${key} removed; ${named.length ? `still named in (change them with save): ${[...new Set(named.map(toPosixPath))].join(', ')}` : 'no other record names it'}`);
 }
 
 function saveDecision(ctx) {
@@ -528,7 +563,10 @@ function removeSkill(ctx, name) {
 
 function saveSkill(ctx) {
   const [name] = rest;
-  if (!name || !isValidId(name) || hasDiacritics(name)) fail('usage: save.mjs skill <name> --description "..." --content "..." --origin error|routine');
+  // report-5d6c4ce2: the usage listed only the new-skill form, so an agent editing an existing skill passed a
+  // placeholder --description and it replaced the real one; the edit forms keep the description without it.
+  if (!name || !isValidId(name) || hasDiacritics(name)) fail('usage: save.mjs skill <name> --description "Použi, keď ..." --content "..." --origin error|routine (new skill)\n'
+    + '       save.mjs skill <name> --sed \'s/<pattern>/<replacement>/\' | --script <file> | --content "..." --replace (existing skill: keeps its description; --description only to change it, it replaces the old one)');
   const repo = repoTarget(ctx);
   if (repo) return saveRepoSkill(ctx, repo, name);
   if (args.remove) return removeSkill(ctx, name);

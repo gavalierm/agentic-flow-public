@@ -14,7 +14,7 @@ import { SUBAGENT_ALLOWED, recordWaitingOperator } from '../scripts/comms.mjs';
 import { repeatsAnswered, REPEATED_QUESTION_REASON } from '../scripts/protocol.mjs';
 import { knowledgeDirOf, PROJECT_KNOWLEDGE } from '../scripts/repo-knowledge.mjs';
 import { findSecret } from '../scripts/secrets.mjs';
-import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell } from '../scripts/own-files.mjs';
+import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell, foreignScratch } from '../scripts/own-files.mjs';
 import { catalogPreTool } from '../scripts/catalog/pretool.mjs';
 import { bigWriteDeny } from '../scripts/materialy.mjs';
 import { heldTopics, topicCopyPath, expectedImplementation, implementMarkers, IMPLEMENT_CLASSES } from '../scripts/topic.mjs';
@@ -909,7 +909,9 @@ function driftWrite(tool, toolInput, cwd, ctx, sessionId) {
   if (!FILE_TOOLS.includes(tool) && tool !== 'Bash' && tool !== 'PowerShell') return false;
   return !!questionSideEffect(tool, toolInput, cwd, ctx, sessionId);
 }
-export const DRIFT_REASON = (v) => `the task does not fit the subject of topic ${v.topic || '-'} ("${v.subject || '-'}"): ${v.reason || 'a different subject'}; save it (P-007), tell the operator the message drifted from the topic and offer a new topic (workflow:topic create), do not work on it here (P-012); if the operator explicitly wants it in this topic, repeat the step`;
+export const DRIFT_REASON = (v) => v.belongs_to
+  ? `the task does not fit the subject of topic ${v.topic || '-'} ("${v.subject || '-'}"): ${v.reason || 'a different subject'}; it belongs to the open topic ${v.belongs_to} ("${v.belongs_subject || '-'}"): tell the operator the message drifted and that topic ${v.belongs_to} has this work; send it there (workflow:comms) or let the operator continue in its thread, do not work on it here and do not offer this topic as the recommended option of a dialog (P-012, flow-public#59); if the operator explicitly wants it in this topic, repeat the step`
+  : `the task does not fit the subject of topic ${v.topic || '-'} ("${v.subject || '-'}"): ${v.reason || 'a different subject'}; save it (P-007), tell the operator the message drifted from the topic and offer a new topic (workflow:topic create), do not work on it here and do not offer this topic as the recommended option of a dialog (P-012); if the operator explicitly wants it in this topic, repeat the step`;
 
 const WAIT_UNIT = { '': 1, s: 1, m: 60, h: 3600, d: 86400 };
 /**
@@ -1616,6 +1618,13 @@ function pathChecks(input, ctx, cwd) {
     // and the same file named twice is one file: none of them asks as an overwrite of many files.
     const overwritten = [...new Set(bashTargets(cmd, cwd, { skipRmdir: true, skipAppend: true }))];
     const dangerous = overwritten.filter((t) => !isCreated(t) && fs.existsSync(t) && !ownWork(ctx, t) && classifyTarget(t).dangerous);
+    // report-143e7cdb: a scratch/ file is disposable only for the thread that wrote it; removing a directory that holds files
+    // another thread recorded there lost that thread's drafts (rm -rf of a shared scratch dir instead of its own files).
+    const foreign = overwritten.filter((t) => fs.existsSync(t) && ownWork(ctx, t)).flatMap((t) => foreignScratch(ctx, t));
+    if (foreign.length) {
+      const list = [...new Set(foreign.map((f) => toPosix(path.relative(cwd, f.file))))];
+      return permissionOutput('ask', `targets hold ${list.length} work file(s) of another thread (${[...new Set(foreign.map((f) => f.thread))].join(', ')}): ${list.slice(0, 5).join(', ')}${list.length > 5 ? ', …' : ''}; remove only the files this thread made, name work dirs after the topic (scratch/<topic>-…), or confirm with the operator (P-018)`);
+    }
     const thr = policy.destructive || {};
     // The threshold counts files the command changes or removes: not the ones it creates, not missing ones and not the
     // thread's own work files (6 files in scratch/wt asked and waited 6 896 s for the operator, audit M2 2026-11-11).

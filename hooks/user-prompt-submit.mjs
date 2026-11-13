@@ -15,6 +15,7 @@ import { PLUGIN_ROOT, toPosix } from '../scripts/util.mjs';
 import { threadTitleSignal } from '../scripts/thread-title.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 import { startDriftJudge, ownWords } from '../scripts/drift.mjs';
+import { listTopics } from '../scripts/topic.mjs';
 
 export const HOOK_META = { event: 'UserPromptSubmit', class: 'e+c', limit: '2 lines', principles: ['P-012', 'P-023', 'P-036', 'P-038', 'P-043', 'P-044', 'P-047', 'P-003', 'P-013', 'P-008'] };
 
@@ -254,12 +255,15 @@ export function run(input) {
   const turnIntent = turnSource === 'operator' && kind === 'misread' ? 'misread' : turnSource === 'operator' && kind === null && isQuestionPrompt(input.prompt, ctx.policy) ? 'question' : null;
   if (turnIntent === 'misread') extras.push('starting a worker or subagent before the new reading is restated or chosen in a dialog is refused once in this turn (P-063)');
   if (turnIntent === 'question') extras.push('the operator asks (question, explanation, check) and gives no instruction to change: answer it and propose a change, do not make it; the first write or change in this turn is refused once (P-063)');
+  // report-e2d5cf30: the question line read as "leave the handover step" let the turn end "hotovo" with that step open.
+  const openStep = turnIntent === 'question' && (info.held || []).find((t) => !isMainTopic(t) && t.state !== 'paused' && t.next);
+  if (openStep) extras.push(`the handover of topic ${openStep.id} has a next step ("${openStep.next}"): the question does not close or cancel it, so do not end "Stav: hotovo"; a step the operator already approved for the topic is no new change: do it after the answer (repeat the refused write, P-059, P-026); else end "Stav: čakám (na <what>)" with a waker or "Stav: otázka" with the step as an item (P-061)`);
   // P-012: an operator task (no bell, no question, no done/nudge/save/error phrase) while the thread holds a work topic: a judge
   // compares the task with the topic subject in the background; PreToolUse refuses the first write of the turn once on a mismatch.
   const startedAt = new Date().toISOString();
   const heldTopic = info.held?.[0];
   if (state && turnSource === 'operator' && kind === null && !turnIntent && heldTopic && !isMainTopic(heldTopic) && heldTopic.subject) {
-    startDriftJudge({ brainDir: ctx.brainDir, thread: ctx.thread, startedAt, topic: heldTopic.id, subject: heldTopic.subject, state: heldTopic.state, next: heldTopic.next, handover: heldTopic.handover, task: ownWords(input.prompt) });
+    startDriftJudge({ brainDir: ctx.brainDir, thread: ctx.thread, startedAt, topic: heldTopic.id, subject: heldTopic.subject, state: heldTopic.state, next: heldTopic.next, handover: heldTopic.handover, task: ownWords(input.prompt), others: listTopics(ctx.brainDir).filter((t) => t.id !== heldTopic.id && !isMainTopic(t) && t.subject).map((t) => ({ id: t.id, subject: t.subject })) });
   }
   // P-059: the operator started this turn: the questions the last reply ended with are answered (a bell does not answer them).
   const answered = state && turnSource === 'operator' && state.last_questions?.length ? { ...withAnswered(state, state.last_questions, state.turn_started_at || new Date(Date.now() - 1).toISOString()), last_questions: [] } : state;

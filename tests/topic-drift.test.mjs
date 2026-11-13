@@ -114,3 +114,30 @@ test('drift: topic main, a bell, a question, WORKFLOW_DRIFT_JUDGE=off and done s
     assert.doesNotMatch(reasonOf(write(main, 'config.txt')), DRIFT);
   } finally { main.cleanup(); }
 });
+
+test('drift: related work that is the subject of another open topic is judged with that topic and the refusal names it (flow-public#59)', async () => {
+  const fx = started({ fits: true, reason: 'nový skill na prepis textov', belongs_to: 'beta' });
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'beta', '--subject', 'Skill na prepis textov', '--class', 'discussion', '--no-claim']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'sprav nový skill na prepis textov' });
+    const v = await verdictOf(fx);
+    assert.equal(v?.fits, false, 'belongs_to another open topic is off this topic');
+    assert.equal(v?.belongs_to, 'beta');
+    const seen = fs.readFileSync(`${fx.mark}.in`, 'utf8');
+    assert.match(seen, /# Other open topics[^]*beta: Skill na prepis textov/, 'the judge sees the other open topics');
+    assert.doesNotMatch(seen, /\nalpha: /, 'the held topic is not listed among the others');
+    const first = write(fx, 'skills/prepis/SKILL.md');
+    assert.equal(first.json.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(reasonOf(first), /belongs to the open topic beta \("Skill na prepis textov"\)[^]*recommended option/);
+  } finally { fx.cleanup(); }
+});
+
+test('drift: belongs_to naming no open topic is ignored', async () => {
+  const fx = started({ fits: true, reason: 'same subject', belongs_to: 'nope' });
+  try {
+    fx.hook('user-prompt-submit.mjs', { prompt: 'pridaj do obchodu košík' });
+    const v = await verdictOf(fx);
+    assert.equal(v?.fits, true);
+    assert.equal(v?.belongs_to, undefined);
+  } finally { fx.cleanup(); }
+});
