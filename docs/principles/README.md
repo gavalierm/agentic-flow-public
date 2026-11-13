@@ -108,3 +108,4 @@ Hodnoty určil agent (operátor delegoval rozhodnutie, 2026-10-31). Sú to vých
 | Notifikácia pri `blocker` | e-mail cez `notify.command`; bez neho iba stránka oznamov | P-046 | určil operátor |
 | Umiestnenie brain | `../<nazov-brain>` relatívne k projektu | P-024 | brain vedľa projektu, bez absolútnych ciest |
 | Kópia kódu témy | `../<project>-topics/<id>/` | P-036 | vždy samostatný klon vedľa projektu, aj v T3 |
+| Automatické témy kódu (`topics.auto`) | žiadne: téma hlásenia či issue ostáva v projekte bez kópie | D-0035 | brain ich smeruje do projektu repa: `projects` (`{"<priečinok relatívne k brainu>": ["<repo>", …]}`), `default_project` (hlásenie, nezaradené repo), `orchestrator` (téma brainu, ktorej vlákno dostáva otázky a zlyhania) |

@@ -61,7 +61,9 @@ export function topicOrchestrator(brainDir, topic, thread) {
   if (!topic || isMainTopic(topic)) return null;
   const o = topic.orchestrator && typeof topic.orchestrator === 'object' ? topic.orchestrator : null;
   const by = o?.thread || topic.created_by || null;
-  if (!by || by === thread) return null;
+  // An automatic topic (report intake, issue watch: code without a thread, policy topics.auto, D-0035) records only the
+  // orchestrator topic: its thread asks that topic, whoever holds it.
+  if (by ? by === thread : !o?.topic) return null;
   let id = o?.topic || null;
   if (!id) { try { id = heldTopics(brainDir, by)[0]?.id || null; } catch { id = null; } }
   // A closed orchestrator topic (same brain) has no address: the main thread triages the mail.
@@ -272,7 +274,7 @@ export function resolveClass(ctx, cls, kind = null) {
   return c;
 }
 
-function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedKind = null, mode, claim = true, copy = true, forThread = null, newThread = false, task = null, explicitProject = false, origin = ctx, run = spawnSync }) {
+function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedKind = null, mode, claim = true, copy = true, forThread = null, newThread = false, task = null, explicitProject = false, origin = ctx, orchestrator = null, run = spawnSync }) {
   if (!isValidId(id)) throw new Error(`topic id "${id}" must be lowercase letters, digits and hyphens (P-036)`);
   if (id === MAIN_TOPIC) throw new Error('topic id "main" is reserved for the persona main thread: use topic.mjs main (P-045)');
   if (!subject || !String(subject).trim()) throw new Error('topic needs --subject "<one sentence>" (P-045)');
@@ -300,6 +302,8 @@ function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedK
   // (49 extra `topic claim` commits, median 11.1 s against ~6 s).
   const claimNow = claim && !forThread && !newThread;
   // P-064: a topic for another thread records its orchestrator (this thread and its topic); that thread asks it, not the operator.
+  // An automatic topic (policy topics.auto, D-0035) gets the orchestrator of the policy: code has no thread to name.
+  if (!claimNow && orchestrator?.topic) topic.orchestrator = orchestrator;
   if (!claimNow && !topic.orchestrator) {
     const o = orchestratorFor(ctx, origin || ctx, { holderThread: forThread ? String(forThread) : null });
     if (o) topic.orchestrator = o;
@@ -319,6 +323,8 @@ function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedK
   if (newThread && !forThread) {
     // P-036: a new topic gets its own T3 thread titled by the topic; its first message shows what the topic holds, so the
     // operator does not have to prompt it (alice 2026-11-02). Failure keeps the topic free and says why.
+    // The code copy first: the thread's first message names it and the thread may look before the assignment below.
+    if (kind === 'code' && copy) out.copy = ensureCodeCopy(ctx, id);
     const started = startTopicThread(ctx, topic, run, { task });
     if (!started.ok) { out.claim = { ok: false, reason: `topic ${id} created, but no thread was started (${started.reason}); ${started.fallback}; or claim it here with topic.mjs claim ${id}` }; return out; }
     out.thread = started.thread;
@@ -330,7 +336,7 @@ function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedK
     // Topic for a new thread (P-037): the new thread holds it from its first turn, so its status block shows the topic
     // instead of `Téma: žiadna` (Bob 2026-11-01: topic beszel created for a new thread that then asked for a topic).
     out.claim = assignTopic(ctx, id, String(forThread), { mode, model });
-    if (kind === 'code' && copy) out.copy = ensureCodeCopy(ctx, id);
+    if (kind === 'code' && copy && !out.copy) out.copy = ensureCodeCopy(ctx, id);
     return out;
   }
   if (claimNow) {

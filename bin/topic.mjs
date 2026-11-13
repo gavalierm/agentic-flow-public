@@ -6,6 +6,8 @@
 //                        to another machine: flush logs, send outbox, handover, release, push (P-040)
 //           main [--force --operator-approved]   persona main thread (topic main, P-045)
 //           thread <id> [--task ".."] [--mode operator|auto] [--for-thread <id>]   new T3 thread for a free topic (P-036)
+//           auto <id> --subject ".." [--repo <name>] [--task ".."] [--persona <name>]   code without a thread (cron): topic
+//                        with its own thread in the repo's project by policy topics.auto (D-0035); prints `mail: <addr>`
 //           pause <id> [--until <ISO | <n>d | <n>h>] [--reason ".."]   snooze: no bells until resumed or until
 //           resume <id>
 //           list | status
@@ -19,6 +21,7 @@ import { loadContext, foreignProjectCwd } from '../scripts/config.mjs';
 import { createTopic, CLASS_HELP, startThreadForTopic, claimTopic, claimMain, releaseTopic, handoffTopic, listTopics, heldTopics, ensureCodeCopy, copyTopic, readTopic, pauseTopic, resumeTopic, grantConsent } from '../scripts/topic.mjs';
 import fs from 'node:fs';
 import { topicLine } from '../scripts/index.mjs';
+import { ensureWorkTopic, autoFallback } from '../scripts/intake.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const [cmd, id] = args._;
@@ -47,6 +50,22 @@ try {
     if (res.copy) out(`code copy: ${res.copy.path} (branch ${res.copy.branch})`);
     if (res.write.unpushed) out(`unpushed: ${res.write.unpushed}`);
     if (res.claim && !res.claim.ok) process.exit(1);
+  } else if (cmd === 'auto') {
+    // Code without a thread (cron: issue watch of a persona, D-0019): the topic of an automatic input with its own thread,
+    // in the project of --repo by policy topics.auto (D-0035). Prints `mail: <project>/<topic>` (where its mail goes);
+    // on failure `fallback: <address>` (the policy orchestrator, else the persona main thread) and exit 1.
+    if (!id) fail('usage: topic.mjs auto <id> --subject "..." [--repo <repo name>] [--task ".."] [--class code] [--persona <name>]');
+    ctx.thread = null;
+    const res = ensureWorkTopic(ctx, { id, subject: args.subject, task: typeof args.task === 'string' ? args.task : null, class: typeof args.class === 'string' ? args.class : 'code', repo: typeof args.repo === 'string' ? args.repo : null });
+    if (res.mail) out(`mail: ${res.mail}`);
+    if (res.copy) out(`code copy: ${res.copy}`);
+    if (res.ok) out(`topic ${id} ${res.step}, thread ${res.thread}`);
+    else {
+      const fb = autoFallback(ctx, typeof args.persona === 'string' ? args.persona : null);
+      if (fb) out(`fallback: ${fb}`);
+      out(`topic ${id} (${res.step}): ${res.reason}`);
+      process.exit(1);
+    }
   } else if (cmd === 'thread') {
     if (!id) fail('usage: topic.mjs thread <id> [--task ".."] [--mode operator|auto] [--for-thread <id started by t3_thread_launch>]');
     const res = startThreadForTopic(ctx, id, { task: args.task || null, mode: args.mode, forThread: typeof args['for-thread'] === 'string' ? args['for-thread'] : null });
@@ -123,7 +142,7 @@ try {
     if (copy.write?.unpushed) out(`unpushed: ${copy.write.unpushed}`);
     if (readTopic(ctx.brainDir, id)?.kind !== 'code') out(`next: delegate.mjs prepare --implement${readTopic(ctx.brainDir, id)?.class === 'ops' ? '' : ' web|code|ops'} --task-file <file> (the worker changes the copy; commit, merge and release stay in this thread, D-0020)`);
   } else {
-    fail('usage: topic.mjs create|claim|main|release|handoff|pause|resume|list|status|closed|copy|consent');
+    fail('usage: topic.mjs create|claim|main|release|handoff|pause|resume|list|status|closed|copy|consent|auto');
   }
 } catch (err) {
   fail(err.message);

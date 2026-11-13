@@ -93,6 +93,7 @@ switch (cmd) {
       n.state = 'decided'; n.decision = opt('decision');
       const m = (state.message || {})[n.message_id];
       if (m && opt('decision') === 'deliver') m.state = 'pending';
+      if (m && opt('decision') === 'redirect') { const [p, t] = String(opt('target') || '').split('/'); Object.assign(m, { state: 'pending', project: p, topic: t }); }
       save();
     }
     print({ notice_id: opt('notice'), decision: opt('decision') });
