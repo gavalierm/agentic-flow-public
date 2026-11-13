@@ -4,11 +4,32 @@
 // --adopt: a brain from an older setup: its git hooks are replaced by the workflow ones, .gitignore gets the
 // workflow lines, and the change is committed; data stays (the old hooks remain in the git history).
 // --persona: the repository (remote and directory) must be named agent-<name>.
+// --attach makes the git hooks executable; hooks git keeps as 100644 (a brain made on Windows) get 100755 in a brain
+// script commit, so the brain stays clean. project.mjs connect and restore attach their brain the same way.
 import fs from 'node:fs';
 import path from 'node:path';
 import { PLUGIN_ROOT, copyDir, git, fail, parseArgs, exists } from '../scripts/util.mjs';
 import { assertPersonaRemote, PERSONA_REPO_RE } from '../scripts/persona-name.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv } from '../scripts/config.mjs';
+
+const HOOKS = ['pre-commit', 'commit-msg'];
+
+/**
+ * Hooks git keeps as 100644 (a brain made on Windows, where git records no modes): the chmod of the attach made them
+ * executable, so the brain showed them as changed and stayed dirty. The mode goes into git with a brain script commit,
+ * only for hooks whose content and index are as in HEAD; core.fileMode false would only hide it. Where git records no
+ * modes (Windows, core.fileMode false) nothing changes. Returns the hooks committed.
+ */
+function commitHookModes(brainDir, env) {
+  if (process.platform === 'win32' || git(['config', '--type=bool', 'core.fileMode'], { cwd: brainDir }).stdout === 'false') return [];
+  const rels = HOOKS.map((h) => `.githooks/${h}`).filter((rel) => /^100644 /.test(git(['ls-tree', 'HEAD', '--', rel], { cwd: brainDir }).stdout)
+    && git(['diff', '--cached', '--quiet', 'HEAD', '--', rel], { cwd: brainDir }).ok
+    && git(['-c', 'core.fileMode=false', 'diff', '--quiet', '--', rel], { cwd: brainDir }).ok);
+  if (!rels.length) return [];
+  const commit = git(['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} brain template: git hooks executable (100755)`, '--', ...rels], { cwd: brainDir, env });
+  if (!commit.ok) throw new Error(`git hooks mode commit failed: ${commit.stderr || commit.stdout}`);
+  return rels.map((rel) => path.basename(rel));
+}
 
 export function brainInit(target, { attach = false, adopt = false, remote = null, project = null, persona = false } = {}) {
   const brainDir = path.resolve(target);
@@ -72,7 +93,7 @@ export function brainInit(target, { attach = false, adopt = false, remote = null
       fs.mkdirSync(path.join(brainDir, dir), { recursive: true });
     }
   }
-  for (const hook of ['pre-commit', 'commit-msg']) {
+  for (const hook of HOOKS) {
     try { fs.chmodSync(path.join(brainDir, '.githooks', hook), 0o755); } catch { /* windows */ }
   }
   const hooks = git(['config', 'core.hooksPath', '.githooks'], { cwd: brainDir });
@@ -96,6 +117,10 @@ export function brainInit(target, { attach = false, adopt = false, remote = null
     const commit = git(['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} brain template: .gitattributes keeps binary files as they are`, '--', '.gitattributes'], { cwd: brainDir, env });
     if (!commit.ok) throw new Error(`.gitattributes commit failed: ${commit.stderr || commit.stdout}`);
     created.push('committed .gitattributes');
+  }
+  if (isRepo && !adopt) {
+    const hooksFixed = commitHookModes(brainDir, env);
+    if (hooksFixed.length) created.push(`committed git hooks as executable (100755): ${hooksFixed.join(', ')}`);
   }
   if (!isRepo) {
     git(['add', '-A'], { cwd: brainDir, env });

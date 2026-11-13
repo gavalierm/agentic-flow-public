@@ -13,7 +13,7 @@ import { brainWrite, brainSync, formatWriteResult, readHolder, isHolderOf } from
 import { freeHandover } from '../scripts/brain-checks.mjs';
 import { recordNames, existingNames } from '../scripts/logs.mjs';
 import { rejectedProposal } from '../scripts/find.mjs';
-import { heldTopics, readTopic, freePointMail } from '../scripts/topic.mjs';
+import { heldTopics, readTopic, freePointMail, hasCodeCopy, codeCopyPath } from '../scripts/topic.mjs';
 import { registerTopic } from '../scripts/comms.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
 import { asList } from '../scripts/frontmatter.mjs';
@@ -109,7 +109,7 @@ function doneUnit(ctx, id) {
   notes.unshift(scratchReminder(ctx.projectDir, unitStart(ctx, id, topic), id));
   // The verified code of the unit goes into the main branch before anything is written, so a failed merge writes nothing
   // (D-0011: 5 questions "may I merge?", each answered with the recommended option, 5 887 s of waiting).
-  const merge = topic?.kind === 'code' ? mergeCode(ctx, id, topic, { keepCopy: true, label: `done ${id}` }) : null;
+  const merge = hasCodeCopy(topic) ? mergeCode(ctx, id, topic, { keepCopy: true, label: `done ${id}` }) : null;
   if (topic) ops.push({ path: `topics/${id}/topic.json`, content: JSON.stringify({ ...topic, last_done: nowIso() }, null, 2) + '\n' });
   const res = brainWrite(ctx, { ops, message: `done ${id}: unit of work done (verified: ${String(args.verified).slice(0, 60)})` });
   out(formatWriteResult(res, [`topics/${id}/handover.md`, `topics/${id}/topic.json`]));
@@ -147,7 +147,8 @@ function setBackSameAsBranch(dir, branch) {
 }
 
 function mergeCode(ctx, id, topic, { keepCopy = !!args['keep-copy'], label = `done --topic ${id}` } = {}) {
-  const copy = path.resolve(ctx.projectDir, topic.copy || `../${ctx.projectName}-topics/${id}`);
+  // A copy that claim made (topic created without one, e.g. a report intake) has no recorded path: the path claim used.
+  const copy = topic.copy ? path.resolve(ctx.projectDir, topic.copy) : codeCopyPath(ctx, id);
   const branch = `topic/${id}`;
   if (!fs.existsSync(path.join(copy, '.git'))) return { merged: false, note: `no code copy at ${copy}; nothing to merge` };
   const dirtyCopy = git(['status', '--porcelain', '--untracked-files=no'], { cwd: copy }).stdout;
@@ -211,7 +212,7 @@ function doneTopic(ctx, id) {
   if (!topic) fail(`topic ${id} does not exist`);
   if (topic.kind === 'main') fail('topic main is the persona main thread: it is never closed or archived (P-045)');
   let merge = { merged: false, note: 'discussion topic, no code' };
-  if (topic.kind === 'code') merge = mergeCode(ctx, id, topic);
+  if (hasCodeCopy(topic)) merge = mergeCode(ctx, id, topic);
   const closed = { ...topic, state: 'closed', closed: nowIso(), closed_by: ctx.thread, verified: String(args.verified), merged: merge.merged };
   const ops = [
     { from: `topics/${id}`, to: `topics/archive/${id}` },

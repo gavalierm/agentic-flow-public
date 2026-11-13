@@ -355,9 +355,9 @@ export function syncAndCheckHolder(brainDir, rel, thread) {
 /**
  * Git refuses a repo owned by another user than the process (dubious ownership): no brain write can commit. Returns the
  * fix with the exact command, or null when git works (agentic-flow-public#23: topic create left half a topic on Windows).
+ * `r`: the result of a git call already made in `dir` (session start: the record author log), so the check costs no call.
  */
-export function gitAccessProblem(dir) {
-  const r = git(['rev-parse', '--git-dir'], { cwd: dir });
+export function gitAccessProblem(dir, r = git(['rev-parse', '--git-dir'], { cwd: dir })) {
   if (r.ok || !/dubious ownership|safe\.directory/i.test(r.stderr)) return null;
   const home = process.env.HOME || process.env.USERPROFILE || '?';
   return `git refuses ${toPosix(dir)} (dubious ownership: the repo belongs to another user than this process); run: git config --global --add safe.directory ${toPosix(dir)} (global config of this process: HOME=${toPosix(home)}; a hook that still fails runs with another HOME, add it there too)`;

@@ -2,7 +2,7 @@
 // UserPromptSubmit: status line (P-023 e, 1 line, only when it changed or in a bell turn) + at most one signal line
 // (P-023 c): wake flag (P-047; the waiting mail as mechanical `<id> <category>` lines when new mail waits), no-reply/undelivered line for the sender (P-042, P-046),
 // keepalive resume (P-043), the mail line once per change of the count (P-044, no bodies), error/save hint
-// (P-003, P-013), queued Stop signals, thread title after a topic change (P-036). Bells are recognised only as the exact whole prompt. Opens the turn record (P-043).
+// (P-003, P-013), queued Stop signals, topic drift judge started detached for an operator task (P-012), thread title after a topic change (P-036). Bells are recognised only as the exact whole prompt. Opens the turn record (P-043).
 import { readHookInput, emit, contextOutput, isMain, enforceLines } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { withAnswered } from '../scripts/protocol.mjs';
@@ -14,8 +14,9 @@ import { readReports } from '../scripts/report.mjs';
 import { PLUGIN_ROOT, toPosix } from '../scripts/util.mjs';
 import { threadTitleSignal } from '../scripts/thread-title.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
+import { startDriftJudge, ownWords } from '../scripts/drift.mjs';
 
-export const HOOK_META = { event: 'UserPromptSubmit', class: 'e+c', limit: '2 lines', principles: ['P-023', 'P-036', 'P-038', 'P-043', 'P-044', 'P-047', 'P-003', 'P-013', 'P-008'] };
+export const HOOK_META = { event: 'UserPromptSubmit', class: 'e+c', limit: '2 lines', principles: ['P-012', 'P-023', 'P-036', 'P-038', 'P-043', 'P-044', 'P-047', 'P-003', 'P-013', 'P-008'] };
 
 const escapeRe = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // A message id holds a digit (service ids are timestamps), so „no reply yet“ or „undelivered mail“ are not bells.
@@ -250,11 +251,19 @@ export function run(input) {
   if (upd?.line) extras.unshift(upd.line);
   // P-063 (agentic-flow-public#30): the operator asked what something is and the agent changed a live configuration. A turn
   // the operator starts with a question gets its first side effect refused once by PreToolUse (questionSideEffect).
-  const turnIntent = turnSource === 'operator' && kind === null && isQuestionPrompt(input.prompt, ctx.policy) ? 'question' : null;
-  if (turnIntent) extras.push('the operator asks (question, explanation, check) and gives no instruction to change: answer it and propose a change, do not make it; the first write or change in this turn is refused once (P-063)');
+  const turnIntent = turnSource === 'operator' && kind === 'misread' ? 'misread' : turnSource === 'operator' && kind === null && isQuestionPrompt(input.prompt, ctx.policy) ? 'question' : null;
+  if (turnIntent === 'misread') extras.push('starting a worker or subagent before the new reading is restated or chosen in a dialog is refused once in this turn (P-063)');
+  if (turnIntent === 'question') extras.push('the operator asks (question, explanation, check) and gives no instruction to change: answer it and propose a change, do not make it; the first write or change in this turn is refused once (P-063)');
+  // P-012: an operator task (no bell, no question, no done/nudge/save/error phrase) while the thread holds a work topic: a judge
+  // compares the task with the topic subject in the background; PreToolUse refuses the first write of the turn once on a mismatch.
+  const startedAt = new Date().toISOString();
+  const heldTopic = info.held?.[0];
+  if (state && turnSource === 'operator' && kind === null && !turnIntent && heldTopic && !isMainTopic(heldTopic) && heldTopic.subject) {
+    startDriftJudge({ brainDir: ctx.brainDir, thread: ctx.thread, startedAt, topic: heldTopic.id, subject: heldTopic.subject, state: heldTopic.state, next: heldTopic.next, handover: heldTopic.handover, task: ownWords(input.prompt) });
+  }
   // P-059: the operator started this turn: the questions the last reply ended with are answered (a bell does not answer them).
   const answered = state && turnSource === 'operator' && state.last_questions?.length ? { ...withAnswered(state, state.last_questions, state.turn_started_at || new Date(Date.now() - 1).toISOString()), last_questions: [] } : state;
-  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...answered, ...keepTimer, ...mailSpent, ...taskSpent, ...(upd?.patch || {}), turn_started_at: new Date().toISOString(), ...(title?.patch || {}), turn_source: turnSource, discussion, turn_intent: turnIntent, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
+  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...answered, ...keepTimer, ...mailSpent, ...taskSpent, ...(upd?.patch || {}), turn_started_at: startedAt, ...(title?.patch || {}), turn_source: turnSource, discussion, turn_intent: turnIntent, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
   if (extras.length) lines.push(extras.join('; '));
   const limited = enforceLines(lines.join('\n'), ctx.policy?.limits?.hook_signal_lines ?? 2);
   // Nothing new: empty context (contextOutput leaves additionalContext out).

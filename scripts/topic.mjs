@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { git, readJson, nowIso, relPosix } from './util.mjs';
+import { git, readJson, nowIso, relPosix, toPosix } from './util.mjs';
 import { isWakeTurn, machineName, sameMachine, inSubagent, inHarness, readThreadState, writeThreadState, mainCheckout, WORKTREES_DIR } from './config.mjs';
 import { brainWrite, brainSync, readHolder, currentBranch, withBrainLock, isHolderOf } from './brain.mjs';
 import { freeHandover, renderHandover, checkHandover } from './brain-checks.mjs';
@@ -182,7 +182,9 @@ function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedK
   // The creating thread may clean up its own topic (test, mistake) without operator approval (P-018).
   if (ctx.thread) topic.created_by = ctx.thread;
   if (kind === 'code') {
-    topic.copy = relPosix(ctx.projectDir, codeCopyPath(ctx, id));
+    // Only a copy that is made is recorded: the intake (copy: false) recorded a path its thread then named as
+    // `Kópia kódu`, a folder that never existed (report-228e044c).
+    if (copy) topic.copy = relPosix(ctx.projectDir, codeCopyPath(ctx, id));
     topic.repo = path.basename(mainCheckout(ctx.projectDir)); // the repo the topic changes (v3: one domain, several repos)
   }
   // This thread claims its own new topic: the holder goes into the create commit, one sync cycle instead of two
@@ -619,6 +621,110 @@ export function ensureCodeCopy(ctx, id) {
     : git(['checkout', '--quiet', '-b', branch], { cwd: copy });
   if (!checkout.ok) throw new Error(`checkout ${branch} failed: ${checkout.stderr}`);
   return { path: copy, branch, created: true };
+}
+
+/** A discussion topic: class discussion, or a topic from before the classes of kind discussion (D-0020). */
+export function isDiscussionTopic(topic) {
+  return topic?.class ? topic.class === 'discussion' : topic?.kind === 'discussion';
+}
+
+/** The topic has a code copy: a code topic always, another one (not main) once `topic.mjs copy` recorded it (D-0020). */
+export function hasCodeCopy(topic) {
+  if (!topic || isMainTopic(topic)) return false;
+  return topic.kind === 'code' || !!topic.copy;
+}
+
+/** Path of the topic's code copy (where ensureCodeCopy makes it), or null for a topic without one. */
+export function topicCopyPath(ctx, topic) {
+  return hasCodeCopy(topic) ? codeCopyPath(ctx, topic.id) : null;
+}
+
+/**
+ * Code copy for a topic without one (D-0020): a discussion gets it after the operator approved the proposal
+ * (--operator-approved), only from its holder and never in a turn started by a message (P-047). The copy is recorded in
+ * topic.json (`copy`, `repo`); class and kind stay, so `done` merges it like the copy of a code topic (P-036).
+ * A code topic (web, code) only gets its copy made again, as before.
+ */
+export function copyTopic(ctx, id, opts = {}) {
+  return withBrainLock(ctx.brainDir, () => copyTopicUnlocked(ctx, id, opts));
+}
+
+function copyTopicUnlocked(ctx, id, { operatorApproved = false, explicitProject = false } = {}) {
+  const topic = readTopic(ctx.brainDir, id);
+  if (!topic) throw new Error(`topic ${id} does not exist (archived or never created)`);
+  if (topic.kind === 'code') return { ...ensureCodeCopy(ctx, id), recorded: false };
+  if (isMainTopic(topic)) throw new Error('topic main is the persona main thread: it has no code copy (P-045)');
+  guardThread(ctx, 'copy');
+  const holder = readHolder(ctx.brainDir, id);
+  if (!isHolderOf(holder, ctx.thread)) throw new Error(`topic ${id} ${holder.thread ? heldBy(holder) : 'has no holder'}; only its holder makes its code copy (P-037)`);
+  const discussion = isDiscussionTopic(topic);
+  if (discussion && !operatorApproved) throw new Error(`topic ${id} is a discussion: its implementation is approved by the operator (D-0020). Show the operator the proposal and ask; only after an explicit yes: topic.mjs copy ${id} --operator-approved, then delegate.mjs prepare --implement web|code|ops`);
+  if (!explicitProject && isPersonaProject(ctx)) throw new Error(`code copy of topic ${id} would be made of persona project ${path.basename(ctx.projectDir)}: a persona has no project code (P-025). Pass --project <managed project dir>`);
+  const copy = ensureCodeCopy(ctx, id);
+  const rel = relPosix(ctx.projectDir, copy.path);
+  if (topic.copy === rel) return { ...copy, recorded: false };
+  const next = { ...topic, copy: rel, repo: path.basename(mainCheckout(ctx.projectDir)), ...(discussion ? { copy_approved: { by: 'operator', at: nowIso(), thread: ctx.thread } } : {}), updated: nowIso() };
+  const write = brainWrite(ctx, { internal: true, ops: [{ path: `topics/${id}/topic.json`, content: JSON.stringify(next, null, 2) + '\n' }], message: `topic copy ${id}${discussion ? ' (operator approved)' : ''} by ${ctx.thread}` });
+  return { ...copy, recorded: true, write };
+}
+
+/** Classes an implementation runs in (D-0021): a discussion is not one, its implementation takes the class of the work. */
+export const IMPLEMENT_CLASSES = ['web', 'code', 'ops'];
+export const IMPLEMENT_HELP = IMPLEMENT_CLASSES.map((c) => `${c} = ${TOPIC_CLASSES[c].when}`).join('; ');
+
+/**
+ * Class and model of an implementation in a topic (D-0020, D-0021): the class of a web, code or ops topic decides (an asked
+ * class that differs is refused); a discussion topic (or one from before the classes) names the class of the work. The model
+ * is the class's subagent_model from policy; a class without one is a blocker of the policy, never a fallback model.
+ */
+export function implementationClass(ctx, topic, asked = null) {
+  const own = IMPLEMENT_CLASSES.includes(topic?.class) ? topic.class : null;
+  const want = typeof asked === 'string' && asked.trim() ? asked.trim() : null;
+  let cls = own;
+  if (own && want && want !== own) throw new Error(`--implement ${want} contradicts the class of topic ${topic.id} (${own}): the topic's class decides the implementation; leave the class out`);
+  if (!own) {
+    if (!want) throw new Error(`topic ${topic.id} is ${topic.class ? `of class ${topic.class}` : `a ${topic.kind} topic without a class`}: name the class of the work, --implement web|code|ops (D-0021): ${IMPLEMENT_HELP}`);
+    if (!IMPLEMENT_CLASSES.includes(want)) throw new Error(`--implement ${want} is not a class of an implementation (D-0021): ${IMPLEMENT_HELP}`);
+    cls = want;
+  }
+  const model = topicClass(ctx, cls)?.subagent_model;
+  if (!model || typeof model !== 'string') throw new Error(`policy topics.classes.${cls}.subagent_model is not set: an implementation of class ${cls} has no model; set it in policy.json (a blocker of the policy, no fallback model, D-0021)`);
+  return { cls, model };
+}
+
+/**
+ * Class and model the hook expects for an implementation in a topic: the topic's class, else the class of its last
+ * implementation recorded by delegate.mjs prepare --implement (a discussion); model from policy. Null without a class.
+ */
+export function expectedImplementation(ctx, topic) {
+  const last = Array.isArray(topic?.implementations) ? topic.implementations.at(-1) : null;
+  const cls = IMPLEMENT_CLASSES.includes(topic?.class) ? topic.class : IMPLEMENT_CLASSES.includes(last?.class) ? last.class : null;
+  if (!cls) return null;
+  const model = topicClass(ctx, cls)?.subagent_model;
+  return { cls, model: typeof model === 'string' && model ? model : null };
+}
+
+/** Evidence of an implementation (D-0020): {at, class, model} appended to `implementations` in topic.json. */
+export function recordImplementation(ctx, id, { cls, model }) {
+  return withBrainLock(ctx.brainDir, () => {
+    const topic = readTopic(ctx.brainDir, id);
+    if (!topic) throw new Error(`topic ${id} does not exist (archived or never created)`);
+    const entry = { at: nowIso(), class: cls, model };
+    const next = { ...topic, implementations: [...(Array.isArray(topic.implementations) ? topic.implementations : []), entry] };
+    const write = brainWrite(ctx, { internal: true, ops: [{ path: `topics/${id}/topic.json`, content: JSON.stringify(next, null, 2) + '\n' }], message: `topic implement ${id}: class ${cls}, model ${model} by ${ctx.thread}` });
+    return { entry, write };
+  });
+}
+
+/** Marker line of delegate.mjs prepare --implement in a worker brief; the PreToolUse hook reads it (D-0020). */
+export function implementMarker({ id, cls, model, copy, branch }) {
+  return `implement: topic ${id}, class ${cls}, model ${model}, code copy ${toPosix(copy)} (branch ${branch})`;
+}
+
+/** Marker lines in a text: [{ id, cls, model, copy, branch }]. */
+export function implementMarkers(text) {
+  const re = /^[ \t]*implement: topic ([a-z0-9-]+), class ([a-z]+), model (\S+), code copy (.+?) \(branch (\S+)\)[ \t]*$/gm;
+  return [...String(text || '').matchAll(re)].map((m) => ({ id: m[1], cls: m[2], model: m[3], copy: m[4], branch: m[5] }));
 }
 
 export function listTopics(brainDir) {

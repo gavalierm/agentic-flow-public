@@ -23,6 +23,7 @@ import { parseFrontmatter, serializeFrontmatter, asList } from '../scripts/front
 import { makeKey, normalizeKey, hasDiacritics, isValidId, KEY_TYPES } from '../scripts/keys.mjs';
 import { find, findSimilar } from '../scripts/find.mjs';
 import { readDecisions, readSkills, nextDecisionId } from '../scripts/records.mjs';
+import { recordAuthors, foreignAuthor } from '../scripts/authors.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { ruleCorpus, judgeRule, unanswered, onlyCondenses } from '../scripts/rule-gate.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
@@ -189,9 +190,14 @@ function saveMemory(ctx) {
   if (elsewhere) fail(`${elsewhere.key} already exists in ${elsewhere.repo ? `repo ${elsewhere.repo}${elsewhere.topic ? ` (topic ${elsewhere.topic})` : ''}` : 'brain'}: ${elsewhere.path}; one record per key (P-031): ${elsewhere.repo ? `save it with --repo ${elsewhere.repo}` : repo ? `move it: save.mjs move ${elsewhere.path} --repo ${repo}` : ''}`);
   let rel = `memory/${key}.md`;
   let existing = null;
+  let by = null;
   if (byAlias.length) {
     rel = repo ? knowledgeRel(ctx, byAlias[0].path) : byAlias[0].path;
     existing = parseFrontmatter(readText(path.resolve(ctx.brainDir, byAlias[0].path), ''));
+    // Author = who added the file (scripts/authors.mjs). Operator memory holds one operator's preferences: another operator's
+    // is not overwritten (brain shared by several operators); a shared record of another type is, and the output names its author.
+    by = repo ? null : foreignAuthor(recordAuthors(ctx.brainDir, { paths: [rel] }), rel);
+    if (by && (type === 'operator' || existing.data.type === 'operator')) fail(`${byAlias[0].key} is the operator memory of ${by} (their preferences, not yours): not overwritten; save your own under another name, e.g. save memory operator <your-name> (P-013)`);
   } else {
     const similar = findSimilar(ctx.brainDir, key, ctx.domain);
     if (similar.length && !args.new) {
@@ -218,6 +224,7 @@ function saveMemory(ctx) {
   if (repo) return out(formatRepoWrite(repoWrite(ctx, repo, { ops: [op], message: `save memory ${data.key}` })));
   const res = brainWrite(ctx, { ops: [op], message: `save memory ${data.key}` });
   finish(ctx, res, [rel]);
+  if (by) out(`record by ${by}`);
 }
 
 function saveDecision(ctx) {

@@ -12,7 +12,8 @@
 //     notices: [{ id, kind, state, project, topic, message_id }] (decide marks the notice decided and a deliver turns
 //     message[<message_id>].state to pending), decide_fail: true (decide exits 1), decide_expired: true (decide exits 1 with
 //     409 and details.expired_at: the held message expired), send_held_to: ['<p>/<t>' | '@<persona>', ...] (send to that
-//     address: held + notice), send_queued: true (mail unavailable: the client queued the send in its outbox, exit 0) }
+//     address: held + notice), send_queued: true (mail unavailable: the client queued the send in its outbox, exit 0),
+//     key: '<key>' (key add answers it, default k-stub) }
 // Every call is appended to STUB_COMMS_LOG as one JSON line (argv). Interface as in hotfix-contract (count ids, send --ttl, turn).
 import fs from 'node:fs';
 
@@ -37,6 +38,7 @@ if (state.down) {
 
 switch (cmd) {
   case 'health': print({ instance_id: 'stub' }); break;
+  case 'key': print({ sender: opt('sender'), key: state.key || 'k-stub' }); break;
   case 'register-topic':
     if (state.register_fail) { process.stderr.write(JSON.stringify({ error: 'comms unavailable' }) + '\n'); process.exit(2); }
     print({ created: true });

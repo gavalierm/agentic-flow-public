@@ -200,7 +200,7 @@ Pri zlyhaní:
 - Pošta na serveri za HTTPS a viac strojov proti jednej pošte; pilot má lokálny socket na serveri (a voliteľne samostatnú inštanciu na Windows bez komunikácie medzi nimi).
 - Cloud sessions a prostredia bez stabilného ID vlákna (IDE, desktop) nad rámec oznamu „bez zabratia témy“.
 - Externý task manager a iné klienty pošty.
-- Hook-based vynútenie P-001, P-002, P-012, P-019, P-020 (nedeterministické; ostávajú textové pravidlá).
+- Hook-based vynútenie P-001, P-002, P-019, P-020 (nedeterministické; ostávajú textové pravidlá). P-012 už nie iba text: sudca odbočenia (`scripts/drift.mjs`) + jednorazové zamietnutie prvého zápisu v PreToolUse.
 - Konsolidáciu pamäte v reálnom objeme (limit 50 sa v pilote pravdepodobne nedosiahne; `consolidate` sa overí umelo zníženým limitom v teste).
 - Prevod existujúcich dát zo starej implementácie; nový brain začína prázdny.
 

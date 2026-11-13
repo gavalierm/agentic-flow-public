@@ -1,5 +1,6 @@
 // Project wizard (skill workflow:project): find a project on disk and on GitHub, restore it, connect its
-// repositories, adopt an older setup, or create a new one. Repositories live under the operator's account.
+// repositories, adopt an older setup, or create a new one. Repositories live under the operator's account; probe and
+// connect with `owner` find and clone those of another account or organization where the operator is a collaborator.
 // Layout (operator 2026-11-04): ~/agentic/<Project>/ (upper case first letter, domainDirName, operator 2026-11-07)
 // holds the code repositories of the project and one shared brain ~/agentic/<Project>/<project>-brain; each code repository is a T3 project. Older projects sit flat in
 // ~/agentic (<name> next to <name>-brain); restore still handles them.
@@ -12,9 +13,10 @@ import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDir
 // The projects root saved for this machine lives in config.mjs: the write hook reads it without this module's GitHub code.
 export { ROOT_FILE, rootFile, machineRoot, setMachineRoot } from './config.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
+import { brainSync } from './brain.mjs';
 import { ensureLineEndings, EOL_RULE } from './eol.mjs';
 import { servicesClient } from './comms.mjs';
-import { gh, ghOwner, ghOwnedRepos, ghRootNames, grantAgentAccess, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_AGENT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
+import { gh, ghOwner, ghOwnedRepos, ghOwnerRepos, ghRootNames, grantAgentAccess, checkOwner, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_AGENT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
 
 export const DEFAULT_ROOT = path.join(os.homedir(), 'agentic');
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
@@ -94,15 +96,24 @@ export function probeLocal(root, stem) {
   });
 }
 
-/** Repositories of the operator's GitHub account whose name contains the stem. */
-export async function probeGithub(stem, { apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE } = {}) {
+/** Access of the token to a repository of another owner, from the listing's permissions: admin, push or read. */
+const accessOf = (r) => (r.permissions?.admin ? 'admin' : r.permissions?.push ? 'push' : 'read');
+
+/**
+ * Repositories whose name contains the stem: of the operator's GitHub account, or with `owner` of that account or
+ * organization where the operator is a collaborator or member (each with the operator's access).
+ */
+export async function probeGithub(stem, { apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE, owner: ownerOpt = null } = {}) {
   const token = readToken(tokenFile);
-  const owner = await ghOwner(apiUrl, token);
-  const repos = (await ghOwnedRepos(apiUrl, token)).filter((r) => matchKey(r.name).includes(matchKey(stem)));
+  const me = await ghOwner(apiUrl, token);
+  const foreign = !!ownerOpt && String(ownerOpt).toLowerCase() !== me.toLowerCase();
+  const listed = foreign ? await ghOwnerRepos(apiUrl, token, checkOwner(ownerOpt)) : await ghOwnedRepos(apiUrl, token);
+  const owner = foreign ? listed[0]?.owner?.login || ownerOpt : me;
+  const repos = listed.filter((r) => matchKey(r.name).includes(matchKey(stem)));
   const out = [];
   for (const r of repos) {
     const names = await ghRootNames(apiUrl, token, owner, r.name);
-    out.push({ full: `${owner}/${r.name}`, name: r.name, private: !!r.private, archived: !!r.archived, pushed: r.pushed_at || null, description: r.description || '', branch: r.default_branch || 'main', kind: classifyNames(names) });
+    out.push({ full: `${owner}/${r.name}`, name: r.name, private: !!r.private, archived: !!r.archived, pushed: r.pushed_at || null, description: r.description || '', branch: r.default_branch || 'main', kind: classifyNames(names), ...(foreign ? { access: accessOf(r) } : {}) });
   }
   return { owner, repos: out };
 }
@@ -119,14 +130,15 @@ export function decide(local, remote) {
   return 'create';
 }
 
-export async function probe(stem, { root = DEFAULT_ROOT, roots = null, apiUrl, tokenFile, github = true } = {}) {
+export async function probe(stem, { root = DEFAULT_ROOT, roots = null, apiUrl, tokenFile, github = true, owner = null } = {}) {
   checkName(stem);
+  if (owner) checkOwner(owner);
   const dirs = roots && roots.length ? roots : [root];
   const local = dirs.flatMap((r) => probeLocal(r, stem));
   let remote = { owner: null, repos: [] };
   let githubError = null;
   if (github) {
-    try { remote = await probeGithub(stem, { apiUrl, tokenFile }); } catch (err) { githubError = err.message; }
+    try { remote = await probeGithub(stem, { apiUrl, tokenFile, owner }); } catch (err) { githubError = err.message; }
   }
   // Without GitHub the disk still decides when it found something; GitHub is needed only to connect or create.
   const branch = githubError && !local.length ? null : decide(local, remote.repos);
@@ -171,8 +183,29 @@ function pullIfClean(dir, label) {
 }
 
 /**
- * Restore a project on disk: pull its repositories and brain when clean, regenerate the settings. The name is a
- * project folder (all its workflow repositories) or an older flat workflow project.
+ * Activation of a brain clone on restore, the same as `brain-init.mjs --attach` (P-024): core.hooksPath, executable
+ * hooks (a 100644 hook gets 100755 in a brain script commit), local/. What the attach committed goes to origin with brainSync. A brain that
+ * cannot be attached is a NOT line with the command, restore goes on.
+ */
+function attachBrain(brainDir, label) {
+  let res;
+  try { res = brainInit(brainDir, { attach: true }); } catch (err) {
+    return [`${label}: brain NOT attached (${err.message.split('\n')[0]}): node ${toPosix(path.join(PLUGIN_ROOT, 'bin', 'brain-init.mjs'))} ${toPosix(brainDir)} --attach`];
+  }
+  const lines = [`${label}: brain attached (core.hooksPath .githooks; ${res.created.join('; ')})`];
+  // brainSync, not a bare push: a brain left unpulled above (only the hook modes made it dirty) is behind origin.
+  if (res.created.some((c) => c.startsWith('committed')) && git(['remote', 'get-url', 'origin'], { cwd: brainDir }).ok) {
+    const sync = brainSync(brainDir);
+    lines.push(sync.pushed ? `${label}: attach commit pushed (brain synced with origin)`
+      : `${label}: attach commit NOT pushed (${sync.error || `disagreement with origin: ${(sync.conflict || []).join(', ')}`}); the next brain write pushes it`);
+  }
+  return lines;
+}
+
+/**
+ * Restore a project on disk: pull its repositories and brain when clean, attach the brain (attachBrain), regenerate the
+ * settings. The name is a project folder (all its workflow repositories) or an older flat workflow project. brains: each
+ * separate brain with its first repository, for the mail key (bin/project.mjs restore, as `project.mjs mail`).
  */
 export function restore(name, { root = DEFAULT_ROOT, domain = null } = {}) {
   checkName(name);
@@ -180,7 +213,7 @@ export function restore(name, { root = DEFAULT_ROOT, domain = null } = {}) {
   const repos = exists(path.join(base, WORKFLOW_CONFIG)) ? [base] : subdirs(base).map((c) => path.join(base, c)).filter((d) => exists(path.join(d, WORKFLOW_CONFIG)));
   if (!repos.length) throw new Error(`${base} holds no workflow project (no ${WORKFLOW_CONFIG}); use connect or adopt`);
   const lines = [];
-  const brains = new Set();
+  const brains = new Map();
   for (const projectDir of repos) {
     const label = path.basename(projectDir);
     lines.push(pullIfClean(projectDir, label));
@@ -188,16 +221,19 @@ export function restore(name, { root = DEFAULT_ROOT, domain = null } = {}) {
     if (eol) lines.push(eol);
     const brainRel = readJson(path.join(projectDir, WORKFLOW_CONFIG), {})?.brain ?? null;
     const brainDir = brainRel && brainRel !== '.' ? path.resolve(projectDir, brainRel) : null;
+    // A persona repository is its own brain ("brain": "."): pulled above, attached here.
+    if (brainRel === '.') lines.push(...attachBrain(projectDir, label));
     if (brainDir && !brains.has(brainDir)) {
-      brains.add(brainDir);
+      brains.set(brainDir, projectDir);
       lines.push(pullIfClean(brainDir, path.basename(brainDir)));
+      if (exists(path.join(brainDir, '.git'))) lines.push(...attachBrain(brainDir, path.basename(brainDir)));
       // A project folder adopted before the marker existed becomes a domain on restore (D-0002).
       if (base !== projectDir && path.dirname(brainDir) === base) { const m = ensureDomainMarker(base, path.basename(brainDir)); if (m) lines.push(m); }
     }
     adapter(projectDir, brainRel);
     lines.push(`${label}: settings regenerated`);
   }
-  return { projectDir: repos[0], projectDirs: repos, lines };
+  return { projectDir: repos[0], projectDirs: repos, brains: [...brains].map(([brainDir, projectDir]) => ({ brainDir, projectDir })), lines };
 }
 
 /**
@@ -255,13 +291,22 @@ function setAsideNamed(root, setAside) {
   return plan.map(({ n, from, to }) => { fs.renameSync(from, to); return `set aside: ${n} -> ${path.basename(to)}`; });
 }
 
-export async function connect({ project, repo = null, brain = null, renameBrain = false, adopt = false, brainBranch = null, setAside = false, domain = null, root = DEFAULT_ROOT, apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE, agentTokenFile = DEFAULT_AGENT_TOKEN_FILE, remoteFor = sshRemote }) {
+// owner: the account or organization of the code repository when it is not the operator's (the operator is a
+// collaborator there). Its brain is cloned from that owner when it has one, else it is the operator's (found or created
+// there: a new repository can be created only in the token's own account). The agent account gets push access where the
+// operator's token can give it; where it cannot (not owner or admin), a NOT line says the step, connect goes on.
+export async function connect({ project, repo = null, brain = null, renameBrain = false, adopt = false, brainBranch = null, setAside = false, domain = null, owner: ownerOpt = null, root = DEFAULT_ROOT, apiUrl = DEFAULT_API_URL, tokenFile = DEFAULT_TOKEN_FILE, agentTokenFile = DEFAULT_AGENT_TOKEN_FILE, remoteFor = sshRemote }) {
   const token = readToken(tokenFile);
-  const owner = await ghOwner(apiUrl, token);
+  const me = await ghOwner(apiUrl, token);
+  if (ownerOpt) checkOwner(ownerOpt);
+  const foreign = !!ownerOpt && ownerOpt.toLowerCase() !== me.toLowerCase();
+  const owner = foreign ? ownerOpt : me;
   const name = checkName(project);
   const repoName = checkName(repo || name);
   const brainName = `${name}-brain`;
   if (domain) checkDomainName(domain);
+  if (foreign && (await gh(apiUrl, token, 'GET', `/repos/${owner}/${repoName}`)).status !== 200) throw new Error(`${owner}/${repoName} not found with the operator's token (is the operator a collaborator there?); probe --owner ${owner} lists what it can reach`);
+  const brainOwner = foreign && (await gh(apiUrl, token, 'GET', `/repos/${owner}/${brain || brainName}`)).status !== 200 ? me : owner;
   const setAsideLines = setAsideNamed(root, setAside);
   let base = domainDir(root, name, domain);
   // A chosen domain name may be the old setup's own folder (`Home assistant`): it is not taken over as the domain.
@@ -282,21 +327,28 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
   fs.mkdirSync(base, { recursive: true });
   const projectDir = path.join(base, repoName);
   const brainDir = path.join(base, brainName);
-  const lines = [...setAsideLines, cloneInto(remoteFor(owner, repoName), projectDir, repoName)];
+  const lines = [...setAsideLines];
+  // Another owner's repository: the machine's SSH key (the agent account) needs access before the clone.
+  const access = foreign ? await grantAgentAccess(apiUrl, token, owner, repoName, agentTokenFile, { foreign: true }) : null;
+  if (access) lines.push(access);
+  try { lines.push(cloneInto(remoteFor(owner, repoName), projectDir, repoName)); } catch (err) { throw new Error(access && / NOT /.test(access) ? `${err.message}; ${access}` : err.message); }
   const eol = ensureLineEndings(projectDir, { label: repoName });
   if (eol) lines.push(eol);
 
   if (brain && brain !== brainName) {
-    if (!renameBrain) throw new Error(`brain repository ${owner}/${brain} must be named ${brainName}; run again with --rename-brain (renames it on GitHub, the old name redirects)`);
-    const taken = await gh(apiUrl, token, 'GET', `/repos/${owner}/${brainName}`);
-    if (taken.status === 200) throw new Error(`${owner}/${brainName} already exists; resolve it first`);
-    const r = await gh(apiUrl, token, 'PATCH', `/repos/${owner}/${brain}`, { name: brainName });
-    if (r.status !== 200 || r.json.name !== brainName) throw new Error(`renaming ${owner}/${brain} failed (HTTP ${r.status}): ${r.json.message || ''}`);
+    if (!renameBrain) throw new Error(`brain repository ${brainOwner}/${brain} must be named ${brainName}; run again with --rename-brain (renames it on GitHub, the old name redirects)`);
+    const taken = await gh(apiUrl, token, 'GET', `/repos/${brainOwner}/${brainName}`);
+    if (taken.status === 200) throw new Error(`${brainOwner}/${brainName} already exists; resolve it first`);
+    const r = await gh(apiUrl, token, 'PATCH', `/repos/${brainOwner}/${brain}`, { name: brainName });
+    if (r.status !== 200 || r.json.name !== brainName) throw new Error(`renaming ${brainOwner}/${brain} failed (HTTP ${r.status}): ${r.json.message || ''}`);
     lines.push(`brain repository renamed: ${brain} -> ${brainName}`);
   }
-  const brainExists = brain || exists(brainDir) || (await gh(apiUrl, token, 'GET', `/repos/${owner}/${brainName}`)).status === 200;
+  if (foreign) lines.push(brainOwner === owner ? `brain: from ${owner}/${brainName}` : `brain: in the operator's account, ${me}/${brainName} (${owner} has no ${brain || brainName})`);
+  const brainExists = brain || exists(brainDir) || (await gh(apiUrl, token, 'GET', `/repos/${brainOwner}/${brainName}`)).status === 200;
   if (brainExists) {
-    lines.push(cloneInto(remoteFor(owner, brainName), brainDir, 'brain'));
+    const brainAccess = foreign && brainOwner === owner ? await grantAgentAccess(apiUrl, token, owner, brainName, agentTokenFile, { foreign: true }) : null;
+    if (brainAccess) lines.push(brainAccess);
+    lines.push(cloneInto(remoteFor(brainOwner, brainName), brainDir, 'brain'));
     if (brainBranch && brainBranch !== 'main') {
       gitRemote(['fetch', '--quiet', 'origin'], { cwd: brainDir });
       const target = `origin/${brainBranch}`;
@@ -325,8 +377,8 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
       lines.push(push.ok ? 'brain: pushed' : `brain: push failed: ${push.stderr.split('\n')[0]}`);
     } else git(['branch', '--quiet', '--set-upstream-to', 'origin/main'], { cwd: brainDir });
   } else {
-    lines.push(...(await createRepo(apiUrl, token, owner, brainName, agentTokenFile)));
-    const res = brainInit(brainDir, { remote: remoteFor(owner, brainName) });
+    lines.push(...(await createRepo(apiUrl, token, brainOwner, brainName, agentTokenFile)));
+    const res = brainInit(brainDir, { remote: remoteFor(brainOwner, brainName) });
     lines.push(...res.created.map((c) => `brain: ${c}`));
   }
   const marker = ensureDomainMarker(base, brainName);

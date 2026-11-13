@@ -5,7 +5,8 @@ import path from 'node:path';
 import { PLUGIN_ROOT, shortSha, git, toPosix } from './util.mjs';
 import { WORKFLOW_CONFIG, SCRATCH_DIR, readThreadState, writeThreadState } from './config.mjs';
 import { assembleRules } from './rules.mjs';
-import { buildIndexes, topicLine } from './index.mjs';
+import { buildIndexes, shownIndexes, topicLine } from './index.mjs';
+import { recordAuthors, foreignAuthor } from './authors.mjs';
 import { heldTopics, mailboxTopics } from './topic.mjs';
 import { mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics, isMainTopic, noticesCount, discussionMail } from './comms.mjs';
 import { syncBrainSkills } from './skills-sync.mjs';
@@ -110,8 +111,12 @@ export function changedRules(text, prev) {
 const BOOT_STAMPS = ['local', 'boot'];
 const bootStamp = (brainDir, sessionId) => path.join(brainDir, ...BOOT_STAMPS, `${encodeURIComponent(sessionId)}.json`);
 
-/** session-start.mjs after the brain pull (P-040): the rules hook running at the same time reads the rules after it. */
-export function stampBootPull(brainDir, sessionId, now = Date.now()) {
+/**
+ * session-start.mjs after the brain pull (P-040): the rules hook running at the same time reads the rules after it.
+ * `extra` rides along for that hook (`foreign_rules`: { path: name } of the project rules of other operators), so it needs
+ * no git call of its own; written whole (rename), the hook never reads half a stamp.
+ */
+export function stampBootPull(brainDir, sessionId, now = Date.now(), extra = {}) {
   if (!brainDir || !sessionId) return;
   try {
     const dir = path.join(brainDir, ...BOOT_STAMPS);
@@ -119,8 +124,16 @@ export function stampBootPull(brainDir, sessionId, now = Date.now()) {
     for (const f of fs.readdirSync(dir)) {
       try { if (now - fs.statSync(path.join(dir, f)).mtimeMs > 86_400_000) fs.rmSync(path.join(dir, f), { force: true }); } catch { /* gone */ }
     }
-    fs.writeFileSync(bootStamp(brainDir, sessionId), JSON.stringify({ at: new Date(now).toISOString() }));
+    const file = bootStamp(brainDir, sessionId);
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify({ at: new Date(now).toISOString(), ...extra }));
+    fs.renameSync(`${file}.tmp`, file);
   } catch { /* best effort: the rules hook waits at most maxMs */ }
+}
+
+/** The stamp of this boot as stampBootPull wrote it, or null. */
+export function readBootStamp(brainDir, sessionId) {
+  if (!brainDir || !sessionId) return null;
+  try { return JSON.parse(fs.readFileSync(bootStamp(brainDir, sessionId), 'utf8')); } catch { return null; }
 }
 
 /** Wait (synchronously, at most `maxMs`) for the pull stamp of this boot; a stamp older than `since` is an earlier boot. */
@@ -136,14 +149,16 @@ export function waitBootPull(brainDir, sessionId, { since = Date.now() - 30_000,
 }
 
 // `rulesHook`: item 1 comes from session-start-rules.mjs (Claude Code); the hash is recorded, on resume it is left as it is.
-export function buildBootContext(ctx, { source = 'startup', harness = 'claude-code', includeRules = true, rulesHook = false, t3Note = null, catalogLines = [] } = {}) {
+// `authors`: record authors (scripts/authors.mjs) the caller already read; else read here, the one git call they cost.
+export function buildBootContext(ctx, { source = 'startup', harness = 'claude-code', includeRules = true, rulesHook = false, t3Note = null, catalogLines = [], authors = null } = {}) {
   const limits = ctx.policy?.limits || {};
   const notices = [];
   const parts = [];
+  const who = ctx.brainDir ? authors || recordAuthors(ctx.brainDir) : null;
 
-  // 1. rules + applied exceptions
-  const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness });
-  if (includeRules && !rulesHook) parts.push(`${BOOT_MARKERS[0]}\n${rules.text.trim()}`);
+  // 1. rules + applied exceptions (a rule of another operator applies to the project too, marked [by <name>])
+  const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness, foreign: (rel) => foreignAuthor(who, rel) });
+  if (includeRules && !rulesHook) parts.push(`${BOOT_MARKERS[0]}\n${rules.shown.trim()}`);
   // On resume the rules hook injects nothing when a hash is recorded, so the hash stays that of the rules in the transcript.
   const recordRules = includeRules && !(rulesHook && source === 'resume');
   if (rules.overLimit.length) notices.push(`limit: ${rules.overLimit.join('; ')} (P-022)`);
@@ -153,7 +168,7 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   let status = info.line;
   const mailLine = mailNoticeLine(info.mail);
   // A brain git refuses (dubious ownership) fails every save, log and topic write: say it with the fix at start (#23).
-  const gitProblem = ctx.brainDir ? gitAccessProblem(ctx.brainDir) : null;
+  const gitProblem = ctx.brainDir ? gitAccessProblem(ctx.brainDir, who.git) : null;
   if (gitProblem) status += `\n${gitProblem}`;
   if (mailLine) status += `\n${mailLine}`;
   if (ctx.thread) status += `\n${statusBlockInstruction(operatorStatus(ctx, info), !info.held.length, ctx.projectName)}`;
@@ -179,17 +194,19 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
 
   // 4-6. indexes and open topics
   let indexes = { text: { memory: '', decisions: '' }, warnings: [] };
+  let shown = { memory: '', decisions: '' };
   let topics = [];
   if (ctx.brainDir) {
     indexes = buildIndexes(ctx.brainDir, ctx.policy);
+    shown = shownIndexes(indexes.records, who);
     topics = heldTopicsAll(ctx);
     notices.push(...indexes.warnings.map((w) => `limit: ${w}`));
     // CLAUDE.md is loaded unchecked into every session and goes stale; its knowledge belongs in brain (P-007, operator 2026-11-03).
     const stray = ['CLAUDE.md', 'CLAUDE.local.md'].filter((f) => fs.existsSync(path.join(ctx.projectDir, f)));
     if (stray.length) notices.push(`${stray.join(', ')} in the project: loaded into every session unchecked, so it goes stale; move what is still valid into brain (workflow:save) and delete it (git rm), after the current unit of work (P-007)`);
   }
-  parts.push(`${BOOT_MARKERS[2]}\n${indexes.text.memory.trim() || '(prázdny)'}`);
-  parts.push(`${BOOT_MARKERS[3]}\n${indexes.text.decisions.trim() || '(prázdny)'}`);
+  parts.push(`${BOOT_MARKERS[2]}\n${shown.memory || '(prázdny)'}`);
+  parts.push(`${BOOT_MARKERS[3]}\n${shown.decisions || '(prázdny)'}`);
   parts.push(`${BOOT_MARKERS[4]}\n${topics.length ? topics.map((t) => `open: ${topicLine(t)}`).join('\n') : '(žiadne)'}`);
 
   // skills of the brain into the project (P-017)

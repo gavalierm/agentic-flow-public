@@ -1,6 +1,7 @@
 // Deterministic lookup in brain (P-031). Returns paths and one-line descriptions, never content.
 import { allRecords, readDecisions, normalizedNames } from './records.mjs';
 import { normalizeKey, tokens } from './keys.mjs';
+import { foreignAuthor, byTag } from './authors.mjs';
 
 function line(r) {
   return { path: r.path, description: r.description, kind: r.kind, key: r.key, status: r.status, id: r.id, ...(r.repo ? { repo: r.repo } : {}), ...(r.topic ? { topic: r.topic } : {}) };
@@ -54,6 +55,14 @@ export function rejectedProposal(brainDir, name) {
   return readDecisions(brainDir).some((d) => (!d.status || d.status === 'valid') && d.relates_to.some((v) => normalizeKey(v) === normalizeKey(name)) && /zamietnut|rejected/i.test(`${d.title} ${d.description}`));
 }
 
+/** Matches with `by: <name>` on a record another operator added (authors: recordAuthors of scripts/authors.mjs). */
+export function withAuthors(matches, authors) {
+  return matches.map((m) => {
+    const by = foreignAuthor(authors, m.path);
+    return by ? { ...m, by } : m;
+  });
+}
+
 export function formatMatches(matches) {
-  return matches.map((m) => `${m.path}: ${m.description}`).join('\n');
+  return matches.map((m) => `${m.path}: ${m.description}${byTag(m.by)}`).join('\n');
 }

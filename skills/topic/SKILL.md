@@ -1,7 +1,7 @@
 ---
 name: topic
 description: Použi, keď operátor začína novú samostatnú prácu alebo diskusiu (založ tému), keď treba tému zabrať, uvoľniť, vypísať stav, alebo založiť kópiu kódu pre kódovú tému.
-argument-hint: "create <id> --subject \"...\" --class web|code|ops|discussion [--for-thread <id>] [--here | --new-thread] | main | claim <id> [--mode operator|auto] | thread <id> [--task \"...\"] [--for-thread <id>] | release <id> | handoff <id> --task \"...\" --done \"...\" --next \"...\" | pause <id> [--until <ISO|<n>d|<n>h>] [--reason \"...\"] | resume <id> | list | status"
+argument-hint: "create <id> --subject \"...\" --class web|code|ops|discussion [--for-thread <id>] [--here | --new-thread] | main | claim <id> [--mode operator|auto] | thread <id> [--task \"...\"] [--for-thread <id>] | release <id> | handoff <id> --task \"...\" --done \"...\" --next \"...\" | pause <id> [--until <ISO|<n>d|<n>h>] [--reason \"...\"] | resume <id> | copy <id> [--operator-approved] | list | status"
 ---
 
 # topic – téma ako jednotka práce (P-036, P-037, P-045)
@@ -21,6 +21,7 @@ Skript: `node ${CLAUDE_PLUGIN_ROOT}/bin/topic.mjs`.
 - `handoff <id> --task … --done … --next …` – odovzdanie inému stroju toho istého brainu: zapíše logy, odošle poštu z outboxu, uloží handover, uvoľní tému a pushne. Na druhom stroji `claim <id>` bez `--force`. Ak poštu nevie odoslať, odmietne (`--leave-outbox` ju nechá na tomto stroji).
 - `release <id>` – uvoľnenie držiteľa (téma ostáva otvorená). Tému `main` nikdy neuvoľní (P-045). Ak pošta uvoľnenie neprijme, skript to oznámi a zopakovaním sa uvoľnenie zaregistruje znova.
 - `pause <id> [--until 7d] [--reason "…"]` – pozastavenie (snooze) témy, ktorá ostáva platná, ale operátor sa jej teraz nevenuje: žiadne budenie ani časovače; pošta chodí ďalej. S `--until` vlákno v tom čase raz zazvoní. Iba držiteľ, nie `main`. Na pokyn operátora alebo keď téma čaká iba na neho. `resume <id>` – späť do práce (urob ho aj vtedy, keď operátor k téme dá prácu).
+- `copy <id>` – kópia kódu témy. Kódová téma ju má od založenia (`copy` ju iba obnoví). Diskusná téma (`discussion`) ju dostane až po schválení implementácie operátorom: po jeho výslovnom áno `copy <id> --operator-approved` (bez príznaku skript odmietne, D-0020); téma `ops` bez príznaku. Iba držiteľ, nie v ťahu zo správy (P-047). Kópia sa zapíše do `topic.json` (`copy`), trieda a druh ostávajú; `done` aj `done --topic` ju zlúčia ako kópiu kódovej témy. Implementáciu potom deleguj cez `delegate.mjs prepare --implement` (skill `delegate`).
 - `list` – otvorené témy, jeden riadok. `status` – čo drží toto vlákno.
 
 Bez stabilného `thread <id>` (stavový riadok) skript tému nezaberie: spusti harness cez `node ${CLAUDE_PLUGIN_ROOT}/bin/thread.mjs` alebo v T3. V ťahu spustenom správou (wake) skript zabratie odmietne (P-047).

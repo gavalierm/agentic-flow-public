@@ -2,7 +2,8 @@
 // find.mjs <query> | --relates-to <path> | --similar <key>   [--json]
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { find, findWords, findRelatesTo, findSimilar, formatMatches } from '../scripts/find.mjs';
+import { find, findWords, findRelatesTo, findSimilar, formatMatches, withAuthors } from '../scripts/find.mjs';
+import { recordAuthors } from '../scripts/authors.mjs';
 import { catalogConfig } from '../scripts/catalog/config.mjs';
 import { findCatalog, formatCatalogBlock } from '../scripts/catalog/find.mjs';
 
@@ -32,6 +33,8 @@ try {
       if (cfg.enabled) catalog = { cfg, res: findCatalog(cfg, q, { limit: ctx.policy?.limits?.catalog_find_lines ?? cfg.find.max_lines }) };
     } catch { /* the catalog never breaks the brain search */ }
   }
+  // A record of another operator carries their name (scripts/authors.mjs); a brain of one author prints as before.
+  if (matches.length && ctx.brainDir) matches = withAuthors(matches, recordAuthors(ctx.brainDir));
   if (args.json) {
     // without a catalog the output is the same array as before; with one, a catalog key joins it
     process.stdout.write(JSON.stringify(catalog ? { matches, catalog: catalog.res.matches } : matches) + '\n');

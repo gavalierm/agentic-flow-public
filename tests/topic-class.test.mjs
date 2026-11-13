@@ -69,7 +69,8 @@ test('topic create: the class is in topic.json and decides the kind; a claim by 
   try {
     const kinds = { web: 'code', code: 'code', ops: 'discussion', discussion: 'discussion' };
     for (const [cls, kind] of Object.entries(kinds)) {
-      const r = fx.run('topic.mjs', ['create', `t-${cls}`, '--subject', cls, '--class', cls, '--no-claim', '--no-copy']);
+      // Without --no-copy: a copy path is recorded only for a copy that is made (report-228e044c); --no-claim makes none yet.
+      const r = fx.run('topic.mjs', ['create', `t-${cls}`, '--subject', cls, '--class', cls, '--no-claim']);
       assert.equal(r.status, 0, r.out);
       assert.match(r.out, new RegExp(`topic t-${cls} created \\(class ${cls}, ${kind}\\)`));
       const topic = JSON.parse(fx.read(`topics/t-${cls}/topic.json`));

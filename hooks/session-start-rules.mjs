@@ -7,7 +7,7 @@
 import { readHookInput, emit, contextOutput, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState } from '../scripts/config.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
-import { rulesParts, waitBootPull, BOOT_MARKERS, RULES_HOOK_PARTS, RULES_PART_CHARS } from '../scripts/boot.mjs';
+import { rulesParts, waitBootPull, readBootStamp, BOOT_MARKERS, RULES_HOOK_PARTS, RULES_PART_CHARS } from '../scripts/boot.mjs';
 
 export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: `${RULES_PART_CHARS} chars per part`, principles: ['P-021', 'P-022'] };
 
@@ -21,9 +21,10 @@ export function run(input, part = 1) {
   // session-start.mjs leaves rules_hash unchanged on resume, so this read does not race with its write.
   if ((input.source || 'startup') === 'resume' && ctx.brainDir && ctx.thread && readThreadState(ctx.brainDir, ctx.thread).rules_hash) return {};
   // The rules of the brain after its pull (P-040): session-start.mjs runs at the same time and stamps the end of its pull.
-  if (ctx.brainDir) waitBootPull(ctx.brainDir, input.session_id);
-  const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code' });
-  const parts = rulesParts(rules.text);
+  // The stamp also names the project rules of other operators (session-start.mjs read the authors): marked [by <name>].
+  const foreign = ctx.brainDir && waitBootPull(ctx.brainDir, input.session_id) ? readBootStamp(ctx.brainDir, input.session_id)?.foreign_rules || {} : {};
+  const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code', foreign: (rel) => foreign[rel] || null });
+  const parts = rulesParts(rules.shown);
   if (part > parts.length) return {};
   const shown = Math.min(parts.length, RULES_HOOK_PARTS);
   const text = part < RULES_HOOK_PARTS ? parts[part - 1] : parts.slice(part - 1).join('\n');

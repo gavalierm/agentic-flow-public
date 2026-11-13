@@ -1,8 +1,13 @@
 #!/usr/bin/env node
-// Project wizard script (skill workflow:project). Repositories live under the operator's GitHub account.
-//   project.mjs probe <stem> [--root <dir> ...] [--no-github] [--json]   find the project on disk and on GitHub (name match ignores case, spaces, dashes)
-//   project.mjs restore <name> [--domain "<folder>"] [--root <dir>]                       pull the repositories and brain when clean, regenerate settings
-//   project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside [<folder>,...]] [--domain "<folder>"] [--root <dir>]
+// Project wizard script (skill workflow:project). Repositories live under the operator's GitHub account, or under
+// another owner (--owner) where the operator is a collaborator.
+//   project.mjs probe <stem> [--owner <account|org>] [--root <dir> ...] [--no-github] [--json]   find the project on disk and on GitHub (name match ignores case, spaces, dashes)
+//   project.mjs restore <name> [--domain "<folder>"] [--root <dir>]   pull the repositories and brain when clean, attach the brain
+//     (as brain-init.mjs --attach), regenerate settings, issue the mail key (as project.mjs mail; not possible: a line with the command)
+//   project.mjs connect <name> [--owner <account|org>] [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside [<folder>,...]] [--domain "<folder>"] [--root <dir>]
+//     --owner: the repositories of that account or organization the operator's token reaches (as a collaborator too); the
+//     brain is the owner's <name>-brain when it has one, else one in the operator's account; the agent account gets push
+//     access by an invitation only an owner or admin can give: otherwise a NOT line names the step, connect goes on
 //   project.mjs create <name> [--repo <repo>] --purpose "<one sentence>" [--domain "<folder>"] [--root <dir>]
 // Layout: ~/agentic/<Name>/<repo> (code repositories, each a T3 project) and ~/agentic/<Name>/<name>-brain;
 // the project folder (domain) is the folder name the operator chose (--domain, spaces allowed), by default the project
@@ -23,7 +28,7 @@
 // P-008; an older one without a key may be removed when its rewrite is written).
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseArgs, fail, toPosix, readJson } from '../scripts/util.mjs';
+import { parseArgs, fail, toPosix, readJson, PLUGIN_ROOT } from '../scripts/util.mjs';
 import { loadContext, loadPolicy, inSubagent, isWakeTurn, readThreadState, writeThreadState, WORKFLOW_CONFIG } from '../scripts/config.mjs';
 import { setupT3, startWelcome, pendingT3Line } from '../scripts/t3-setup.mjs';
 import { brainWrite, formatWriteResult } from '../scripts/brain.mjs';
@@ -61,7 +66,7 @@ function formatProbe(p) {
   if (p.githubError) lines.push(`github: ${p.githubError}${p.local.length ? ' (branch from disk; GitHub access is needed only for connect/create: ask for it then, not now)' : ''}`);
   else {
     lines.push(`github (${p.owner}):${p.github.length ? '' : ' nothing'}`);
-    for (const r of p.github) lines.push(`- ${r.full}: ${r.kind}, ${r.private ? 'private' : 'public'}${r.archived ? ', archived' : ''}, default ${r.branch}, last push ${String(r.pushed || '-').slice(0, 10)}${r.description ? `, "${r.description}"` : ''}`);
+    for (const r of p.github) lines.push(`- ${r.full}: ${r.kind}, ${r.private ? 'private' : 'public'}${r.archived ? ', archived' : ''}${r.access ? `, access ${r.access}` : ''}, default ${r.branch}, last push ${String(r.pushed || '-').slice(0, 10)}${r.description ? `, "${r.description}"` : ''}`);
   }
   return lines.join('\n');
 }
@@ -128,21 +133,34 @@ function startDeferredWelcome(ctx) {
 
 const list = (lines) => lines.map((l) => `- ${l}`).join('\n');
 const mailStep = (r) => [issueMailKey({ projectDir: r.projectDir, brainDir: r.brainDir, sessionBrain: session.brainDir })];
+/** restore: the mail key of each separate brain, as `project.mjs mail`; one not set up is a line with the command for later. */
+const restoreMail = (r) => r.brains.map(({ brainDir, projectDir }) => {
+  let line;
+  try { line = issueMailKey({ projectDir, brainDir, sessionBrain: session.brainDir }); } catch (err) { line = `mail: NOT set up (${err.message.split('\n')[0]})`; }
+  const later = line.startsWith('mail: NOT') ? `; later, when mail runs: node ${toPosix(path.join(PLUGIN_ROOT, 'bin', 'project.mjs'))} mail ${toPosix(projectDir)}` : '';
+  return `${path.basename(brainDir)}: ${line}${later}`;
+});
+/** --owner <account|org>: a value, never a bare flag. */
+function ownerArg(usage) {
+  if (args.owner === undefined) return null;
+  if (typeof args.owner !== 'string') fail(`usage: ${usage} (--owner takes a GitHub account or organization)`);
+  return args.owner;
+}
 
 try {
   if (cmd === 'probe') {
-    if (!target) fail('usage: project.mjs probe <stem>');
-    const p = await probe(target, { roots, github: !args['no-github'], ...gh });
+    if (!target) fail('usage: project.mjs probe <stem> [--owner <account|org>]');
+    const p = await probe(target, { roots, github: !args['no-github'], owner: ownerArg('project.mjs probe <stem> --owner <account|org>'), ...gh });
     out(args.json ? JSON.stringify(p, null, 2) : formatProbe(p));
   } else if (cmd === 'restore') {
     if (!target) fail('usage: project.mjs restore <name>');
     guardWrite();
     const r = restore(target, { root, domain: typeof args.domain === 'string' ? args.domain : null });
-    out(`restored ${r.projectDirs.join(', ')}\n${list([...r.lines, ...t3Step(r.projectDirs, target), ...rememberRoot()])}`);
+    out(`restored ${r.projectDirs.join(', ')}\n${list([...r.lines, ...restoreMail(r), ...t3Step(r.projectDirs, target), ...rememberRoot()])}`);
   } else if (cmd === 'connect') {
-    if (!target) fail('usage: project.mjs connect <name> [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside] [--domain "<folder>"]');
+    if (!target) fail('usage: project.mjs connect <name> [--owner <account|org>] [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside] [--domain "<folder>"]');
     guardWrite();
-    const r = await connect({ project: target, repo: args.repo || null, brain: args.brain || null, renameBrain: !!args['rename-brain'], adopt: !!args.adopt, brainBranch: args['brain-branch'] || null, setAside: typeof args['set-aside'] === 'string' ? args['set-aside'] : !!args['set-aside'], domain: typeof args.domain === 'string' ? args.domain : null, root, ...gh });
+    const r = await connect({ project: target, owner: ownerArg('project.mjs connect <name> --owner <account|org>'), repo: args.repo || null, brain: args.brain || null, renameBrain: !!args['rename-brain'], adopt: !!args.adopt, brainBranch: args['brain-branch'] || null, setAside: typeof args['set-aside'] === 'string' ? args['set-aside'] : !!args['set-aside'], domain: typeof args.domain === 'string' ? args.domain : null, root, ...gh });
     out(`connected ${r.projectDir} (brain ${r.brainDir})\n${list([...r.lines, ...mailStep(r), ...t3Step([r.projectDir], target), ...rememberRoot()])}`);
   } else if (cmd === 'create') {
     if (!target) fail('usage: project.mjs create <name> [--repo <repo>] --purpose "<one sentence>"');

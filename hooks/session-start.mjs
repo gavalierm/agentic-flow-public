@@ -14,6 +14,7 @@ import { pinClone, pinFile, readPins, newerThanPin } from '../scripts/update.mjs
 import { PLUGIN_ROOT } from '../scripts/util.mjs';
 import { ensureLineEndings } from '../scripts/eol.mjs';
 import { catalogBoot } from '../scripts/catalog/hooks.mjs';
+import { recordAuthors, foreignRecords } from '../scripts/authors.mjs';
 import { closedTargetsNote } from './pre-tool-use.mjs';
 
 export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '9500 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038', 'P-050'] };
@@ -31,11 +32,14 @@ export function run(input) {
   if (pull?.pulled) {
     try { ctx = loadContext({ project: ctx.projectDir, requireBrain: false }); } catch { /* keep the context loaded before the pull */ }
   }
-  stampBootPull(ctx.brainDir, input.session_id);
+  // Record authors after the pull (scripts/authors.mjs): the boot marks records of other operators, the rules hook gets the
+  // foreign project rules through the stamp, so the start costs one git log for both.
+  const authors = ctx.brainDir ? recordAuthors(ctx.brainDir) : null;
+  stampBootPull(ctx.brainDir, input.session_id, Date.now(), { foreign_rules: foreignRecords(authors, 'rules/') });
   const notes = [brainPullNote(pull), pinWorkflow(ctx), projectLineEndings(ctx), t3Session(ctx, input)].filter(Boolean);
   // Catalog of project data: scan within its budget before the boot text; it never fails the boot and does nothing without a source.
   const catalog = catalogBoot(ctx, { source: input.source || 'startup', state: ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : null });
-  const boot = buildBootContext(ctx, { source: input.source || 'startup', rulesHook: true, t3Note: notes.length ? notes.join('\n') : null, catalogLines: catalog.lines });
+  const boot = buildBootContext(ctx, { source: input.source || 'startup', rulesHook: true, t3Note: notes.length ? notes.join('\n') : null, catalogLines: catalog.lines, authors });
   // P-021: the revision this session loaded; the prompt and tool hooks announce a later update once. P-001: a new or
   // compacted context starts with an empty read budget (post-tool-use readNudge).
   if (ctx.brainDir && ctx.thread) {

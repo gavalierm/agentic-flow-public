@@ -8,10 +8,12 @@
 //           thread <id> [--task ".."] [--mode operator|auto] [--for-thread <id>]   new T3 thread for a free topic (P-036)
 //           pause <id> [--until <ISO | <n>d | <n>h>] [--reason ".."]   snooze: no bells until resumed or until
 //           resume <id>
-//           list | status | copy <id>
+//           list | status
+//           copy <id> [--operator-approved]   code copy (branch topic/<id>); a discussion topic gets one only after the
+//                        operator approved its implementation (D-0020), recorded in topics/<id>/topic.json; done merges it
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext, foreignProjectCwd } from '../scripts/config.mjs';
-import { createTopic, CLASS_HELP, startThreadForTopic, claimTopic, claimMain, releaseTopic, handoffTopic, listTopics, heldTopics, ensureCodeCopy, readTopic, pauseTopic, resumeTopic } from '../scripts/topic.mjs';
+import { createTopic, CLASS_HELP, startThreadForTopic, claimTopic, claimMain, releaseTopic, handoffTopic, listTopics, heldTopics, ensureCodeCopy, copyTopic, readTopic, pauseTopic, resumeTopic } from '../scripts/topic.mjs';
 import { topicLine } from '../scripts/index.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -96,9 +98,11 @@ try {
     out(`thread ${ctx.thread || '-'}`);
     out(held.length ? held.map((t) => `holds ${topicLine(t)}`).join('\n') : 'holds no topic');
   } else if (cmd === 'copy') {
-    if (!id) fail('usage: topic.mjs copy <id>');
-    const copy = ensureCodeCopy(ctx, id);
-    out(`code copy: ${copy.path} (branch ${copy.branch})${copy.created ? '' : ' (existing)'}`);
+    if (!id) fail('usage: topic.mjs copy <id> [--operator-approved]');
+    const copy = copyTopic(ctx, id, { operatorApproved: !!args['operator-approved'], explicitProject: !!args.project });
+    out(`code copy: ${copy.path} (branch ${copy.branch})${copy.created ? '' : ' (existing)'}${copy.recorded ? `; recorded in topics/${id}/topic.json` : ''}`);
+    if (copy.write?.unpushed) out(`unpushed: ${copy.write.unpushed}`);
+    if (readTopic(ctx.brainDir, id)?.kind !== 'code') out(`next: delegate.mjs prepare --implement${readTopic(ctx.brainDir, id)?.class === 'ops' ? '' : ' web|code|ops'} --task-file <file> (the worker changes the copy; commit, merge and release stay in this thread, D-0020)`);
   } else {
     fail('usage: topic.mjs create|claim|main|release|handoff|pause|resume|list|status|copy');
   }

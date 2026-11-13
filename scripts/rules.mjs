@@ -4,6 +4,7 @@ import { PLUGIN_ROOT, listFiles, readText } from './util.mjs';
 import { normalizeKey } from './keys.mjs';
 import { machineName } from './config.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
+import { byTag } from './authors.mjs';
 
 export const LAYERS = ['harness', 'machine', 'project', 'local'];
 
@@ -45,7 +46,12 @@ export function layerFiles(brainDir, { harness = 'claude-code', machine = machin
   ];
 }
 
-export function assembleRules({ brainDir = null, policy, harness = 'claude-code', machine = machineName(), coreDir = path.join(PLUGIN_ROOT, 'rules') } = {}) {
+/**
+ * `foreign(rel)`: name of the operator who added the project rule `rules/<file>` when it is another one (scripts/authors.mjs);
+ * `shown` then carries `[by <name>]` on its heading. `text` stays without it: the hash, the sections and the limits are the
+ * same on every machine.
+ */
+export function assembleRules({ brainDir = null, policy, harness = 'claude-code', machine = machineName(), coreDir = path.join(PLUGIN_ROOT, 'rules'), foreign = null } = {}) {
   const immutable = policy?.immutable_principles || [];
   const core = listFiles(coreDir, (f) => f.endsWith('.md') && path.basename(f) !== 'README.md', { recursive: false });
   const blocks = [];
@@ -81,23 +87,28 @@ export function assembleRules({ brainDir = null, policy, harness = 'claude-code'
       .map((file) => {
         const { data, body } = parseFrontmatter(readText(file, ''));
         const title = data.title || path.basename(file, '.md');
-        return body.trim() ? `### ${title}\n${body.trim()}` : null;
+        const by = foreign ? foreign(path.relative(brainDir, file).split(path.sep).join('/')) : null;
+        return body.trim() ? { text: `### ${title}\n${body.trim()}`, shown: `### ${title}${byTag(by)}\n${body.trim()}` } : null;
       })
       .filter(Boolean)
     : [];
-  const parts = [];
-  if (preambles.length) parts.push(preambles.join('\n\n'));
-  parts.push(...blocks.map((b) => b.text.trimEnd()));
-  if (projectRules.length) parts.push('Pravidlá projektu (brain `rules/`):', ...projectRules);
-  if (extra.length) parts.push('Výnimky z princípov mimo jadra:', ...extra.map((b) => b.text.trimEnd()));
-  parts.push(applied.length ? `Výnimky: ${applied.map((a) => `${a.id} (${a.layer})`).join(', ')}` : 'Výnimky: žiadne');
-  if (errors.length) parts.push(`Odmietnuté výnimky: ${errors.join('; ')}`);
-  const text = parts.join('\n\n') + '\n';
+  const compose = (which) => {
+    const parts = [];
+    if (preambles.length) parts.push(preambles.join('\n\n'));
+    parts.push(...blocks.map((b) => b.text.trimEnd()));
+    if (projectRules.length) parts.push('Pravidlá projektu (brain `rules/`):', ...projectRules.map((r) => r[which]));
+    if (extra.length) parts.push('Výnimky z princípov mimo jadra:', ...extra.map((b) => b.text.trimEnd()));
+    parts.push(applied.length ? `Výnimky: ${applied.map((a) => `${a.id} (${a.layer})`).join(', ')}` : 'Výnimky: žiadne');
+    if (errors.length) parts.push(`Odmietnuté výnimky: ${errors.join('; ')}`);
+    return parts.join('\n\n') + '\n';
+  };
+  const text = compose('text');
+  const shown = compose('shown');
   const lines = text.split('\n').length - 1;
   const chars = text.length;
   const limits = policy?.limits || {};
   const overLimit = [];
   if (lines > (limits.rules_lines ?? 200)) overLimit.push(`rules ${lines} lines > ${limits.rules_lines ?? 200}`);
   if (chars > (limits.rules_chars ?? 10000)) overLimit.push(`rules ${chars} chars > ${limits.rules_chars ?? 10000}`);
-  return { text, applied, errors, lines, chars, overLimit };
+  return { text, shown, applied, errors, lines, chars, overLimit };
 }

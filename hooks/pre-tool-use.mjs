@@ -7,6 +7,7 @@ import path from 'node:path';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR, resolveBrain, threadStateFile } from '../scripts/config.mjs';
 import { git, isInside, toPosix } from '../scripts/util.mjs';
+import { readDrift } from '../scripts/drift.mjs';
 import { parse, programIndex } from '../scripts/shell-parse.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
 import { SUBAGENT_ALLOWED, recordWaitingOperator } from '../scripts/comms.mjs';
@@ -16,10 +17,11 @@ import { findSecret } from '../scripts/secrets.mjs';
 import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell } from '../scripts/own-files.mjs';
 import { catalogPreTool } from '../scripts/catalog/pretool.mjs';
 import { bigWriteDeny } from '../scripts/materialy.mjs';
+import { heldTopics, topicCopyPath, expectedImplementation, implementMarkers, IMPLEMENT_CLASSES } from '../scripts/topic.mjs';
 import { logDecision } from '../scripts/denials.mjs';
 import { analyze, bypassOf, bypassReason, callKey, closedTargets, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, openByAnswers, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, transcriptTurnText, turnLifts, awaitTranscriptToolUse, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
-export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-052', 'P-054', 'P-055'] };
+export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-036', 'P-052', 'P-053', 'P-054', 'P-055'] };
 
 const FILE_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
 
@@ -87,6 +89,21 @@ export function executedText(command) {
     out.push(seg.replace(/\u0006(\d+)\u0006/g, (m, i) => (runs ? quoted[i] : 'Q')));
   }
   return out.join('');
+}
+
+/**
+ * A command form the project's brain forbids (policy `harness.deny_commands`: [{ match: <regex source>, reason }]), tested
+ * against the whole command text, heredoc bodies included; the reason names the skill that replaces the form (P-030).
+ * An entry whose regex does not compile is skipped.
+ */
+export function deniedCommand(command, rules) {
+  for (const r of Array.isArray(rules) ? rules : []) {
+    if (!r || typeof r.match !== 'string' || !r.match) continue;
+    let re;
+    try { re = new RegExp(r.match); } catch { continue; }
+    if (re.test(String(command || ''))) return `${r.reason || 'command form forbidden by the project'} (policy harness.deny_commands of the brain)`;
+  }
+  return null;
 }
 
 /** History operation that needs confirmation: a listed command as a whole word sequence, minus listed safe forms (P-018). */
@@ -872,7 +889,27 @@ export function questionSideEffect(tool, toolInput = {}, cwd = process.cwd(), ct
   return null;
 }
 
+/**
+ * P-063 (report-f10bd0ef): a turn the operator started by saying the agent misread them; true when the call starts work on a
+ * reading (a worker or subagent, a brief from delegate.mjs prepare) before the reading was checked with the operator.
+ */
+export function misreadWorkStart(tool, toolInput) {
+  if (tool === 'Agent' || tool === 'Task') return true;
+  return tool === 'Bash' && /\bdelegate\.mjs\b[^\n]*\bprepare\b/.test(String(toolInput?.command || ''));
+}
+
+export const MISREAD_TURN_REASON = 'the operator started this turn by saying you misread them, and this call starts work on your new reading before they confirmed it: first restate in the reply text in one sentence what you now understand they want (the kind of result, not only its topic: e.g. how we will work versus the content of the work); if two readings lead to different results, ask one AskUserQuestion with the readings as options, recommended first; an answered dialog opens the turn. If the reading is clear and already restated, run the same call again: it passes, this refusal comes once per turn (P-063, P-059)';
+
 export const QUESTION_TURN_REASON = (what) => `the operator started this turn with a question (an explanation, a check), not an instruction to change, and ${what} changes something: answer the question first, and propose the change with what it would do; make it only when the operator asks for it. A guess or a hedge in the question („asi“, „maybe“) is no instruction. If the prompt does ask for this change, run the same call again: it passes, this refusal comes once per turn (P-063, P-002)`;
+
+// P-012: topic drift. Only file tools and shell writes count; MCP tools and the workflow's own scripts do not.
+const DRIFT_REMEDY = /(?:^|[\s/])(?:topic|save|comms|error)\.mjs\b/;
+const driftRemedyText = (tool, toolInput) => ((tool === 'Bash' || tool === 'PowerShell') ? String(toolInput.command || '') : '');
+function driftWrite(tool, toolInput, cwd, ctx, sessionId) {
+  if (!FILE_TOOLS.includes(tool) && tool !== 'Bash' && tool !== 'PowerShell') return false;
+  return !!questionSideEffect(tool, toolInput, cwd, ctx, sessionId);
+}
+export const DRIFT_REASON = (v) => `the task does not fit the subject of topic ${v.topic || '-'} ("${v.subject || '-'}"): ${v.reason || 'a different subject'}; save it (P-007), tell the operator the message drifted from the topic and offer a new topic (workflow:topic create), do not work on it here (P-012); if the operator explicitly wants it in this topic, repeat the step`;
 
 const WAIT_UNIT = { '': 1, s: 1, m: 60, h: 3600, d: 86400 };
 /**
@@ -952,8 +989,8 @@ export function gitReadOnlyForm(w) {
   if (rest.some((x) => /^-[dafsum]$|^--(delete|annotate|force|sign|message|file)/.test(x))) return false;
   return rest.every((x) => /^-(l|n\d*|i)$|^--(list|sort|contains|no-contains|merged|no-merged|points-at|format|column|no-column|ignore-case|omit-empty|color|no-color)(=|$)/.test(x) || !x.startsWith('-')) && (rest.length === 0 || rest[0].startsWith('-'));
 }
-/** Repositories a shell command changes through git (`git [-C dir] commit|push|...`, also after `cd dir`). */
-export function gitWriteDirs(command, cwd = process.cwd()) {
+/** Repositories a shell command changes through git (`git [-C dir] commit|push|...`, also after `cd dir`); subs: the subcommands. */
+export function gitWriteDirs(command, cwd = process.cwd(), subs = GIT_WRITES) {
   const dirs = [];
   let base = cwd;
   const home = process.env.HOME || '';
@@ -971,9 +1008,66 @@ export function gitWriteDirs(command, cwd = process.cwd()) {
     while (i < w.length && w[i].startsWith('-')) {
       if (w[i] === '-C' && w[i + 1]) { dir = abs(dir, w[i + 1]); i += 2; } else if (w[i] === '-c') i += 2; else i++;
     }
-    if (GIT_WRITES.has(w[i]) && !gitReadOnlyForm(w.slice(i))) dirs.push(dir);
+    if (subs.has(w[i]) && !gitReadOnlyForm(w.slice(i))) dirs.push(dir);
   }
   return dirs;
+}
+
+// D-0020: in a topic code copy the worker only changes files; the topic thread commits, merges and releases after review.
+export const TOPIC_THREAD_GIT = new Set(['commit', 'push', 'merge', 'rebase', 'tag']);
+
+/** Roots of the topic code copies (P-036): the clones `../<project>-topics/` and, in a domain, `<domain>/.worktrees/`. */
+export function topicCopyRoots(ctx) {
+  const roots = [topicsDir(ctx.projectDir)];
+  if (ctx.domain?.root) roots.push(path.join(ctx.domain.root, WORKTREES_DIR));
+  return roots;
+}
+
+/** abs lies in a topic code copy (below one of the roots, not the root itself). */
+export function inTopicCopy(ctx, abs) {
+  return topicCopyRoots(ctx).some((root) => path.relative(path.resolve(root), path.resolve(abs)) !== '' && isInside(root, abs));
+}
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+const samePath = (a, b) => toPosix(realOr(path.resolve(gitBashPath(String(a))))) === toPosix(realOr(path.resolve(gitBashPath(String(b)))));
+
+/** The text names the directory (its path, native form or real path) as a whole path, not as the prefix of another name. */
+export function mentionsPath(text, dir) {
+  const forms = new Set([dir, toPosix(dir), realOr(dir), toPosix(realOr(dir))]);
+  return [...forms].some((f) => new RegExp(`(?<![\\w./\\\\-])${escapeRe(f)}(?![\\w-]|\\.[\\w-])`).test(text));
+}
+
+/**
+ * D-0020, P-053: an Agent call of the main agent whose prompt names the code copy of a topic this thread holds is an
+ * implementation: it carries the marker of delegate.mjs prepare --implement for that copy and `model` equal to the model
+ * the hook takes itself from policy and topic (class of the topic, or of its last recorded implementation); the marker
+ * text is not trusted. Without `model` the worker runs on CLAUDE_CODE_SUBAGENT_MODEL, the cheap model. Read-only agent
+ * types (harness.subagent_stop_exempt_agent_types) pass. Returns the deny reason or null.
+ */
+export function implementCheck(ctx, toolInput = {}) {
+  if (!ctx.brainDir || !ctx.thread) return null;
+  const type = String(toolInput.subagent_type || '');
+  const exempt = ctx.policy?.harness?.subagent_stop_exempt_agent_types || [];
+  if (type && exempt.some((t) => type === t || type.endsWith(`:${t}`))) return null;
+  const prompt = String(toolInput.prompt || '');
+  if (!prompt) return null;
+  for (const topic of heldTopics(ctx.brainDir, ctx.thread)) {
+    const copy = topicCopyPath(ctx, topic);
+    if (!copy || !mentionsPath(prompt, copy)) continue;
+    const prepare = `delegate.mjs prepare --implement${IMPLEMENT_CLASSES.includes(topic.class) ? '' : ' <web|code|ops>'} --topic ${topic.id} --task-file <file>`;
+    const expected = expectedImplementation(ctx, topic);
+    const want = expected?.model ? `; Agent with model: "${expected.model}" (class ${expected.cls})` : '';
+    const marker = implementMarkers(prompt).find((m) => m.id === topic.id && samePath(m.copy, copy));
+    if (!marker) return `the prompt names the code copy of topic ${topic.id} (${toPosix(copy)}) without its implement: marker: an implementation in a topic runs on the model of its class (D-0020, P-053); build the brief with ${prepare} and pass its output as the prompt${want}`;
+    if (!expected) return `topic ${topic.id} has no class of an implementation (a discussion without delegate.mjs prepare --implement): the marker alone does not set it; run ${prepare} and pass its output as the prompt (D-0020, D-0021)`;
+    if (!expected.model) return `policy topics.classes.${expected.cls}.subagent_model is not set: an implementation of class ${expected.cls} (topic ${topic.id}) has no model; set it in policy.json (a blocker of the policy, no fallback model, D-0021)`;
+    if (marker.cls !== expected.cls) return `the marker names class ${marker.cls}, topic ${topic.id} implements as class ${expected.cls}: rebuild the brief with ${prepare}${want}`;
+    const model = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
+    if (!model) return `the implementation worker of topic ${topic.id} has no model: without it the worker runs on CLAUDE_CODE_SUBAGENT_MODEL (the cheap model); pass model: "${expected.model}" (class ${expected.cls}, policy topics.classes.${expected.cls}.subagent_model, P-053); brief from ${prepare}`;
+    if (model.toLowerCase() !== expected.model.toLowerCase()) return `model "${model}" is not the model of class ${expected.cls} (topic ${topic.id}): pass model: "${expected.model}" (policy topics.classes.${expected.cls}.subagent_model, P-053); brief from ${prepare}`;
+  }
+  return null;
 }
 
 /**
@@ -1221,6 +1315,29 @@ export function run(input) {
     }
   }
 
+  // P-063 (report-f10bd0ef): after „nepochopil si“ the agent started workers on a second wrong reading; the first work start of
+  // such a turn is refused once until the reading is restated or the operator chose it in a dialog (PostToolUse clears turn_intent).
+  if (!input.agent_id && !input.agent_type && ctx.brainDir && ctx.thread) {
+    const st = readThreadState(ctx.brainDir, ctx.thread);
+    const turnKey = st.turn_started_at || 'turn';
+    if (st.turn_intent === 'misread' && st.misread_denied_at !== turnKey && misreadWorkStart(tool, toolInput)) {
+      writeThreadState(ctx.brainDir, ctx.thread, { ...st, misread_denied_at: turnKey });
+      return permissionOutput('deny', MISREAD_TURN_REASON);
+    }
+  }
+
+  // P-012: the judge (UserPromptSubmit, detached) found this turn's task off the subject of the held topic: the first write of the
+  // turn is refused once; a repeat passes (the operator may want it here). No verdict yet (late, failed, off): nothing is refused.
+  if (!input.agent_id && !input.agent_type && ctx.brainDir && ctx.thread) {
+    const st = readThreadState(ctx.brainDir, ctx.thread);
+    const turnKey = st.turn_started_at;
+    const verdict = turnKey && st.drift_denied_at !== turnKey ? readDrift(ctx.brainDir, ctx.thread, turnKey) : null;
+    if (verdict && verdict.fits === false && !DRIFT_REMEDY.test(driftRemedyText(tool, toolInput)) && driftWrite(tool, toolInput, cwd, ctx, input.session_id)) {
+      writeThreadState(ctx.brainDir, ctx.thread, { ...st, drift_denied_at: turnKey });
+      return permissionOutput('deny', DRIFT_REASON(verdict));
+    }
+  }
+
   if (ctx.thread && accountEmailCall(tool, toolInput, accountEmail())) {
     const key = crypto.createHash('sha1').update(JSON.stringify(toolInput)).digest('hex').slice(0, 16);
     const state = readThreadState(ctx.brainDir, ctx.thread);
@@ -1245,6 +1362,9 @@ export function run(input) {
     if (hit) return permissionOutput('deny', `subagents do not write to brain or hold topics (${hit}); return the result to the main agent (P-025)`);
     const comms = commsSubagentCheck(cmd, input.agent_type);
     if (comms) return permissionOutput('deny', comms);
+    // D-0020: the worker changes the topic copy; commit, push, merge, rebase and tag stay with the topic thread.
+    const inCopy = gitWriteDirs(cmd, cwd, TOPIC_THREAD_GIT).find((d) => inTopicCopy(ctx, d));
+    if (inCopy) return permissionOutput('deny', `a worker does not commit, push, merge, rebase or tag in a topic code copy (${toPosix(inCopy)}): the topic thread commits after review (D-0020); leave the changes uncommitted and return a summary of them and the tests run`);
   }
 
   // P-052: a worker brief built by hand misses the work-file path, and the worker then writes into /tmp (2026-11-02:
@@ -1254,6 +1374,10 @@ export function run(input) {
     if (!String(toolInput.prompt || '').includes(`${scratch}/`)) {
       return permissionOutput('deny', `worker brief has no work-file path (${scratch}/), so the worker would write into /tmp and every write would ask the operator; build the brief with delegate.mjs prepare --task "..." and pass its output as the prompt (workflow:delegate, P-052)`);
     }
+  }
+  if ((tool === 'Agent' || tool === 'Task') && !input.agent_id && !input.agent_type) {
+    const why = implementCheck(ctx, toolInput);
+    if (why) return permissionOutput('deny', why);
   }
 
   // P-030: a recurring task collects data with a script and the agent only evaluates its output; a prompt that makes
@@ -1416,6 +1540,8 @@ function pathChecks(input, ctx, cwd) {
     snapshotShell(ctx, input.tool_use_id, shellDirs(cmd, cwd), threadStateBirths(cmd, cwd, ctx.thread));
     const cat = catalogCheck(input, ctx, cwd);
     if (cat?.deny) return permissionOutput('deny', cat.deny);
+    const forbidden = deniedCommand(cmd, policy.harness?.deny_commands);
+    if (forbidden) return permissionOutput('deny', forbidden);
     const targets = bashTargets(cmd, cwd);
     const edits = bashEdits(cmd, cwd);
     const strayFile = (t) => fs.existsSync(t) && !fs.statSync(t).isDirectory() && ['untracked', 'ignored by git'].includes(classifyTarget(t).reason);
