@@ -14,7 +14,7 @@ Postup s >3 krokmi bez skillu ide pri `done` do `procedures.log`; pri treťom v�
 Pred odvodením z viacerých zdrojov `find`; druhé odvodenie ulož ako záver (1–3 vety + zdroje), nie kópiu.
 
 ### P-008: Rozhodnutia
-Voľbu s reálnou alternatívou eviduj (`save decision`, `relates_to`); nemaže sa, iba nahrádza. Pred zmenou veci s rozhodnutím si ho prečítaj; commit odkazuje na jeho ID.
+Voľbu s alternatívou eviduj (`save decision`, `relates_to`); maže sa len na pokyn operátora, inak nahrádza. Pred zmenou veci s rozhodnutím ho prečítaj; commit nesie ID.
 
 ### P-009: Pôvod pamäte
 `operator` sa neoveruje, `derived` odtlačkom zdrojov, `observed` pred nevratnou akciou. Rozchod s realitou oprav hneď. Expirácia podľa času je zakázaná.

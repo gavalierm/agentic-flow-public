@@ -80,6 +80,25 @@ export function dropOp(logName, whats) {
   return { path: machineLogPath(), append: whats.map((w) => `drop ${kind} ${w}\n`).join('') };
 }
 
+/**
+ * Deletion on an explicit operator order (log.mjs remove): every line containing `match` leaves every machine's day file
+ * and the old shared logs, physically (a drop line would keep the text). An emptied file is removed.
+ */
+export function removeLinesOps(brainDir, match) {
+  const files = [...LOG_FILES.map((f) => ({ file: path.join(brainDir, 'logs', f), rel: `logs/${f}` })), ...dayFiles(brainDir)];
+  const ops = [];
+  let removed = 0;
+  for (const { file, rel } of files) {
+    if (!fs.existsSync(file)) continue;
+    const lines = readText(file, '').split('\n').filter(Boolean);
+    const kept = lines.filter((l) => !l.includes(match));
+    if (kept.length === lines.length) continue;
+    removed += lines.length - kept.length;
+    ops.push(kept.length ? { path: rel, content: kept.join('\n') + '\n' } : { path: rel, remove: true });
+  }
+  return { ops, removed };
+}
+
 /** Rotation: this machine removes only its own day files past the window (other machines rotate theirs). */
 export function rotationOps(brainDir, days, machine = machineName()) {
   if (!days) return [];

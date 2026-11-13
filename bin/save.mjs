@@ -3,6 +3,7 @@
 // The agent classifies; this script only writes in a fixed format, deduplicates via find, commits via brain.mjs, regenerates indexes.
 //   save.mjs memory <type> <name> --content "..." [--origin operator|derived|observed] [--aliases a,b] [--relates-to x,y] [--sources f1,f2] [--summary "..."] [--new]
 //   save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y [--supersedes D-0001]
+//   save.mjs decision --remove D-XXXX [--repo [<repo>]] --reason "operator <YYYY-MM-DD>: <why>"   only on an explicit operator order (P-008)
 //   save.mjs rule <name> [--repo [<repo>]] --content "..." (--enforced-by <file>[:<symbol>][,...] | --unenforced "<why code cannot check it>") [--title "..."] | --remove --reason "..."
 //   save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local] [--title "..."]
 //   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]' ...] [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
@@ -23,6 +24,7 @@ import { parseFrontmatter, serializeFrontmatter, asList } from '../scripts/front
 import { makeKey, normalizeKey, hasDiacritics, isValidId, KEY_TYPES } from '../scripts/keys.mjs';
 import { find, findSimilar } from '../scripts/find.mjs';
 import { readDecisions, readSkills, nextDecisionId } from '../scripts/records.mjs';
+import { DECISION_REMOVED_ENV } from './brain-precommit.mjs';
 import { recordAuthors, foreignAuthor } from '../scripts/authors.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { ruleCorpus, judgeRule, unanswered, onlyCondenses } from '../scripts/rule-gate.mjs';
@@ -227,7 +229,34 @@ function saveMemory(ctx) {
   if (by) out(`record by ${by}`);
 }
 
+// Removal is an explicit operator order only (P-008); otherwise a decision is superseded. Not the shell (git rm), which
+// the brain hook denies, and P-008 had no way for that order (report-526ff5ce, 2026-11-13).
+const OPERATOR_REASON_RE = /^operator\b/i;
+
+function removeDecision(ctx) {
+  const id = String(args.remove === true ? rest[0] || '' : args.remove).trim();
+  if (!/^([a-z0-9-]+\/)?D-\d{4}$/i.test(id)) fail('usage: save.mjs decision --remove D-XXXX [--repo [<repo>]] --reason "operator <YYYY-MM-DD>: <why>"');
+  if (ctx.thread && isWakeTurn(ctx.brainDir, ctx.thread)) fail('decisions cannot be removed in a turn started by a message (P-047)');
+  if (!args.reason || !OPERATOR_REASON_RE.test(String(args.reason))) fail('--remove needs --reason "operator <YYYY-MM-DD>: <why>": a decision is removed only on an explicit operator order; otherwise replace it with --supersedes (P-008)');
+  const repo = repoTarget(ctx);
+  if (repo) {
+    const held = heldRepoTopic(ctx, repo)?.topic || null;
+    const key = id.replace(new RegExp(`^${repo}/`), '').toUpperCase();
+    const old = find(ctx.brainDir, key, ctx.domain).find((m) => m.kind === 'decision' && m.repo === repo && (!m.topic || m.topic === held));
+    if (!old) fail(`decision ${id} not found in repo ${repo}`);
+    out(formatRepoWrite(repoWrite(ctx, repo, { ops: [{ path: knowledgeRel(ctx, old.path), remove: true }], message: `remove decision ${key}: ${args.reason}` })));
+    return out(`decision ${repo}/${key} removed; references to it elsewhere stay as they are`);
+  }
+  const key = id.toUpperCase();
+  const old = readDecisions(ctx.brainDir).find((d) => (d.id || d.key) === key);
+  if (!old) fail(`decision ${key} not found`);
+  const res = brainWrite(ctx, { ops: [{ path: old.path, remove: true }], message: `remove decision ${key}: ${args.reason}`, env: { [DECISION_REMOVED_ENV]: old.path } });
+  finish(ctx, res, [old.path]);
+  out(`decision ${key} removed; references to it elsewhere (relates_to, supersedes, commit messages) stay as they are`);
+}
+
 function saveDecision(ctx) {
+  if (args.remove) return removeDecision(ctx);
   const title = rest.join(' ');
   if (!title) fail('usage: save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y');
   const relates = asList(args['relates-to']);

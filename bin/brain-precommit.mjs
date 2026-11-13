@@ -8,6 +8,8 @@ import { git, readText } from '../scripts/util.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, loadPolicy } from '../scripts/config.mjs';
 
 export const DECISION_MOVED_ENV = 'WORKFLOW_DECISION_MOVED';
+// save decision --remove on an explicit operator order (P-008): the only deletion of a decision besides save move.
+export const DECISION_REMOVED_ENV = 'WORKFLOW_DECISION_REMOVED';
 import { checkBrainFile } from '../scripts/brain-checks.mjs';
 import { parseFrontmatter } from '../scripts/frontmatter.mjs';
 
@@ -25,12 +27,12 @@ export function checkStaged(brainDir, { env = process.env } = {}) {
   }
   const removed = git(['diff', '--cached', '--name-only', '--diff-filter=D'], { cwd: brainDir }).stdout.split('\n').filter(Boolean);
   // save move: a decision of one repo moves into <repo>/agentic/decisions/ (D-0002); it lives on there, not deleted.
-  const moved = String(env[DECISION_MOVED_ENV] || '').split(',').filter(Boolean);
+  const moved = [DECISION_MOVED_ENV, DECISION_REMOVED_ENV].flatMap((k) => String(env[k] || '').split(',')).filter(Boolean);
   for (const rel of removed) {
     if (!/^decisions\/[^/]+\.md$/.test(rel) || moved.includes(rel)) continue;
     // A file without a record key is not a workflow decision (README, older format replaced when a brain is adopted).
     const before = git(['show', `HEAD:${rel}`], { cwd: brainDir });
-    if (!before.ok || parseFrontmatter(before.stdout).data?.key) errors.push(`${rel}: decisions are never deleted, only superseded (P-008)`);
+    if (!before.ok || parseFrontmatter(before.stdout).data?.key) errors.push(`${rel}: decisions are never deleted, only superseded, except on an explicit operator order through save.mjs decision --remove D-XXXX --reason "operator ..." (P-008)`);
   }
   return errors;
 }
