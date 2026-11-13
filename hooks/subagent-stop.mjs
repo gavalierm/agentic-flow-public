@@ -27,9 +27,12 @@ export function failuresText(text) {
 }
 
 // Tools that read a source (web, MCP): a failed call there is a source not read, not a fact not found (flow-public#34: a
-// worker reported sources it could not read as missing, with "Failures: none"). Bash is left out: grep without a match
-// also ends with a non-zero exit code.
+// worker reported sources it could not read as missing, with "Failures: none"). Bash is left out (grep without a match
+// also ends with a non-zero exit code), except a command that runs a browser: a browser that did not start is a source
+// not read, even when curl then returned a page without its JavaScript content (flow-public#52).
 const SOURCE_TOOL = /^(WebFetch|WebSearch|mcp__.+)$/;
+const BROWSER_CMD = /(^|[^\w-])(agent-browser|playwright|puppeteer|chromium(-browser)?|google-chrome|chrome\.exe|msedge(\.exe)?)([^\w-]|$)/i;
+const isSourceCall = (c) => SOURCE_TOOL.test(String(c.name || '')) || (c.name === 'Bash' && BROWSER_CMD.test(String(c.input?.command || '')));
 const TRANSCRIPT_MAX = 8 * 1024 * 1024;
 
 /** The worker's own transcript: `agent_transcript_path`, else `<session>/subagents/agent-<id>.jsonl` next to the main transcript. */
@@ -59,11 +62,11 @@ export function failedSourceCalls(file) {
     const content = entry?.message?.content;
     if (!Array.isArray(content)) continue;
     for (const c of content) {
-      if (c?.type === 'tool_use' && SOURCE_TOOL.test(String(c.name || ''))) calls.set(c.id, c);
+      if (c?.type === 'tool_use' && isSourceCall(c)) calls.set(c.id, c);
       else if (c?.type === 'tool_result' && c.is_error === true && calls.has(c.tool_use_id)) {
         const use = calls.get(c.tool_use_id);
         const body = typeof c.content === 'string' ? c.content : Array.isArray(c.content) ? c.content.map((x) => x?.text || '').join(' ') : '';
-        const target = use.input?.url || use.input?.query || Object.values(use.input || {}).find((v) => typeof v === 'string') || '';
+        const target = use.input?.url || use.input?.query || use.input?.command || Object.values(use.input || {}).find((v) => typeof v === 'string') || '';
         failed.push({ tool: use.name, target: String(target).slice(0, 120), error: body.replace(/\s+/g, ' ').trim().slice(0, 120) });
       }
     }

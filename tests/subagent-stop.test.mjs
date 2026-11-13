@@ -30,6 +30,14 @@ test('P-028, flow-public#34: a failed source call (web, MCP) with "Failures: non
     assert.equal(run({ ...none, session_id: 's1', transcript_path: path.join(dir, 's1.jsonl') }, policy).decision, 'block', 'the transcript next to the session when the input has no agent_transcript_path');
     fs.writeFileSync(file, [use('b1', 'Bash', { command: 'grep x y' }), result('b1', 'Exit code 1', true), use('m1', 'mcp__gsc__query', { site: 's' }), result('m1', 'rows', false)].join('\n') + '\n');
     assert.deepEqual(run({ ...none, agent_transcript_path: file }, policy), {}, 'a Bash exit code and a source that was read are no unread source');
+    // flow-public#52: the browser did not start (Bash), curl returned a page without its JavaScript content.
+    fs.writeFileSync(file, [use('b2', 'Bash', { command: 'agent-browser open https://shop.test/p1' }), result('b2', 'Exit code 1\nError: spawn UNKNOWN', true), use('b3', 'Bash', { command: 'curl -sL https://shop.test/p1' }), result('b3', '<html>', false)].join('\n') + '\n');
+    const browser = run({ ...none, agent_transcript_path: file }, policy);
+    assert.equal(browser.decision, 'block', 'a browser that did not start is a source not read');
+    assert.match(browser.reason, /Bash agent-browser open https:\/\/shop\.test\/p1: Exit code 1 Error: spawn UNKNOWN/);
+    assert.deepEqual(run({ ...none, last_assistant_message: 'Tabuľka veľkostí sa nepodarilo prečítať.\n\nFailures: agent-browser spawn UNKNOWN, curl bez JavaScriptu', agent_transcript_path: file }, policy), {});
+    fs.writeFileSync(file, [use('b4', 'Bash', { command: 'grep -r agent-browser-notes docs' }), result('b4', 'Exit code 1', true)].join('\n') + '\n');
+    assert.deepEqual(run({ ...none, agent_transcript_path: file }, policy), {}, 'a word inside another name is no browser');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
