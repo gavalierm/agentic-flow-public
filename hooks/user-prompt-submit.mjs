@@ -220,7 +220,7 @@ export function run(input) {
   let hash = state?.rules_hash ?? null;
   let sections = state?.rules_sections ?? null;
   if (state && (hash || state.rules_hook)) {
-    const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code' });
+    const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code', layers: ctx.layers });
     const now = rulesHash(rules.text);
     if (hash && now !== hash) {
       const diff = sections ? changedRules(rules.text, sections) : null;

@@ -23,7 +23,7 @@ export function run(input, part = 1) {
   // The rules of the brain after its pull (P-040): session-start.mjs runs at the same time and stamps the end of its pull.
   // The stamp also names the project rules of other operators (session-start.mjs read the authors): marked [by <name>].
   const foreign = ctx.brainDir && waitBootPull(ctx.brainDir, input.session_id) ? readBootStamp(ctx.brainDir, input.session_id)?.foreign_rules || {} : {};
-  const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code', foreign: (rel) => foreign[rel] || null });
+  const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code', foreign: (rel) => foreign[rel] || null, layers: ctx.layers });
   const parts = rulesParts(rules.shown);
   if (part > parts.length) return {};
   const shown = Math.min(parts.length, RULES_HOOK_PARTS);

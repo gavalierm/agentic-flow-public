@@ -117,15 +117,18 @@ export function run(input, policy = loadPolicy(null)) {
 if (isMain(import.meta.url)) {
   try {
     const input = readHookInput();
-    const out = run(input);
+    // The project's composed policy (D-0025): its limit and exempt types, not the plugin's alone.
+    let ctx = null;
+    try { ctx = loadContext({ requireBrain: false }); } catch (err) { process.stderr.write(`subagent-stop: plugin policy only: ${err.message}\n`); }
+    const out = ctx ? run(input, ctx.policy) : run(input);
     if (!out.decision) {
       try {
-        recordWorkerFailures(input, loadContext({ requireBrain: false }));
+        if (!ctx) throw new Error('no context');
+        recordWorkerFailures(input, ctx);
       } catch (err) { process.stderr.write(`subagent-stop: failures not recorded: ${err.message}\n`); }
     }
     if (out.decision === 'block') {
       try {
-        const ctx = loadContext({ requireBrain: false });
         logDecision(ctx.brainDir, { event: 'SubagentStop', out, thread: ctx.thread, agentType: input.agent_type });
       } catch { /* the log never changes the decision */ }
     }

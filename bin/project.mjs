@@ -82,6 +82,11 @@ function recordPending(update) {
   writeThreadState(ctx.brainDir, ctx.thread, state);
 }
 
+/** Composed policy of a project (D-0025: domain brain, then its project layer), else the policy of its brain. */
+function policyOf(dir) {
+  try { return loadContext({ project: dir, requireBrain: false }).policy; } catch { return loadPolicy(brainOf(dir)); }
+}
+
 function brainOf(dir) {
   const rel = readJson(path.join(dir, WORKFLOW_CONFIG), {})?.brain;
   return rel ? path.resolve(dir, rel) : null;
@@ -97,7 +102,7 @@ function t3Step(dirs, name) {
     // wakeJob: the issue check job in this machine's wake.json (D-0024), idempotent for every project of the machine.
     let wakeJob = null;
     try { wakeJob = loadContext({ project: dir, requireBrain: false }); } catch { /* no context: no job line */ }
-    const r = setupT3(dir, { name, policy: loadPolicy(brainOf(dir)), welcome: !args['no-welcome'], deferWelcome: !!args.adopt, wakeJob });
+    const r = setupT3(dir, { name, policy: wakeJob?.policy || policyOf(dir), welcome: !args['no-welcome'], deferWelcome: !!args.adopt, wakeJob });
     lines.push(...r.lines.map((l) => `${path.basename(dir)}: ${l}`));
     update[dir] = r.pending;
     if (r.deferred) deferred[dir] = name;
@@ -123,7 +128,7 @@ function startDeferredWelcome(ctx) {
   writeThreadState(ctx.brainDir, ctx.thread, state);
   const lines = []; const update = {};
   for (const [dir, name] of Object.entries(deferred)) {
-    const r = startWelcome(dir, { name, policy: loadPolicy(brainOf(dir)), adopted: true }); // wizard end needs the T3 project set up
+    const r = startWelcome(dir, { name, policy: policyOf(dir), adopted: true }); // wizard end needs the T3 project set up
     lines.push(...r.lines.map((l) => `${path.basename(dir)}: ${l}`));
     if (r.pending.length) update[dir] = r.pending;
   }

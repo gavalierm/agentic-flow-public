@@ -35,7 +35,7 @@ if (same && held) {
 } else {
   try {
     const ctx = loadContext({ requireBrain: false });
-    const res = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: args.harness || 'claude-code' });
+    const res = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: args.harness || 'claude-code', layers: ctx.layers });
     out('newer workflow installed: the rules below replace the rules loaded at session start; skills and hooks change only in a new session or after /clear (tell the operator)');
     out('');
     process.stdout.write(res.text.endsWith('\n') ? res.text : res.text + '\n');

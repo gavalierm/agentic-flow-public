@@ -11,7 +11,7 @@ import { checkBrainFile } from './brain-checks.mjs';
 /** Project knowledge folder in a repo (v3, D-0002): travels with the repo, never deployed. */
 export const PROJECT_KNOWLEDGE = 'agentic';
 /** Subfolders of `<repo>/agentic/` and the record kind each holds. */
-export const KNOWLEDGE_KINDS = { memory: 'memory', decisions: 'decision', runbooks: 'runbook', skills: 'skill' };
+export const KNOWLEDGE_KINDS = { memory: 'memory', decisions: 'decision', runbooks: 'runbook', skills: 'skill', rules: 'rule' };
 export const REPO_HANDOVER = 'HANDOVER.md';
 
 const hasChildDomain = (dir) => {

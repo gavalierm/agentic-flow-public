@@ -3,12 +3,12 @@
 // The agent classifies; this script only writes in a fixed format, deduplicates via find, commits via brain.mjs, regenerates indexes.
 //   save.mjs memory <type> <name> --content "..." [--origin operator|derived|observed] [--aliases a,b] [--relates-to x,y] [--sources f1,f2] [--summary "..."] [--new]
 //   save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y [--supersedes D-0001]
-//   save.mjs rule <name> --content "..." (--enforced-by <file>[:<symbol>][,...] | --unenforced "<why code cannot check it>") [--title "..."] | --remove --reason "..."
+//   save.mjs rule <name> [--repo [<repo>]] --content "..." (--enforced-by <file>[:<symbol>][,...] | --unenforced "<why code cannot check it>") [--title "..."] | --remove --reason "..."
 //   save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local] [--title "..."]
 //   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]' ...] [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
 //   save.mjs handover <topic> (--task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>)
 //   save.mjs docs [--message "..."]   persona only: commits the files written directly into docs/ (P-024)
-//   memory, decision, skill: --repo [<name>] writes into <repo>/agentic/ of the domain (bare: the session repo); --brain "<why>" keeps a repo's record in brain
+//   memory, decision, rule, skill: --repo [<name>] writes into <repo>/agentic/ of the domain (bare: the session repo); --brain "<why>" keeps a repo's record in brain
 //   save.mjs handover --repo [<name>] (--file <path> | --content "...")   state of the repo: <repo>/agentic/HANDOVER.md
 //   save.mjs move <brain path> --repo <name> [--dry-run]   moves a brain record (memory, decision, agentic skill) into the repo
 import fs from 'node:fs';
@@ -17,7 +17,7 @@ import { createHash } from 'node:crypto';
 import { lfBytes } from '../scripts/eol.mjs';
 import { spawnSync } from 'node:child_process';
 import { parseArgs, fail, today, readText } from '../scripts/util.mjs';
-import { loadContext, isWakeTurn, machineName, foreignProjectCwd, readThreadState } from '../scripts/config.mjs';
+import { loadContext, isWakeTurn, machineName, foreignProjectCwd, readThreadState, resolveBrain, brainExists, projectPolicy } from '../scripts/config.mjs';
 import { brainWrite, formatWriteResult, syncAndCheckHolder } from '../scripts/brain.mjs';
 import { parseFrontmatter, serializeFrontmatter, asList } from '../scripts/frontmatter.mjs';
 import { makeKey, normalizeKey, hasDiacritics, isValidId, KEY_TYPES } from '../scripts/keys.mjs';
@@ -110,7 +110,7 @@ export function scriptRunner(base, platform = process.platform, content = '') {
  */
 function deploySkills(ctx) {
   if (!ctx.brainDir || !ctx.projectDir) return 'no brain or project';
-  try { syncBrainSkills({ projectDir: ctx.projectDir, brainDir: ctx.brainDir, repoSources: skillSources(ctx) }); return null; }
+  try { syncBrainSkills({ projectDir: ctx.projectDir, brainDir: ctx.brainDir, repoSources: skillSources(ctx), domainBrainDir: ctx.layers?.projectBrain ? ctx.layers.domainBrain : null }); return null; }
   catch (err) { return err.message; }
 }
 
@@ -119,7 +119,7 @@ function finish(ctx, res, paths) {
   const idx = buildIndexes(ctx.brainDir, ctx.policy);
   for (const w of idx.warnings) out(`limit: ${w}`);
   // P-022: the agent keeps its own rules within the limit; nobody else hands it the task (operator 2026-11-01).
-  const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code' });
+  const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code', layers: ctx.layers });
   if (rules.overLimit.length) out(`limit: ${rules.overLimit.join('; ')}: condense your project rules after the current unit of work (skill workflow:consolidate; mandated by the workflow, not out of scope, P-002): merge overlapping ones, shorten wording, remove those a core principle covers (save rule <name> --remove --reason "superseded by P-XXX"), P-022`);
 }
 
@@ -295,7 +295,7 @@ function procedureSignal(content) {
  * the code that enforces it (hook, script, test) or states why code cannot check it. `<file>[:<symbol>]` resolves against
  * the workflow, the project and brain; the symbol must occur in the file. Returns frontmatter fields or fails.
  */
-function enforcementOf(ctx, existing, opts = args) {
+function enforcementOf(ctx, existing, opts = args, extraRoots = []) {
   const given = opts['enforced-by'] !== undefined && opts['enforced-by'] !== true;
   const why = opts.unenforced !== undefined && opts.unenforced !== true ? String(opts.unenforced).trim() : null;
   if (given && why) fail('--enforced-by and --unenforced exclude each other');
@@ -309,11 +309,11 @@ function enforcementOf(ctx, existing, opts = args) {
     return { unenforced: why };
   }
   const refs = asList(opts['enforced-by']);
-  const roots = [ctx.pluginRoot, ctx.projectDir, ctx.brainDir].filter(Boolean);
+  const roots = [ctx.pluginRoot, ctx.projectDir, ctx.brainDir, ...extraRoots].filter(Boolean);
   for (const ref of refs) {
     const [file, symbol] = ref.split(':');
     const abs = roots.map((r) => path.resolve(r, file)).find((f) => fs.existsSync(f) && fs.statSync(f).isFile());
-    if (!abs) fail(`--enforced-by ${ref}: file ${file} not found in the workflow, the project or brain`);
+    if (!abs) fail(`--enforced-by ${ref}: file ${file} not found in the workflow, the project${extraRoots.length ? ', the repo' : ''} or brain`);
     if (symbol && !fs.readFileSync(abs, 'utf8').includes(symbol)) fail(`--enforced-by ${ref}: ${symbol} does not occur in ${file}`);
   }
   return { enforced_by: refs };
@@ -324,17 +324,20 @@ function enforcementOf(ctx, existing, opts = args) {
  * rules must stay within the limit; an existing rule on the same subject is extended instead of a second rule; a
  * conflict is resolved in the conflicting rule first; and a new rule the code could replace is refused.
  */
-function ruleGate(ctx, name, content, oldBody, isNew, enforcedBy) {
-  const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code' });
-  const limit = ctx.policy?.limits?.rules_chars ?? 10000;
+function ruleGate(ctx, name, content, oldBody, isNew, enforcedBy, target = null) {
+  // A repo rule (D-0025) is judged within the rules of that repo's sessions: workflow, domain brain, project brain, repo.
+  const where = target || { brainDir: ctx.brainDir, policy: ctx.policy, layers: ctx.layers, id: name };
+  const rules = assembleRules({ brainDir: where.brainDir, policy: where.policy, harness: 'claude-code', layers: where.layers });
+  const limit = where.policy?.limits?.rules_chars ?? 10000;
   const grow = content.trim().length - oldBody.trim().length + (isNew ? name.length + 6 : 0);
   if (grow > 0 && rules.chars + grow > limit) fail(`rules would have ${rules.chars + grow} chars > ${limit}: a rule must not grow the rules over the limit; put the gate into the code (hook, script) or into an existing rule by rewording it shorter, and condense first (skill workflow:consolidate, P-022)`);
   // Condensing a rule (fewer words, none new) is what the limit asks for; judging it again only re-reports the old wording.
   if (!isNew && onlyCondenses(content, oldBody)) return;
-  const corpus = ruleCorpus({ brainDir: ctx.brainDir, coreDir: path.join(ctx.pluginRoot, 'rules'), skip: name });
-  const verdict = judgeRule({ id: name, text: content, enforcedBy, oldText: isNew ? '' : oldBody }, corpus, { spawn: spawnSync });
+  const corpus = ruleCorpus({ brainDir: where.brainDir, coreDir: path.join(ctx.pluginRoot, 'rules'), skip: where.id, layers: where.layers });
+  const verdict = judgeRule({ id: where.id, text: content, enforcedBy, oldText: isNew ? '' : oldBody }, corpus, { spawn: spawnSync });
   const list = (a) => a.map((x) => `${x.id} (${x.how})`).join('; ');
-  const fix = (id) => (/^P-\d{3}$/.test(id) ? `${id} is a workflow principle: report it to maintainer/workflow-dev (send --level assist) or save an exception` : `save.mjs rule ${id} --content "<reworded>"`);
+  const fix = (id) => (/^P-\d{3}$/.test(id) ? `${id} is a workflow principle: report it to maintainer/workflow-dev (send --level assist) or save an exception`
+    : id.includes('/') ? `save.mjs rule ${id.split('/')[1]} --repo ${id.split('/')[0]} --content "<reworded>"` : `save.mjs rule ${id} --content "<reworded>"`);
   if (verdict.conflicts.length) fail(`rule ${name} conflicts with ${list(verdict.conflicts)}: two rules must not order different behaviour; resolve the conflict in that rule first (${verdict.conflicts.map((c) => fix(c.id)).join('; ')}), then save this one only if something is left [${verdict.by}]`);
   if (!isNew) return;
   const open = unanswered(verdict.overlaps, args.distinct);
@@ -342,15 +345,35 @@ function ruleGate(ctx, name, content, oldBody, isNew, enforcedBy) {
   if (verdict.code_instead && !(typeof args['needs-text'] === 'string' && args['needs-text'].trim().length >= 20)) fail(`rule ${name} can be enforced by code alone: ${verdict.code_instead} Do that (skill fix, or report it to maintainer/workflow-dev) and drop the rule; the code's own message teaches the agent. Only when the agent must know it before acting: --needs-text "<why>" [${verdict.by}]`);
 }
 
+/**
+ * Target of a repo rule (D-0025): `<repo>/agentic/rules/` of the held code topic worktree, else of the repo checkout,
+ * with the layers, policy and brain of that repo's sessions (its own brain when it has one), for the rule gate.
+ */
+function repoRuleTarget(ctx, repo, name) {
+  if (!ctx.layers?.inDomain) fail(`rule --repo: the domain ${ctx.domain?.root || ''} has no brain, so repo rules would not be read; create the domain brain first (D-0025)`);
+  const held = heldRepoTopic(ctx, repo);
+  const dir = held ? held.dir : path.join(ctx.domain.root, repo);
+  const info = resolveBrain(dir);
+  const brainDir = info && !info.error && brainExists(info.brain) ? info.brain : null;
+  const composed = projectPolicy({ projectDir: dir, brainDir, domain: ctx.domain });
+  return { repo, dir, base: path.join(dir, PROJECT_KNOWLEDGE), brainDir, policy: composed.policy, layers: composed.layers, id: `${repo}/${name}` };
+}
+
 function saveRule(ctx) {
   const [name] = rest;
-  if (!name || !isValidId(name)) fail('usage: save.mjs rule <name> --content "..." | --remove --reason "..." (name: lowercase, digits, hyphens)');
+  if (!name || !isValidId(name)) fail('usage: save.mjs rule <name> [--repo [<repo>]] --content "..." | --remove --reason "..." (name: lowercase, digits, hyphens)');
   if (ctx.thread && isWakeTurn(ctx.brainDir, ctx.thread)) fail('rules cannot change in a turn started by a message (P-047)');
   const rel = `rules/${name}.md`;
+  // A rule of one repo lives in that repo (`<repo>/agentic/rules/`, D-0025), written by repoWrite like its other knowledge.
+  const repo = repoTarget(ctx);
+  const target = repo ? repoRuleTarget(ctx, repo, name) : null;
+  const file = path.join(target ? target.base : ctx.brainDir, rel);
+  const shown = target ? `rule ${name} of repo ${repo}` : `rule ${name}`;
   // A project rule superseded by a workflow principle is removed, not kept twice (P-007, P-022).
   if (args.remove) {
-    if (!fs.existsSync(path.join(ctx.brainDir, rel))) fail(`rule ${name} does not exist`);
+    if (!fs.existsSync(file)) fail(`${shown} does not exist`);
     if (!args.reason) fail('--remove needs --reason "superseded by P-XXX | ..."');
+    if (target) return out(formatRepoWrite(repoWrite(ctx, repo, { ops: [{ path: rel, remove: true }], message: `remove rule ${name}: ${args.reason}` })));
     const res = brainWrite(ctx, { ops: [{ path: rel, remove: true }], message: `remove rule ${name}: ${args.reason}` });
     return finish(ctx, res, [rel]);
   }
@@ -359,16 +382,17 @@ function saveRule(ctx) {
   if (PRECEDENCE_RE.test(String(args.content))) fail('a rule must not take precedence over another rule: move the boundary into one rule and narrow or remove the other (skill workflow:consolidate, P-007)');
   const proc = procedureSignal(args.content);
   if (proc) fail(`rule content reads as a procedure (${proc}): save the steps as a skill (save.mjs skill <name> --description "Použi, keď ..." --origin routine) and keep in the rule only the gate (MUST / MUST NOT, "skill <name>"), P-007`);
-  const existing = parseFrontmatter(readText(path.join(ctx.brainDir, rel), ''));
-  const isNew = !fs.existsSync(path.join(ctx.brainDir, rel));
+  const existing = parseFrontmatter(readText(file, ''));
+  const isNew = !fs.existsSync(file);
   // Code first (operator 2026-11-03): a new rule exists only next to the code that blocks its violation; what code cannot
   // check goes into an existing rule, not a new one.
   if (isNew && args.unenforced !== undefined) fail('a new rule needs --enforced-by <file>[:<symbol>]: rules are unreliable, so a new one exists only next to the code that blocks its violation; what code cannot check belongs in an existing rule (extend it: save.mjs rule <existing> --content ...), not a new one');
-  const enforcement = enforcementOf(ctx, existing.data);
-  ruleGate(ctx, name, String(args.content), existing.body || '', isNew, enforcement.enforced_by?.join(', '));
+  const enforcement = enforcementOf(ctx, existing.data, args, target ? [target.dir] : []);
+  ruleGate(ctx, name, String(args.content), existing.body || '', isNew, enforcement.enforced_by?.join(', '), target);
   const data = { key: `rule-${name}`, title: args.title || existing.data.title || name, aliases: asList(args.aliases), ...enforcement, created: existing.data.created || today(), updated: today() };
-  const res = brainWrite(ctx, { ops: [{ path: rel, content: serializeFrontmatter(data, String(args.content)) }], message: `save rule ${name}` });
-  finish(ctx, res, [rel]);
+  const op = { path: rel, content: serializeFrontmatter(data, String(args.content)) };
+  if (target) out(formatRepoWrite(repoWrite(ctx, repo, { ops: [op], message: `save rule ${name}` })));
+  else finish(ctx, brainWrite(ctx, { ops: [op], message: `save rule ${name}` }), [rel]);
   out('rule check (P-007): if it says how or when to do something (order of work, how to deploy or update), it is a skill with a trigger in its description; the rule keeps only the gate');
 }
 
@@ -705,7 +729,7 @@ try {
   if (foreign) fail(foreign);
   const handlers = { memory: saveMemory, decision: saveDecision, rule: saveRule, exception: saveException, skill: saveSkill, handover: saveHandover, docs: saveDocs, move: saveMove };
   if (!handlers[category]) fail('usage: save.mjs memory|decision|rule|exception|skill|handover|docs|move ...');
-  if (args.repo !== undefined && !['memory', 'decision', 'skill', 'handover', 'move'].includes(category)) fail(`--repo: ${category} lives in brain only (memory, decision, skill, handover and move take --repo)`);
+  if (args.repo !== undefined && !['memory', 'decision', 'rule', 'skill', 'handover', 'move'].includes(category)) fail(`--repo: ${category} lives in brain only (memory, decision, rule, skill, handover and move take --repo)`);
   handlers[category](ctx);
 } catch (err) {
   fail(err.message);

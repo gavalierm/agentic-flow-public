@@ -1,4 +1,5 @@
-// Assemble rules from layers: core (workflow) -> harness -> machine -> project -> local (P-035, P-022).
+// Assemble rules from layers: core (workflow) -> exceptions (harness, machine, project, local) -> rules of the domain brain,
+// the project brain and the repo (P-035, P-022, D-0025).
 import path from 'node:path';
 import { PLUGIN_ROOT, listFiles, readText } from './util.mjs';
 import { normalizeKey } from './keys.mjs';
@@ -46,12 +47,28 @@ export function layerFiles(brainDir, { harness = 'claude-code', machine = machin
   ];
 }
 
+/** Folders of project rules in order (D-0025): domain brain, project brain when it is another one, `<repo>/agentic/rules/`. */
+export function ruleLayers(brainDir, layers = null) {
+  if (!layers?.inDomain) return brainDir ? [{ dir: path.join(brainDir, 'rules'), own: true, heading: PROJECT_RULES }] : [];
+  return [
+    { dir: path.join(layers.domainBrain, 'rules'), own: !layers.projectBrain, heading: layers.projectBrain ? 'Pravidlá domény (brain `rules/`):' : PROJECT_RULES },
+    layers.projectBrain && { dir: path.join(layers.projectBrain, 'rules'), own: true, heading: PROJECT_RULES },
+    layers.repo && { dir: path.join(layers.repo.knowledge, 'rules'), own: false, repo: layers.repo.name, heading: `Pravidlá repa ${layers.repo.name} (\`agentic/rules/\`):` },
+  ].filter(Boolean);
+}
+const PROJECT_RULES = 'Pravidlá projektu (brain `rules/`):';
+const ruleFiles = (dir) => listFiles(dir, (f) => f.endsWith('.md') && path.basename(f) !== 'README.md', { recursive: false });
+
 /**
+ * `layers` (loadContext): in a domain the exceptions come only from the domain brain and the rules from every layer of
+ * ruleLayers; the project layer (its own brain, the repo) has no exceptions, its exception files are reported as refused.
+ * Without layers, or outside a domain: exceptions and rules of brainDir, as before.
+ *
  * `foreign(rel)`: name of the operator who added the project rule `rules/<file>` when it is another one (scripts/authors.mjs);
  * `shown` then carries `[by <name>]` on its heading. `text` stays without it: the hash, the sections and the limits are the
  * same on every machine.
  */
-export function assembleRules({ brainDir = null, policy, harness = 'claude-code', machine = machineName(), coreDir = path.join(PLUGIN_ROOT, 'rules'), foreign = null } = {}) {
+export function assembleRules({ brainDir = null, policy, harness = 'claude-code', machine = machineName(), coreDir = path.join(PLUGIN_ROOT, 'rules'), foreign = null, layers = null } = {}) {
   const immutable = policy?.immutable_principles || [];
   const core = listFiles(coreDir, (f) => f.endsWith('.md') && path.basename(f) !== 'README.md', { recursive: false });
   const blocks = [];
@@ -64,10 +81,11 @@ export function assembleRules({ brainDir = null, policy, harness = 'claude-code'
   const applied = [];
   const errors = [];
   const extra = [];
-  for (const { layer, file } of layerFiles(brainDir, { harness, machine })) {
+  const exceptionsBrain = layers?.inDomain ? layers.domainBrain : brainDir;
+  for (const { layer, file } of layerFiles(exceptionsBrain, { harness, machine })) {
     const text = readText(file, null);
     if (text === null) continue;
-    const rel = path.relative(brainDir, file).split(path.sep).join('/');
+    const rel = path.relative(exceptionsBrain, file).split(path.sep).join('/');
     const { entries, errors: e } = parseExceptions(text, rel, immutable);
     errors.push(...e);
     for (const entry of entries) {
@@ -81,22 +99,29 @@ export function assembleRules({ brainDir = null, policy, harness = 'claude-code'
       if (prev) prev.layer = layer; else applied.push({ id: entry.id, layer });
     }
   }
-  // Project rules: one record per file in <brain>/rules/ (written by `save rule`, P-024, P-039).
-  const projectRules = brainDir
-    ? listFiles(path.join(brainDir, 'rules'), (f) => f.endsWith('.md') && path.basename(f) !== 'README.md', { recursive: false })
-      .map((file) => {
-        const { data, body } = parseFrontmatter(readText(file, ''));
-        const title = data.title || path.basename(file, '.md');
-        const by = foreign ? foreign(path.relative(brainDir, file).split(path.sep).join('/')) : null;
-        return body.trim() ? { text: `### ${title}\n${body.trim()}`, shown: `### ${title}${byTag(by)}\n${body.trim()}` } : null;
-      })
-      .filter(Boolean)
-    : [];
+  if (layers?.inDomain) {
+    const refused = [];
+    if (layers.projectBrain) refused.push(...layerFiles(layers.projectBrain, { harness, machine }).map((l) => l.file));
+    if (layers.repo) refused.push(...ruleFiles(path.join(layers.repo.knowledge, 'exceptions')));
+    for (const file of refused.filter((f) => readText(f, null) !== null)) {
+      errors.push(`${path.relative(path.dirname(layers.domainBrain), file).split(path.sep).join('/')}: the project layer has no exceptions, only the domain brain grants them; not applied (D-0025)`);
+    }
+  }
+  // Project rules: one record per file in rules/ of each layer (written by `save rule`, P-024, P-039, D-0025).
+  const ruleSections = ruleLayers(brainDir, layers).map(({ dir, own, heading }) => ({
+    heading,
+    rules: ruleFiles(dir).map((file) => {
+      const { data, body } = parseFrontmatter(readText(file, ''));
+      const title = data.title || path.basename(file, '.md');
+      const by = foreign && own ? foreign(`rules/${path.basename(file)}`) : null;
+      return body.trim() ? { text: `### ${title}\n${body.trim()}`, shown: `### ${title}${byTag(by)}\n${body.trim()}` } : null;
+    }).filter(Boolean),
+  }));
   const compose = (which) => {
     const parts = [];
     if (preambles.length) parts.push(preambles.join('\n\n'));
     parts.push(...blocks.map((b) => b.text.trimEnd()));
-    if (projectRules.length) parts.push('Pravidlá projektu (brain `rules/`):', ...projectRules.map((r) => r[which]));
+    for (const { heading, rules } of ruleSections) if (rules.length) parts.push(heading, ...rules.map((r) => r[which]));
     if (extra.length) parts.push('Výnimky z princípov mimo jadra:', ...extra.map((b) => b.text.trimEnd()));
     parts.push(applied.length ? `Výnimky: ${applied.map((a) => `${a.id} (${a.layer})`).join(', ')}` : 'Výnimky: žiadne');
     if (errors.length) parts.push(`Odmietnuté výnimky: ${errors.join('; ')}`);

@@ -65,21 +65,31 @@ function substitutePluginRoot(dir) {
 }
 
 /**
- * Copy brain skills (and, for Codex, workflow skills) into the generated skills directory of the harness.
+ * Copy brain skills (and, for Codex, workflow skills) into the generated skills directory of the harness. Layers in order
+ * (D-0025): workflow, the domain brain (domainBrainDir, when the project has another brain of its own), the project brain,
+ * the repos; one name has one home, a collision throws.
  * Returns { copied: [names], removed: [names], conflicts: [names] }. Throws on name conflict with workflow skills (P-024).
  */
-export function syncBrainSkills({ projectDir, brainDir, harness = 'claude-code', repoSources = [] }) {
+export function syncBrainSkills({ projectDir, brainDir, harness = 'claude-code', repoSources = [], domainBrainDir = null }) {
   const h = harnessSkills(harness);
   const target = path.join(projectDir, h.dir);
   const marker = path.join(target, GENERATED_MARKER);
   const previous = readJson(marker, { generated: [] }).generated || [];
-  const skills = brainDir ? brainSkillDirs(brainDir) : [];
+  const domainSkills = domainBrainDir && path.resolve(domainBrainDir) !== path.resolve(brainDir || '') ? brainSkillDirs(domainBrainDir) : [];
+  const own = brainDir ? brainSkillDirs(brainDir) : [];
   const workflowNames = workflowSkillNames();
-  const conflicts = skills.filter((s) => workflowNames.includes(s.name)).map((s) => s.name);
+  const conflicts = [...domainSkills, ...own].filter((s) => workflowNames.includes(s.name)).map((s) => s.name);
   if (conflicts.length) throw new Error(`brain skill name(s) collide with workflow skills: ${conflicts.join(', ')} (rename in brain, P-024)`);
   const seen = new Set();
-  const duplicates = skills.filter((s) => (seen.has(s.name) ? true : (seen.add(s.name), false))).map((s) => s.name);
-  if (duplicates.length) throw new Error(`same skill name in skills/operator and skills/agentic: ${duplicates.join(', ')} (P-032)`);
+  const twice = (list) => list.filter((s) => (seen.has(s.name) ? true : (seen.add(s.name), false))).map((s) => s.name);
+  const duplicates = twice(domainSkills);
+  if (duplicates.length) throw new Error(`same skill name in skills/operator and skills/agentic of the domain brain: ${duplicates.join(', ')} (P-032)`);
+  const inDomain = new Set(seen);
+  const ownTwice = twice(own);
+  const overDomain = ownTwice.filter((n) => inDomain.has(n));
+  if (overDomain.length) throw new Error(`project brain skill name(s) collide with domain brain skills: ${[...new Set(overDomain)].join(', ')}; one name per domain, keep one (rename or --remove, D-0025)`);
+  if (ownTwice.length) throw new Error(`same skill name in skills/operator and skills/agentic: ${ownTwice.join(', ')} (P-032)`);
+  const skills = [...domainSkills, ...own];
   // Skills of the session repo and of held code-topic worktrees (D-0002); one name has one home.
   const fromRepos = repoSkillDirs(repoSources);
   const clash = fromRepos.filter((s) => workflowNames.includes(s.name) || seen.has(s.name)).map((s) => `${s.repo}/${s.name}`);

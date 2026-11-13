@@ -4,7 +4,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PLUGIN_ROOT, readJson, writeJson, readText, writeText, toPosix } from '../../scripts/util.mjs';
-import { WORKFLOW_CONFIG, ensureWorkflowConfig, brainExists, loadPolicy, expandBrainPath, SCRATCH_DIR, NO_BRAIN_NOTE } from '../../scripts/config.mjs';
+import { WORKFLOW_CONFIG, ensureWorkflowConfig, brainExists, expandBrainPath, SCRATCH_DIR, NO_BRAIN_NOTE, projectPolicy, resolveDomain } from '../../scripts/config.mjs';
+import { policyIgnoredLine } from '../../scripts/policy-layers.mjs';
 import { commitPersonaFiles } from '../../scripts/persona.mjs';
 import { syncBrainSkills, ensureGitignore, harnessSkills } from '../../scripts/skills-sync.mjs';
 import { assembleRules } from '../../scripts/rules.mjs';
@@ -137,7 +138,11 @@ export function generateCodex({ projectDir, brainRel: brainRelArg = null }) {
   if (cfgWritten) written.push(WORKFLOW_CONFIG);
   const brainDir = brainInfo && !brainInfo.error ? brainInfo.brain : null;
   const hasBrain = brainExists(brainDir);
-  const policy = loadPolicy(hasBrain ? brainDir : null);
+  // The composed policy of the project (D-0025), as the Claude Code adapter.
+  const composed = projectPolicy({ projectDir, brainDir: hasBrain ? brainDir : null, domain: resolveDomain(projectDir) });
+  const policy = composed.policy;
+  const ignoredLine = policyIgnoredLine(composed.ignored);
+  if (ignoredLine) notes.push(ignoredLine);
 
   // .codex/config.toml (committed). Whole file is generated; a foreign file is not merged (TOML tables cannot be
   // concatenated safely): other settings belong to the user config ~/.codex/config.toml.
@@ -156,7 +161,7 @@ export function generateCodex({ projectDir, brainRel: brainRelArg = null }) {
   written.push('.codex/hooks.json (local)');
 
   // AGENTS.md (committed): rules assembled with the codex harness layer.
-  const rules = assembleRules({ brainDir: hasBrain ? brainDir : null, policy, harness: 'codex' });
+  const rules = assembleRules({ brainDir: hasBrain ? brainDir : null, policy, harness: 'codex', layers: composed.layers });
   if (rules.overLimit.length) notes.push(`limit: ${rules.overLimit.join('; ')} (P-022)`);
   if (rules.errors.length) notes.push(`refused exceptions: ${rules.errors.join('; ')}`);
   const agentsFile = path.join(projectDir, 'AGENTS.md');
@@ -169,7 +174,7 @@ export function generateCodex({ projectDir, brainRel: brainRelArg = null }) {
   if (hasBrain && brainInfo.persona) notes.push(commitPersonaFiles({ brainDir, policy, files: [WORKFLOW_CONFIG, '.codex/config.toml', 'AGENTS.md', '.gitignore'] }));
 
   // .agents/skills/ (local): workflow skills with the plugin path substituted + brain skills.
-  const sync = syncBrainSkills({ projectDir, brainDir: hasBrain ? brainDir : null, harness: 'codex', repoSources: hasBrain ? adapterSkillSources(projectDir, brainDir) : [] });
+  const sync = syncBrainSkills({ projectDir, brainDir: hasBrain ? brainDir : null, harness: 'codex', repoSources: hasBrain ? adapterSkillSources(projectDir, brainDir) : [], domainBrainDir: composed.layers.projectBrain ? composed.layers.domainBrain : null });
   written.push(`${harnessSkills('codex').gitignore} (local)`);
   notes.push(`skills copied to ${harnessSkills('codex').gitignore}: ${sync.copied.join(', ')}`);
   if (!brainInfo) notes.push(NO_BRAIN_NOTE.replace('<harness>', 'codex'));

@@ -7,7 +7,7 @@ import { assembleRules } from '../scripts/rules.mjs';
 const args = parseArgs(process.argv.slice(2));
 try {
   const ctx = loadContext({ project: args.project, requireBrain: false });
-  const res = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: args.harness || 'claude-code', machine: args.machine });
+  const res = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: args.harness || 'claude-code', machine: args.machine, layers: ctx.layers });
   if (args.check) {
     process.stdout.write(`rules: ${res.lines} lines, ${res.chars} chars; exceptions: ${res.applied.length}; refused: ${res.errors.length}\n`);
     for (const e of res.errors) process.stdout.write(`refused: ${e}\n`);

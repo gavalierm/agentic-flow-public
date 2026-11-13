@@ -152,12 +152,14 @@ Doména je priečinok, v ktorom agenti smú zapisovať (P-052): persona a repá,
 ~/agentic/<Doména>/        prvé písmeno veľké (Bob, Kubo); repá v nej malými písmenami
   .agentic-domain          {"brain": "agent-<meno>"}  (relatívne ku koreňu domény)
   agent-<meno>/            brain persony (.workflow.json "brain": ".")
-  <repo>/                  spravované repo; vedomosť repa v <repo>/agentic/ (HANDOVER.md, decisions/, runbooks/, memory/, skills/)
+  <repo>/                  spravované repo; vedomosť repa v <repo>/agentic/ (HANDOVER.md, decisions/, runbooks/, memory/, skills/, rules/, policy.json)
   .worktrees/<repo>/<téma>/  kópie kódu kódových tém (git worktree, vetva topic/<téma>)
 ~/services/<repo>/         nainštalované vydanie (checkout tagu), z ktorého bežia služby; súbory sa tu nemenia, iba checkout tagu
 ```
 
 Zápis mimo domény hook zamietne (nepýta sa). Výnimky má brain domény v `policy.json`: `{"domain": {"allow_outside": ["~/cesta", "/etc", "sudo"]}}` (`sudo` povolí príkaz sudo). Platí aj pre `~/services/<repo>` (nainštalované vydanie): inak sa mení iba inštaláciou tagu, ale záznam v `allow_outside` ho povolí. Značku `.agentic-domain` agent nezmení.
+
+Vrstvy v doméne (D-0025). Politika: plugin, `policy.json` brainu domény, potom projektová vrstva (`policy.json` vlastného brainu projektu, ak to nie je brain domény, a `<repo>/agentic/policy.json`). Projektová vrstva iba sprísňuje: zoznamy zákazov a otázok (`harness.deny_*`, `denied_tools`, `ask_commands`, `immutable_principles`) dopĺňa, zoznamy povolení a výnimiek (`domain.allow_outside`, `ask_commands_except`, `logs.readonly_commands`, `subagent_stop_exempt_agent_types`) iba zužuje, limity (`limits.*`, prahy `destructive`) iba znižuje a `harness.native_memory` iba vypína; ostatné kľúče (modely, príkazy, `workflow_version`, `maintainer` …) ignoruje a štart session aj adaptér to vypíšu riadkom `policy: project layer ignored (only tightening): …`. Pravidlá: jadro workflow, výnimky (iba z brainu domény), `rules/` brainu domény, `rules/` brainu projektu, `<repo>/agentic/rules/*.md` (`save.mjs rule <meno> --repo [<repo>]`); výnimky v projektovej vrstve sa neuplatnia a vypíšu sa medzi odmietnutými. Skilly: plugin, brain domény, projektová vrstva; rovnaké meno v dvoch vrstvách je chyba. `.workflow.json` projektu v doméne má pole `domain` (cesta ku koreňu domény relatívne k repu, zapíše ho adaptér); keď nesedí s doménou nad projektom, adaptér skončí chybou s oboma cestami. Projekt mimo domény má jedinú vrstvu, svoj brain.
 
 ### Premenovanie projektu
 

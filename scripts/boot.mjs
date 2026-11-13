@@ -10,6 +10,7 @@ import { recordAuthors, foreignAuthor } from './authors.mjs';
 import { heldTopics, mailboxTopics } from './topic.mjs';
 import { mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics, isMainTopic, noticesCount, discussionMail } from './comms.mjs';
 import { syncBrainSkills } from './skills-sync.mjs';
+import { policyIgnoredLine } from './policy-layers.mjs';
 import { gitAccessProblem } from './brain.mjs';
 import { readTopics } from './records.mjs';
 import { undeliveredIssues } from './issue-watch.mjs';
@@ -157,11 +158,15 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   const who = ctx.brainDir ? authors || recordAuthors(ctx.brainDir) : null;
 
   // 1. rules + applied exceptions (a rule of another operator applies to the project too, marked [by <name>])
-  const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness, foreign: (rel) => foreignAuthor(who, rel) });
+  const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness, foreign: (rel) => foreignAuthor(who, rel), layers: ctx.layers });
   if (includeRules && !rulesHook) parts.push(`${BOOT_MARKERS[0]}\n${rules.shown.trim()}`);
   // On resume the rules hook injects nothing when a hash is recorded, so the hash stays that of the rules in the transcript.
   const recordRules = includeRules && !(rulesHook && source === 'resume');
   if (rules.overLimit.length) notices.push(`limit: ${rules.overLimit.join('; ')} (P-022)`);
+  // Layers (D-0025): what the project layer could not loosen, and a "domain" in .workflow.json that does not match.
+  const ignoredLine = policyIgnoredLine(ctx.policyIgnored);
+  if (ignoredLine) notices.push(ignoredLine);
+  if (ctx.domainError) notices.push(`domain: ${ctx.domainError}`);
 
   // 3. status line (+ the waiting mail as mechanical lines, P-044; + handover of the held topic after compaction, P-026)
   const info = statusInfo(ctx);
@@ -212,7 +217,7 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   // skills of the brain into the project (P-017)
   if (ctx.brainDir) {
     try {
-      syncBrainSkills({ projectDir: ctx.projectDir, brainDir: ctx.brainDir, harness, repoSources: skillSources(ctx) });
+      syncBrainSkills({ projectDir: ctx.projectDir, brainDir: ctx.brainDir, harness, repoSources: skillSources(ctx), domainBrainDir: ctx.layers?.projectBrain ? ctx.layers.domainBrain : null });
     } catch (err) {
       notices.push(err.message);
     }

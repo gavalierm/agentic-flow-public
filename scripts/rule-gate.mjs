@@ -5,7 +5,7 @@
 import path from 'node:path';
 import { listFiles, readText, PLUGIN_ROOT } from './util.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
-import { splitBlocks } from './rules.mjs';
+import { splitBlocks, ruleLayers } from './rules.mjs';
 import { normalizeKey } from './keys.mjs';
 
 /** Share of the new rule's word stems found in an existing rule at which they are one subject. */
@@ -33,18 +33,22 @@ export function onlyCondenses(text, oldText) {
   return [...stems(text)].every((s) => old.has(s));
 }
 
-/** Workflow principles and project rules: [{ id, source, text }]. */
-export function ruleCorpus({ brainDir = null, coreDir = path.join(PLUGIN_ROOT, 'rules'), skip = null } = {}) {
+/**
+ * Workflow principles and project rules: [{ id, source, text }]. With layers (D-0025) the rules of every layer
+ * (rules.mjs ruleLayers): the domain brain, the project brain, the repo; a repo rule has the id `<repo>/<name>`.
+ */
+export function ruleCorpus({ brainDir = null, coreDir = path.join(PLUGIN_ROOT, 'rules'), skip = null, layers = null } = {}) {
   const corpus = [];
   for (const file of listFiles(coreDir, (f) => f.endsWith('.md') && path.basename(f) !== 'README.md', { recursive: false })) {
     for (const b of splitBlocks(readText(file, '')).blocks) corpus.push({ id: b.id, source: 'workflow', text: b.text });
   }
-  if (brainDir) {
-    for (const file of listFiles(path.join(brainDir, 'rules'), (f) => f.endsWith('.md') && path.basename(f) !== 'README.md', { recursive: false })) {
-      const id = path.basename(file, '.md');
+  for (const layer of ruleLayers(brainDir, layers)) {
+    for (const file of listFiles(layer.dir, (f) => f.endsWith('.md') && path.basename(f) !== 'README.md', { recursive: false })) {
+      const name = path.basename(file, '.md');
+      const id = layer.repo ? `${layer.repo}/${name}` : name;
       if (id === skip) continue;
       const { data, body } = parseFrontmatter(readText(file, ''));
-      corpus.push({ id, source: 'project', text: `${data.title || id}\n${body}` });
+      corpus.push({ id, source: layer.repo ? 'repo' : 'project', text: `${data.title || name}\n${body}` });
     }
   }
   return corpus;

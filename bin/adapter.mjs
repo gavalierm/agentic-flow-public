@@ -6,7 +6,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PLUGIN_ROOT, readJson, writeJson, shortSha, parseArgs, fail } from '../scripts/util.mjs';
-import { loadContext, enabledPluginsFor, channelOf, WORKFLOW_CONFIG, resolveTargetProject, ensureWorkflowConfig, brainExists, loadPolicy, expandBrainPath, PERSONA_BRAIN, SCRATCH_DIR, NO_BRAIN_NOTE } from '../scripts/config.mjs';
+import { loadContext, enabledPluginsFor, channelOf, WORKFLOW_CONFIG, resolveTargetProject, ensureWorkflowConfig, brainExists, expandBrainPath, PERSONA_BRAIN, SCRATCH_DIR, NO_BRAIN_NOTE, projectPolicy, resolveDomain } from '../scripts/config.mjs';
+import { policyIgnoredLine } from '../scripts/policy-layers.mjs';
 import { commitPersonaFiles } from '../scripts/persona.mjs';
 import { syncBrainSkills, ensureGitignore } from '../scripts/skills-sync.mjs';
 import { adapterSkillSources } from '../scripts/repo-knowledge.mjs';
@@ -55,7 +56,11 @@ export function generateClaudeCode({ projectDir, brainRel: brainRelArg = null, c
   if (cfgWritten) written.push(WORKFLOW_CONFIG);
   const brainDir = brainInfo && !brainInfo.error ? brainInfo.brain : null;
   const hasBrain = brainExists(brainDir);
-  const policy = loadPolicy(hasBrain ? brainDir : null);
+  // The composed policy of the project (D-0025): settings come from what the domain and the project layer allow.
+  const composed = projectPolicy({ projectDir, brainDir: hasBrain ? brainDir : null, domain: resolveDomain(projectDir) });
+  const policy = composed.policy;
+  const ignoredLine = policyIgnoredLine(composed.ignored);
+  if (ignoredLine) notes.push(ignoredLine);
 
   // .claude/settings.json: managed keys replaced, other keys preserved.
   const settingsFile = path.join(projectDir, '.claude', 'settings.json');
@@ -85,7 +90,7 @@ export function generateClaudeCode({ projectDir, brainRel: brainRelArg = null, c
 
   if (hasBrain) {
     // Repo skills (<repo>/agentic/skills) too: without them every deploy removed them until the next start or save (mojprojekt-web 2026-11-09).
-    const sync = syncBrainSkills({ projectDir, brainDir, repoSources: adapterSkillSources(projectDir, brainDir) });
+    const sync = syncBrainSkills({ projectDir, brainDir, repoSources: adapterSkillSources(projectDir, brainDir), domainBrainDir: composed.layers.projectBrain ? composed.layers.domainBrain : null });
     notes.push(`brain skills copied to .claude/skills/: ${sync.copied.length ? sync.copied.join(', ') : 'none'}`);
   } else if (!brainInfo) {
     notes.push(NO_BRAIN_NOTE.replace('<harness>', 'claude-code'));

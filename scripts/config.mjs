@@ -2,7 +2,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PLUGIN_ROOT, readJson, writeJson, gitToplevel, git, isInside, realPathLoose } from './util.mjs';
+import { PLUGIN_ROOT, readJson, writeJson, gitToplevel, git, isInside, realPathLoose, toPosix } from './util.mjs';
+import { tightenPolicy } from './policy-layers.mjs';
 
 export const WORKFLOW_CONFIG = '.workflow.json';
 export const LOCAL_CONFIG = path.join('local', 'workflow.json');
@@ -207,6 +208,17 @@ export function ensureWorkflowConfig(projectDir, brainRelArg = null) {
     written = true;
     brainInfo = resolveBrain(projectDir);
   }
+  // The domain (D-0025), relative to the main checkout like brain: a code topic copy finds the same one. A "domain" that
+  // does not match the domain found above the project throws here (resolveDomain), so the adapter stops with both paths.
+  const file = path.join(projectDir, WORKFLOW_CONFIG);
+  if (fs.existsSync(file)) {
+    const domain = resolveDomain(projectDir);
+    const current = readJson(file, {});
+    if (domain && current && typeof current === 'object' && typeof current.domain !== 'string') {
+      writeJson(file, { ...current, domain: toPosix(path.relative(mainCheckout(projectDir), domain.root)) || '.' });
+      written = true;
+    }
+  }
   return { brainInfo, written };
 }
 
@@ -222,6 +234,7 @@ export function brainExists(brainDir) {
   return !!brainDir && fs.existsSync(path.join(brainDir, 'topics')) && fs.existsSync(path.join(brainDir, '.git'));
 }
 
+/** Policy of one brain: the plugin policy with `<brain>/policy.json` merged over it (brain-level commands, the domain brain). */
 export function loadPolicy(brainDir) {
   const base = readJson(path.join(PLUGIN_ROOT, 'policy', 'policy.json'));
   if (brainDir) {
@@ -229,6 +242,52 @@ export function loadPolicy(brainDir) {
     return deepMerge(base, extra);
   }
   return base;
+}
+
+const samePath = (a, b) => !!a && !!b && realPathLoose(a) === realPathLoose(b);
+// Literal: repo-knowledge.mjs (PROJECT_KNOWLEDGE) imports this module.
+const REPO_KNOWLEDGE_DIR = 'agentic';
+
+/**
+ * Layers of a project's policy, rules and skills (D-0016, D-0025). In a domain whose brain exists: the domain brain, the
+ * project's own brain when it is another one, and the repo of the session (`<repo>/agentic/`, the checkout it runs in,
+ * a code topic copy included) when the project is a repo of the domain and not a brain. Outside a domain (or without its
+ * brain) inDomain is false and the project's brain is the only layer, as before.
+ */
+export function policyLayers({ projectDir, brainDir = null, domain = null }) {
+  if (!domain?.brain || !brainExists(domain.brain)) return { inDomain: false, domainBrain: null, projectBrain: null, repo: null };
+  const projectBrain = brainDir && !samePath(brainDir, domain.brain) ? brainDir : null;
+  let repo = null;
+  if (projectDir) {
+    const main = mainCheckout(projectDir);
+    if (!samePath(main, domain.brain) && !samePath(main, brainDir) && samePath(path.dirname(main), domain.root)) {
+      repo = { name: path.basename(main), dir: path.resolve(projectDir), knowledge: path.join(path.resolve(projectDir), REPO_KNOWLEDGE_DIR) };
+    }
+  }
+  return { inDomain: true, domainBrain: domain.brain, projectBrain, repo };
+}
+
+/**
+ * Policy of a project (D-0025): plugin -> domain brain (merged) -> project layer (its own brain's policy.json when it is
+ * not the domain brain, then `<repo>/agentic/policy.json`), the project layer only tightening (tightenPolicy). Outside a
+ * domain: plugin -> project brain, as loadPolicy. Returns { policy, ignored: [{ key, why, source }], layers }.
+ */
+export function projectPolicy({ projectDir, brainDir = null, domain = null, layers = policyLayers({ projectDir, brainDir, domain }) }) {
+  if (!layers.inDomain) return { policy: loadPolicy(brainDir), ignored: [], layers };
+  let policy = loadPolicy(layers.domainBrain);
+  const ignored = [];
+  const files = [];
+  if (layers.projectBrain) files.push({ file: path.join(layers.projectBrain, 'policy.json'), source: `${path.basename(layers.projectBrain)}/policy.json` });
+  if (layers.repo) files.push({ file: path.join(layers.repo.knowledge, 'policy.json'), source: `${layers.repo.name}/${REPO_KNOWLEDGE_DIR}/policy.json` });
+  for (const { file, source } of files) {
+    if (!fs.existsSync(file)) continue;
+    const layer = readJson(file, null);
+    if (layer === null) { ignored.push({ key: '(file)', why: 'not valid JSON', source }); continue; }
+    const res = tightenPolicy(policy, layer);
+    policy = res.policy;
+    ignored.push(...res.ignored.map((i) => ({ ...i, source })));
+  }
+  return { policy, ignored, layers };
 }
 
 function deepMerge(a, b) {
@@ -382,7 +441,26 @@ export const WORKTREES_DIR = '.worktrees';
 export function servicesDir(env = process.env) {
   return env.WORKFLOW_SERVICES_DIR || path.join(env.HOME || os.homedir(), 'services');
 }
-export function resolveDomain(projectDir, home = os.homedir()) {
+/**
+ * The domain of a project (D-0002). `"domain"` in .workflow.json (written by the adapter, D-0025) decides first: relative
+ * to the main checkout like brain, so a code topic copy (`<domain>/.worktrees/<repo>/<id>`) finds the same domain. A
+ * "domain" folder without DOMAIN_MARKER, or one that is not the domain found above the project, throws with both paths;
+ * `{ field: false }` skips the field (a hook keeps the domain above the project and reports the error instead).
+ */
+export function resolveDomain(projectDir, home = os.homedir(), { field = true } = {}) {
+  const up = domainAbove(projectDir, home);
+  const rel = field ? readWorkflowConfig(projectDir).domain : undefined;
+  if (typeof rel !== 'string' || !rel.trim()) return up;
+  const cfgFile = path.join(projectDir, WORKFLOW_CONFIG);
+  if (path.isAbsolute(rel) || /^[A-Za-z]:[\\/]/.test(rel)) throw new Error(`absolute domain path "${rel}" is not allowed in ${cfgFile}; it is relative to the project like brain (P-024)`);
+  const root = path.resolve(mainCheckout(projectDir), rel);
+  const above = up ? `the domain found above the project is ${up.root}` : `no ${DOMAIN_MARKER} lies above the project`;
+  if (!fs.existsSync(path.join(root, DOMAIN_MARKER))) throw new Error(`domain "${rel}" in ${cfgFile} is ${root}, which has no ${DOMAIN_MARKER}; ${above}: fix "domain" in ${WORKFLOW_CONFIG} (D-0025)`);
+  if (!up || !samePath(up.root, root)) throw new Error(`domain "${rel}" in ${cfgFile} is ${root}, but ${above}: fix "domain" in ${WORKFLOW_CONFIG} or move the project into its domain (D-0025)`);
+  return up;
+}
+
+function domainAbove(projectDir, home) {
   for (let p = path.resolve(projectDir); ; p = path.dirname(p)) {
     const file = path.join(p, DOMAIN_MARKER);
     if (fs.existsSync(file)) {
@@ -428,6 +506,21 @@ export function loadContext({ project, requireBrain = true } = {}) {
       : brainInfo.error || `brain not found at ${brainInfo.brainRel}`;
     throw new Error(`brain unavailable: ${reason}`);
   }
+  // A wrong "domain" in .workflow.json stops a command; a hook (requireBrain false) keeps the domain above the project, so
+  // its guards still bound the writes, and the start reports domainError.
+  let domain = null;
+  let domainError = null;
+  try { domain = resolveDomain(projectDir); } catch (err) {
+    if (requireBrain) throw err;
+    domainError = err.message;
+    domain = resolveDomain(projectDir, os.homedir(), { field: false });
+  }
+  const composed = projectPolicy({ projectDir, brainDir: ok ? brainDir : null, domain });
+  // Write exceptions outside the domain from the composed policy: a project layer can only drop them (intersect).
+  if (domain && composed.layers.inDomain) {
+    const allow = allowOutside(composed.policy);
+    domain = { ...domain, allowOutside: allow.paths, sudo: allow.sudo };
+  }
   return {
     projectDir,
     projectName: path.basename(projectDir),
@@ -435,10 +528,13 @@ export function loadContext({ project, requireBrain = true } = {}) {
     brainInfo,
     persona: !!brainInfo?.persona,
     config: readWorkflowConfig(projectDir),
-    policy: loadPolicy(ok ? brainDir : null),
+    policy: composed.policy,
+    policyIgnored: composed.ignored,
+    layers: composed.layers,
     thread: threadId(),
     pluginRoot: PLUGIN_ROOT,
-    domain: resolveDomain(projectDir),
+    domain,
+    domainError,
   };
 }
 

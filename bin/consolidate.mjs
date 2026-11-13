@@ -76,7 +76,7 @@ export function report(ctx) {
   const byOrigin = { operator: [], derived: [], observed: [], unknown: [] };
   for (const r of memory) (byOrigin[r.origin] || byOrigin.unknown).push(r.path);
   // P-022: assembled rules (core + project) against the limit, with the project rules the agent may condense.
-  const assembled = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code' });
+  const assembled = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code', layers: ctx.layers });
   const rulesDir = path.join(ctx.brainDir, 'rules');
   const projectRules = fs.existsSync(rulesDir) ? fs.readdirSync(rulesDir).filter((f) => f.endsWith('.md') && f !== 'README.md').map((f) => ({ name: f.replace(/\.md$/, ''), chars: fs.readFileSync(path.join(rulesDir, f), 'utf8').length })).sort((a, b) => b.chars - a.chars) : [];
   const rules = { chars: assembled.chars, lines: assembled.lines, over: assembled.overLimit, project: projectRules };
