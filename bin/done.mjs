@@ -18,7 +18,7 @@ import { registerTopic } from '../scripts/comms.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
 import { asList } from '../scripts/frontmatter.mjs';
 import { PROJECT_KNOWLEDGE, REPO_HANDOVER } from '../scripts/repo-knowledge.mjs';
-import { scratchReminder } from '../scripts/materialy.mjs';
+import { scratchReminder, citedScratch, RESULTS_FILE } from '../scripts/materialy.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const out = (s) => process.stdout.write(s + '\n');
@@ -203,6 +203,16 @@ function mergeCode(ctx, id, topic, { keepCopy = !!args['keep-copy'], label = `do
   return { merged: true, note: `${branch} merged into ${mainBranch}${keepCopy ? '' : `; copy ${copy} removed`}` };
 }
 
+/** Reminder of scratch/ paths cited in the topic's worker results that still exist only there (D-0032 B1), or null. */
+function citedResults(ctx, id) {
+  let text = '';
+  try { text = fs.readFileSync(path.join(ctx.brainDir, 'topics', 'archive', id, RESULTS_FILE), 'utf8'); } catch { return null; }
+  const cited = ctx.projectDir ? citedScratch(ctx.projectDir, text) : [];
+  if (!cited.length) return null;
+  const shown = cited.slice(0, 5).join(', ') + (cited.length > 5 ? `, … (+${cited.length - 5})` : '');
+  return `results: ${cited.length} scratch/ path(s) cited in worker results of ${id} exist only in scratch/ (not in git): ${shown}. Move data that cannot be fetched again to materialy/${id}/ (skill workflow:materialy); the rest may stay (D-0032)`;
+}
+
 function doneTopic(ctx, id) {
   guard(ctx, id);
   // An answer of the operator in a dialog of this turn is the operator's instruction, the message never is (P-047; D-0011:
@@ -225,6 +235,8 @@ function doneTopic(ctx, id) {
   out(`topic ${id} closed and archived. Start a new session for the next topic (P-026).`);
   const scratch = scratchReminder(ctx.projectDir, unitStart(ctx, id, topic), id);
   if (scratch) out(scratch);
+  const cited = citedResults(ctx, id);
+  if (cited) out(cited);
   // The mail closes the topic too: new mail gets 410 at once, waiting mail bounces to its senders (alice 2026-11-02).
   const comms = registerTopic(ctx, id, { close: true });
   if (comms.ok) out(`mail: topic ${id} closed in the mail service (new mail refused, waiting mail returned to the senders)`);

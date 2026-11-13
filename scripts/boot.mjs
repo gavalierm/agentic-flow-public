@@ -15,6 +15,7 @@ import { gitAccessProblem } from './brain.mjs';
 import { readTopics } from './records.mjs';
 import { undeliveredIssues } from './issue-watch.mjs';
 import { sessionKnowledgeSources, skillSources, KNOWLEDGE_KINDS, REPO_HANDOVER } from './repo-knowledge.mjs';
+import { HANDOVER_NONE_LINE } from './protocol.mjs';
 
 export const BOOT_MARKERS = ['## Pravidlá', '## Stav vlákna', '## Index pamäte', '## Index rozhodnutí', '## Otvorené témy', '## Workflow'];
 
@@ -301,7 +302,7 @@ export function statusBlockInstruction(block, unknown = false, project = '<proje
   const n = block.split('\n').length;
   // The question is only for an unknown topic: a prompt that names the topic (claimed before the reply) is not asked again.
   const known = unknown ? `\nThis block is only for a topic that stays unknown. If the operator's prompt names the topic or starts new work, claim that topic or create it (\`topic.mjs create <id> --subject "<subject>" --class web|code|ops|discussion\` claims it, skill workflow:topic) before your first reply, and start that reply instead with \`${project} / <id>\` (and the \`Pošta:\` line if shown above), without the list and without \`Aká bude téma?\`; asking for a topic that is known is wrong (P-050).` : '';
-  return `status block (P-050): your first reply in this session MUST start with exactly the next ${n} lines, verbatim, before anything else (no tags, no code fence)${unknown ? ', unless the topic is known (below)' : ''}; later replies MUST NOT repeat them:\n${block}\n(end of status block)${known}${unknown ? '\nA reply that leaves the topic question open ends with the line `Stav: otázka` (P-061).' : ''}`;
+  return `status block (P-050): your first reply in this session MUST start with exactly the next ${n} lines, verbatim, before anything else (no tags, no code fence)${unknown ? ', unless the topic is known (below)' : ''}; later replies MUST NOT repeat them:\n${block}\n(end of status block)${known}${unknown ? `\nA reply that leaves the topic question open ends with the lines \`${HANDOVER_NONE_LINE}\` and \`Stav: otázka\` (P-061).` : ''}`;
 }
 
 /** All open topics, one line each (P-021 item 6); the limit is reported through index warnings. */

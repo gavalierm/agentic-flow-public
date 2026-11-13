@@ -2,6 +2,7 @@
 // the size limit (a file over materialy_max_mb never goes to git, only a record of it) and the check of that limit.
 // Everything else (what is saved, where, shared materials) is the rule P-062 and the skill `materialy`.
 import crypto from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isInside } from './util.mjs';
@@ -114,4 +115,52 @@ export function scratchReminder(projectDir, sinceMs, topic) {
   if (!count) return null;
   const shown = files.slice(0, 5).join(', ') + (count > 5 ? `, … (+${count - 5})` : '');
   return `scratch: ${count} file(s) changed since ${new Date(sinceMs).toISOString().slice(0, 16)} are only in scratch/ (not in git): ${shown}. Inputs from outside and results of work move now to materialy/${topic || '<téma>'}/ (skill workflow:materialy), procedures to a skill; intermediate results stay (P-062, P-052)`;
+}
+
+// D-0032 (knowledge point 4): a worker result lived only in the conversation; the hook keeps it with the topic.
+export const RESULTS_FILE = 'results.md';
+
+/** The first line of the worker task: the first non-empty, non-heading line of the first user message of its transcript. */
+export function workerTaskLine(file) {
+  let text = '';
+  try {
+    const fd = fs.openSync(file, 'r');
+    try { const buf = Buffer.alloc(256 * 1024); text = buf.toString('utf8', 0, fs.readSync(fd, buf, 0, buf.length, 0)); } finally { fs.closeSync(fd); }
+  } catch { return ''; }
+  for (const line of text.split('\n')) {
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry?.type !== 'user' && entry?.message?.role !== 'user') continue;
+    const c = entry?.message?.content;
+    const body = typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => (x?.type === 'text' ? x.text : '')).join('\n') : '';
+    const first = body.split('\n').map((l) => l.trim()).find((l) => l && !l.startsWith('#'));
+    if (first) return first.slice(0, 200);
+  }
+  return '';
+}
+
+/** One entry of topics/<id>/results.md: a heading (time, agent, task line) and the result as returned. */
+export function resultEntry({ at, agent, task, result }) {
+  return `\n## ${at} ${agent}${task ? ` – ${task.replace(/\s+/g, ' ')}` : ''}\n\n${String(result || '').trim()}\n`;
+}
+
+const SCRATCH_REF = /(?:^|[\s`'"(])((?:\/[^\s`'")]+\/)?scratch\/[^\s`'"),;]+)/g;
+
+/** scratch/ paths cited in a results.md text that still exist under the project (only there, not in git): relative paths. */
+export function citedScratch(projectDir, text) {
+  const seen = new Set();
+  for (const m of String(text || '').matchAll(SCRATCH_REF)) {
+    let p = m[1].replace(/[.:]+$/, '');
+    if (path.isAbsolute(p)) { if (!isInside(path.join(projectDir, 'scratch'), p)) continue; p = path.relative(projectDir, p); }
+    if (!p.startsWith('scratch/') || p === 'scratch/') continue;
+    if (fs.existsSync(path.join(projectDir, p))) seen.add(p.split(path.sep).join('/'));
+  }
+  return [...seen];
+}
+
+/** Untracked files under docs/ and materialy/ of a git repo (content not in git): relative paths, [] when clean or no git. */
+export function untrackedKnowledge(dir) {
+  const r = spawnSync('git', ['status', '--porcelain', '--untracked-files=all', '--', 'docs', 'materialy'], { cwd: dir, encoding: 'utf8' });
+  if (r.status !== 0) return [];
+  return r.stdout.split('\n').filter((l) => l.startsWith('?? ')).map((l) => l.slice(3).replace(/^"|"$/g, ''));
 }

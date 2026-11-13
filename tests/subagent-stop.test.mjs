@@ -80,7 +80,7 @@ test('P-028: a worker result with Failures is logged for error list; "none" and 
   try {
     const worker = (session, agent, msg) => fx.hook('subagent-stop.mjs', { session_id: session, agent_id: agent, agent_type: 'workflow:worker', last_assistant_message: msg });
     assert.deepEqual(worker('w1', 'sub7', 'Hotovo.\n\nFailures: curl bez hlavičky X -> 401; funguje s X').json, {});
-    assert.match(fx.run('error.mjs', ['list']).stdout, /1\. \S+ sub7 w1 worker-result :: curl bez hlavičky X -> 401; funguje s X/);
+    assert.match(fx.run('error.mjs', ['list']).stdout, /1\. f[0-9a-f]{7} \S+ sub7 w1 worker-result :: curl bez hlavičky X -> 401; funguje s X/);
     worker('w2', 'sub8', 'Hotovo.\n\nFailures: none');
     assert.doesNotMatch(fx.run('error.mjs', ['list']).stdout, /sub8/);
     fx.hook('subagent-stop.mjs', { session_id: 'w3', agent_id: 'sub9', agent_type: 'Explore', last_assistant_message: 'Failures: something' });

@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { heldTopics } from '../scripts/topic.mjs';
+import { isMainTopic } from '../scripts/comms.mjs';
 
 export const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = (name) => path.join(PLUGIN_ROOT, 'bin', name);
@@ -13,6 +15,18 @@ function gitq(cwd, ...args) {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed in ${cwd}: ${r.stderr}`);
   return r.stdout.trim();
+}
+
+/** The reply with the true Handover line inserted before its last line when that is a `Stav:` line without a Handover line before it. */
+export function withHandover(msg, brainDir, thread) {
+  const lines = msg.replace(/\s+$/, '').split('\n');
+  if (!/^stav\s*:/i.test(lines[lines.length - 1].replace(/[*_`>]/g, '').trim())) return msg;
+  const before = lines.slice(0, -1).filter((l) => l.trim()).pop() || '';
+  if (/^handover\s*:/i.test(before.replace(/[*_`>]/g, '').trim())) return msg;
+  let ids = [];
+  try { ids = heldTopics(brainDir, thread).filter((t) => !isMainTopic(t)).map((t) => t.id); } catch { /* no brain */ }
+  const line = ids.length ? `Handover: ${ids.join(', ')} – ďalší krok` : 'Handover: žiadny (po /clear nič nepokračuje)';
+  return [...lines.slice(0, -1), ...(before ? ['', line] : [line]), lines[lines.length - 1]].join('\n');
 }
 
 export function cleanEnv(extra = {}) {
@@ -69,6 +83,11 @@ export function setup({ thread = 'a1', remote = true, second = false, brainName 
       });
     },
     hook(name, input, opts = {}) {
+      // P-061: a final reply ends with `Handover: …` before its `Stav:` line. A Stop test that does not test that line gets the true one
+      // (every held work topic, else `žiadny`); `rawHandover: true` leaves the reply as written.
+      const { rawHandover, ...rest } = input;
+      input = rest;
+      if (name === 'stop.mjs' && !rawHandover && typeof input.last_assistant_message === 'string') input = { ...input, last_assistant_message: withHandover(input.last_assistant_message, (opts.cwd && opts.cwd === fx.projectB) ? fx.brainB : brain, (opts.env || {}).WORKFLOW_THREAD_ID ?? env.WORKFLOW_THREAD_ID) };
       const res = spawnSync(process.execPath, [HOOK(name), ...(opts.args || [])], { cwd: opts.cwd || project, env: { ...env, CLAUDE_PROJECT_DIR: opts.cwd || project, ...(opts.env || {}) }, encoding: 'utf8', input: JSON.stringify({ session_id: 's1', cwd: opts.cwd || project, ...input }) });
       let json = {};
       try { json = JSON.parse(res.stdout.trim() || '{}'); } catch { json = { raw: res.stdout }; }

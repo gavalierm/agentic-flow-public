@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { readJson } from './util.mjs';
+import { readJson, PLUGIN_ROOT } from './util.mjs';
 import { machineName, servicesDir } from './config.mjs';
 import { PERSONA_REPO_RE, PERSONA_PREFIX } from './persona-name.mjs';
 
@@ -130,6 +130,16 @@ export function dropNoticesCache(ctx) {
   if (s.clientDir) fs.rmSync(path.join(s.clientDir, NOTICES_CACHE), { force: true });
 }
 
+let cachedVersion;
+/** Installed workflow version `v<package.json version>` (null when unreadable), sent to the mail client. */
+export function workflowVersion() {
+  if (cachedVersion === undefined) {
+    const v = readJson(path.join(PLUGIN_ROOT, 'package.json'), {})?.version;
+    cachedVersion = v ? `v${v}` : null;
+  }
+  return cachedVersion;
+}
+
 /**
  * Run the comms client once. Returns { ok, code, data, error, unavailable }.
  * Exit codes of the client: 0 ok, 1 rejected/usage, 2 comms unavailable, 3 other instance.
@@ -148,7 +158,8 @@ export function runClient(ctx, args, { timeoutMs, input } = {}) {
     encoding: 'utf8',
     input,
     timeout: wait + 1500,
-    env: { ...process.env, COMMS_THREAD_ID: ctx.thread || '' },
+    // The mail service records the workflow version per persona and machine (`comms clients`); an older client ignores it.
+    env: { ...process.env, COMMS_THREAD_ID: ctx.thread || '', COMMS_WORKFLOW_VERSION: workflowVersion() || '' },
   });
   const parse = (t) => { try { return JSON.parse(String(t || '').trim()); } catch { return null; } };
   if (res.error || res.status === null) {

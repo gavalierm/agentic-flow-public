@@ -1,11 +1,12 @@
 // Observation logs (P-030, P-028, P-005, P-006): per-turn buffer in <brain>/local/log-buffer/, one brain write per turn.
 // Several machines on one brain (P-040): each machine only appends to its own logs/<machine>/<date>.log, so a sync never
 // meets a log conflict (a flush that rewrote the shared logs/*.log lost lines of the other machine). A line is
-// `<log> <entry>`; a removal is an appended `drop <log> <name|failure line>`. The combined view (old shared files
+// `<log> <entry>`; a removal is an appended `drop <log> <name|failure line>` (a failure comes back by `undrop failures <line>`). The combined view (old shared files
 // first, then the day files in date order) is built on read and kept in <brain>/local/logs/<log>.log.
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
-import { readText, today, nowIso, listFiles, PLUGIN_ROOT } from './util.mjs';
+import { readText, today, nowIso, listFiles, git, PLUGIN_ROOT } from './util.mjs';
 import { brainWrite } from './brain.mjs';
 import { rejectedProposal } from './find.mjs';
 import { machineName } from './config.mjs';
@@ -43,6 +44,7 @@ export function readLog(brainDir, logName, { rotationDays = null } = {}) {
   const kind = kindOf(logName);
   const entries = readText(path.join(brainDir, 'logs', logName), '').split('\n').filter(Boolean).map((text) => ({ text, machine: null }));
   const drops = [];
+  const undrops = [];
   let seq = 0;
   for (const d of dayFiles(brainDir)) {
     for (const raw of readText(d.file, '').split('\n')) {
@@ -53,12 +55,19 @@ export function readLog(brainDir, logName, { rotationDays = null } = {}) {
       seq += 1;
       if (head === kind) entries.push({ text: rest, machine: d.machine, date: d.date, seq });
       else if (head === 'drop' && rest.startsWith(`${kind} `)) drops.push({ what: rest.slice(kind.length + 1), machine: d.machine, date: d.date, seq });
+      else if (head === 'undrop' && rest.startsWith(`${kind} `)) undrops.push(rest.slice(kind.length + 1));
     }
   }
+  // A failure line is gone while its drops outnumber its undrops (error.mjs restore appends an undrop, append-only).
+  // Drops are indexed by what they remove: checking every drop for every line made each turn end quadratic (1.5 s, D-0034).
+  const byWhat = new Map();
+  for (const x of drops) byWhat.set(x.what, [...(byWhat.get(x.what) || []), x]);
+  const undropCount = new Map();
+  for (const u of undrops) undropCount.set(u, (undropCount.get(u) || 0) + 1);
   const gone = (e) => (kind === 'failures'
-    ? drops.some((x) => x.what === e.text)
-    : drops.some((x) => x.what === e.text.split(' ')[1] && (!e.machine || (e.machine === x.machine ? e.seq < x.seq : e.date < x.date))));
-  let lines = (drops.length ? entries.filter((e) => !gone(e)) : entries).map((e) => e.text);
+    ? (byWhat.get(e.text) || []).length > (undropCount.get(e.text) || 0)
+    : (byWhat.get(e.text.split(' ')[1]) || []).some((x) => !e.machine || (e.machine === x.machine ? e.seq < x.seq : e.date < x.date)));
+  let lines = (drops.length || undrops.length ? entries.filter((e) => !gone(e)) : entries).map((e) => e.text);
   if (rotationDays) lines = rotateLines(lines, rotationDays);
   try {
     const view = path.join(brainDir, 'local', 'logs', logName);
@@ -99,11 +108,27 @@ export function removeLinesOps(brainDir, match) {
   return { ops, removed };
 }
 
-/** Rotation: this machine removes only its own day files past the window (other machines rotate theirs). */
+/** Old shared logs that are read through the rotation window (frozen since the day files; trimmed by rotation). */
+export const ROTATED_SHARED_LOGS = ['sequences.log'];
+
+/**
+ * Rotation: this machine removes only its own day files past the window (other machines rotate theirs). The old shared
+ * sequences.log only loses lines: lines of days before the window leave it, an emptied file is removed (D-0034; it was
+ * read in full at every turn end). The cut is by whole days, so machines trimming on the same day write the same file;
+ * a conflict between two days' trims keeps the lines of both (brain.mjs resolveConflict).
+ */
 export function rotationOps(brainDir, days, machine = machineName()) {
   if (!days) return [];
   const cutoff = Date.now() - days * 864e5;
-  return dayFiles(brainDir).filter((d) => d.machine === machine && Date.parse(d.date) < cutoff).map((d) => ({ path: d.rel, remove: true }));
+  const ops = dayFiles(brainDir).filter((d) => d.machine === machine && Date.parse(d.date) < cutoff).map((d) => ({ path: d.rel, remove: true }));
+  const cutDay = new Date(cutoff).toISOString().slice(0, 10);
+  for (const name of ROTATED_SHARED_LOGS) {
+    const lines = readText(path.join(brainDir, 'logs', name), '').split('\n').filter(Boolean);
+    const kept = lines.filter((l) => !/^\d{4}-\d{2}-\d{2}$/.test(l.slice(0, 10)) || l.slice(0, 10) >= cutDay);
+    if (kept.length === lines.length) continue;
+    ops.push(kept.length ? { path: `logs/${name}`, content: kept.join('\n') + '\n' } : { path: `logs/${name}`, remove: true });
+  }
+  return ops;
 }
 
 export function bufferFile(brainDir, sessionId) {
@@ -308,11 +333,44 @@ export function listFailures(brainDir) {
   return readLog(brainDir, 'failures.log');
 }
 
-/** Failure n (1-based, as listed) processed: appended drop of its line. Throws when there is no such line. */
-export function resolveFailureOp(brainDir, n) {
+/** Stable id of a failure line (its text is unique: time and session); a list number shifts after every resolve. */
+export const failureId = (line) => `f${crypto.createHash('sha1').update(line).digest('hex').slice(0, 7)}`;
+
+/** Listed failures with their stable ids, as `n. <id> <line>`. */
+export function formatFailures(lines) {
+  return lines.map((l, i) => `${i + 1}. ${failureId(l)} ${l}`).join('\n');
+}
+
+/**
+ * Failures with the given ids processed: one appended drop per line. A bare number is refused: numbers from one
+ * listing shift after each resolve and a series of them removed another session's failure (2026-11-13).
+ */
+export function resolveFailuresOp(brainDir, ids) {
+  const want = [...new Set((ids || []).map(String))];
+  if (!want.length) throw new Error('usage: resolve <id> [<id> ...] (the id from error.mjs list)');
+  const numbers = want.filter((k) => /^\d+$/.test(k));
+  if (numbers.length) throw new Error(`resolve takes the failure id from error.mjs list, not its number (${numbers.join(', ')}): numbers shift after each resolve`);
   const lines = listFailures(brainDir);
-  if (!n || !lines[n - 1]) throw new Error(`no failure line ${n}`);
-  return { op: dropOp('failures.log', [lines[n - 1]]), remaining: lines.length - 1 };
+  const byId = new Map(lines.map((l) => [failureId(l), l]));
+  const missing = want.filter((k) => !byId.has(k));
+  if (missing.length) throw new Error(`no unprocessed failure with id ${missing.join(', ')}; nothing resolved`);
+  return { op: dropOp('failures.log', want.map((k) => byId.get(k))), ids: want, remaining: lines.length - want.length };
+}
+
+/**
+ * Failures dropped by a brain commit come back: one appended undrop per dropped line that is not listed now
+ * (a wrong resolve is undone through the workflow, not by editing the brain, P-013).
+ */
+export function restoreFailuresOp(brainDir, commit) {
+  if (!commit || commit === true) throw new Error('usage: restore <brain commit that dropped the failure>');
+  const r = git(['show', '--format=', '--no-color', '-U0', String(commit), '--', 'logs'], { cwd: brainDir });
+  if (!r.ok) throw new Error(`git show ${commit}: ${(r.stderr || r.stdout || '').trim()}`);
+  const dropped = r.stdout.split('\n').filter((l) => l.startsWith('+drop failures ')).map((l) => l.slice('+drop failures '.length));
+  if (!dropped.length) throw new Error(`commit ${commit} dropped no failure`);
+  const listed = new Set(listFailures(brainDir));
+  const lines = [...new Set(dropped)].filter((l) => !listed.has(l));
+  if (!lines.length) throw new Error(`the failure(s) dropped by ${commit} are listed already; nothing restored`);
+  return { op: { path: machineLogPath(), append: lines.map((l) => `undrop failures ${l}\n`).join('') }, lines };
 }
 
 export function pendingBuffers(brainDir) {

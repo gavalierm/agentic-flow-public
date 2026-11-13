@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import { parseArgs, fail, nowIso, readStdin } from '../scripts/util.mjs';
 import { loadContext, inSubagent, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { commsSettings, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, categoryLabel, LEVELS, dropNoticesCache } from '../scripts/comms.mjs';
-import { readTopic, mailboxTopics, heldTopics, heldBy } from '../scripts/topic.mjs';
+import { readTopic, mailboxTopics, heldTopics, heldBy, topicMailProject } from '../scripts/topic.mjs';
 import { readHolder, isHolderOf } from '../scripts/brain.mjs';
 import { setTimer, clearTimer, activeTimer, validWaker, withoutMailWaker, TIMER_CMD, REPLY_WINDOW_MS, REPLY_STATE_TIMER_MS } from '../scripts/waker.mjs';
 import { STATES } from '../scripts/protocol.mjs';
@@ -323,6 +323,8 @@ function cmdSend(ctx) {
     destination = `reply to ${replyTo}`;
   } else {
     const addr = parseAddress(args.to || args.topic, s.project);
+    // D-0035: a bare topic of this brain created for another project (--project) lives there in the mail service.
+    if (addr?.topic && !String(args.to || args.topic).includes('/') && ctx.brainDir) addr.project = topicMailProject(ctx.brainDir, addr.topic) || addr.project;
     if (!addr) fail('usage: comms.mjs send --level <level> --to [<project>/]<topic> | @<persona>/main --text "..."  |  --reply-to <id>');
     if (addr.persona) {
       clientArgs.push('--persona', addr.persona);

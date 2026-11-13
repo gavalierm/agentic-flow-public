@@ -16,5 +16,6 @@ nie stovky čítaní v jednom pracovníkovi, lebo 259 `t3_thread_read` prekroči
 nie pracovník na taký krok, lebo povolenia pracovníka súhlas operátora z hlavného vlákna nevidia a krok dvakrát zamietli (agentic-flow-public#36).
 3. Výsledok pracovníka `workflow:worker` bez časti „Failures“, s „Failures: none“ pri zlyhanom volaní zdroja (web, MCP) alebo nad 3 000 znakov vráti hook SubagentStop raz na opravu; ručná kontrola nie je potrebná (`delegate.mjs check --file` iba pre výsledok mimo Agent).
 4. Neprázdne „Failures“ zapíše SubagentStop do `<brain>/logs/failures.log`; spracuj ich cez `workflow:error` (`error.mjs list`).
+5. Prijatý výsledok pracovníka `workflow:worker` pripíše SubagentStop do `<brain>/topics/<držaná téma>/results.md` (čas, agent, prvý riadok zadania); s témou sa archivuje, do indexu nejde (D-0032). Bez držanej témy sa neukladá. Trvalý záver z neho ulož cez `save` (P-006); `done --topic` vypíše cesty `scratch/` z výsledkov, ktoré sú iba tam: dáta, ktoré sa nedajú znova získať, presuň do `materialy/<téma>/`.
 
 Sám čítaj iba to, čo potrebuješ na rozhodnutie alebo overenie (P-019, P-020).

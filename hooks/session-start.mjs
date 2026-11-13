@@ -17,6 +17,7 @@ import { catalogBoot } from '../scripts/catalog/hooks.mjs';
 import { recordAuthors, foreignRecords } from '../scripts/authors.mjs';
 import { closedTargetsNote } from './pre-tool-use.mjs';
 import { mcpEnvNote } from '../scripts/mcp-env.mjs';
+import { artifactsNote } from '../scripts/artifacts.mjs';
 
 export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '9500 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038', 'P-050'] };
 
@@ -48,7 +49,10 @@ export function run(input) {
   }
   // flow-public#46: a compaction inside a turn drops which targets the turn refused; the refusals still lock (P-054).
   const closed = input.source === 'compact' ? closedTargetsNote(ctx, input) : null;
-  return contextOutput('SessionStart', closed ? `${boot.text}\n${closed}` : boot.text);
+  // report-80357d47: the harness forgets which file went to which artifact address; the topic's record does not.
+  let published = null;
+  try { published = artifactsNote(ctx); } catch { published = null; }
+  return contextOutput('SessionStart', [boot.text, closed, published].filter(Boolean).join('\n'));
 }
 
 /**

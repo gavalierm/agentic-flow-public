@@ -2,7 +2,8 @@
 // Support script for skill error (P-003, P-028, P-030): list unprocessed failures, check for an existing skill, mark a failure processed.
 //   error.mjs list [--agent <id>]
 //   error.mjs check <tool-or-work>      -> existing brain skill to extend, or "none"
-//   error.mjs resolve <n>               -> remove failure line n after the lesson was saved
+//   error.mjs resolve <id> [<id> ...]   -> remove the listed failures (stable id from list, not the number) after the lesson was saved
+//   error.mjs restore <brain commit>    -> bring back the failure(s) a wrong resolve commit dropped
 //   error.mjs report --title "..." --text "..."   -> report to the maintainer: mail, else public issue, else draft (P-003)
 //   error.mjs report --from <message id>          -> a mailed report without pickup (no reply / undelivered) as an issue
 //   error.mjs confirm <issue url> --text "..."    -> the fix works in the reported scenario: comment, the watch ends (3c)
@@ -10,7 +11,7 @@
 //   error.mjs watch [--force]                     -> check the watched issues now; prints the rings without a mail address
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { listFailures, resolveFailureOp } from '../scripts/logs.mjs';
+import { listFailures, formatFailures, resolveFailuresOp, restoreFailuresOp } from '../scripts/logs.mjs';
 import { find, formatMatches } from '../scripts/find.mjs';
 import { readSkills } from '../scripts/records.mjs';
 import { tokens } from '../scripts/keys.mjs';
@@ -31,8 +32,8 @@ try {
   if (cmd === 'list') {
     let lines = listFailures(ctx.brainDir);
     if (args.agent) lines = lines.filter((l) => l.split(' ')[1] === args.agent);
-    out(lines.length ? lines.map((l, i) => `${i + 1}. ${l}`).join('\n') : 'no unprocessed failures');
-    if (lines.length) out('after saving the lesson (save skill ... --origin error): error.mjs resolve <n>');
+    out(lines.length ? formatFailures(lines) : 'no unprocessed failures');
+    if (lines.length) out('after saving the lesson (save skill ... --origin error): error.mjs resolve <id> [<id> ...] (the id after the number; numbers shift)');
   } else if (cmd === 'check') {
     if (!arg) fail('usage: error.mjs check <tool-or-work>');
     const exact = find(ctx.brainDir, arg).filter((m) => m.kind === 'skill');
@@ -44,10 +45,13 @@ try {
     const maintainer = ctx.brainDir && ctx.thread && heldTopics(ctx.brainDir, ctx.thread).some((t) => t.id === 'workflow-dev');
     out(maintainer ? 'this thread holds workflow-dev: do not mail the report to yourself; fix the error here (skill fix) (P-003)' : REPORT_LINE);
   } else if (cmd === 'resolve') {
-    const n = Number(arg);
-    const r = resolveFailureOp(ctx.brainDir, n);
-    brainWrite(ctx, { internal: true, ops: [r.op], message: `error: failure ${n} processed` });
-    out(`failure ${n} processed; remaining ${r.remaining}`);
+    const r = resolveFailuresOp(ctx.brainDir, args._.slice(1));
+    brainWrite(ctx, { internal: true, ops: [r.op], message: `error: failure ${r.ids.join(' ')} processed` });
+    out(`failure ${r.ids.join(', ')} processed; remaining ${r.remaining}`);
+  } else if (cmd === 'restore') {
+    const r = restoreFailuresOp(ctx.brainDir, arg);
+    brainWrite(ctx, { internal: true, ops: [r.op], message: `error: failure restored from ${arg}` });
+    for (const l of r.lines) out(`restored: ${l}`);
   } else if (cmd === 'report') {
     const maintainer = ctx.brainDir && ctx.thread && heldTopics(ctx.brainDir, ctx.thread).some((t) => t.id === 'workflow-dev');
     if (maintainer) fail('this thread holds workflow-dev: do not report to yourself; fix the error here (skill fix) (P-003)');
@@ -75,7 +79,7 @@ try {
       updateIssue(base, u.key, { undelivered: null });
     }
   } else {
-    fail('usage: error.mjs list | check <tool> | resolve <n> | report --title ... --text ... | report --from <id> | confirm|reopen <issue url> --text ... | watch [--force]');
+    fail('usage: error.mjs list | check <tool> | resolve <id> [<id> ...] | restore <brain commit> | report --title ... --text ... | report --from <id> | confirm|reopen <issue url> --text ... | watch [--force]');
   }
 } catch (err) {
   fail(err.message);

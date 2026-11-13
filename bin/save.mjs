@@ -23,7 +23,7 @@ import { lfBytes } from '../scripts/eol.mjs';
 import { spawnSync } from 'node:child_process';
 import { parseArgs, fail, today, readText, listFiles, relPosix } from '../scripts/util.mjs';
 import { loadContext, isWakeTurn, dialogAnsweredInTurn, machineName, foreignProjectCwd, readThreadState, resolveBrain, brainExists, projectPolicy } from '../scripts/config.mjs';
-import { brainWrite, formatWriteResult, syncAndCheckHolder, checkHolder } from '../scripts/brain.mjs';
+import { brainWrite, formatWriteResult, syncAndCheckHolder, checkHolder, withBrainLock, hasRemote, brainSync } from '../scripts/brain.mjs';
 import { parseFrontmatter, serializeFrontmatter, asList } from '../scripts/frontmatter.mjs';
 import { makeKey, normalizeKey, hasDiacritics, isValidId, KEY_TYPES } from '../scripts/keys.mjs';
 import { find, findSimilar } from '../scripts/find.mjs';
@@ -386,20 +386,26 @@ function saveDecision(ctx) {
   if (badLinks) fail(badLinks);
   if (repo) return saveRepoDecision(ctx, repo, title, relates);
   brainGuard(ctx, '', relates);
-  const id = nextDecisionId(ctx.brainDir);
+  if (args.supersedes && !readDecisions(ctx.brainDir).some((d) => (d.id || d.key) === args.supersedes)) fail(`decision ${args.supersedes} not found`);
   const slug = normalizeKey(title).slice(0, 40);
-  const rel = `decisions/${id.toLowerCase()}-${slug}.md`;
-  const ops = [];
-  if (args.supersedes) {
-    const old = readDecisions(ctx.brainDir).find((d) => (d.id || d.key) === args.supersedes);
-    if (!old) fail(`decision ${args.supersedes} not found`);
-    const parsed = parseFrontmatter(readText(path.join(ctx.brainDir, old.path), ''));
-    ops.push({ path: old.path, content: serializeFrontmatter({ ...parsed.data, status: `superseded-by ${id}`, updated: today() }, parsed.body) });
-  }
-  const data = { key: id, id, title, status: 'valid', relates_to: relates, aliases: asList(args.aliases), supersedes: args.supersedes || undefined, created: today() };
-  const body = `**Rozhodnuté:** ${args.what}\n\n**Zamietnuté alternatívy:** ${args.alternatives || '-'}\n\n**Dôvod:** ${args.reason}\n`;
-  ops.push({ path: rel, content: serializeFrontmatter(data, body) });
-  const res = brainWrite(ctx, { ops, message: `save decision ${id} ${slug}` });
+  // The ID is assigned under the brain lock after a sync: two threads saving at once both got D-0033 when the ID was taken
+  // before the lock (report-392ea415, 2026-11-13).
+  let id; let rel;
+  const res = withBrainLock(ctx.brainDir, () => {
+    if (hasRemote(ctx.brainDir)) brainSync(ctx.brainDir);
+    id = nextDecisionId(ctx.brainDir);
+    rel = `decisions/${id.toLowerCase()}-${slug}.md`;
+    const ops = [];
+    const old = args.supersedes ? readDecisions(ctx.brainDir).find((d) => (d.id || d.key) === args.supersedes) : null;
+    if (old) {
+      const parsed = parseFrontmatter(readText(path.join(ctx.brainDir, old.path), ''));
+      ops.push({ path: old.path, content: serializeFrontmatter({ ...parsed.data, status: `superseded-by ${id}`, updated: today() }, parsed.body) });
+    }
+    const data = { key: id, id, title, status: 'valid', relates_to: relates, aliases: asList(args.aliases), supersedes: args.supersedes || undefined, created: today() };
+    const body = `**Rozhodnuté:** ${args.what}\n\n**Zamietnuté alternatívy:** ${args.alternatives || '-'}\n\n**Dôvod:** ${args.reason}\n`;
+    ops.push({ path: rel, content: serializeFrontmatter(data, body) });
+    return brainWrite(ctx, { ops, message: `save decision ${id} ${slug}` });
+  });
   finish(ctx, res, [rel]);
   out(`decision ${id}: reference it in the commit message of the change it drives (P-008)`);
 }
@@ -565,7 +571,14 @@ function applySed(body, expr) {
   const re = new RegExp(parts[0], parts[2]);
   if (!re.test(body)) throw new Error(`--sed ${expr}: pattern not found in the skill body; nothing changed`);
   re.lastIndex = 0;
-  return body.replace(re, parts[1].replace(/\\n/g, '\n'));
+  // sed group references \1..\9 are honoured like $1..$9 (report-46e5fd4c: `\1` was written into the skill verbatim
+  // and the clause matched by the group was lost); & stays literal, because skill texts carry `&&`.
+  const groups = new RegExp(`${parts[0]}|`).exec('').length - 1;
+  const repl = parts[1].replace(/\\([1-9])/g, (_, n) => {
+    if (Number(n) > groups) throw new Error(`--sed ${expr}: \\${n} names a group the pattern does not have; nothing changed`);
+    return `$${n}`;
+  }).replace(/\\n/g, '\n');
+  return body.replace(re, repl);
 }
 
 function saveException(ctx) {

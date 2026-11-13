@@ -46,6 +46,9 @@ const ASCII = { hotovo: 'hotovo', otazka: 'otázka', cakam: 'čakám' };
 
 export const STATE_LINE = 'Stav: hotovo | otázka | čakám (na <čo>)';
 export const WAIT_LINE = 'Stav: čakám (na <čo>)';
+// The line before the state line: what continues after /clear or in a new session (operator: he could not tell). One topic of the thread or none.
+export const HANDOVER_LINE = 'Handover: <téma> – <ďalší krok v skratke>';
+export const HANDOVER_NONE_LINE = 'Handover: žiadny (po /clear nič nepokračuje)';
 
 /** What a `čakám` state line waits for: "(na pracovníka)" or "na pracovníka" -> "na pracovníka"; null without letters. */
 function waitTarget(rest) {
@@ -90,10 +93,11 @@ function blockItems(body, re) {
  * the heading that has no item or null; `question`, the first question (else the first task) item, up to its question
  * mark when it has one, or null; for `čakám`
  * what it waits for (`waitFor`, null when the line does not say it); `step`, a step written as prose under a label
- * ("Ostáva: …") or null. Only `čakám` may carry text after the word.
+ * ("Ostáva: …") or null. Only `čakám` may carry text after the word. `handover`: the last non-empty line before the state line
+ * when it is `Handover: …` (markdown stripped), else null.
  */
 export function parseReply(text) {
-  const out = { state: null, question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null };
+  const out = { state: null, handover: null, question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null };
   if (typeof text !== 'string' || !text.trim()) return out;
   const lines = text.replace(/\s+$/, '').split('\n');
   const last = lines[lines.length - 1].replace(/[*_`>]/g, '').trim();
@@ -106,6 +110,11 @@ export function parseReply(text) {
       out.state = state;
       out.waitFor = waitTarget(m[2]);
     } else if (!m[2]) out.state = state;
+  }
+  if (m) {
+    const before = lines.slice(0, -1).filter((l) => l.trim());
+    const h = before.length ? before[before.length - 1].replace(/[*_`>]/g, '').replace(/\s+/g, ' ').trim() : '';
+    if (/^handover\s*:\s*\S/i.test(h)) out.handover = h;
   }
   const body = lines.slice(0, -1).join('\n');
   const prose = body.replace(/```[\s\S]*?```/g, '');
@@ -132,3 +141,12 @@ export function parseReply(text) {
 
 /** P-059: the reason of the Stop block and of the PreToolUse denial of a dialog that repeats an answered question. */
 export const REPEATED_QUESTION_REASON = (oldItem, newItem) => `the operator already answered a question of this kind in this thread ("${String(oldItem).slice(0, 120)}"); you now ask "${String(newItem).slice(0, 120)}": his decision stands for further steps of the same kind. Act on it and report in the body what you did and what you could not verify yourself (e.g. the look in a browser). When the step is serious (irreversible: deleting data, git history, money, a message to a third party, a secret, a write to an external service or account: its settings, profile or data) or his decision does not cover it (another scope: he agreed to drafts without a write and this asks for the write; he rejected the previous version or asked for this preview), ask the same question again now: a repeat in this turn passes (P-059)`;
+
+const HANDOVER_NO = /^handover\s*:\s*(?:žiadny|ziadny|-|–|—)(?![\p{L}\p{N}])/iu;
+/** Does the Handover line name every topic in `ids` (word match), or say žiadny / - when `ids` is empty and name none? */
+export function handoverMatches(handover, ids) {
+  if (typeof handover !== 'string') return false;
+  if (!ids.length) return HANDOVER_NO.test(handover);
+  const low = handover.toLowerCase();
+  return ids.every((id) => new RegExp(`(^|[^a-z0-9-])${String(id).toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9-])`).test(low));
+}

@@ -10,6 +10,8 @@ import { logDecision } from '../scripts/denials.mjs';
 import { appendOp } from '../scripts/logs.mjs';
 import { brainWrite } from '../scripts/brain.mjs';
 import { nowIso } from '../scripts/util.mjs';
+import { heldTopics } from '../scripts/topic.mjs';
+import { RESULTS_FILE, workerTaskLine, resultEntry } from '../scripts/materialy.mjs';
 
 export const HOOK_META = { event: 'SubagentStop', class: 'block', limit: '1 reason', principles: ['P-028'] };
 
@@ -91,6 +93,24 @@ export function recordWorkerFailures(input, ctx, now = nowIso()) {
   return line;
 }
 
+/**
+ * An accepted worker result goes to <brain>/topics/<held topic>/results.md (D-0032): it lived only in the conversation and
+ * was lost with it. It is archived with the topic (done --topic) and never indexed. No held topic: nothing is written.
+ */
+export function recordWorkerResult(input, ctx, now = nowIso()) {
+  if (!/(^|:)worker$/.test(String(input.agent_type || ''))) return null;
+  const result = String(input.last_assistant_message || '').trim();
+  if (!result || !ctx.brainDir) return null;
+  const topic = heldTopics(ctx.brainDir, ctx.thread)[0]?.id;
+  if (!topic) return null;
+  const file = agentTranscriptPath(input);
+  const task = file ? workerTaskLine(file) : '';
+  const agent = String(input.agent_id || input.agent_type || 'worker').replace(/\s+/g, '-');
+  const rel = `topics/${topic}/${RESULTS_FILE}`;
+  brainWrite(ctx, { ops: [{ path: rel, append: resultEntry({ at: now, agent, task, result }) }], internal: true, message: `worker result: ${topic}` });
+  return rel;
+}
+
 export function run(input, policy = loadPolicy(null)) {
   if (input.stop_hook_active) return {};
   const exempt = policy.harness?.subagent_stop_exempt_agent_types || [];
@@ -126,6 +146,9 @@ if (isMain(import.meta.url)) {
         if (!ctx) throw new Error('no context');
         recordWorkerFailures(input, ctx);
       } catch (err) { process.stderr.write(`subagent-stop: failures not recorded: ${err.message}\n`); }
+      try {
+        if (ctx) recordWorkerResult(input, ctx);
+      } catch (err) { process.stderr.write(`subagent-stop: result not recorded: ${err.message}\n`); }
     }
     if (out.decision === 'block') {
       try {

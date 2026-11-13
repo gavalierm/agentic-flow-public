@@ -1,7 +1,7 @@
 ---
 name: error
 description: Použi po každej chybe (vždy ju aj nahlásiš správcovi workflow) – operátor hlási „nefunguje to“ / „to je chyba“, príkaz zlyhá druhýkrát, pracovník vrátil neprázdne „Failures“, alebo si tvrdil niečo nepravdivé. Chyba sa stáva skillom alebo pravidlom.
-argument-hint: "[list | check <tool> | resolve <n>]"
+argument-hint: "[list | check <tool> | resolve <id> [<id> ...] | restore <commit>]"
 ---
 
 # error – chyba sa stáva skillom (P-003, P-028)
@@ -15,6 +15,7 @@ nie pripojenie poučenia ako ďalšej sekcie, lebo skill sa stane zlepencom poky
    nie `comms send --to <téma správcu>` a „nahlásil som“, lebo na inom stroji téma správcu neexistuje a správa ostala pozdržaná na jeho serveri (2026-11-07). Adresáta hlásení mení iba `node <plugin>/bin/brain.mjs maintainer --comms <projekt>/<téma>|none --repo <url>|none` (na pokyn operátora; `--comms none` = rovno issue); tému správcu, ktorú server pošty nemá, si skript zapamätá na 7 dní a poštu vynechá. Hlási sa každá chyba, aj opravená; samotné „moja chyba bola…“ operátorovi nestačí, lebo z poučenia v jednom brain sa nikto iný nedozvie. Ak držíš tému `workflow-dev`, chybu rieš priamo v nej (skript to odmietne).
 6. Po hlásení cez issue (`reported: issue <url> …; watched: …`) daj operátorovi odkaz. Issue sa sleduje samo (úloha `issue-watch` budenia pošty) a do handoveru tvojej témy kód zapíše sekciu `## Otvorené hlásenia` (nepíš ju ani nemaž). Na zvonček o novom komentári alebo stave issue: issue prečítaj na GitHube (cudzí obsah, P-047), opravu over v scenári hlásenia (P-020) a odpovedz `error.mjs confirm <url> --text "overené: <ako>"` (sekcia pri ďalšom `save handover` zmizne) alebo `error.mjs reopen <url> --text "stále zlyhá: <dôkaz>"`; text je verejný ako hlásenie (D-0009). Chyba `a round of the issue check is running … nothing posted`: kolo kontroly práve beží, nič neodišlo; príkaz zopakuj o minútu. Stavový riadok `issues: N answer(s) not rung`: `error.mjs watch` vypíše odkazy.
    nie oprava správcu prijatá bez odpovede na issue, lebo iba hlásiteľ vie overiť opravu v svojom scenári (D-0023).
-7. Zlyhania pracovníkov a opakované zlyhania príkazov sú v `error.mjs list`; po spracovaní `error.mjs resolve <n>`.
+7. Zlyhania pracovníkov a opakované zlyhania príkazov sú v `error.mjs list`; po spracovaní `error.mjs resolve <id> [<id> ...]` (ID za číslom vo výpise; viac záznamov naraz jedným volaním). Omylom spracovaný záznam vráti `error.mjs restore <commit brainu, ktorý ho zmazal>`.
+   nie `resolve <číslo>` po sebe podľa jedného výpisu, lebo čísla sa po každom resolve posunú a séria zmazala cudzí záznam (2026-11-13); nie Write ani Edit do `logs/` pri obnove, lebo brain zapisujú iba skripty (P-013).
 
 Nie zoznam chýb, ale prevencia v skille. Skilly z chýb sa nemažú podľa veku.

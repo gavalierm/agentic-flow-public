@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // log.mjs flush --session <id>      write buffered observations to brain logs (one commit per turn)
-//         failures [--resolve <n>]  list unprocessed failures / remove line n (after error skill)
+//         failures [--resolve <id> [<id> ...]]  list unprocessed failures / remove them by stable id (after error skill)
 //         names <procedures|derivations>
 //         remove --match "<text>" --reason "operator <YYYY-MM-DD>: <why>"   deletes every log line containing the text
 //                                   (all machines' day files, old shared logs); only on an explicit operator order
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext, isWakeTurn, dialogAnsweredInTurn } from '../scripts/config.mjs';
-import { flushBuffer, listFailures, existingNames, resolveFailureOp, removeLinesOps } from '../scripts/logs.mjs';
+import { flushBuffer, listFailures, formatFailures, existingNames, resolveFailuresOp, removeLinesOps } from '../scripts/logs.mjs';
 import { brainWrite } from '../scripts/brain.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -20,12 +20,11 @@ try {
   } else if (cmd === 'failures') {
     const lines = listFailures(ctx.brainDir);
     if (args.resolve) {
-      const n = Number(args.resolve);
-      const r = resolveFailureOp(ctx.brainDir, n);
-      brainWrite(ctx, { internal: true, ops: [r.op], message: `failure ${n} processed via error skill` });
-      process.stdout.write(`resolved failure ${n}; remaining ${r.remaining}\n`);
+      const r = resolveFailuresOp(ctx.brainDir, [args.resolve, ...args._.slice(1)]);
+      brainWrite(ctx, { internal: true, ops: [r.op], message: `failure ${r.ids.join(' ')} processed via error skill` });
+      process.stdout.write(`resolved failure ${r.ids.join(', ')}; remaining ${r.remaining}\n`);
     } else {
-      process.stdout.write(lines.length ? lines.map((l, i) => `${i + 1}. ${l}`).join('\n') + '\n' : 'no unprocessed failures\n');
+      process.stdout.write(lines.length ? formatFailures(lines) + '\n' : 'no unprocessed failures\n');
     }
   } else if (cmd === 'names') {
     const log = arg === 'derivations' ? 'derivations.log' : 'procedures.log';

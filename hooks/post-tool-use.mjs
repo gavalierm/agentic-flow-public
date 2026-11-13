@@ -16,6 +16,7 @@ import { settleOwn, settleShell, recordScratch, inWorkScratch } from '../scripts
 import { bashTargets, bashEdits } from './pre-tool-use.mjs';
 import { wakerFromTool, recordWaker } from '../scripts/waker.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
+import { recordPublish } from '../scripts/artifacts.mjs';
 
 export const HOOK_META = { event: 'PostToolUse|PostToolUseFailure', class: 'log+c', limit: '1 line (once per waiting message; once per read step)', principles: ['P-001', 'P-018', 'P-030', 'P-028', 'P-003', 'P-041', 'P-042', 'P-061', 'P-021'] };
 
@@ -161,6 +162,8 @@ export function run(input, now = Date.now()) {
     writeThreadState(ctx.brainDir, ctx.thread, { ...lifted, dialog_questions: [], ...answeredNow, ...noTopic });
     if (noTopic.no_topic_chosen_at) noTopicLine = NO_TOPIC_CHOSEN_LINE(ctx.projectName || '<project>');
   }
+  // report-80357d47: the address of a published artifact outlives the context (scripts/artifacts.mjs).
+  if (!input.agent_id) { try { recordPublish(ctx, input, now); } catch { /* the record never fails the hook */ } }
   settleOwn(ctx, changedFiles(input));
   // report-143e7cdb: what this thread leaves in a scratch/ is its own; another thread's recursive rm of the dir asks (P-018).
   recordScratch(ctx, changedFiles(input), (abs) => (ctx.projectDir && isInside(path.join(ctx.projectDir, SCRATCH_DIR), abs)) || inWorkScratch(abs));

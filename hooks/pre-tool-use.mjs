@@ -17,8 +17,9 @@ import { findSecret } from '../scripts/secrets.mjs';
 import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell, foreignScratch } from '../scripts/own-files.mjs';
 import { catalogPreTool } from '../scripts/catalog/pretool.mjs';
 import { bigWriteDeny } from '../scripts/materialy.mjs';
-import { heldTopics, topicCopyPath, expectedImplementation, implementMarkers, IMPLEMENT_CLASSES } from '../scripts/topic.mjs';
+import { heldTopics, threadOrchestrator, ORCHESTRATOR_QUESTION_REASON, ORCHESTRATOR_CONSENT_REASON, findConsent,topicCopyPath,expectedImplementation, implementMarkers, IMPLEMENT_CLASSES } from '../scripts/topic.mjs';
 import { logDecision } from '../scripts/denials.mjs';
+import { republishDeny } from '../scripts/artifacts.mjs';
 import { analyze, bypassOf, bypassReason, callKey, closedTargets, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, openByAnswers, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, transcriptTurnText, turnLifts, awaitTranscriptToolUse, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-036', 'P-052', 'P-053', 'P-054', 'P-055'] };
@@ -1238,9 +1239,16 @@ export function run(input) {
   const policy = ctx.policy;
   const resolve = (p) => path.resolve(cwd, gitBashPath(p));
 
+  // report-80357d47: a recorded artifact path published without url would get a new address (scripts/artifacts.mjs).
+  const republish = tool === 'Artifact' ? republishDeny(ctx, input) : null;
+  if (republish) return permissionOutput('deny', republish);
+
   // P-061 (operator 2026-11-08): a question to the operator is asked in the dialog, so T3 shows the thread as "Awaiting Input";
   // a text question was lost in the thread among the mail turns. The time is kept for the Stop hook (question asked this turn).
   if (tool === 'AskUserQuestion' && !input.agent_id && ctx.brainDir && ctx.thread) {
+    // P-064: a thread of a topic another thread created asks its orchestrator by mail, never the operator.
+    const orchestrator = threadOrchestrator(ctx.brainDir, ctx.thread);
+    if (orchestrator) return permissionOutput('deny', ORCHESTRATOR_QUESTION_REASON(orchestrator));
     // P-059: a dialog that repeats a question the operator answered in this thread is refused once per turn (the operator sees
     // the dialog before any Stop check); a second call in the turn passes: the agent then holds the step for serious.
     const before = readThreadState(ctx.brainDir, ctx.thread);
@@ -1416,7 +1424,22 @@ export function run(input) {
     if (p) return permissionOutput('deny', `${p.call}: scope ${p.scope || 'user (default)'} turns it on in every session of this machine; install only for this repository: cd "${ctx.projectDir}" && <the same command> --scope project (or --scope local when it must not be committed)`);
   }
 
-  const out = pathChecks(input, ctx, cwd);
+  let out = pathChecks(input, ctx, cwd);
+  // P-064: a confirmation in the thread of a topic with an orchestrator goes to the orchestrator, not to the operator: the
+  // ask is refused with the way to it; the orchestrator's consent for this exact call lets it pass once.
+  if (out?.hookSpecificOutput?.permissionDecision === 'ask' && ctx.brainDir && ctx.thread) {
+    const orchestrator = threadOrchestrator(ctx.brainDir, ctx.thread);
+    if (orchestrator) {
+      const st = readThreadState(ctx.brainDir, ctx.thread);
+      const used = Array.isArray(st.consents_used) ? st.consents_used : [];
+      const consent = findConsent(ctx.brainDir, orchestrator.of, tool, toolInput, used);
+      if (consent) {
+        writeThreadState(ctx.brainDir, ctx.thread, { ...st, consents_used: [...used, consent.id].slice(-100) });
+        return permissionOutput('allow', `granted by the orchestrator (topic ${orchestrator.to}, consent ${consent.id}, P-064)`);
+      }
+      out = permissionOutput('deny', ORCHESTRATOR_CONSENT_REASON(orchestrator, out.hookSpecificOutput.permissionDecisionReason, tool));
+    }
+  }
   const decision = out?.hookSpecificOutput?.permissionDecision;
   // P-001 bulk read of docs/principles/ is a hint, not a deny: the check reads the command text and cannot tell a
   // search over the directory from a mention of it, and a wrong deny stopped the work (operator 2026-11-08, hooks
@@ -1429,7 +1452,8 @@ export function run(input) {
   // A refused forced add names its own way (git add without -f, a named file) on the same paths: it locks nothing.
   // So does a command form the brain forbids (deny_commands): it names the tool for the same file (Edit, multi-replace),
   // and its lock denied that Edit as a bypass until the end of the turn (report-14a1f628, 2026-11-13).
-  if (decision === 'deny' && state && !/ adds ignored files too |\(policy harness\.deny_commands of the brain\)$/.test(out.hookSpecificOutput.permissionDecisionReason || '')) {
+  // A confirmation sent to the orchestrator (P-064) locks nothing either: its consent lets the same call pass.
+  if (decision === 'deny' && state && !/ adds ignored files too |\(policy harness\.deny_commands of the brain\)$|passes once \(P-064\)$/.test(out.hookSpecificOutput.permissionDecisionReason || '')) {
     const found = analyze(tool, toolInput, cwd, anchors);
     const write = found.write;
     // A P-052 refusal (write outside the project) is about the outside target only: the way it names, a work file in

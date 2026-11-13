@@ -13,7 +13,7 @@ import { mistakeClaim, AUTO_TIMER_THEN } from '../hooks/stop.mjs';
 const stateOf = (fx) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), 'utf8'));
 
 test('parseReply: the state is the last line only; diacritics and markdown are tolerated; the question is the first item under Operátor', () => {
-  assert.deepEqual(parseReply('Vydané.\n\nStav: hotovo'), { state: 'hotovo', question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null });
+  assert.deepEqual(parseReply('Vydané.\n\nStav: hotovo'), { state: 'hotovo', handover: null, question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null });
   assert.equal(parseReply('Hotové.\n**Stav:** cakam').state, 'čakám');
   assert.equal(parseReply('x\nstav: Otázka.\n\n').state, 'otázka');
   assert.equal(parseReply('Stav: hotovo\nA ešte niečo urobím neskôr.').state, null, 'the state must be the last line');
@@ -22,7 +22,7 @@ test('parseReply: the state is the last line only; diacritics and markdown are t
   assert.equal(parseReply('').state, null);
   assert.equal(parseReply(undefined).state, null);
   const q = parseReply('Návrh je hotový.\n\n**Otázky na operátora:** Vydať teraz? Odporúčam áno.\n\nStav: otázka');
-  assert.deepEqual(q, { state: 'otázka', question: 'Vydať teraz?', waitFor: null, operator: ['Vydať teraz? Odporúčam áno.'], questions: ['Vydať teraz? Odporúčam áno.'], tasks: null, legacyOperator: false, emptySection: null, step: null });
+  assert.deepEqual(q, { state: 'otázka', handover: null, question: 'Vydať teraz?', waitFor: null, operator: ['Vydať teraz? Odporúčam áno.'], questions: ['Vydať teraz? Odporúčam áno.'], tasks: null, legacyOperator: false, emptySection: null, step: null });
   assert.equal(parseReply('**Pre teba:** Vydať teraz?\n\nStav: otázka').question, 'Vydať teraz?', 'the marker before v0.9.43 still opens the block (legacy)');
   const list = parseReply('Hotové.\n\n**Otázky na operátora:**\n- [ ] Potvrď zmazanie starého priečinka (odporúčam áno)\n- [ ] Spusti wake install\n\nĎalší text.\n\nStav: otázka');
   assert.deepEqual(list.operator, ['Potvrď zmazanie starého priečinka (odporúčam áno)', 'Spusti wake install'], 'checklist items up to an empty line');
@@ -116,7 +116,7 @@ test('Stop: a background task whose end was notified is no waker: "hotovo" with 
 test('parseReply: čakám carries what it waits for, in parentheses or after "na"; other states take no text', () => {
   assert.equal(parseReply('Pracovník beží.\n\nStav: čakám (na návrh od pracovníka)').waitFor, 'na návrh od pracovníka');
   assert.equal(parseReply('**Stav:** cakam na build.').waitFor, 'na build');
-  assert.deepEqual(parseReply('Stav: čakám'), { state: 'čakám', question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null });
+  assert.deepEqual(parseReply('Stav: čakám'), { state: 'čakám', handover: null, question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null });
   assert.equal(parseReply('Stav: čakám ()').waitFor, null, 'empty parentheses name nothing');
   assert.equal(parseReply('Stav: hotovo (všetko)').state, null, 'only čakám may carry text');
 });

@@ -10,6 +10,7 @@ import { parseArgs, fail, toPosix } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
 import { readMemory, readSkills, projectRecords } from '../scripts/records.mjs';
 import { domainRepos, REPO_HANDOVER } from '../scripts/repo-knowledge.mjs';
+import { untrackedKnowledge } from '../scripts/materialy.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
 import { tokens } from '../scripts/keys.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
@@ -132,7 +133,20 @@ export function report(ctx) {
   const rules = { chars: assembled.chars, lines: assembled.lines, over: assembled.overLimit, project: projectRules };
   const health = checkProject(ctx).filter((r) => r.findings.length).map((r) => ({ name: r.name, errors: r.findings.filter((f) => f.level === 'error').length, warns: r.findings.filter((f) => f.level === 'warn').length }));
   const repos = repoReport(ctx, [...memory, ...readSkills(ctx.brainDir)]);
-  return { limits: [...idx.warnings, ...assembled.overLimit, ...repos.limits], counts: idx.counts, stale: [...stale, ...repos.stale], duplicates, mergeable, byOrigin, rules, health, repos, identity: identityReport(ctx) };
+  return { limits: [...idx.warnings, ...assembled.overLimit, ...repos.limits], counts: idx.counts, stale: [...stale, ...repos.stale], duplicates, mergeable, byOrigin, rules, health, repos, identity: identityReport(ctx), untracked: untrackedReport(ctx) };
+}
+
+/** Untracked docs/ and materialy/ in the project and the domain repos (D-0032 C1): content there is not in git. */
+function untrackedReport(ctx) {
+  const dirs = new Map();
+  if (ctx.projectDir) dirs.set(path.resolve(ctx.projectDir), path.basename(ctx.projectDir));
+  for (const repo of domainRepos(ctx.domain, ctx.brainDir)) dirs.set(path.resolve(repo.dir), repo.name);
+  const found = [];
+  for (const [dir, name] of dirs) {
+    const files = untrackedKnowledge(dir);
+    if (files.length) found.push({ repo: name, dir, files });
+  }
+  return found;
 }
 
 try {
@@ -154,6 +168,7 @@ try {
     out(`relates_to links that resolve to nothing (${FORMS}; run the command under each, a free word goes into the body): ${r.identity.links.length ? r.identity.links.map((l) => `\n  ${l.path}: ${l.problem}\n    ${l.fix}`).join('') : 'none'}`);
     out(`agentic skills sharing a tool/work token (merge only same tool): ${r.mergeable.length ? r.mergeable.map((m) => `${m.token}: ${m.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`skill health (skill-check.mjs <name> for details, skill workflow:skill-check): ${r.health.length ? r.health.map((h) => `${h.name} ${h.errors}e/${h.warns}w`).join(', ') : 'all ok'}`);
+    out(`untracked docs/ and materialy/ (not in git, lost with the disk: commit them in that repo, keep one version of a document): ${r.untracked.length ? r.untracked.map((u) => `\n  ${u.repo}: ${u.files.slice(0, 5).join(', ')}${u.files.length > 5 ? `, … (+${u.files.length - 5})` : ''}\n    git -C ${u.dir} add docs materialy && git -C ${u.dir} commit -m "docs: track project knowledge"`).join('') : 'none'}`);
     out(`operator records (never deleted by the agent, only proposed): ${r.byOrigin.operator.length}`);
     out(`observed records (verify cheaply or delete): ${r.byOrigin.observed.length ? r.byOrigin.observed.join(', ') : 'none'}`);
   }

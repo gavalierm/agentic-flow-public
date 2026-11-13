@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
-import { normalizeCommand, sequencesFrom, rotateLines, isReadonly, readLog, bufferAppend } from '../scripts/logs.mjs';
+import { normalizeCommand, sequencesFrom, rotateLines, isReadonly, readLog, bufferAppend, failureId } from '../scripts/logs.mjs';
 import { loadPolicy } from '../scripts/config.mjs';
 const logView = (fx, name) => { const l = readLog(fx.brain, name, { rotationDays: 30 }); return l.length ? l.join('\n') + '\n' : ''; };
 
@@ -81,7 +81,7 @@ test('third occurrence of a sequence signals once on the next prompt; read-only 
     fx.hook('stop.mjs', { session_id: 's4' });
     assert.match(logView(fx, 'failures.log'), /sub9 s4 curl -H x .* :: Exit code 22/);
     assert.match(fx.run('error.mjs', ['list']).stdout, /1\. .*sub9/);
-    assert.equal(fx.run('error.mjs', ['resolve', '1']).status, 0);
+    assert.equal(fx.run('error.mjs', ['resolve', failureId(logView(fx, 'failures.log').trim())]).status, 0);
     assert.equal(logView(fx, 'failures.log').trim(), '');
     // P-003 step 5: every error is reported to the workflow maintainer
     assert.match(fx.run('error.mjs', ['check', 'curl']).stdout, /report the error to the workflow maintainer: error\.mjs report --title/);
@@ -104,6 +104,35 @@ test('rotation: sequences older than 30 days are dropped; failures older than 7 
     const prompt = fx.hook('user-prompt-submit.mjs', { prompt: 'x' });
     assert.match(prompt.context, /1 unprocessed failure\(s\) older than 7 days/);
     assert.ok(!fs.existsSync(path.join(fx.brain, 'local', 'log-buffer', 's1.jsonl')), 'buffer cleared after flush');
+  } finally { fx.cleanup(); }
+});
+
+// D-0034: the old shared sequences.log is frozen since the day files; rotation trims it instead of reading it forever.
+test('rotation trims the old shared sequences.log by whole days and removes it once empty; trims of two machines merge without conflict', () => {
+  const fx = setup({ second: true });
+  try {
+    const day = (n) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
+    const shared = `${day(40)} a+b s0\n${day(35)} c+d s0\n${day(1)} e+f s0\n`;
+    assert.equal(fx.run('brain.mjs', ['write', 'logs/sequences.log', '--message', 'seed', '--content', shared]).status, 0);
+    fx.git(fx.brainB, 'pull', '-q', '--rebase', 'origin', 'main');
+    // machine B removes a different old line on its own (another day's cut); machine A rotates
+    assert.equal(fx.runB('brain.mjs', ['write', 'logs/sequences.log', '--message', 'trim b', '--content', `${day(40)} a+b s0\n${day(1)} e+f s0\n`]).status, 0);
+    bufferAppend(fx.brain, 's1', { kind: 'cmd', commands: ['npm ci', 'npm test'] });
+    const r = fx.run('log.mjs', ['flush', '--session', 's1'], { env: { WORKFLOW_MACHINE_ID: 'pc-a' } });
+    assert.equal(r.status, 0, r.out);
+    assert.doesNotMatch(r.out, /conflict/);
+    // logs/*.log merge=union: a trim of another day merges without conflict and keeps lines of both; the next flush trims them
+    assert.match(fx.read('logs/sequences.log'), /a\+b/);
+    bufferAppend(fx.brain, 's1b', { kind: 'cmd', commands: ['npm ci', 'npm test'] });
+    const again = fx.run('log.mjs', ['flush', '--session', 's1b'], { env: { WORKFLOW_MACHINE_ID: 'pc-a' } });
+    assert.equal(again.status, 0, again.out);
+    assert.equal(fx.read('logs/sequences.log').trim(), `${day(1)} e+f s0`);
+    assert.match(logView(fx, 'sequences.log'), /e\+f[\s\S]*npm-ci\+npm-test/);
+    // all lines past the window: the file goes
+    assert.equal(fx.run('brain.mjs', ['write', 'logs/sequences.log', '--message', 'seed', '--content', `${day(40)} a+b s0\n`]).status, 0);
+    bufferAppend(fx.brain, 's2', { kind: 'cmd', commands: ['npm ci', 'npm test'] });
+    assert.equal(fx.run('log.mjs', ['flush', '--session', 's2'], { env: { WORKFLOW_MACHINE_ID: 'pc-a' } }).status, 0);
+    assert.ok(!fs.existsSync(path.join(fx.brain, 'logs', 'sequences.log')), 'emptied shared log removed');
   } finally { fx.cleanup(); }
 });
 
@@ -148,8 +177,8 @@ test('two machines flush into their own day files: no conflict, the combined vie
     assert.match(view, /curl a/);
     assert.match(view, /curl b/);
     const day = new Date().toISOString().slice(0, 10);
-    const n = view.trim().split('\n').findIndex((l) => /curl b/.test(l)) + 1;
-    assert.equal(fx.run('error.mjs', ['resolve', String(n)], { env: { WORKFLOW_MACHINE_ID: 'pc-a' } }).status, 0);
+    const id = failureId(view.trim().split('\n').find((l) => /curl b/.test(l)));
+    assert.equal(fx.run('error.mjs', ['resolve', id], { env: { WORKFLOW_MACHINE_ID: 'pc-a' } }).status, 0);
     assert.doesNotMatch(logView(fx, 'failures.log'), /curl b/);
     assert.match(fx.read('local/logs/failures.log'), /curl a/);
     assert.match(fx.git(fx.origin, 'show', `main:logs/pc-b/${day}.log`), /^failures .*curl b/m);

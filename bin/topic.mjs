@@ -10,16 +10,20 @@
 //           resume <id>
 //           list | status
 //           closed <id>   exit 0 once the topic is no longer open (condition of timer.mjs --topic)
+//           consent <id> --tool <tool> --target "<exact call>" | --target-file <file> [--reason ".."]   the orchestrator grants one
+//                        exact call of the topic's thread that a hook left to a confirmation (P-064)
 //           copy <id> [--operator-approved]   code copy (branch topic/<id>); a discussion topic gets one only after the
 //                        operator approved its implementation (D-0020), recorded in topics/<id>/topic.json; done merges it
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext, foreignProjectCwd } from '../scripts/config.mjs';
-import { createTopic, CLASS_HELP, startThreadForTopic, claimTopic, claimMain, releaseTopic, handoffTopic, listTopics, heldTopics, ensureCodeCopy, copyTopic, readTopic, pauseTopic, resumeTopic } from '../scripts/topic.mjs';
+import { createTopic, CLASS_HELP, startThreadForTopic, claimTopic, claimMain, releaseTopic, handoffTopic, listTopics, heldTopics, ensureCodeCopy, copyTopic, readTopic, pauseTopic, resumeTopic, grantConsent } from '../scripts/topic.mjs';
+import fs from 'node:fs';
 import { topicLine } from '../scripts/index.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const [cmd, id] = args._;
 const out = (s) => process.stdout.write(s + '\n');
+const originContext = (ctx) => { try { const o = loadContext({ requireBrain: false }); return o.brainDir ? o : ctx; } catch { return ctx; } };
 
 try {
   const ctx = loadContext({ project: args.project });
@@ -29,6 +33,8 @@ try {
     if (!id) fail(`usage: topic.mjs create <id> --subject "..." --class web|code|ops|discussion [--task "..."] [--here | --new-thread]\n${CLASS_HELP}`);
     // The class decides the kind (D-0021): web and code get a code copy, ops and discussion do not.
     const res = createTopic(ctx, { id, subject: args.subject, class: args.class, kind: typeof args.kind === 'string' ? args.kind : null, mode: args.mode, claim: !args['no-claim'], copy: !args['no-copy'], forThread: args['for-thread'] || null, task: args.task || null, explicitProject: !!args.project,
+      // D-0031: with --project the orchestrator topic is the one this thread holds in its own project.
+      origin: args.project ? originContext(ctx) : ctx,
       // In T3 a new topic gets its own thread (P-036) when this thread already works on a topic (or --new-thread); a
       // thread without a topic takes it itself: the operator gave the task here (alice 2026-11-03: a duplicate thread).
       // --new-thread also from code without a thread id (cron, D-0019): the new thread holds the topic.
@@ -104,6 +110,12 @@ try {
     const held = heldTopics(ctx.brainDir, ctx.thread);
     out(`thread ${ctx.thread || '-'}`);
     out(held.length ? held.map((t) => `holds ${topicLine(t)}`).join('\n') : 'holds no topic');
+  } else if (cmd === 'consent') {
+    // P-064: the orchestrator grants one exact call of the thread of topic <id> (a step a hook leaves to a confirmation).
+    if (!id) fail('usage: topic.mjs consent <id> --tool <Bash|Write|Edit|…> --target "<exact command or path>" | --target-file <file> [--reason ".."]');
+    const target = typeof args['target-file'] === 'string' ? fs.readFileSync(args['target-file'], 'utf8') : args.target;
+    const res = grantConsent(ctx, id, { tool: args.tool, target: typeof target === 'string' ? target : '', reason: typeof args.reason === 'string' ? args.reason : null, origin: args.project ? originContext(ctx) : ctx });
+    out(`consent ${res.consent.id} for topic ${id}: ${res.consent.tool} ${JSON.stringify(res.consent.target).slice(0, 200)}${res.write?.sync?.pushed ? ', pushed' : ''}`);
   } else if (cmd === 'copy') {
     if (!id) fail('usage: topic.mjs copy <id> [--operator-approved]');
     const copy = copyTopic(ctx, id, { operatorApproved: !!args['operator-approved'], explicitProject: !!args.project });
@@ -111,7 +123,7 @@ try {
     if (copy.write?.unpushed) out(`unpushed: ${copy.write.unpushed}`);
     if (readTopic(ctx.brainDir, id)?.kind !== 'code') out(`next: delegate.mjs prepare --implement${readTopic(ctx.brainDir, id)?.class === 'ops' ? '' : ' web|code|ops'} --task-file <file> (the worker changes the copy; commit, merge and release stay in this thread, D-0020)`);
   } else {
-    fail('usage: topic.mjs create|claim|main|release|handoff|pause|resume|list|status|closed|copy');
+    fail('usage: topic.mjs create|claim|main|release|handoff|pause|resume|list|status|closed|copy|consent');
   }
 } catch (err) {
   fail(err.message);
