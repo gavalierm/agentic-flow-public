@@ -94,14 +94,17 @@ export function executedText(command) {
 /**
  * A command form the project's brain forbids (policy `harness.deny_commands`: [{ match: <regex source>, reason }]), tested
  * against the whole command text, heredoc bodies included; the reason names the skill that replaces the form (P-030).
+ * With the shell's directory the text is the command as run from there (`cd '<cwd>'` line first): a cd of an earlier call
+ * persists in the main session, so a command run in a clone without naming its path passed (report-23c6fb63).
  * An entry whose regex does not compile is skipped.
  */
-export function deniedCommand(command, rules) {
+export function deniedCommand(command, rules, cwd = '') {
+  const text = `${cwd ? `cd '${cwd}'\n` : ''}${String(command || '')}`;
   for (const r of Array.isArray(rules) ? rules : []) {
     if (!r || typeof r.match !== 'string' || !r.match) continue;
     let re;
     try { re = new RegExp(r.match); } catch { continue; }
-    if (re.test(String(command || ''))) return `${r.reason || 'command form forbidden by the project'} (policy harness.deny_commands of the brain)`;
+    if (re.test(text)) return `${r.reason || 'command form forbidden by the project'} (policy harness.deny_commands of the brain)`;
   }
   return null;
 }
@@ -1557,7 +1560,7 @@ function pathChecks(input, ctx, cwd) {
     snapshotShell(ctx, input.tool_use_id, shellDirs(cmd, cwd), threadStateBirths(cmd, cwd, ctx.thread));
     const cat = catalogCheck(input, ctx, cwd);
     if (cat?.deny) return permissionOutput('deny', cat.deny);
-    const forbidden = deniedCommand(cmd, policy.harness?.deny_commands);
+    const forbidden = deniedCommand(cmd, policy.harness?.deny_commands, cwd);
     if (forbidden) return permissionOutput('deny', forbidden);
     const targets = bashTargets(cmd, cwd);
     const edits = bashEdits(cmd, cwd);

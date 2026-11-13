@@ -2,6 +2,7 @@
 // Support script for skill delegate (P-027, P-028): bundle brain skills whose trigger matches the task, and check a worker result.
 //   delegate.mjs prepare --task "..."             -> task block with bundled skills (paste into the Agent prompt)
 //   delegate.mjs prepare --task-file <file>       -> the same with the brief read from a file (flow-public#38)
+//   delegate.mjs prepare ... --agent <type>       -> checks the tools of the agent type the brief goes to (report-dd4ad700)
 //   delegate.mjs prepare --implement [web|code|ops] [--topic <id>] --task-file <file>
 //                                                 -> brief of an implementation worker in the code copy of a topic this
 //                                                    thread holds (D-0020, D-0021): an "implement:" marker line (topic, class,
@@ -85,6 +86,64 @@ export function readBanConflict(task) {
   return ban && file ? { ban: ban[0].trim(), file: file[0].trim().replace(/^[`'"(]/, '') } : null;
 }
 
+// report-dd4ad700: a brief for an agent type of another plugin (no Bash, no Write) asked it to save raw API responses into
+// scratch/; the agent could not, the data stayed only in the harness tool results. prepare --agent <type> reads the type's
+// tools and refuses a brief that needs file writes from a type without Write, Edit and Bash.
+const WRITE_TOOLS = ['Write', 'Edit', 'Bash'];
+const splitTools = (v) => (v == null ? null : String(v).replace(/^\[|\]$/g, '').split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean));
+function frontmatter(text) {
+  const m = String(text).match(/^---\r?\n([^]*?)\r?\n---/);
+  const out = {};
+  if (!m) return out;
+  let key = null;
+  for (const raw of m[1].split(/\r?\n/)) {
+    const line = raw.replace(/\s+#.*$/, ''); // YAML comment after a value ("tools: Read, Bash  # why")
+    const kv = line.match(/^([\w-]+):\s*(.*)$/);
+    if (kv) { key = kv[1]; out[key] = kv[2]; continue; }
+    const item = line.match(/^\s*-\s*(.+)$/);
+    if (item && key) out[key] = out[key] ? `${out[key]}, ${item[1]}` : item[1];
+  }
+  return out;
+}
+function* agentFiles(dir, name, depth = 0) {
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory() && depth < 6) {
+      if (e.name === 'agents') { const f = path.join(p, `${name}.md`); if (fs.existsSync(f)) yield f; } else yield* agentFiles(p, name, depth + 1);
+    }
+  }
+}
+/** Definition file and tool set of an agent type ("plugin:name" or "name"); tools null = all tools of the harness. */
+export function agentTools(type, { projectDir, home = process.env.HOME, pluginRoot = path.join(import.meta.dirname, '..') } = {}) {
+  const [plugin, name] = String(type).includes(':') ? String(type).split(':') : [null, String(type)];
+  const candidates = [];
+  if (plugin === 'workflow') candidates.push(path.join(pluginRoot, 'agents', `${name}.md`));
+  else if (plugin) {
+    for (const f of agentFiles(path.join(home || '', '.claude', 'plugins'), name)) if (f.split(path.sep).includes(plugin)) candidates.push(f);
+  } else candidates.push(path.join(projectDir || '', '.claude', 'agents', `${name}.md`), path.join(home || '', '.claude', 'agents', `${name}.md`));
+  const file = candidates.find((f) => fs.existsSync(f));
+  if (!file) return null;
+  const fm = frontmatter(fs.readFileSync(file, 'utf8'));
+  return { file, tools: splitTools(fm.tools), disallowed: splitTools(fm.disallowedTools) || [] };
+}
+/** Write tools the agent type has (Write, Edit, Bash). */
+export function writeToolsOf(def) {
+  return WRITE_TOOLS.filter((t) => (!def.tools || def.tools.includes(t) || def.tools.includes('*')) && !def.disallowed.includes(t));
+}
+// A brief that asks the worker to store something (raw responses, a result file, scratch/).
+const NEEDS_WRITE = /(ulo[žz]|zap[ií][šs]|uchovaj|save|store|write)\p{L}*[^.\n]{0,80}?(scratch|s[uú]bor\p{L}*|files?|json|csv|odpove\p{L}*|responses?|dat\p{L}*|data)|\bscratch\//iu;
+export const needsWrite = (task) => NEEDS_WRITE.test(String(task || ''));
+// report-dd4ad700: an agent skipped a paid data source because the brief named no budget.
+const PAID = /(platen\p{L}*|plat[ií]\s+sa\s+za|spoplatn\p{L}*|\bpaid\b|\bpay-per\p{L}*|\bapi\s+s\s+poplatkom)/iu;
+const BUDGET = /(rozpo[čc]\p{L}*|budget|limit\p{L}*\s+(ceny|n[aá]klad\p{L}*|kredit\p{L}*|\$|€)|najviac\s+\$?\d|max(\.|imum)?\s+\$?\d|nepou[žz][ií]va[jť]\s+platen|bez\s+platen)/iu;
+export function paidWithoutBudget(task) {
+  const text = String(task || '');
+  const m = text.match(PAID);
+  return m && !BUDGET.test(text) ? m[0].trim() : null;
+}
+
 /** The work topic this thread holds that an implementation goes into; --topic <id> picks one of several (D-0020). */
 export function implementTopic(ctx, asked) {
   if (inSubagent()) throw new Error('delegate.mjs prepare --implement refused in subagent: the main agent of the topic thread delegates an implementation (P-025)');
@@ -124,6 +183,14 @@ if (process.argv[1]?.endsWith('delegate.mjs')) try {
     if (!task || task === true) fail('usage: delegate.mjs prepare --task "..." | --task-file <file>');
     const conflict = readBanConflict(task);
     if (conflict) fail(`the brief forbids reading files ("${conflict.ban}") and names ${conflict.file}: the worker needs the files the brief names (a source list, an input), so allow reading them and forbid only the rest (flow-public#48)`);
+    const paid = paidWithoutBudget(task);
+    if (paid) fail(`the brief names a paid source ("${paid}") without a budget: state the budget (rozpočet: najviac <suma> / <počet volaní>) or that the paid source is not used, so the worker neither skips it nor overspends (report-dd4ad700)`);
+    let agentDef = null;
+    if (args.agent && args.agent !== true) {
+      agentDef = agentTools(args.agent, { projectDir: ctx.projectDir });
+      if (!agentDef) fail(`agent type ${args.agent} not found (workflow:<name> in the plugin, <plugin>:<name> under ~/.claude/plugins, <name> in .claude/agents): prepare checks the tools of the type the brief goes to (report-dd4ad700)`);
+      if (needsWrite(task) && !writeToolsOf(agentDef).length) fail(`agent type ${args.agent} has no Write, Edit or Bash (${toPosixPath(agentDef.file)}: tools ${agentDef.tools ? agentDef.tools.join(', ') : 'all'}${agentDef.disallowed.length ? `, disallowed ${agentDef.disallowed.join(', ')}` : ''}) and the brief asks it to store files: give the writing part to workflow:worker, or have the agent return the data and store it in the parent (report-dd4ad700)`);
+    }
     const impl = args.implement ? prepareImplementation(ctx, { implement: args.implement, topic: args.topic }) : null;
     const limit = ctx.policy.limits.worker_result_chars;
     const { bundled, listed } = bundleSkills(ctx.brainDir, readSkills(ctx.brainDir), String(task), {
@@ -139,6 +206,11 @@ if (process.argv[1]?.endsWith('delegate.mjs')) try {
         '- Necommituj, nepushuj, nezlučuj (merge, rebase) ani netaguj: hook to v kópii odmietne; commit, zlúčenie a vydanie robí vlákno témy po kontrole (D-0020).',
         '- Nezapisuj do brain (P-013, P-025).',
         '- Vráť súhrn zmien (súbor a jedna veta ku každému) a spustené testy s výsledkom (počty prešlo/zlyhalo).', '');
+    }
+    if (agentDef) {
+      const w = writeToolsOf(agentDef);
+      parts.push('## Nástroje agenta', `- Typ ${args.agent}: ${agentDef.tools ? agentDef.tools.join(', ') : 'všetky nástroje'}${agentDef.disallowed.length ? ` (bez ${agentDef.disallowed.join(', ')})` : ''}.`,
+        w.length ? `- Zápis súborov: ${w.join(', ')}.` : '- Súbory zapisovať nevie: dáta vráť vo výsledku, uloží ich rodič.', '');
     }
     parts.push('## Pravidlá výsledku', `- Vráť záver so zdrojmi, najviac ${limit} znakov; nie surový obsah.`, '- Nezapisuj do brain, nedrž tému, nekomunikuj s operátorom; výsledok vráť rodičovi (P-025).', '- Kód meň iba v kópii témy, ak ju zadanie uvádza.', '- Zdroj, ktorý zlyhá (403, timeout, blokovanie), nie je koniec úlohy: skús ho raz inou cestou, ktorú zadanie nezakazuje (iná adresa zdroja, `curl -sL` cez Bash), potom ho uveď vo Failures a pokračuj ďalšími zdrojmi. Prehliadač, ktorý sa nespustil a nahradil ho curl, patrí do Failures aj s vrátenou stránkou: curl nespúšťa JavaScript, obsah načítaný skriptom (tabuľky, EAN) v ňom chýba.', `- Pracovné súbory (pokusy, klon, medzivýsledky) iba do ${toPosixPath(path.join(ctx.projectDir, 'scratch'))}/, nikdy /tmp ani ~ (P-052).`, '- Výsledok MUSÍ končiť časťou "Failures: čo zlyhalo a čo nakoniec fungovalo" (alebo "Failures: none").', '');
     if (bundled.length) {
@@ -162,7 +234,7 @@ if (process.argv[1]?.endsWith('delegate.mjs')) try {
     if (errors.length) fail(`worker result rejected:\n- ${errors.join('\n- ')}`, 2);
     out(`worker result ok (${text.length} chars); process its Failures via workflow:error`);
   } else {
-    fail('usage: delegate.mjs prepare --task "..." | prepare --task-file <file> [--implement [web|code|ops] [--topic <id>]] | check --file <result>');
+    fail('usage: delegate.mjs prepare --task "..." | prepare --task-file <file> [--agent <type>] [--implement [web|code|ops] [--topic <id>]] | check --file <result>');
   }
 } catch (err) {
   fail(err.message);
