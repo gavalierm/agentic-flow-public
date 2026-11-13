@@ -256,7 +256,7 @@ function resultText(c) {
 }
 
 /** The last TRANSCRIPT_TAIL bytes of the session transcript, or null. */
-function transcriptTail(transcriptPath) {
+export function transcriptTail(transcriptPath) {
   if (!transcriptPath) return null;
   try {
     const size = fs.statSync(transcriptPath).size;

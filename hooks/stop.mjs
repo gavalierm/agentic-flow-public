@@ -25,7 +25,8 @@ import { heldTopics } from '../scripts/topic.mjs';
 import { parseReply, repeatsAnswered, REPEATED_QUESTION_REASON } from '../scripts/protocol.mjs';
 export { REPEATED_QUESTION_REASON };
 import { TOPIC_QUESTION } from '../scripts/boot.mjs';
-import { waitOnlyStep, validWaker, activeTimer, setTimer, clearTimer, AUTO_TIMER_MS, AUTO_TIMER_MAX_MS, OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS, IDLE_RING_MS } from '../scripts/waker.mjs';
+import { waitOnlyStep, validWaker, activeTimer, setTimer, clearTimer, finishedTasks, withoutFinished, AUTO_TIMER_MS, AUTO_TIMER_MAX_MS, OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS, IDLE_RING_MS } from '../scripts/waker.mjs';
+import { transcriptTail } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to next prompt); 1 block reason', principles: ['P-003', 'P-026', 'P-030', 'P-040', 'P-042', 'P-043', 'P-061'] };
 
@@ -208,6 +209,11 @@ export function run(input) {
     }
     // A timer outlives an operator prompt (12 of 59 timers were dropped by one, audit 2026-11-11) and is spent here, when that
     // turn ends without "čakám"; an auto timer of code is always spent then, the turn arms its own wait.
+    // A task whose end the harness already notified (in this turn, or as the prompt of an earlier one) rings nobody: its
+    // waker is spent, else it kept "hotovo" with a next step from blocking for 2 h (operator 2026-11-13).
+    const recorded = readThreadState(ctx.brainDir, ctx.thread);
+    const live = (recorded.wakers || []).some((w) => w.tasks?.length) ? withoutFinished(recorded.wakers, finishedTasks(transcriptTail(input.transcript_path))) : recorded.wakers;
+    if (live !== recorded.wakers && live.length !== recorded.wakers.length) writeThreadState(ctx.brainDir, ctx.thread, { ...recorded, wakers: live });
     const before = readThreadState(ctx.brainDir, ctx.thread);
     const spent = !!before.timer && before.turn_source === 'operator' && !(before.turn_started_at && before.timer.set_at >= before.turn_started_at) && (before.timer.auto || reply.state !== 'čakám');
     const waker = validWaker(spent ? { ...before, timer: undefined } : before);

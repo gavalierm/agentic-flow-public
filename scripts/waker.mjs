@@ -14,7 +14,7 @@ export const TIMER_CMD = `node ${path.join(PLUGIN_ROOT, 'bin', 'timer.mjs')}`;
 
 export const TIMER_MIN_MS = 60_000;
 export const TIMER_MAX_MS = 24 * 3600_000;
-/** Background work notifies the thread when done; it counts as a waker this long. */
+/** Background work notifies the thread when done; it counts as a waker until that notification, at most this long. */
 export const BACKGROUND_WAKER_MS = 2 * 3600_000;
 /** Timer the Stop hook arms itself when the agent ended waiting without one (doubles per repeat, up to the max). */
 export const AUTO_TIMER_MS = 15 * 60_000;
@@ -78,6 +78,37 @@ export function parseDelay(s) {
   return Math.round(n * (unit === 's' ? 1000 : unit === 'h' ? 3600_000 : 60_000));
 }
 
+/** Ids of the harness tasks a tool call started or waits on (background command, async agent, Monitor, t3_background_wait):
+ * the end notification of the task spends its waker (withoutFinished). */
+function taskIds(ti, resp, respText) {
+  const ids = Array.isArray(ti.taskIds) ? ti.taskIds.filter((x) => typeof x === 'string') : [];
+  if (resp && typeof resp === 'object') for (const k of ['backgroundTaskId', 'agentId', 'taskId', 'task_id']) if (typeof resp[k] === 'string' && resp[k]) ids.push(resp[k]);
+  const named = /running in background with ID: ([\w-]+)/.exec(respText) || /(?:^|\n)agentId: ([\w-]+)/.exec(respText);
+  if (named) ids.push(named[1]);
+  return [...new Set(ids)];
+}
+
+const FINAL_STATUS = /^(completed|failed|killed|stopped|cancell?ed|error|timeout|timed_out)$/i;
+
+/** Ids of the tasks whose end the harness notified in `text` (a prompt or the session transcript): a <task-notification>
+ * with a final <status>. A notification comes as a prompt when the thread is idle, inside the running turn otherwise. */
+export function finishedTasks(text) {
+  const out = new Set();
+  for (const m of String(text || '').matchAll(/<task-id>([^<\s]+)<\/task-id>([\s\S]{0,3000}?)<\/task-notification>/g)) {
+    const status = /<status>([\w-]+)<\/status>/.exec(m[2])?.[1];
+    if (status && FINAL_STATUS.test(status)) out.add(m[1]);
+  }
+  return out;
+}
+
+/** Wakers without those whose tasks all ended: the harness rings nobody for them any more (operator 2026-11-13: a release
+ * notified 1 h before still counted for 2 h, so "Stav: hotovo" passed with a next step in the handover). */
+export function withoutFinished(wakers, finished) {
+  const list = wakers || [];
+  if (!finished?.size) return list;
+  return list.filter((w) => !(Array.isArray(w.tasks) && w.tasks.length && w.tasks.every((id) => finished.has(id))));
+}
+
 /** Waker an agent armed with this tool call (PostToolUse input), or null. */
 export function wakerFromTool(input, now = Date.now()) {
   const tool = String(input?.tool_name || '');
@@ -85,7 +116,13 @@ export function wakerFromTool(input, now = Date.now()) {
   const resp = input?.tool_response;
   const respText = typeof resp === 'string' ? resp : typeof resp?.stdout === 'string' ? resp.stdout : JSON.stringify(resp || {}).slice(0, 2000);
   const at = new Date(now).toISOString();
-  const bg = (kind) => ({ kind, at, until: new Date(now + BACKGROUND_WAKER_MS).toISOString() });
+  // A stopped task rings nobody: its waker goes (TaskStop; KillShell in older harness versions).
+  if (tool === 'TaskStop' || tool === 'KillShell') {
+    const id = ti.task_id || ti.shell_id || (resp && typeof resp === 'object' ? resp.task_id : null);
+    return id ? { kind: 'background', ended: [String(id)], at } : null;
+  }
+  const tasks = taskIds(ti, resp, respText);
+  const bg = (kind) => ({ kind, at, until: new Date(now + BACKGROUND_WAKER_MS).toISOString(), ...(tasks.length ? { tasks } : {}) });
   if ((tool === 'Bash' || tool === 'PowerShell') && ti.run_in_background === true) return bg('background');
   if ((tool === 'Agent' || tool === 'Task') && (ti.run_in_background === true || /async_launched|running in the background|run_in_background/i.test(respText))) return bg('agent');
   // A harness schedule rings this thread on every run, also turns later: it stays a waker until removed, not 2 h
@@ -161,6 +198,7 @@ export function recordWaker(brainDir, thread, waker) {
   // A removed schedule drops its waker (by id; without an id every recurring one, the safe side: auto timers return).
   const removed = (w) => waker.remove && w.recurring && (!waker.id || !w.id || w.id === waker.id);
   const keep = (state.wakers || []).filter((w) => !removed(w) && (w.recurring || (w.until && Date.parse(w.until) > now))).slice(-20);
+  if (waker.ended) return writeThreadState(brainDir, thread, { ...state, wakers: withoutFinished(keep, new Set(waker.ended)) });
   writeThreadState(brainDir, thread, { ...state, wakers: waker.remove ? keep : [...keep.filter((w) => !(waker.id && w.id === waker.id)), waker] });
 }
 

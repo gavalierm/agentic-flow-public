@@ -75,6 +75,43 @@ test('Stop: "hotovo" while the handover has a next step blocks, also in a bell t
   } finally { fx.cleanup(); }
 });
 
+// Operator 2026-11-13: a release run in the background notified its end, the next turn ended "hotovo" with a next step and
+// passed, because the waker of the finished task counted for 2 h.
+test('Stop: a background task whose end was notified is no waker: "hotovo" with a next step blocks (prompt, transcript, TaskStop)', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
+    assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--task', 'Oprava', '--done', 'Oprava je v dev.', '--next', 'Etapa 4.']).status, 0);
+    const note = (id) => `<task-notification>\n<task-id>${id}</task-id>\n<tool-use-id>toolu_x</tool-use-id>\n<status>completed</status>\n<summary>Background command "release" completed (exit code 0)</summary>\n</task-notification>`;
+    const launch = (id) => fx.hook('post-tool-use.mjs', { tool_name: 'Bash', tool_use_id: `toolu_${id}`, tool_input: { command: 'sh release.sh', run_in_background: true }, tool_response: { stdout: '', stderr: '', backgroundTaskId: id } });
+    fx.hook('user-prompt-submit.mjs', { prompt: 'Vydaj to.' });
+    launch('bt1');
+    assert.deepEqual(stateOf(fx).wakers.map((w) => w.tasks), [['bt1']], 'the waker names its task');
+    // The notification is the prompt of the next turn: the task rings nobody any more.
+    fx.hook('user-prompt-submit.mjs', { prompt: note('bt1') });
+    assert.deepEqual(stateOf(fx).wakers, [], 'the notification spent the waker');
+    let r = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Vydané.\n\nStav: hotovo' });
+    assert.equal(r.json.decision, 'block');
+    assert.match(r.json.reason, /handover of topic alpha has a next step: "Etapa 4\."/);
+    // A task still running from an earlier turn stays a waker.
+    launch('bt2');
+    fx.hook('user-prompt-submit.mjs', { prompt: 'Stav?' });
+    const transcript = path.join(fx.root, 'transcript.jsonl');
+    fs.writeFileSync(transcript, `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'Stav?' } })}\n`);
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, transcript_path: transcript, last_assistant_message: 'Beží.\n\nStav: hotovo' }).json.decision, undefined);
+    // Its notification inside a running turn (queued, no prompt) is in the transcript: Stop spends the waker.
+    fx.hook('user-prompt-submit.mjs', { prompt: 'Ďalej.' });
+    fs.appendFileSync(transcript, `${JSON.stringify({ type: 'attachment', attachment: { type: 'queued_command', prompt: note('bt2'), commandMode: 'task-notification' } })}\n`);
+    r = fx.hook('stop.mjs', { stop_hook_active: false, transcript_path: transcript, last_assistant_message: 'Hotové.\n\nStav: hotovo' });
+    assert.equal(r.json.decision, 'block', 'the transcript notification spent the waker');
+    assert.deepEqual(stateOf(fx).wakers, []);
+    // A stopped task (TaskStop) rings nobody either.
+    launch('bt3');
+    fx.hook('post-tool-use.mjs', { tool_name: 'TaskStop', tool_use_id: 'toolu_stop', tool_input: { task_id: 'bt3' }, tool_response: { message: 'Successfully stopped task: bt3', task_id: 'bt3' } });
+    assert.deepEqual(stateOf(fx).wakers, [], 'TaskStop spent the waker');
+  } finally { fx.cleanup(); }
+});
+
 // Operator 2026-11-08: "Stav: čakám" must also say what it waits for.
 test('parseReply: čakám carries what it waits for, in parentheses or after "na"; other states take no text', () => {
   assert.equal(parseReply('Pracovník beží.\n\nStav: čakám (na návrh od pracovníka)').waitFor, 'na návrh od pracovníka');

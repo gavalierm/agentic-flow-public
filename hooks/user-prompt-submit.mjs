@@ -9,7 +9,7 @@ import { withAnswered } from '../scripts/protocol.mjs';
 import { statusInfo, rulesHash, rulesSections, changedRules, BOOT_MARKERS } from '../scripts/boot.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { recordTurn, runClient, mailNoticeLine, isMainTopic, turnDiscussion } from '../scripts/comms.mjs';
-import { waitOnlyStep, setTimer, untilMet, withoutMailWaker, AUTO_TIMER_MS } from '../scripts/waker.mjs';
+import { waitOnlyStep, setTimer, untilMet, withoutMailWaker, finishedTasks, withoutFinished, AUTO_TIMER_MS } from '../scripts/waker.mjs';
 import { readReports } from '../scripts/report.mjs';
 import { PLUGIN_ROOT, toPosix } from '../scripts/util.mjs';
 import { threadTitleSignal } from '../scripts/thread-title.mjs';
@@ -239,6 +239,10 @@ export function run(input) {
   // so is the mail waker of that message, else it kept Stop from arming the timer of a later "čakám" for 2 h.
   const bellSpent = messageBell && !!state?.timer?.for && state.timer.for === parsed.id;
   const mailSpent = messageBell && (state?.wakers || []).some((w) => w.kind === 'mail' && w.for === parsed.id) ? { wakers: withoutMailWaker(state.wakers, parsed.id) } : {};
+  // A task notification (the harness rings an idle thread when a background task or agent ends) spends the waker of that
+  // task: it rings nobody any more (operator 2026-11-13: it let "hotovo" pass with a next step for 2 h).
+  const ended = finishedTasks(input.prompt);
+  const taskSpent = ended.size && state ? { wakers: withoutFinished(mailSpent.wakers || state.wakers, ended) } : {};
   const keepTimer = rearmed ? { timer: rearmed } : state?.timer && !(kind === 'continue' && timer) && !bellSpent ? { timer: state.timer } : { timer: undefined };
   // P-021: the installed workflow changed during the session: one line; the rules come above only when their text changed
   // (rules hash), not at every update (tokens, operator 2026-11-03).
@@ -250,7 +254,7 @@ export function run(input) {
   if (turnIntent) extras.push('the operator asks (question, explanation, check) and gives no instruction to change: answer it and propose a change, do not make it; the first write or change in this turn is refused once (P-063)');
   // P-059: the operator started this turn: the questions the last reply ended with are answered (a bell does not answer them).
   const answered = state && turnSource === 'operator' && state.last_questions?.length ? { ...withAnswered(state, state.last_questions, state.turn_started_at || new Date(Date.now() - 1).toISOString()), last_questions: [] } : state;
-  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...answered, ...keepTimer, ...mailSpent, ...(upd?.patch || {}), turn_started_at: new Date().toISOString(), ...(title?.patch || {}), turn_source: turnSource, discussion, turn_intent: turnIntent, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
+  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...answered, ...keepTimer, ...mailSpent, ...taskSpent, ...(upd?.patch || {}), turn_started_at: new Date().toISOString(), ...(title?.patch || {}), turn_source: turnSource, discussion, turn_intent: turnIntent, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
   if (extras.length) lines.push(extras.join('; '));
   const limited = enforceLines(lines.join('\n'), ctx.policy?.limits?.hook_signal_lines ?? 2);
   // Nothing new: empty context (contextOutput leaves additionalContext out).
