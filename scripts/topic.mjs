@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { git, readJson, nowIso, relPosix } from './util.mjs';
-import { isWakeTurn, machineName, sameMachine, inSubagent, readThreadState, writeThreadState, mainCheckout, WORKTREES_DIR } from './config.mjs';
+import { isWakeTurn, machineName, sameMachine, inSubagent, inHarness, readThreadState, writeThreadState, mainCheckout, WORKTREES_DIR } from './config.mjs';
 import { brainWrite, brainSync, readHolder, currentBranch, withBrainLock, isHolderOf } from './brain.mjs';
 import { freeHandover, renderHandover, checkHandover } from './brain-checks.mjs';
 import { pendingBuffers, flushBuffer } from './logs.mjs';
@@ -38,8 +38,11 @@ export function codeCopyPath(ctx, id) {
   return path.resolve(ctx.projectDir, '..', `${ctx.projectName}-topics`, id);
 }
 
-function guardThread(ctx, action, { allowWake = false } = {}) {
+// codeStart: the action starts a new thread that holds the topic. Code without a thread id (cron, e.g. issues/watch.sh of a
+// persona, D-0019) may do that: it holds nothing and no message started it. An agent session still needs its id (P-038).
+function guardThread(ctx, action, { allowWake = false, codeStart = false } = {}) {
   if (inSubagent()) throw new Error(`topic ${action} refused in subagent (P-025)`);
+  if (!ctx.thread && codeStart && !inHarness()) return;
   if (!ctx.thread) throw new Error(`topic ${action} needs a stable thread id: start the harness via thread.mjs or in T3 (WORKFLOW_THREAD_ID / T3CODE_THREAD_ID, P-038)`);
   if (!allowWake && isWakeTurn(ctx.brainDir, ctx.thread)) throw new Error(`topic ${action} refused: this turn was started by a message, not by the operator (P-047)`);
 }
@@ -173,7 +176,7 @@ function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedK
   // A persona has no project code (P-025): a code topic from its session without --project went to the persona repo
   // instead of the managed project (bob 2026-11-03, t3-workarounds-check in bob, not the managed project).
   if (kind === 'code' && !explicitProject && isPersonaProject(ctx)) throw new Error(`code topic ${id} would be created in persona project ${path.basename(ctx.projectDir)}: a persona has no project code (P-025). Pass --project <managed project dir> (or --project ${ctx.projectDir} if the persona repo itself is the code)`);
-  guardThread(ctx, 'create');
+  guardThread(ctx, 'create', { codeStart: newThread && !forThread });
   if (topicExists(ctx.brainDir, id) || fs.existsSync(path.join(ctx.brainDir, 'topics', 'archive', id))) throw new Error(`topic ${id} already exists`);
   const topic = { id, subject: String(subject).trim(), class: String(cls), kind, state: 'working', created: nowIso() };
   // The creating thread may clean up its own topic (test, mistake) without operator approval (P-018).
@@ -326,7 +329,7 @@ export function startTopicThread(ctx, topic, run = spawnSync, { task = null, pla
  * work (Bob 2026-11-03: thread of tracker-remote-verify stood on a question). A held topic is refused (takeover is P-037).
  */
 export function startThreadForTopic(ctx, id, { task = null, mode, run, forThread = null } = {}) {
-  guardThread(ctx, 'thread');
+  guardThread(ctx, 'thread', { codeStart: !forThread });
   if (!topicExists(ctx.brainDir, id)) throw new Error(`topic ${id} does not exist (archived or never created)`);
   const holder = readHolder(ctx.brainDir, id);
   if (holder.thread) return { ok: false, reason: `topic ${id} ${heldBy(holder)}; a new thread needs a free topic: write to the holder (comms send --to ${id}) or ask the operator about a takeover (P-037)` };

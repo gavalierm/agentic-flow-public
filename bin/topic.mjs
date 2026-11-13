@@ -28,7 +28,8 @@ try {
     const res = createTopic(ctx, { id, subject: args.subject, class: args.class, kind: typeof args.kind === 'string' ? args.kind : null, mode: args.mode, claim: !args['no-claim'], copy: !args['no-copy'], forThread: args['for-thread'] || null, task: args.task || null, explicitProject: !!args.project,
       // In T3 a new topic gets its own thread (P-036) when this thread already works on a topic (or --new-thread); a
       // thread without a topic takes it itself: the operator gave the task here (alice 2026-11-03: a duplicate thread).
-      newThread: !!process.env.T3CODE_THREAD_ID && !args.here && !args['no-claim'] && !args['for-thread'] && (!!args['new-thread'] || heldTopics(ctx.brainDir, ctx.thread).length > 0) });
+      // --new-thread also from code without a thread id (cron, D-0019): the new thread holds the topic.
+      newThread: !args.here && !args['no-claim'] && !args['for-thread'] && (!!process.env.T3CODE_THREAD_ID || !ctx.thread) && (!!args['new-thread'] || heldTopics(ctx.brainDir, ctx.thread).length > 0) });
     out(`topic ${id} created (class ${res.topic.class}, ${res.topic.kind})`);
     if (res.thread) out(`thread ${res.thread} started with title ${id}; it holds the topic (this thread does not)`);
     if (res.effortNote) out(res.effortNote);

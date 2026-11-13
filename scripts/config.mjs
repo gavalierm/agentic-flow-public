@@ -248,6 +248,11 @@ export function inSubagent() {
   return !!(process.env.WORKFLOW_AGENT_ID || process.env.CLAUDE_AGENT_ID);
 }
 
+/** A model harness runs this process (Claude Code sets CLAUDECODE in its shell, Codex its CODEX_* variables); cron does not. */
+export function inHarness(env = process.env) {
+  return !!(env.CLAUDECODE || env.CODEX_HOME || env.CODEX_SANDBOX || env.CODEX_THREAD_ID);
+}
+
 /**
  * Stable machine id (holder.json `machine`, logs/<machine>/, machine exceptions). The hostname at first use is kept in
  * ~/.config/agentic-flow/machine-id, so a later hostname change does not make this machine a stranger to its own topics.
