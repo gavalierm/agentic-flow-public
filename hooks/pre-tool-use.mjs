@@ -1094,6 +1094,13 @@ export const MIN_ANSWER_TEXT = 80;
 export const UNANSWERED_DIALOG_REASON = (written) => `the operator started this turn with a question and the turn has written only ${written} characters of text before this dialog: while it is open the operator may not see the thread (T3 shows the dialog in place of the composer, on the phone over the thread), so they would decide about your proposal without your answer. Write the answer to the question in the reply text first, then ask about the proposal in the dialog: start its question with the answer in one sentence (the open dialog covers the text) and say what it decides about. A clarifying question you need before any answer: ask the same dialog again, a repeat passes (P-061, P-063)`;
 export const THIN_DIALOG_REASON = (written, shown) => `this turn wrote ${written} characters of text before the dialog, the dialog shows only ${shown}: while it is open the operator may not see the text of the turn (T3 shows the dialog in place of the composer, on the phone over the thread), so they decide without the plan or proposal you wrote. Put into the dialog what the operator decides about: the content in short in the question (what the plan does, 1–3 sentences), in each option's description what it does, a longer text (the plan, a draft) in the option's preview (markdown). Then ask again; a repeat passes (P-061)`;
 
+// flow-public#53: the turn wrote links (new products) in a table and opened a dialog at once; the dialog covered the table,
+// so the operator decided without the links. The links the turn wrote that the dialog does not show.
+const URL_RE = /\bhttps?:\/\/[^\s<>()[\]{}|"'`]+/g;
+export const turnLinks = (text) => [...new Set((String(text || '').match(URL_RE) || []).map((u) => u.replace(/[.,;:!?*_~]+$/, '')))];
+export const hiddenLinks = (turnText, shownText) => turnLinks(turnText).filter((u) => !String(shownText || '').includes(u));
+export const HIDDEN_LINKS_REASON = (links) => `this turn wrote ${links.length} link(s) in its text that the dialog does not show (${links.slice(0, 5).join(', ')}${links.length > 5 ? ', …' : ''}): while it is open the operator may not see the text of the turn (T3 shows the dialog in place of the composer, on the phone over the thread), so they cannot open what they decide about. Put the links the operator needs into the dialog (the question, an option's description or preview), as bare addresses, not hidden in a table. Then ask again; a repeat passes (P-061, flow-public#53)`;
+
 // flow-public#45: a dialog right after the operator's answer covers the thread again before the operator sees what the answer did.
 export const CHAINED_DIALOG_REASON = (written) => `the operator answered a dialog in this turn and the turn has written only ${written} characters of text since: this dialog would cover the thread again (T3 shows the dialog in place of the composer, on the phone over the thread), so the operator would not see what the answer decided. Write in the reply text what the answer decided and what you did with it, then ask; put all remaining items into this one dialog (up to 4 questions) instead of one dialog after another. A follow-up the answer itself needs: ask the same dialog again, a repeat passes (P-061, flow-public#45)`;
 
@@ -1156,6 +1163,16 @@ export function run(input) {
       if (written >= LONG_TURN_TEXT) {
         writeThreadState(ctx.brainDir, ctx.thread, { ...before, thin_dialog_denied_at: turnKey });
         return permissionOutput('deny', THIN_DIALOG_REASON(written, shown));
+      }
+    }
+    // flow-public#53: links written in the turn text are covered by the dialog; refused once per turn while the dialog does
+    // not show them; a repeat passes. Without a transcript there is nothing to compare.
+    if (before.hidden_links_denied_at !== turnKey && input.transcript_path && fs.existsSync(input.transcript_path)) {
+      awaitTranscriptToolUse(input.transcript_path, input.tool_use_id);
+      const hidden = hiddenLinks(transcriptTurnText(input.transcript_path, before.turn_started_at || ''), dialogText(toolInput));
+      if (hidden.length) {
+        writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), hidden_links_denied_at: turnKey });
+        return permissionOutput('deny', HIDDEN_LINKS_REASON(hidden));
       }
     }
     // flow-public#44: in a turn the operator started with a question, a dialog about a proposal opened before the answer

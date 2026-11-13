@@ -137,3 +137,37 @@ test('AskUserQuestion: the turn text reaches the transcript after PreToolUse sta
     assert.match(reasonOf(r), THIN);
   } finally { fx.cleanup(); }
 });
+
+// flow-public#53: the turn listed links to new products in a table and opened a dialog at once; the dialog covered the
+// table and the operator decided without the links.
+test('AskUserQuestion after links written in the turn text: refused once while the dialog does not show them; a repeat and a dialog with the links pass (flow-public#53)', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
+    const HIDDEN = /link\(s\) in its text that the dialog does not show[^]*flow-public#53/;
+    const ask = (tool_input, transcript_path) => fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input, transcript_path });
+    const turn = (text) => {
+      fx.hook('user-prompt-submit.mjs', { prompt: 'nahoď produkty' });
+      const at = new Date(Date.now() + 1000).toISOString();
+      return transcript(fx, [line('user', 'nahoď produkty', at), line('assistant', [{ type: 'text', text }], at)]);
+    };
+    const TABLE = 'Hotovo.\n\n| produkt | web | admin |\n|---|---|---|\n| A | [web](https://shop.example/p/a) | [admin](https://shop.example/admin/a). |';
+    const DIALOG = { questions: [{ question: 'Produkty sú nahodené, sú v poriadku popisy a ceny, alebo niečo upraviť?', options: [
+      { label: 'V poriadku', description: 'Uzavriem nahodenie a pokračujem ďalšou dávkou produktov.' },
+      { label: 'Upraviť', description: 'Napíšeš, čo zmeniť, a upravím popisy alebo ceny v admine.' },
+    ] }] };
+
+    let t = turn(TABLE);
+    const first = ask(DIALOG, t);
+    assert.equal(first.json.hookSpecificOutput?.permissionDecision, 'deny');
+    assert.match(reasonOf(first), HIDDEN);
+    assert.match(reasonOf(first), /https:\/\/shop\.example\/admin\/a[,)]/, 'the trailing dot is not part of the link');
+    assert.doesNotMatch(reasonOf(ask(DIALOG, t)), HIDDEN, 'once per turn: the repeat passes');
+
+    t = turn(TABLE);
+    const withLinks = { questions: [{ ...DIALOG.questions[0], options: [{ ...DIALOG.questions[0].options[0], preview: 'https://shop.example/p/a\nhttps://shop.example/admin/a' }, DIALOG.questions[0].options[1]] }] };
+    assert.doesNotMatch(reasonOf(ask(withLinks, t)), HIDDEN, 'the dialog shows the links');
+    t = turn('Produkty sú nahodené, odkazy dám po kontrole.');
+    assert.doesNotMatch(reasonOf(ask(DIALOG, t)), HIDDEN, 'a turn without links');
+  } finally { fx.cleanup(); }
+});
