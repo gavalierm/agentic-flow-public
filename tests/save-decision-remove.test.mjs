@@ -57,3 +57,32 @@ test('log.mjs remove: lines containing the text leave every log file on an opera
     assert.equal(fx.git(fx.brain, 'status', '--porcelain').trim(), '', 'the removal is committed');
   } finally { fx.cleanup(); }
 });
+
+test('removal in a wake turn: refused without a dialog, allowed after the operator answered a dialog in this turn (P-047, D-0011)', () => {
+  const fx = setup();
+  try {
+    twoDecisions(fx);
+    fs.writeFileSync(path.join(fx.brain, 'logs', 'procedures.log'), '2026-11-01 secret-proc\n');
+    fx.git(fx.brain, 'add', '-A');
+    fx.git(fx.brain, '-c', 'core.hooksPath=/dev/null', 'commit', '-qm', '[brain-script] fixture logs');
+    const threads = path.join(fx.brain, 'local', 'threads');
+    fs.mkdirSync(threads, { recursive: true });
+    const state = (s) => fs.writeFileSync(path.join(threads, 'a1.json'), JSON.stringify({ turn_source: 'wake', ...s }));
+    const now = Date.now();
+    const iso = (ms) => new Date(ms).toISOString();
+    const dec = ['decision', '--remove', 'D-0001', '--reason', 'operator 2026-11-13: wrong decision'];
+    const log = ['remove', '--match', 'secret', '--reason', 'operator 2026-11-13: private data'];
+    state({ turn_started_at: iso(now) });
+    let r = fx.run('save.mjs', dec);
+    assert.equal(r.status, 1); assert.match(r.stderr, /P-047/); assert.match(r.stderr, /AskUserQuestion/);
+    r = fx.run('log.mjs', log);
+    assert.equal(r.status, 1); assert.match(r.stderr, /P-047/); assert.match(r.stderr, /AskUserQuestion/);
+    state({ turn_started_at: iso(now), dialog_answered_at: iso(now - 60_000) });
+    assert.equal(fx.run('save.mjs', dec).status, 1, 'a dialog answered before this turn does not count');
+    state({ turn_started_at: iso(now - 60_000), dialog_answered_at: iso(now) });
+    r = fx.run('save.mjs', dec);
+    assert.equal(r.status, 0, r.out); assert.match(r.stdout, /D-0001 removed/);
+    r = fx.run('log.mjs', log);
+    assert.equal(r.status, 0, r.out); assert.match(r.stdout, /removed 1 log line/);
+  } finally { fx.cleanup(); }
+});

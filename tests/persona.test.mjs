@@ -167,7 +167,16 @@ test('P-052: a temp-dir target is denied with the scratch path (no operator ques
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Agent', tool_input: { subagent_type: 'workflow:worker', description: 'x', prompt: brief.stdout } });
     assert.notEqual(r.json.hookSpecificOutput?.permissionDecision, 'deny', 'brief from prepare passes');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Agent', tool_input: { subagent_type: 'Explore', description: 'x', prompt: 'find x' } });
-    assert.notEqual(r.json.hookSpecificOutput?.permissionDecision, 'deny', 'other agents pass');
+    assert.notEqual(r.json.hookSpecificOutput?.permissionDecision, 'deny', 'read-only agents pass');
+    // report-44b5e967: an agent of another plugin with a hand-made brief would use the harness scratchpad in /tmp.
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Agent', tool_input: { subagent_type: 'other-plugin:writer', description: 'x', prompt: 'Write the report.' } });
+    assert.equal(r.json.hookSpecificOutput?.permissionDecision, 'deny', 'a plugin agent without the work path is denied');
+    assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /other-plugin:writer.*\/scratch\/.*name the work directory/);
+    const scratch = path.join(fx.project, 'scratch').split(path.sep).join('/');
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Agent', tool_input: { subagent_type: 'other-plugin:writer', description: 'x', prompt: `Write the report; work files only in ${scratch}/.` } });
+    assert.notEqual(r.json.hookSpecificOutput?.permissionDecision, 'deny', 'a plugin agent with the work path passes');
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Agent', tool_input: { description: 'x', prompt: 'Write the report.' } });
+    assert.equal(r.json.hookSpecificOutput?.permissionDecision, 'deny', 'the default agent type without the work path is denied');
   } finally { fx.cleanup(); }
 });
 

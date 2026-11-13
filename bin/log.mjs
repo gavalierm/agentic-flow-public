@@ -5,7 +5,7 @@
 //         remove --match "<text>" --reason "operator <YYYY-MM-DD>: <why>"   deletes every log line containing the text
 //                                   (all machines' day files, old shared logs); only on an explicit operator order
 import { parseArgs, fail } from '../scripts/util.mjs';
-import { loadContext, isWakeTurn } from '../scripts/config.mjs';
+import { loadContext, isWakeTurn, dialogAnsweredInTurn } from '../scripts/config.mjs';
 import { flushBuffer, listFailures, existingNames, resolveFailureOp, removeLinesOps } from '../scripts/logs.mjs';
 import { brainWrite } from '../scripts/brain.mjs';
 
@@ -36,7 +36,8 @@ try {
     const match = args.match === true ? '' : String(args.match || '');
     if (!match.trim()) fail('usage: log.mjs remove --match "<text>" --reason "operator <YYYY-MM-DD>: <why>"');
     if (!args.reason || !/^operator\b/i.test(String(args.reason))) fail('--reason "operator <YYYY-MM-DD>: <why>" required: log lines are deleted only on an explicit operator order');
-    if (ctx.thread && isWakeTurn(ctx.brainDir, ctx.thread)) fail('log lines cannot be removed in a turn started by a message (P-047)');
+    // The operator's answer in a dialog of this turn is the order (D-0011), as in done --topic (report-f52368f8).
+    if (ctx.thread && isWakeTurn(ctx.brainDir, ctx.thread) && !dialogAnsweredInTurn(ctx.brainDir, ctx.thread)) fail('log lines cannot be removed in a turn started by a message, and the operator answered no dialog in it: ask the operator with AskUserQuestion (P-047, D-0011)');
     const { ops, removed } = removeLinesOps(ctx.brainDir, match);
     if (!removed) fail(`no log line contains "${match}"`);
     brainWrite(ctx, { internal: true, ops, message: `remove ${removed} log line(s): ${args.reason}` });

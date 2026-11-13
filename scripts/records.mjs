@@ -5,7 +5,7 @@ import { listFiles, readJson, readText, relPosix } from './util.mjs';
 import { parseFrontmatter, asList } from './frontmatter.mjs';
 import { normalizeKey } from './keys.mjs';
 import { handoverNextStep } from './brain-checks.mjs';
-import { PROJECT_KNOWLEDGE, KNOWLEDGE_KINDS, REPO_HANDOVER, domainRepos, knowledgeDirs } from './repo-knowledge.mjs';
+import { PROJECT_KNOWLEDGE, KNOWLEDGE_KINDS, REPO_HANDOVER, domainRepos, knowledgeDirs, historyDecisionMax } from './repo-knowledge.mjs';
 
 function summary(data, body) {
   const s = data.summary || data.description || data.title;
@@ -21,6 +21,7 @@ function record(brainDir, file, kind) {
   const name = data.name || data.title || path.basename(path.dirname(file) === path.join(brainDir, 'memory') ? file : file, '.md');
   return {
     path: rel,
+    abs: file,
     kind,
     key: String(data.key || (kind === 'skill' ? data.name || path.basename(path.dirname(file)) : path.basename(file, '.md'))),
     type: data.type || null,
@@ -37,19 +38,20 @@ function record(brainDir, file, kind) {
   };
 }
 
-export function readMemory(brainDir) {
-  return listFiles(path.join(brainDir, 'memory'), (f) => f.endsWith('.md')).map((f) => record(brainDir, f, 'memory'));
+// base: the folder paths are relative to (default the brain itself; another store's records are read relative to the session brain).
+export function readMemory(brainDir, base = brainDir) {
+  return listFiles(path.join(brainDir, 'memory'), (f) => f.endsWith('.md')).map((f) => record(base, f, 'memory'));
 }
 
-export function readDecisions(brainDir) {
-  return listFiles(path.join(brainDir, 'decisions'), (f) => f.endsWith('.md')).map((f) => record(brainDir, f, 'decision'));
+export function readDecisions(brainDir, base = brainDir) {
+  return listFiles(path.join(brainDir, 'decisions'), (f) => f.endsWith('.md')).map((f) => record(base, f, 'decision'));
 }
 
-export function readRules(brainDir) {
-  return listFiles(path.join(brainDir, 'rules'), (f) => f.endsWith('.md')).map((f) => record(brainDir, f, 'rule'));
+export function readRules(brainDir, base = brainDir) {
+  return listFiles(path.join(brainDir, 'rules'), (f) => f.endsWith('.md')).map((f) => record(base, f, 'rule'));
 }
 
-export function readSkills(brainDir) {
+export function readSkills(brainDir, base = brainDir) {
   const out = [];
   for (const owner of ['operator', 'agentic']) {
     const dir = path.join(brainDir, 'skills', owner);
@@ -58,7 +60,7 @@ export function readSkills(brainDir) {
       if (!entry.isDirectory()) continue;
       const file = path.join(dir, entry.name, 'SKILL.md');
       if (!fs.existsSync(file)) continue;
-      const r = record(brainDir, file, 'skill');
+      const r = record(base, file, 'skill');
       r.owner = owner;
       r.skillName = String(r.data.name || entry.name);
       r.key = r.skillName;
@@ -97,30 +99,33 @@ export { PROJECT_KNOWLEDGE };
  */
 export function projectRecords(domain, brainDir) {
   if (!domain?.root || !fs.existsSync(domain.root)) return [];
+  return domainRepos(domain, brainDir).flatMap((repo) => repoRecords(domain, repo.name, brainDir || domain.root));
+}
+
+/** Records of one repo of a domain: its main checkout's agentic/, then what each topic worktree changed (r.topic). */
+export function repoRecords(domain, repoName, base = domain.root) {
   const out = [];
-  for (const repo of domainRepos(domain, brainDir)) {
-    const [main, ...worktrees] = knowledgeDirs(domain, repo.name);
-    for (const k of [main, ...worktrees]) {
-      if (!fs.existsSync(k.dir)) continue;
-      for (const f of listFiles(k.dir, (x) => x.endsWith('.md'))) {
-        const rel = path.relative(k.dir, f);
-        if (k.topic && readText(path.join(main.dir, rel), null) === readText(f, '')) continue;
-        const sub = rel.split(path.sep)[0];
-        const kind = rel === REPO_HANDOVER ? 'handover' : KNOWLEDGE_KINDS[sub] || 'project';
-        const r = record(brainDir || domain.root, f, kind);
-        r.repo = repo.name;
-        if (k.topic) r.topic = k.topic;
-        if (kind === 'skill') r.key = String(r.data.name || path.basename(path.dirname(f)));
-        if (kind === 'handover') { r.key = `${repo.name}-handover`; r.aliases.push(`${repo.name} handover`); }
-        out.push(r);
-      }
+  const [main, ...worktrees] = knowledgeDirs(domain, repoName);
+  for (const k of [main, ...worktrees]) {
+    if (!fs.existsSync(k.dir)) continue;
+    for (const f of listFiles(k.dir, (x) => x.endsWith('.md'))) {
+      const rel = path.relative(k.dir, f);
+      if (k.topic && readText(path.join(main.dir, rel), null) === readText(f, '')) continue;
+      const sub = rel.split(path.sep)[0];
+      const kind = rel === REPO_HANDOVER ? 'handover' : KNOWLEDGE_KINDS[sub] || 'project';
+      const r = record(base, f, kind);
+      r.repo = repoName;
+      if (k.topic) r.topic = k.topic;
+      if (kind === 'skill') r.key = String(r.data.name || path.basename(path.dirname(f)));
+      if (kind === 'handover') { r.key = `${repoName}-handover`; r.aliases.push(`${repoName} handover`); }
+      out.push(r);
     }
   }
   return out;
 }
 
 export function nextDecisionId(brainDir) {
-  let max = 0;
+  let max = historyDecisionMax(brainDir, 'decisions');
   for (const d of readDecisions(brainDir)) {
     const m = /^D-(\d+)$/.exec(String(d.id || d.key || ''));
     if (m) max = Math.max(max, Number(m[1]));

@@ -2,10 +2,12 @@
 
 /** Token formats of known providers and private keys. */
 // Built from pieces so the pattern itself does not look like a token to secret scanners (public snapshot gate).
+// A private key is its PEM header with a key body after it (a newline, also JSON-escaped, then base64): the header alone
+// is the format a check names (startswith), no key (report-123b3205: a format check of a key file was denied as a token).
 const TOKEN_RE = new RegExp([
   String.raw`\b(ghp_[A-Za-z0-9]{20,}`, 'github' + String.raw`_pat_[A-Za-z0-9_]{20,}`, String.raw`gh[ousr]_[A-Za-z0-9]{20,}`,
   String.raw`sk-(ant-)?[A-Za-z0-9_-]{20,}`, 'xo' + String.raw`x[bap]-[A-Za-z0-9-]{10,}`, String.raw`AKIA[0-9A-Z]{16})\b`,
-].join('|') + String.raw`|-----BEGIN ([A-Z]+ )?PRIVATE KEY-----`);
+].join('|') + String.raw`|-----BEGIN ([A-Z]+ )?PRIVATE KEY-----(\s|\\[rn])+[A-Za-z0-9+/=]{40,}`);
 
 /** `password|token|secret|api_key = "value"` with a literal value that is not a placeholder. */
 const ASSIGN_RE = /(password|passwd|token|secret|api[_-]?key|client[_-]?secret)["']?\s*[:=]\s*["']([^"'\s]{12,})["']/gi;

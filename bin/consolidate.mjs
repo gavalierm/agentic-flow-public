@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { lfBytes } from '../scripts/eol.mjs';
-import { parseArgs, fail } from '../scripts/util.mjs';
+import { parseArgs, fail, toPosix } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
 import { readMemory, readSkills, projectRecords } from '../scripts/records.mjs';
 import { domainRepos, REPO_HANDOVER } from '../scripts/repo-knowledge.mjs';
@@ -14,6 +14,7 @@ import { buildIndexes } from '../scripts/index.mjs';
 import { tokens } from '../scripts/keys.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { checkProject } from '../scripts/skill-check.mjs';
+import { machineStores, sessionStores, machineRecords, storeRecords, sameStore, subjectMatch, subjectNames, recordType, decisionRefs, refProblem, refFiles, displayPath, SUBJECT_TYPES, ID_LINE } from '../scripts/stores.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const out = (s) => process.stdout.write(s + '\n');
@@ -55,6 +56,45 @@ export function repoReport(ctx, brainRecords) {
   return { repos, limits, stale, both };
 }
 
+const TOMBSTONE = /presun|moved|nahraden|superseded/i;
+
+/**
+ * One subject, one record (D-0028), over the stores of this session (its brain, the domain brain, the domain repos):
+ * a project, service, person or tool record whose key, name or alias another store of the machine has too (both
+ * paths); tombstones (a memory or decision body under 300 characters that only says where the record went); decision
+ * references that do not resolve: a bare D-NNNN its own store lacks, a <store>/D-NNNN the named store lacks (path:line).
+ */
+export function identityReport(ctx) {
+  const stores = machineStores(ctx);
+  const mine = sessionStores(ctx);
+  const others = machineRecords(ctx).filter((r) => r.kind === 'memory' && !r.topic && SUBJECT_TYPES.includes(recordType(r)));
+  const duplicates = [];
+  const seen = new Set();
+  const tombstones = [];
+  const refs = [];
+  for (const s of mine) {
+    const recs = storeRecords(s, ctx.brainDir).filter((r) => !r.topic);
+    for (const r of recs.filter((x) => x.kind === 'memory' && SUBJECT_TYPES.includes(recordType(x)))) {
+      for (const o of others) {
+        if (sameStore(o.storeOf, s)) continue;
+        const how = subjectMatch(o, { key: r.key, names: subjectNames(r) });
+        const pair = [displayPath(r), displayPath(o)].sort().join(' + ');
+        if (!how || seen.has(pair)) continue;
+        seen.add(pair);
+        duplicates.push({ key: r.key, how, store: s.name, other: o.storeOf.name, paths: [displayPath(r), displayPath(o)] });
+      }
+    }
+    for (const r of recs.filter((x) => (x.kind === 'memory' || x.kind === 'decision') && String(x.body).trim().length < 300 && TOMBSTONE.test(x.body))) tombstones.push(displayPath(r));
+    for (const f of refFiles(s)) {
+      for (const ref of decisionRefs(fs.readFileSync(f, 'utf8'), { skip: ID_LINE })) {
+        const problem = refProblem(stores, s, ref, ctx.brainDir);
+        if (problem) refs.push(`${toPosix(f)}:${ref.line} ${problem}`);
+      }
+    }
+  }
+  return { duplicates, tombstones, refs: [...new Set(refs)] };
+}
+
 export function report(ctx) {
   const idx = buildIndexes(ctx.brainDir, ctx.policy);
   const memory = readMemory(ctx.brainDir);
@@ -82,7 +122,7 @@ export function report(ctx) {
   const rules = { chars: assembled.chars, lines: assembled.lines, over: assembled.overLimit, project: projectRules };
   const health = checkProject(ctx).filter((r) => r.findings.length).map((r) => ({ name: r.name, errors: r.findings.filter((f) => f.level === 'error').length, warns: r.findings.filter((f) => f.level === 'warn').length }));
   const repos = repoReport(ctx, [...memory, ...readSkills(ctx.brainDir)]);
-  return { limits: [...idx.warnings, ...assembled.overLimit, ...repos.limits], counts: idx.counts, stale: [...stale, ...repos.stale], duplicates, mergeable, byOrigin, rules, health, repos };
+  return { limits: [...idx.warnings, ...assembled.overLimit, ...repos.limits], counts: idx.counts, stale: [...stale, ...repos.stale], duplicates, mergeable, byOrigin, rules, health, repos, identity: identityReport(ctx) };
 }
 
 try {
@@ -98,6 +138,9 @@ try {
     out(`rules: ${r.rules.chars} chars, ${r.rules.lines} lines; project rules (condense, merge, remove those a core principle covers): ${r.rules.project.length ? r.rules.project.map((p) => `${p.name} ${p.chars}`).join(', ') : 'none'}`);
     out(`stale derived (fingerprint changed, re-derive or delete): ${r.stale.length ? r.stale.join(', ') : 'none'}`);
     out(`possible duplicate subjects (merge): ${r.duplicates.length ? r.duplicates.map((d) => `${d.token}: ${d.paths.join(' + ')}`).join('; ') : 'none'}`);
+    out(`same subject in another store (one subject, one record: keep one, fold the other into it): ${r.identity.duplicates.length ? r.identity.duplicates.map((d) => `${d.key} (${d.how}, ${d.store} + ${d.other}): ${d.paths.join(' + ')}`).join('; ') : 'none'}`);
+    out(`tombstones (short body pointing elsewhere: remove, the record it names holds the subject): ${r.identity.tombstones.length ? r.identity.tombstones.join(', ') : 'none'}`);
+    out(`decision references that do not resolve (a bare D-NNNN is the own store, another store's decision is <store>/D-NNNN): ${r.identity.refs.length ? r.identity.refs.join('; ') : 'none'}`);
     out(`agentic skills sharing a tool/work token (merge only same tool): ${r.mergeable.length ? r.mergeable.map((m) => `${m.token}: ${m.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`skill health (skill-check.mjs <name> for details, skill workflow:skill-check): ${r.health.length ? r.health.map((h) => `${h.name} ${h.errors}e/${h.warns}w`).join(', ') : 'all ok'}`);
     out(`operator records (never deleted by the agent, only proposed): ${r.byOrigin.operator.length}`);

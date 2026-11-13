@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // find.mjs <query> | --relates-to <path> | --similar <key>   [--json]
+// Searches every knowledge store of the machine (D-0028); a match outside the session brain names its store.
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { find, findWords, findRelatesTo, findSimilar, formatMatches, withAuthors } from '../scripts/find.mjs';
+import { findAll, findWordsAll, findRelatesToAll, findSimilarAll, formatMatches, withAuthors } from '../scripts/find.mjs';
 import { recordAuthors } from '../scripts/authors.mjs';
 import { catalogConfig } from '../scripts/catalog/config.mjs';
 import { findCatalog, formatCatalogBlock } from '../scripts/catalog/find.mjs';
@@ -14,18 +15,18 @@ try {
   let label;
   let catalog = null; // data catalog block (only for a text query and a repo with a source)
   if (args['relates-to']) {
-    matches = findRelatesTo(ctx.brainDir, args['relates-to'], { domain: ctx.domain });
+    matches = findRelatesToAll(ctx, args['relates-to']);
     label = `relates-to ${args['relates-to']}`;
   } else if (args.similar) {
-    matches = findSimilar(ctx.brainDir, args.similar);
+    matches = findSimilarAll(ctx, args.similar);
     label = `similar ${args.similar}`;
   } else {
     const q = args._.join(' ');
     if (!q) fail('usage: find.mjs <query> | --relates-to <path> | --similar <key>');
-    matches = find(ctx.brainDir, q, ctx.domain);
+    matches = findAll(ctx, q);
     label = q;
     if (!matches.length) {
-      matches = findWords(ctx.brainDir, q, ctx.domain);
+      matches = findWordsAll(ctx, q);
       if (matches.length && !args.json) process.stdout.write(`no exact match: ${q}; word matches:\n`);
     }
     try {

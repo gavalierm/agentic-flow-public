@@ -126,9 +126,23 @@ export function singleRepoOf(domain, brainDir, refs) {
   return hits.size === 1 ? [...hits][0] : null;
 }
 
-/** Highest D-number of a repo over its main checkout and all topic worktrees, plus one (`<repo>/D-0001`). */
-export function nextRepoDecisionId(domain, repo) {
+/**
+ * Highest D-number a store's git history ever had under `dir` (one git call over all branches): a removed or moved
+ * decision keeps its number, so a new one never reuses it (D-0028).
+ */
+export function historyDecisionMax(cwd, dir) {
+  const r = git(['log', '--all', '--format=', '--name-only', '--', dir], { cwd });
   let max = 0;
+  if (r.ok) for (const line of r.stdout.split('\n')) { const m = /(?:^|\/)d-(\d+)[^/]*$/i.exec(line.trim()); if (m) max = Math.max(max, Number(m[1])); }
+  return max;
+}
+
+/**
+ * Highest D-number of a repo over its main checkout, all topic worktrees and its history (a removed or moved decision
+ * keeps its number), plus one (`<repo>/D-0001`).
+ */
+export function nextRepoDecisionId(domain, repo) {
+  let max = historyDecisionMax(path.join(domain.root, repo), `${PROJECT_KNOWLEDGE}/decisions`);
   for (const { dir } of knowledgeDirs(domain, repo)) {
     let files = [];
     try { files = fs.readdirSync(path.join(dir, 'decisions')); } catch { continue; }
@@ -210,7 +224,10 @@ export function repoPublic(dir) {
   return readJson(path.join(dir, WORKFLOW_CONFIG), {})?.visibility === 'public';
 }
 
-export function repoWrite(ctx, repoName, { ops, message }) {
+// rewrite(knowledgeDir): extra ops computed from the checkout the write lands in (references save move rewrites), the
+// same commit.
+export function repoWrite(ctx, repoName, { ops: given, message, rewrite = null }) {
+  let ops = given;
   const repo = repoByName(ctx.domain, repoName, ctx.brainDir);
   if (repoPublic(repo.dir)) throw new Error(`${repo.name} is public on GitHub ("visibility": "public" in ${repo.name}/${WORKFLOW_CONFIG}): its knowledge would be pushed publicly; save it into brain without --repo (a project-${repo.name} record needs no --brain), secrets into local/`);
   if (!message || !String(message).trim()) throw new Error('commit message required');
@@ -234,8 +251,15 @@ export function repoWrite(ctx, repoName, { ops, message }) {
         dir = temp;
       }
     }
-    const rels = ops.map((op) => `${PROJECT_KNOWLEDGE}/${toPosix(op.path)}`);
+    let rels = ops.map((op) => `${PROJECT_KNOWLEDGE}/${toPosix(op.path)}`);
     try {
+      if (rewrite) {
+        const extra = rewrite(path.join(dir, PROJECT_KNOWLEDGE)).filter((op) => !ops.some((o) => toPosix(o.path) === toPosix(op.path)));
+        const bad = extra.flatMap((op) => checkKnowledgeFile(op.path, op.content, ctx.policy));
+        if (bad.length) throw new Error(bad.join('\n'));
+        ops = [...ops, ...extra];
+        rels = ops.map((op) => `${PROJECT_KNOWLEDGE}/${toPosix(op.path)}`);
+      }
       const dirty = git(['status', '--porcelain', '--', ...rels], { cwd: dir });
       if (dirty.ok && dirty.stdout.trim()) throw new Error(`${repo.name} (${branch}): uncommitted changes in ${dirty.stdout.trim().split('\n').map((l) => l.slice(3)).join(', ')}; only save writes ${PROJECT_KNOWLEDGE}/, settle them first (commit or restore)`);
       for (const [i, op] of ops.entries()) {

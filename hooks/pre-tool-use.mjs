@@ -1368,11 +1368,19 @@ export function run(input) {
   }
 
   // P-052: a worker brief built by hand misses the work-file path, and the worker then writes into /tmp (2026-11-02:
-  // 13 operator confirmations in one implementation run). The brief comes from `delegate.mjs prepare`.
-  if ((tool === 'Agent' || tool === 'Task') && /(^|:)worker$/.test(String(toolInput.subagent_type || ''))) {
+  // 13 operator confirmations in one implementation run). The brief comes from `delegate.mjs prepare`. An agent of
+  // another plugin (or general-purpose) gets the harness scratchpad in /tmp just the same (report-44b5e967: three
+  // plugin agents with a hand-made brief tried to write and cd there); read-only types
+  // (harness.subagent_stop_exempt_agent_types) pass.
+  const agentType = String(toolInput.subagent_type || '');
+  const readOnly = (ctx.policy?.harness?.subagent_stop_exempt_agent_types || []).some((t) => agentType === t || agentType.endsWith(`:${t}`));
+  if ((tool === 'Agent' || tool === 'Task') && !readOnly) {
     const scratch = toPosix(path.join(ctx.projectDir, SCRATCH_DIR));
     if (!String(toolInput.prompt || '').includes(`${scratch}/`)) {
-      return permissionOutput('deny', `worker brief has no work-file path (${scratch}/), so the worker would write into /tmp and every write would ask the operator; build the brief with delegate.mjs prepare --task "..." and pass its output as the prompt (workflow:delegate, P-052)`);
+      const way = /(^|:)worker$/.test(agentType)
+        ? 'build the brief with delegate.mjs prepare --task "..." and pass its output as the prompt (workflow:delegate, P-052)'
+        : `name the work directory in the prompt ("work files only in ${scratch}/, not /tmp or the harness scratchpad"), or for research use workflow:worker with a brief from delegate.mjs prepare (P-052)`;
+      return permissionOutput('deny', `agent brief${agentType ? ` (${agentType})` : ''} has no work-file path (${scratch}/), so the agent would write into the harness scratchpad in /tmp and the write hook refuses it; ${way}`);
     }
   }
   if ((tool === 'Agent' || tool === 'Task') && !input.agent_id && !input.agent_type) {
@@ -1414,7 +1422,9 @@ export function run(input) {
     return { ...out, hookSpecificOutput: { ...(out?.hookSpecificOutput || {}), hookEventName: 'PreToolUse', additionalContext: prev ? `${bulk}\n${prev}` : bulk } };
   }
   // A refused forced add names its own way (git add without -f, a named file) on the same paths: it locks nothing.
-  if (decision === 'deny' && state && !/ adds ignored files too /.test(out.hookSpecificOutput.permissionDecisionReason || '')) {
+  // So does a command form the brain forbids (deny_commands): it names the tool for the same file (Edit, multi-replace),
+  // and its lock denied that Edit as a bypass until the end of the turn (report-14a1f628, 2026-11-13).
+  if (decision === 'deny' && state && !/ adds ignored files too |\(policy harness\.deny_commands of the brain\)$/.test(out.hookSpecificOutput.permissionDecisionReason || '')) {
     const found = analyze(tool, toolInput, cwd, anchors);
     const write = found.write;
     // A P-052 refusal (write outside the project) is about the outside target only: the way it names, a work file in
@@ -1429,6 +1439,11 @@ export function run(input) {
       const writes = tool === 'Bash' || tool === 'PowerShell' ? [...shellWrites(cmd, cwd), ...bashEdits(cmd, cwd), ...bashTargets(cmd, cwd)] : found.paths;
       paths = [...new Set(writes.map((p) => path.resolve(cwd, p)))].filter((p) => !p.startsWith('/dev/') && !insideProject(ctx, p));
       if (!paths.length) paths = found.paths.filter((p) => !insideProject(ctx, p));
+    }
+    // A secret refusal names local/ as its way: locking local/ closed the place it sends the secret to (report-123b3205).
+    if (/^a secret \(/.test(reasonText)) {
+      const locals = [path.join(ctx.projectDir, 'local'), ctx.brainDir && path.join(ctx.brainDir, 'local')].filter(Boolean);
+      paths = paths.filter((p) => !locals.some((l) => isInside(l, path.resolve(cwd, p))));
     }
     if (paths.length) writeThreadState(ctx.brainDir, ctx.thread, withDenial(readThreadState(ctx.brainDir, ctx.thread), { key: callKey(tool, toolInput), tool, paths, write, reason: out.hookSpecificOutput.permissionDecisionReason.slice(0, 160) }));
   }

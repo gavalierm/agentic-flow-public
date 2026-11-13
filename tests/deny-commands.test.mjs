@@ -38,3 +38,20 @@ test('PreToolUse denies a command the brain policy forbids; without the policy i
     assert.doesNotMatch(r.json?.hookSpecificOutput?.permissionDecisionReason || '', /deny_commands/);
   } finally { fx.cleanup(); }
 });
+
+// report-14a1f628 (2026-11-13): the refusal is about the command form and names another way (Edit, multi-replace); it
+// locked the file it named, so the Edit the refusal names was denied as a bypass (P-054) until the end of the turn.
+test('a deny_commands refusal locks nothing: the Edit of the same file passes afterwards', () => {
+  const fx = setup();
+  try {
+    const file = path.join(fx.project, 'flow-repo', 'hooks', 'a.mjs');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'a\n');
+    fs.writeFileSync(path.join(fx.brain, 'policy.json'), JSON.stringify({ harness: { deny_commands: [RULE] } }));
+    const r = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `cd ${path.dirname(path.dirname(file))} && python3 - <<'EOF'\np='hooks/a.mjs'\ns=open(p).read()\nopen(p,'w').write(s.replace('a', 'b'))\nEOF\nhead -1 hooks/a.mjs` } });
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny', r.out);
+    assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /deny_commands/);
+    const edit = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: file, old_string: 'a', new_string: 'b' } });
+    assert.doesNotMatch(JSON.stringify(edit.json || {}), /P-054/, 'Edit is the way the refusal names, not a bypass');
+  } finally { fx.cleanup(); }
+});
