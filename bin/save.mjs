@@ -2,7 +2,11 @@
 // Single entry point for writing knowledge (P-013, P-007, P-031, P-009, P-008, P-035, P-032, P-011).
 // The agent classifies; this script only writes in a fixed format, deduplicates via find, commits via brain.mjs, regenerates indexes.
 //   save.mjs memory <type> <name> --content "..." [--origin operator|derived|observed] [--aliases a,b] [--relates-to x,y] [--unrelate x,y] [--sources f1,f2] [--summary "..."] [--new]
+//   save.mjs memory <type> <name> (--relates-to x,y | --unrelate x,y)   existing record: changes only its links, the body stays
 //   save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y [--supersedes D-0001]
+//   save.mjs decision --relink D-XXXX [--repo [<repo>]] (--relates-to x,y | --unrelate x,y)   changes only the links of a decision
+//   relates_to (D-0029): a record key (<type>-<name>), a decision (D-NNNN, <store>/D-NNNN), a principle (P-NNN) or a file
+//   tracked in git; a new link that resolves to none of them is refused (scripts/links.mjs)
 //   save.mjs decision --remove D-XXXX [--repo [<repo>]] --reason "operator <YYYY-MM-DD>: <why>"   only on an explicit operator order (P-008)
 //   save.mjs rule <name> [--repo [<repo>]] --content "..." (--enforced-by <file>[:<symbol>][,...] | --unenforced "<why code cannot check it>") [--title "..."] | --remove --reason "..."
 //   save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local] [--title "..."]
@@ -23,6 +27,7 @@ import { brainWrite, formatWriteResult, syncAndCheckHolder, checkHolder } from '
 import { parseFrontmatter, serializeFrontmatter, asList } from '../scripts/frontmatter.mjs';
 import { makeKey, normalizeKey, hasDiacritics, isValidId, KEY_TYPES } from '../scripts/keys.mjs';
 import { find, findSimilar } from '../scripts/find.mjs';
+import { checkLinks, linkProblems } from '../scripts/links.mjs';
 import { readDecisions, readSkills, nextDecisionId } from '../scripts/records.mjs';
 import { DECISION_REMOVED_ENV } from './brain-precommit.mjs';
 import { recordAuthors, foreignAuthor } from '../scripts/authors.mjs';
@@ -182,12 +187,15 @@ function saveMemory(ctx) {
   const name = nameParts.join(' ');
   if (!type || !name) fail(`usage: save.mjs memory <type> <name> --content "..." | --remove --reason "..." (types: ${KEY_TYPES.join(', ')})`);
   if (args.remove) return removeMemory(ctx, type, name);
-  if (args.content === undefined) fail('--content required');
+  // --relates-to or --unrelate alone changes the links of an existing record; body, origin and sources stay (D-0029:
+  // the fix consolidate prints must not make the agent retype the content).
+  const linksOnly = args.content === undefined && (args['relates-to'] !== undefined || args.unrelate !== undefined);
+  if (args.content === undefined && !linksOnly) fail('--content required');
   const key = makeKey(type, name);
-  const origin = args.origin || 'operator';
+  let origin = args.origin || 'operator';
   if (!['operator', 'derived', 'observed'].includes(origin)) fail('origin must be operator | derived | observed (P-009)');
-  const sources = asList(args.sources);
-  if (origin === 'derived' && !sources.length) fail('derived record needs --sources f1,f2 (P-009)');
+  let sources = asList(args.sources);
+  if (!linksOnly && origin === 'derived' && !sources.length) fail('derived record needs --sources f1,f2 (P-009)');
   const repo = repoTarget(ctx);
   if (repo && BRAIN_ONLY_TYPES.includes(type)) fail(`${type} records stay in brain: knowledge about the operator and people is not knowledge of one repo (D-0002, P-007)`);
   if (!repo) brainGuard(ctx, key, [...asList(args['relates-to']), ...sources]);
@@ -235,6 +243,18 @@ function saveMemory(ctx) {
   const unrelate = asList(args.unrelate);
   const absent = unrelate.filter((v) => !linked.includes(v));
   if (absent.length) fail(`--unrelate ${absent.join(', ')}: not in relates_to of ${existing?.data.key || key} (${linked.join(', ') || 'empty'}), nothing saved`);
+  if (linksOnly) {
+    if (!existing) fail(`${key} does not exist: --relates-to or --unrelate without --content changes the links of an existing record; give --content`);
+    if (args.origin !== undefined || args.sources !== undefined || args.summary !== undefined || args.aliases !== undefined) fail('--relates-to or --unrelate without --content changes only the links: give --content to change origin, sources, summary or aliases');
+    origin = existing.data.origin || 'operator';
+    sources = asList(existing.data.sources);
+  }
+  // A new link must resolve (D-0029); links the record already has are reported, and the agent drops them with --unrelate.
+  const added = asList(args['relates-to']).filter((v) => !linked.includes(v));
+  const badLinks = checkLinks(ctx, target, added);
+  if (badLinks) fail(badLinks);
+  const kept = linked.filter((v) => !unrelate.includes(v));
+  const oldBad = linkProblems(ctx, target, kept);
   const data = {
     key: existing?.data.key || key,
     type,
@@ -248,14 +268,17 @@ function saveMemory(ctx) {
   };
   if (origin === 'derived') {
     data.sources = sources;
-    // Sources of a repo record are paths in that repo (D-0002), so consolidate checks them from any session.
-    data.fingerprint = fingerprint(repo ? path.join(ctx.domain.root, repo) : ctx.projectDir, sources);
+    // Sources of a repo record are paths in that repo (D-0002), so consolidate checks them from any session. A links-only
+    // edit keeps the fingerprint: the sources were not read again.
+    data.fingerprint = linksOnly ? existing.data.fingerprint : fingerprint(repo ? path.join(ctx.domain.root, repo) : ctx.projectDir, sources);
   }
-  const op = { path: rel, content: serializeFrontmatter(data, String(args.content)) };
-  if (repo) return out(formatRepoWrite(repoWrite(ctx, repo, { ops: [op], message: `save memory ${data.key}` })));
+  const op = { path: rel, content: serializeFrontmatter(data, linksOnly ? existing.body : String(args.content)) };
+  const note = oldBad.length ? `note: links of ${data.key} that resolve to nothing (drop or replace them: --unrelate x [--relates-to <key>]): ${oldBad.join('; ')}` : null;
+  if (repo) { out(formatRepoWrite(repoWrite(ctx, repo, { ops: [op], message: `save memory ${data.key}` }))); if (note) out(note); return; }
   const res = brainWrite(ctx, { ops: [op], message: `save memory ${data.key}` });
   finish(ctx, res, [rel]);
   if (by) out(`record by ${by}`);
+  if (note) out(note);
 }
 
 // Removal is an explicit operator order only (P-008); otherwise a decision is superseded. Not the shell (git rm), which
@@ -313,8 +336,44 @@ function removeMemory(ctx, type, name) {
   out(`memory ${key} removed; ${named.length ? `still named in (change them with save): ${[...new Set(named.map(toPosixPath))].join(', ')}` : 'no other record names it'}`);
 }
 
+/**
+ * Links of a decision (D-0029): --relink D-XXXX with --relates-to adds, --unrelate drops; the choice and its body stay
+ * (a wrong link is no new choice, so no --supersedes). A decision keeps at least one link (P-008).
+ */
+function relinkDecision(ctx) {
+  const id = String(args.relink === true ? rest[0] || '' : args.relink).trim();
+  if (!/^([a-z0-9-]+\/)?D-\d{4}$/i.test(id) || (args['relates-to'] === undefined && args.unrelate === undefined)) fail('usage: save.mjs decision --relink D-XXXX [--repo [<repo>]] (--relates-to x,y | --unrelate x,y)');
+  const repo = repoTarget(ctx);
+  const target = targetStore(ctx, repo);
+  const key = (repo ? id.replace(new RegExp(`^${repo}/`), '') : id).toUpperCase();
+  let hit;
+  if (repo) {
+    const held = heldRepoTopic(ctx, repo)?.topic || null;
+    hit = find(ctx.brainDir, key, ctx.domain).find((m) => m.kind === 'decision' && m.repo === repo && (!m.topic || m.topic === held));
+  } else hit = readDecisions(ctx.brainDir).find((d) => (d.id || d.key) === key);
+  if (!hit) fail(`decision ${id} not found${repo ? ` in repo ${repo}` : ''}`);
+  const parsed = parseFrontmatter(readText(path.resolve(ctx.brainDir, hit.path), ''));
+  const linked = asList(parsed.data.relates_to);
+  const unrelate = asList(args.unrelate);
+  const absent = unrelate.filter((v) => !linked.includes(v));
+  if (absent.length) fail(`--unrelate ${absent.join(', ')}: not in relates_to of ${key} (${linked.join(', ') || 'empty'}), nothing saved`);
+  const added = asList(args['relates-to']).filter((v) => !linked.includes(v));
+  const refs = checkDecisionRefs(ctx, target, added);
+  if (refs) fail(refs);
+  const bad = checkLinks(ctx, target, added);
+  if (bad) fail(bad);
+  const relates = [...new Set([...linked, ...added])].filter((v) => !unrelate.includes(v));
+  if (!relates.length) fail(`decision ${key} keeps at least one link (P-008): add --relates-to <key|D-NNNN|P-NNN|file> with the --unrelate`);
+  const op = { path: repo ? knowledgeRel(ctx, hit.path) : hit.path, content: serializeFrontmatter({ ...parsed.data, relates_to: relates, updated: today() }, parsed.body) };
+  const message = `relink decision ${key}`;
+  if (repo) out(formatRepoWrite(repoWrite(ctx, repo, { ops: [op], message })));
+  else finish(ctx, brainWrite(ctx, { ops: [op], message }), [hit.path]);
+  out(`decision ${repo ? `${repo}/` : ''}${key} relates_to: ${relates.join(', ')}`);
+}
+
 function saveDecision(ctx) {
   if (args.remove) return removeDecision(ctx);
+  if (args.relink !== undefined) return relinkDecision(ctx);
   const title = rest.join(' ');
   if (!title) fail('usage: save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y');
   const relates = asList(args['relates-to']);
@@ -323,6 +382,8 @@ function saveDecision(ctx) {
   const repo = repoTarget(ctx);
   const refs = checkDecisionRefs(ctx, targetStore(ctx, repo), [title, args.what, args.alternatives, args.reason, ...relates, args.supersedes].map((v) => (typeof v === 'string' ? v : '')));
   if (refs) fail(refs);
+  const badLinks = checkLinks(ctx, targetStore(ctx, repo), relates);
+  if (badLinks) fail(badLinks);
   if (repo) return saveRepoDecision(ctx, repo, title, relates);
   brainGuard(ctx, '', relates);
   const id = nextDecisionId(ctx.brainDir);

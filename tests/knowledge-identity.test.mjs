@@ -15,7 +15,7 @@ const git = (cwd, ...a) => {
 };
 const MAIL = `t${'@'}t`;
 const put = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
-const decision = (id, title, body = 'Rozhodnuté: x.') => `---\nkey: ${id}\nid: ${id}\ntitle: ${title}\nstatus: valid\nrelates_to: [x]\n---\n${body}\n`;
+const decision = (id, title, body = 'Rozhodnuté: x.') => `---\nkey: ${id}\nid: ${id}\ntitle: ${title}\nstatus: valid\nrelates_to: [P-008]\n---\n${body}\n`;
 
 function brain(fx, dir) {
   const r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'brain-init.mjs'), dir], { env: fx.env, encoding: 'utf8' });
@@ -147,7 +147,7 @@ test('identity: brainGuard compares the normalized repo name with the key', () =
 test('identity: the next decision number never reuses a removed one, in brain and in a repo', () => {
   const m = machine();
   try {
-    const dec = (title, extra = []) => m.run('save.mjs', ['decision', title, '--what', 'w', '--reason', 'r', '--relates-to', 'x', ...extra]);
+    const dec = (title, extra = []) => m.run('save.mjs', ['decision', title, '--what', 'w', '--reason', 'r', '--relates-to', 'P-008', ...extra]);
     assert.match(dec('First').out, /decision D-0001/);
     assert.match(dec('Second').out, /decision D-0002/);
     let r = m.run('save.mjs', ['decision', '--remove', 'D-0002', '--reason', 'operator 2026-11-13: test']);
@@ -176,7 +176,7 @@ test('identity: a bare D-NNNN the target store lacks is refused, a qualified one
     r = dec(['--relates-to', 'D-0001']);
     assert.notEqual(r.status, 0, r.out);
     assert.match(r.out, /agent-one has no D-0001/);
-    r = dec(['--relates-to', 'x', '--supersedes', 'D-0001']);
+    r = dec(['--relates-to', 'P-008', '--supersedes', 'D-0001']);
     assert.match(r.out, /agent-one has no D-0001/);
     assert.equal(dec(['--relates-to', 'beta-brain/D-0001']).status, 0);
     r = m.run('save.mjs', ['rule', 'pick', '--content', 'Follow D-0009.', '--unenforced', 'a judgement the code cannot make']);
@@ -191,7 +191,7 @@ test('identity: a bare D-NNNN the target store lacks is refused, a qualified one
 test('identity: find names the store of a match outside the session brain, also for D-NNNN', () => {
   const m = machine();
   try {
-    assert.equal(m.run('save.mjs', ['decision', 'Own', '--what', 'w', '--reason', 'r', '--relates-to', 'x']).status, 0);
+    assert.equal(m.run('save.mjs', ['decision', 'Own', '--what', 'w', '--reason', 'r', '--relates-to', 'P-008']).status, 0);
     let r = m.run('find.mjs', ['project-shop']);
     assert.match(r.stdout, /project-shop\.md: The shop of beta\. \[store beta-brain\]/);
     r = m.run('find.mjs', ['D-0001']);
@@ -207,8 +207,8 @@ test('identity: find names the store of a match outside the session brain, also 
 test('identity: moving a decision rewrites its references in brain and repo, lists the other stores', () => {
   const m = machine();
   try {
-    assert.equal(m.run('save.mjs', ['decision', 'Use x', '--what', 'w', '--reason', 'r', '--relates-to', 'x']).status, 0);
-    assert.equal(m.run('save.mjs', ['decision', 'Use y', '--what', 'w after D-0001', '--reason', 'r', '--relates-to', 'x']).status, 0);
+    assert.equal(m.run('save.mjs', ['decision', 'Use x', '--what', 'w', '--reason', 'r', '--relates-to', 'P-008']).status, 0);
+    assert.equal(m.run('save.mjs', ['decision', 'Use y', '--what', 'w after D-0001', '--reason', 'r', '--relates-to', 'P-008']).status, 0);
     assert.equal(m.run('save.mjs', ['memory', 'tool', 'hammer', '--content', 'Per D-0001.']).status, 0);
     let r = m.run('save.mjs', ['memory', 'tool', 'saw', '--repo', 'web-a', '--content', 'Per agent-one/D-0001.']);
     assert.equal(r.status, 0, r.out);

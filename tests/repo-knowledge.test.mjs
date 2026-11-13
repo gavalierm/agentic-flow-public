@@ -69,7 +69,7 @@ test('repo knowledge: project-<repo> is refused in brain, one key lives in one p
     r = fx.run('save.mjs', ['memory', 'project', 'srv', '--content', 'Opis srv.', '--repo', 'srv']);
     assert.notEqual(r.status, 0);
     assert.match(r.out, /project-srv already exists in brain: memory\/project-srv\.md.*save\.mjs move memory\/project-srv\.md --repo srv/);
-    r = fx.run('save.mjs', ['memory', 'service', 'web', '--content', 'Web.', '--relates-to', 'srv/web.conf']);
+    r = fx.run('save.mjs', ['memory', 'service', 'web', '--content', 'Web.', '--relates-to', 'srv/src/app.js']);
     assert.equal(r.status, 0, r.out);
     assert.match(r.out, /note: looks like repo srv/);
   } finally { fx.cleanup(); }
@@ -78,7 +78,7 @@ test('repo knowledge: project-<repo> is refused in brain, one key lives in one p
 test('repo knowledge: decisions are numbered per repo over the main checkout and every topic worktree', () => {
   const { fx, srv } = domainFx();
   try {
-    let r = fx.run('save.mjs', ['decision', 'Caddy as proxy', '--what', 'Caddy', '--reason', 'simple', '--relates-to', 'srv/Caddyfile', '--repo', 'srv']);
+    let r = fx.run('save.mjs', ['decision', 'Caddy as proxy', '--what', 'Caddy', '--reason', 'simple', '--relates-to', 'srv/src/app.js', '--repo', 'srv']);
     assert.equal(r.status, 0, r.out);
     assert.match(r.out, /decision srv\/D-0001/);
     const wt = path.join(fx.root, '.worktrees', 'srv', 't1');
@@ -89,7 +89,7 @@ test('repo knowledge: decisions are numbered per repo over the main checkout and
     assert.match(r.stdout, /\.worktrees\/srv\/t1\/agentic\/decisions\/d-0002-tls\.md/);
     r = fx.run('find.mjs', ['D-0001']);
     assert.equal(r.stdout.split('\n').filter((l) => l.includes('srv/')).length, 1, 'a file the worktree did not change is listed once');
-    r = fx.run('save.mjs', ['decision', 'Logs to journald', '--what', 'journald', '--reason', 'one place', '--relates-to', 'srv/caddy.service', '--repo', 'srv']);
+    r = fx.run('save.mjs', ['decision', 'Logs to journald', '--what', 'journald', '--reason', 'one place', '--relates-to', 'srv/README.md', '--repo', 'srv']);
     assert.equal(r.status, 0, r.out);
     assert.match(r.out, /decision srv\/D-0003/);
     assert.equal(fs.readdirSync(path.join(fx.brain, 'decisions')).filter((f) => f.endsWith('.md')).length, 0);
@@ -127,7 +127,7 @@ test('repo knowledge: a commit the repo refuses leaves nothing behind', () => {
 test('repo knowledge: save move writes the record into the repo and removes it from brain; skills keep one name per domain', () => {
   const { fx, srv } = domainFx();
   try {
-    let r = fx.run('save.mjs', ['decision', 'Caddy as proxy', '--what', 'Caddy', '--reason', 'simple', '--relates-to', 'srv/Caddyfile', '--brain', 'test of the move']);
+    let r = fx.run('save.mjs', ['decision', 'Caddy as proxy', '--what', 'Caddy', '--reason', 'simple', '--relates-to', 'srv/src/app.js', '--brain', 'test of the move']);
     assert.equal(r.status, 0, r.out);
     const rel = `decisions/${fs.readdirSync(path.join(fx.brain, 'decisions')).find((f) => f.startsWith('d-0001'))}`;
     r = fx.run('save.mjs', ['move', rel, '--repo', 'srv', '--dry-run']);

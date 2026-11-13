@@ -80,6 +80,19 @@ export function findWordsAll(ctx, query) {
   return select(machineRecords(ctx), words(query));
 }
 
+/**
+ * Records whose body holds every query token, marked in: 'body' (D-0029): the CLI's last fallback after no match in key,
+ * name, title, aliases or description. A topic or a free word lives in the body, so find reaches it there; only paths print.
+ */
+export function findBodyAll(ctx, query) {
+  const want = tokens(query);
+  if (!want.length) return [];
+  return select(machineRecords(ctx), (r) => {
+    const have = new Set(tokens(r.body || ''));
+    return want.every((t) => have.has(t));
+  }).map((m) => ({ ...m, in: 'body' }));
+}
+
 export function findRelatesToAll(ctx, target, { validOnly = false } = {}) {
   return select(machineRecords(ctx), relates(target, validOnly));
 }
@@ -88,8 +101,11 @@ export function findSimilarAll(ctx, key) {
   return select(machineRecords(ctx), similar(key));
 }
 
+/** A valid decision "skill pre <procedure> zamietnutý" (P-005): the procedure named in the title, or in relates_to (records saved before D-0029). */
 export function rejectedProposal(brainDir, name) {
-  return readDecisions(brainDir).some((d) => (!d.status || d.status === 'valid') && d.relates_to.some((v) => normalizeKey(v) === normalizeKey(name)) && /zamietnut|rejected/i.test(`${d.title} ${d.description}`));
+  const n = normalizeKey(name);
+  return readDecisions(brainDir).some((d) => (!d.status || d.status === 'valid') && /zamietnut|rejected/i.test(`${d.title} ${d.description}`)
+    && (`-${normalizeKey(d.title)}-`.includes(`-${n}-`) || d.relates_to.some((v) => normalizeKey(v) === n)));
 }
 
 /** Matches with `by: <name>` on a record another operator added (authors: recordAuthors of scripts/authors.mjs). */
@@ -101,5 +117,5 @@ export function withAuthors(matches, authors) {
 }
 
 export function formatMatches(matches) {
-  return matches.map((m) => `${m.path}: ${m.description}${byTag(m.by)}${m.store ? ` [store ${m.store}]` : ''}`).join('\n');
+  return matches.map((m) => `${m.path}${m.in === 'body' ? '' : `: ${m.description}`}${byTag(m.by)}${m.store ? ` [store ${m.store}]` : ''}`).join('\n');
 }

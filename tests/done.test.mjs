@@ -33,8 +33,8 @@ test('unit of work: verification required, logs written, handover free, repeats 
     assert.match(fx.run('done.mjs', ['--list']).stdout, /procedures: deploy-web-docker 3x/);
     // sessions started before the rename still call finish.mjs
     assert.match(fx.run('finish.mjs', ['--list']).stdout, /procedures: deploy-web-docker 3x/);
-    // rejected proposal is not proposed again
-    assert.equal(fx.run('save.mjs', ['decision', 'skill pre deploy-web-docker zamietnutý', '--what', 'no skill', '--reason', 'rare', '--relates-to', 'deploy-web-docker']).status, 0);
+    // rejected proposal is not proposed again: the procedure is named in the title, the link is P-005 (a free word is no link, D-0029)
+    assert.equal(fx.run('save.mjs', ['decision', 'skill pre deploy-web-docker zamietnutý', '--what', 'no skill', '--reason', 'rare', '--relates-to', 'P-005']).status, 0);
     r = fx.run('done.mjs', ['--verified', 'x', '--procedures', 'deploy-web-docker']);
     assert.match(r.stdout, /rejected earlier, no new proposal/);
     // approval: save skill removes the log lines

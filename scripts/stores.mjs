@@ -224,18 +224,27 @@ export function subjectMatch(r, { key, names }) {
   return alias ? `alias "${alias}"` : null;
 }
 
-/** How to write into a record of another store: the save options that target it. */
-export function saveHint(ctx, r) {
-  const s = r.storeOf;
-  const type = recordType(r);
-  const name = r.data?.name ? String(r.data.name) : String(r.key).slice(type.length + 1);
-  const quoted = /\s/.test(name) ? `"${name}"` : name;
+/** The save options that write into store s from this session (' --repo x --project y' or ''), and the note when only a session of that store can. */
+export function storeOptions(ctx, s) {
   const opts = [];
   if (s.kind === 'repo') {
     opts.push(`--repo ${s.repo}`);
     if (!same(s.domainRoot, ctx.domain?.root) && s.project) opts.push(`--project ${show(s.project)}`);
   } else if (!s.session && s.project) opts.push(`--project ${show(s.project)}`);
-  return `save.mjs memory ${type} ${quoted}${opts.length ? ` ${opts.join(' ')}` : ''} --content ...${!s.project && s.kind === 'brain' && !s.session ? ` (from a session of ${s.name})` : ''}`;
+  return { opts: opts.length ? ` ${opts.join(' ')}` : '', note: !s.project && s.kind === 'brain' && !s.session ? ` (from a session of ${s.name})` : '' };
+}
+
+/** Type and name of a memory record as save takes them (`service "Some name"`). */
+export function memoryArgs(r) {
+  const type = recordType(r);
+  const name = r.data?.name ? String(r.data.name) : String(r.key).slice(type.length + 1);
+  return `${type} ${/\s/.test(name) ? `"${name}"` : name}`;
+}
+
+/** How to write into a record of another store: the save options that target it. */
+export function saveHint(ctx, r) {
+  const { opts, note } = storeOptions(ctx, r.storeOf);
+  return `save.mjs memory ${memoryArgs(r)}${opts} --content ...${note}`;
 }
 
 export const displayPath = (r) => show(r.abs);

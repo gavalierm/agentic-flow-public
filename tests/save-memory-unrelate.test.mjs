@@ -7,6 +7,7 @@ import { setup } from './helpers.mjs';
 test('memory --unrelate drops a link; an unknown link is refused and nothing is saved', () => {
   const fx = setup();
   try {
+    for (const n of ['alpha', 'beta', 'gamma']) assert.equal(fx.run('save.mjs', ['memory', 'tool', n, '--content', `Tool ${n}.`]).status, 0);
     let r = fx.run('save.mjs', ['memory', 'service', 'notify', '--content', 'Sends a mail on arrival.', '--relates-to', 'tool-alpha,tool-beta']);
     assert.equal(r.status, 0, r.out);
     r = fx.run('save.mjs', ['memory', 'service', 'notify', '--content', 'Sends a mail on arrival.', '--unrelate', 'tool-alpha', '--relates-to', 'tool-gamma']);

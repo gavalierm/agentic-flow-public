@@ -14,6 +14,7 @@ import { buildIndexes } from '../scripts/index.mjs';
 import { tokens } from '../scripts/keys.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { checkProject } from '../scripts/skill-check.mjs';
+import { isDecisionLink, linkProblem, linkFix, FORMS } from '../scripts/links.mjs';
 import { machineStores, sessionStores, machineRecords, storeRecords, sameStore, subjectMatch, subjectNames, recordType, decisionRefs, refProblem, refFiles, displayPath, isTombstone, SUBJECT_TYPES, ID_LINE } from '../scripts/stores.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -61,7 +62,9 @@ export function repoReport(ctx, brainRecords) {
  * One subject, one record (D-0028), over the stores of this session (its brain, the domain brain, the domain repos):
  * a project, service, person or tool record whose key, name or alias another store of the machine has too (both
  * paths); tombstones (a memory or decision body under 300 characters that only says where the record went); decision
- * references that do not resolve: a bare D-NNNN its own store lacks, a <store>/D-NNNN the named store lacks (path:line).
+ * references that do not resolve: a bare D-NNNN its own store lacks, a <store>/D-NNNN the named store lacks (path:line);
+ * relates_to links of memory and decisions that resolve to none of the four forms, each with the save command that
+ * drops or replaces it (D-0029; a decision link is in the decision reference list).
  */
 export function identityReport(ctx) {
   const stores = machineStores(ctx);
@@ -71,6 +74,7 @@ export function identityReport(ctx) {
   const seen = new Set();
   const tombstones = [];
   const refs = [];
+  const links = [];
   for (const s of mine) {
     const recs = storeRecords(s, ctx.brainDir).filter((r) => !r.topic);
     for (const r of recs.filter((x) => x.kind === 'memory' && SUBJECT_TYPES.includes(recordType(x)))) {
@@ -90,8 +94,15 @@ export function identityReport(ctx) {
         if (problem) refs.push(`${toPosix(f)}:${ref.line} ${problem}`);
       }
     }
+    for (const r of recs.filter((x) => x.kind === 'memory' || x.kind === 'decision')) {
+      for (const v of r.relates_to || []) {
+        if (isDecisionLink(v)) continue;
+        const problem = linkProblem(ctx, s, v);
+        if (problem) links.push({ path: displayPath(r), value: v, problem, fix: linkFix(ctx, r, v) });
+      }
+    }
   }
-  return { duplicates, tombstones, refs: [...new Set(refs)] };
+  return { duplicates, tombstones, refs: [...new Set(refs)], links };
 }
 
 export function report(ctx) {
@@ -140,6 +151,7 @@ try {
     out(`same subject in another store (one subject, one record: keep one, fold the other into it): ${r.identity.duplicates.length ? r.identity.duplicates.map((d) => `${d.key} (${d.how}, ${d.store} + ${d.other}): ${d.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`tombstones (short body pointing elsewhere: remove it with save.mjs memory <type> <name> --remove --reason "<why>", the record it names holds the subject): ${r.identity.tombstones.length ? r.identity.tombstones.join(', ') : 'none'}`);
     out(`decision references that do not resolve (a bare D-NNNN is the own store, another store's decision is <store>/D-NNNN): ${r.identity.refs.length ? r.identity.refs.join('; ') : 'none'}`);
+    out(`relates_to links that resolve to nothing (${FORMS}; run the command under each, a free word goes into the body): ${r.identity.links.length ? r.identity.links.map((l) => `\n  ${l.path}: ${l.problem}\n    ${l.fix}`).join('') : 'none'}`);
     out(`agentic skills sharing a tool/work token (merge only same tool): ${r.mergeable.length ? r.mergeable.map((m) => `${m.token}: ${m.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`skill health (skill-check.mjs <name> for details, skill workflow:skill-check): ${r.health.length ? r.health.map((h) => `${h.name} ${h.errors}e/${h.warns}w`).join(', ') : 'all ok'}`);
     out(`operator records (never deleted by the agent, only proposed): ${r.byOrigin.operator.length}`);

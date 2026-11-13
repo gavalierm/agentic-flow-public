@@ -9,6 +9,7 @@
 //           pause <id> [--until <ISO | <n>d | <n>h>] [--reason ".."]   snooze: no bells until resumed or until
 //           resume <id>
 //           list | status
+//           closed <id>   exit 0 once the topic is no longer open (condition of timer.mjs --topic)
 //           copy <id> [--operator-approved]   code copy (branch topic/<id>); a discussion topic gets one only after the
 //                        operator approved its implementation (D-0020), recorded in topics/<id>/topic.json; done merges it
 import { parseArgs, fail } from '../scripts/util.mjs';
@@ -93,6 +94,12 @@ try {
   } else if (cmd === 'list') {
     const topics = listTopics(ctx.brainDir);
     out(topics.length ? topics.map((t) => topicLine(t)).join('\n') : 'no open topics');
+  } else if (cmd === 'closed') {
+    // Condition of a timer waiting for another topic (timer.mjs --topic): exit 0 once the topic is no longer open.
+    if (!id) fail('usage: topic.mjs closed <id>');
+    const open = !!readTopic(ctx.brainDir, id);
+    out(open ? `topic ${id} open` : `topic ${id} closed`);
+    process.exitCode = open ? 1 : 0;
   } else if (cmd === 'status') {
     const held = heldTopics(ctx.brainDir, ctx.thread);
     out(`thread ${ctx.thread || '-'}`);
@@ -104,7 +111,7 @@ try {
     if (copy.write?.unpushed) out(`unpushed: ${copy.write.unpushed}`);
     if (readTopic(ctx.brainDir, id)?.kind !== 'code') out(`next: delegate.mjs prepare --implement${readTopic(ctx.brainDir, id)?.class === 'ops' ? '' : ' web|code|ops'} --task-file <file> (the worker changes the copy; commit, merge and release stay in this thread, D-0020)`);
   } else {
-    fail('usage: topic.mjs create|claim|main|release|handoff|pause|resume|list|status|copy');
+    fail('usage: topic.mjs create|claim|main|release|handoff|pause|resume|list|status|closed|copy');
   }
 } catch (err) {
   fail(err.message);

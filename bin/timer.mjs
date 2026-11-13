@@ -7,14 +7,21 @@
 //                                                                       a model turn, and rings the step only when it exits 0
 //                                                                       or the deadline passed (22 of 44 timer turns only saw
 //                                                                       the same state, audit 2026-11-11)
-//   timer.mjs show                                                       the timer of this thread
+//   timer.mjs --in 10m --topic <id> --then "<step>"                      waiting for another topic: the check is topic.mjs closed
+//                                                                       <id> (deadline 24h unless --deadline); over 30m without a
+//                                                                       condition needs --blind (a step bound to the clock itself)
+//   timer.mjs show                                                      the timer of this thread
 //   timer.mjs clear                                                      remove it (the awaited event came)
-import { parseArgs, fail } from '../scripts/util.mjs';
+import path from 'node:path';
+import { parseArgs, fail, PLUGIN_ROOT } from '../scripts/util.mjs';
+import { readTopic } from '../scripts/topic.mjs';
 import { loadContext, readThreadState } from '../scripts/config.mjs';
 import { commsSettings } from '../scripts/comms.mjs';
 import { parseDelay, setTimer, clearTimer, activeTimer, TIMER_MIN_MS, TIMER_MAX_MS, UNTIL_TIMEOUT_MS } from '../scripts/waker.mjs';
 import { run as guard } from '../hooks/pre-tool-use.mjs';
 
+/** Longer than this without a condition is a blind wait (report-32db110e): --topic, --until, mail, or --blind. */
+const BLIND_MAX_MS = 30 * 60_000;
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._[0] || (args.in !== undefined ? 'set' : 'show');
 const out = (s) => process.stdout.write(`${s}\n`);
@@ -24,14 +31,20 @@ try {
   if (!ctx.brainDir || !ctx.thread) fail('timer needs a brain and a stable thread id (thread <id> in the status line)');
   if (cmd === 'set') {
     const ms = parseDelay(args.in);
-    if (!ms) fail('usage: timer.mjs --in <30m|2h|90s|15> --then "<step>" [--until "<check>" --deadline <2h>]');
+    if (!ms) fail('usage: timer.mjs --in <30m|2h|90s|15> --then "<step>" [--until "<check>" --deadline <2h> | --topic <id>] [--blind]');
     const then = str(args.then);
     if (!then) fail('--then "<step to do when the timer fires>" is required: the ring must say what to do');
     if (!commsSettings(ctx).enabled) fail('comms off: no wake module can ring this thread; continue the work now instead of waiting (P-061)');
-    const until = str(args.until);
+    const topic = str(args.topic);
+    if (topic && str(args.until)) fail('--topic builds its own --until check; give one of them');
+    if (topic && !readTopic(ctx.brainDir, topic)) fail(`--topic ${topic}: no open topic of that id in this brain (topic.mjs list); it is already closed or the id is wrong`);
+    // Waiting for another topic is a condition, not a time: code checks it (topic.mjs closed), the step rings when it holds.
+    const until = topic ? `node "${path.join(PLUGIN_ROOT, 'bin', 'topic.mjs')}" closed ${topic}` : str(args.until);
+    // A blind long timer saw the awaited event come early and the operator had to ask (report-32db110e, 2026-11-13).
+    if (!until && ms > BLIND_MAX_MS && !args.blind) fail(`a timer over ${BLIND_MAX_MS / 60_000}m without a condition waits blind: waiting for another topic → --topic <id>; for an event a command can check → --until "<check>" --deadline <2h>; for its result by mail → a message with a deadline; only a step bound to the clock itself → --blind`);
     let deadline = null;
     if (until) {
-      const dl = parseDelay(args.deadline);
+      const dl = parseDelay(args.deadline || (topic ? '24h' : undefined));
       if (!dl) fail('--until "<check>" needs --deadline <30m|2h|…>: code runs the check until then, then the step rings anyway');
       if (dl <= ms) fail('--deadline must come after the first check (--in)');
       // The check runs unattended in the prompt hook: it passes the same guard as a Bash call of this thread (P-054).
@@ -49,7 +62,7 @@ try {
   } else if (cmd === 'clear') {
     out(clearTimer(ctx.brainDir, ctx.thread) ? 'timer cleared' : 'no timer');
   } else {
-    fail('usage: timer.mjs --in <30m|2h> --then "<step>" [--until "<check>" --deadline <2h>] | show | clear');
+    fail('usage: timer.mjs --in <30m|2h> --then "<step>" [--until "<check>" --deadline <2h> | --topic <id>] [--blind] | show | clear');
   }
 } catch (err) {
   fail(err.message);

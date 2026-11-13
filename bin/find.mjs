@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // find.mjs <query> | --relates-to <path> | --similar <key>   [--json]
 // Searches every knowledge store of the machine (D-0028); a match outside the session brain names its store.
+// No match in key, name, title, aliases or description: the record bodies, printed as paths only (D-0029).
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { findAll, findWordsAll, findRelatesToAll, findSimilarAll, formatMatches, withAuthors } from '../scripts/find.mjs';
+import { findAll, findWordsAll, findBodyAll, findRelatesToAll, findSimilarAll, formatMatches, withAuthors } from '../scripts/find.mjs';
 import { recordAuthors } from '../scripts/authors.mjs';
 import { catalogConfig } from '../scripts/catalog/config.mjs';
 import { findCatalog, formatCatalogBlock } from '../scripts/catalog/find.mjs';
@@ -28,6 +29,10 @@ try {
     if (!matches.length) {
       matches = findWordsAll(ctx, q);
       if (matches.length && !args.json) process.stdout.write(`no exact match: ${q}; word matches:\n`);
+    }
+    if (!matches.length) {
+      matches = findBodyAll(ctx, q);
+      if (matches.length && !args.json) process.stdout.write(`no match in key, name, aliases or description: ${q}; in the body of:\n`);
     }
     try {
       const cfg = catalogConfig(ctx.projectDir);
