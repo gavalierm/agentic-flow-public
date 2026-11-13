@@ -283,7 +283,7 @@ export function operatorStatus(ctx, info) {
     lines.push(`${ctx.projectName} / bez témy`, '', 'Dostupné témy:');
     const free = freeTopics(ctx);
     lines.push(...(free.length ? free.map((t) => `- ${t.id}${t.subject && t.subject !== t.id ? ` – ${t.subject}` : ''}`) : ['- žiadne']));
-    lines.push('', `**Otázky na operátora:** ${TOPIC_QUESTION}`);
+    lines.push('', '**Otázky na operátora:**', `1. ${TOPIC_QUESTION}`);
   }
   if (info.notices) lines.splice(1, 0, `Otvorené oznamy: ${info.notices}`);
   if (info.mail.count) lines.splice(1, 0, `Pošta: ${info.mail.count}${info.mail.blockers ? ` (${info.mail.blockers} blocker)` : ''}${info.mail.steers ? ` (${info.mail.steers} steer)` : ''}`);

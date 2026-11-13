@@ -1,5 +1,7 @@
 // P-061: the reply protocol. The end of a turn is declared, not guessed from prose: the last line of the final reply is
-// `Stav: hotovo|otázka|čakám` and everything that waits on the operator is a checklist under `**Otázky na operátora:**` (decisions, confirmations) or `**Úlohy pre operátora:**` (steps only the operator does). Code reads
+// `**Stav:** hotovo|otázka|čakám` and everything that waits on the operator is a numbered list under `**Otázky na operátora:**`
+// (decisions, confirmations) or `**Úlohy pre operátora:**` (steps only the operator does); before the state line the section
+// `**Handover:**` has one numbered line `<téma> → <ďalší krok>` per held topic, or reads `**Handover:** žiadny` (D-0040). Code reads
 // only this fixed form and checks the
 // declared state against facts (handover, wakers); any other wording of a promise or a wait is no state at all
 // (operator 2026-11-08: "a hook that catches variants of promises is never reliable, the agent writes another one").
@@ -44,11 +46,15 @@ export function withAnswered(state, items, at = new Date().toISOString()) {
 }
 const ASCII = { hotovo: 'hotovo', otazka: 'otázka', cakam: 'čakám' };
 
-export const STATE_LINE = 'Stav: hotovo | otázka | čakám (na <čo>)';
-export const WAIT_LINE = 'Stav: čakám (na <čo>)';
-// The line before the state line: what continues after /clear or in a new session (operator: he could not tell). One topic of the thread or none.
-export const HANDOVER_LINE = 'Handover: <téma> – <ďalší krok v skratke>';
-export const HANDOVER_NONE_LINE = 'Handover: žiadny (po /clear nič nepokračuje)';
+export const STATE_LINE = '**Stav:** hotovo | otázka | čakám (na <čo>)';
+export const WAIT_LINE = '**Stav:** čakám (na <čo>)';
+// The section before the state line: what continues after /clear or in a new session (operator: he could not tell), one
+// numbered line per topic the thread holds, or none (D-0040).
+export const HANDOVER_MARK = '**Handover:**';
+export const HANDOVER_LINE = '**Handover:** with one numbered line per held topic, "1. <téma> → <ďalší krok v skratke>"';
+export const HANDOVER_NONE_LINE = '**Handover:** žiadny';
+/** The end of a reply in the protocol (D-0040), quoted in hook messages. */
+export const PROTOCOL_EXAMPLE = '"**Otázky na operátora:**\\n1. <otázka>\\n\\n**Handover:**\\n1. <téma> → <ďalší krok>\\n\\n**Stav:** otázka"';
 
 /** What a `čakám` state line waits for: "(na pracovníka)" or "na pracovníka" -> "na pracovníka"; null without letters. */
 function waitTarget(rest) {
@@ -63,27 +69,63 @@ const TASKS_BLOCK = /(^|\n)[ \t]*[*_]*(?:Úlohy|Ulohy|Úloha|Uloha)[ \t]+pre[ \t
 // The single heading before the split (P-061 until 2026-11-11); "Pre teba" is the marker before v0.9.43. Both still parse.
 const LEGACY_BLOCK = /(^|\n)[ \t]*[*_]*(?:Operátor|Operator|Pre teba)[*_]*[ \t]*:[*_]*[ \t]*/iu;
 const ITEM = /^[ \t]*(?:[-*+][ \t]+(?:\[[ xX]?\][ \t]*)?|\d+[.)][ \t]+|\[[ xX]?\][ \t]*)(.*)$/;
+const NUMBERED = /^[ \t]*\d+[.)][ \t]+/;
 // A step written as prose under a label, at the start of a line (list marker and markdown allowed).
 const STEP_LABEL = /(^|\n)[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?[*_]*(ostáva|zostáva|zvyšok|ďalší krok|ďalšie kroky|ďalej treba|next steps?|remaining|todo|to do)[*_]*[ \t]*:[*_]*[ \t]*([^\n]*)/iu;
 // A request that the operator write "pokračuj" makes the operator the waker (bob 2026-11-11, after a bypass lock).
 const CONTINUE_ASK = /(?:napíš|napíšte|napis|napiste|napísať|napisat|write|type|say)[ \t]+[„"'`*_]*(pokračuj|pokracuj|continue|go on)(?![\p{L}])/iu;
 const NOTHING = /^(nič|nic|žiadn\p{L}*|nothing|none|-|–|—)?[.\s]*$/iu;
 
-/** The items of a heading block: inline text after the marker and the list lines under it, up to an empty line. */
-function blockItems(body, re) {
+/** The items of a heading block: inline text after the marker and the list lines under it, up to an empty line.
+ * `flags.unnumbered`: an item is not a numbered line (`- [ ] …`, `- …` or text after the heading; D-0040). */
+function blockItems(body, re, flags = {}) {
   const m = re.exec(body);
   if (!m) return null;
   const rest = body.slice(m.index + m[0].length).split('\n');
   const items = [];
+  let unnumbered = false;
   const first = rest[0].replace(/[*_]+$/, '').trim();
-  if (first) items.push(first.replace(ITEM, '$1').trim());
+  if (first) {
+    if (!NUMBERED.test(first) && !NOTHING.test(first)) unnumbered = true;
+    items.push(first.replace(ITEM, '$1').trim());
+  }
   for (const line of rest.slice(1)) {
     if (!line.trim()) { if (items.length) break; continue; }
     const it = ITEM.exec(line);
     if (!it) break;
+    if (!NUMBERED.test(line)) unnumbered = true;
     if (it[1].trim()) items.push(it[1].trim());
   }
-  return items.filter((i) => !NOTHING.test(i));
+  const out = items.filter((i) => !NOTHING.test(i));
+  if (unnumbered && out.length) flags.unnumbered = true;
+  return out;
+}
+
+// The handover section (D-0040): the bold heading `**Handover:**` with `žiadny` after it, or with numbered lines
+// `<téma> → <ďalší krok>` under it up to the state line. The single line `Handover: <téma> – <krok>` is the old form.
+const HANDOVER_HEAD = /^[ \t>]*[*_]*handover[*_]*[ \t]*:[*_]*[ \t]*(.*)$/i;
+const HANDOVER_NEW_HEAD = /^[ \t>]*\*\*handover:\*\*[ \t]*(.*)$/i;
+const ARROW = /^[`*_]*([^\s`*_→]+)[`*_]*[ \t]*(?:→|->)[ \t]*(\S.*)$/;
+/** The handover section among the lines before the state line ({ none, items: [{ topic, next }], unnumbered, old, text })
+ * and the index of its heading; null (start = end) when no heading or a line after it is no list item. */
+function handoverSection(before) {
+  let i = before.length - 1;
+  while (i >= 0 && !HANDOVER_HEAD.test(before[i])) i--;
+  if (i < 0) return { section: null, start: before.length };
+  const neu = HANDOVER_NEW_HEAD.exec(before[i]);
+  const inline = (neu ? neu[1] : HANDOVER_HEAD.exec(before[i])[1]).replace(/[*_`]/g, '').trim();
+  const sec = { none: false, items: [], unnumbered: false, old: !neu, text: before[i].replace(/[*_`>]/g, '').replace(/\s+/g, ' ').trim() };
+  if (neu && /^(?:žiadny|ziadny|-|–|—)(?![\p{L}\p{N}])/iu.test(inline)) sec.none = true;
+  else if (inline) sec.old = true;
+  for (const line of before.slice(i + 1)) {
+    if (!line.trim()) continue;
+    const it = ITEM.exec(line);
+    if (!it) return { section: null, start: before.length };
+    if (!NUMBERED.test(line)) sec.unnumbered = true;
+    const a = ARROW.exec(it[1].trim());
+    sec.items.push(a ? { topic: a[1], next: a[2].trim() } : { topic: null, next: null, text: it[1].trim() });
+  }
+  return { section: sec, start: i };
 }
 
 /**
@@ -97,7 +139,7 @@ function blockItems(body, re) {
  * when it is `Handover: …` (markdown stripped), else null.
  */
 export function parseReply(text) {
-  const out = { state: null, handover: null, question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null };
+  const out = { state: null, handover: null, oldForm: [], onlyProtocol: false, question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null };
   if (typeof text !== 'string' || !text.trim()) return out;
   const lines = text.replace(/\s+$/, '').split('\n');
   const last = lines[lines.length - 1].replace(/[*_`>]/g, '').trim();
@@ -106,26 +148,32 @@ export function parseReply(text) {
     const word = m[1].toLowerCase();
     const plain = word.normalize('NFD').replace(/[̀-ͯ]/g, '');
     const state = STATES.includes(word) ? word : ASCII[plain] || null;
+    if (!/^[>\s]*\*\*stav:\*\*/i.test(lines[lines.length - 1])) out.oldForm.push('state');
     if (state === 'čakám') {
       out.state = state;
       out.waitFor = waitTarget(m[2]);
     } else if (!m[2]) out.state = state;
   }
-  if (m) {
-    const before = lines.slice(0, -1).filter((l) => l.trim());
-    const h = before.length ? before[before.length - 1].replace(/[*_`>]/g, '').replace(/\s+/g, ' ').trim() : '';
-    if (/^handover\s*:\s*\S/i.test(h)) out.handover = h;
+  const before = lines.slice(0, -1);
+  const { section, start } = m ? handoverSection(before) : { section: null, start: before.length };
+  if (section) {
+    out.handover = section;
+    if (section.old) out.oldForm.push('handover');
+    else if (section.unnumbered) out.oldForm.push('handover-items');
   }
-  const body = lines.slice(0, -1).join('\n');
+  out.onlyProtocol = !!m && !before.slice(0, start).join('').trim();
+  const body = before.slice(0, start).join('\n');
   const prose = body.replace(/```[\s\S]*?```/g, '');
-  out.questions = blockItems(prose, QUESTIONS_BLOCK);
-  out.tasks = blockItems(prose, TASKS_BLOCK);
+  const numbering = {};
+  out.questions = blockItems(prose, QUESTIONS_BLOCK, numbering);
+  out.tasks = blockItems(prose, TASKS_BLOCK, numbering);
   const legacy = blockItems(prose, LEGACY_BLOCK);
   out.legacyOperator = !!legacy;
   if (out.questions || out.tasks || legacy) out.operator = [...(out.questions || []), ...(out.tasks || []), ...(legacy || [])];
   for (const [items, mark] of [[out.questions, QUESTIONS_MARK], [out.tasks, TASKS_MARK], [legacy, '**Operátor:**']]) {
     if (items && !items.length) { out.emptySection = mark; break; }
   }
+  if (numbering.unnumbered) out.oldForm.push('items');
   const first = out.questions?.[0] || out.tasks?.[0] || out.operator?.[0];
   if (first) {
     const q = first;
@@ -142,11 +190,12 @@ export function parseReply(text) {
 /** P-059: the reason of the Stop block and of the PreToolUse denial of a dialog that repeats an answered question. */
 export const REPEATED_QUESTION_REASON = (oldItem, newItem) => `the operator already answered a question of this kind in this thread ("${String(oldItem).slice(0, 120)}"); you now ask "${String(newItem).slice(0, 120)}": his decision stands for further steps of the same kind. Act on it and report in the body what you did and what you could not verify yourself (e.g. the look in a browser). When the step is serious (irreversible: deleting data, git history, money, a message to a third party, a secret, a write to an external service or account: its settings, profile or data) or his decision does not cover it (another scope: he agreed to drafts without a write and this asks for the write; he rejected the previous version or asked for this preview), ask the same question again now: a repeat in this turn passes (P-059)`;
 
-const HANDOVER_NO = /^handover\s*:\s*(?:žiadny|ziadny|-|–|—)(?![\p{L}\p{N}])/iu;
-/** Does the Handover line name every topic in `ids` (word match), or say žiadny / - when `ids` is empty and name none? */
+/** Does the Handover section (parseReply().handover) have a line `<id> → <step>` for every topic in `ids`, every line in
+ * that form, or say žiadny with no line when `ids` is empty? */
 export function handoverMatches(handover, ids) {
-  if (typeof handover !== 'string') return false;
-  if (!ids.length) return HANDOVER_NO.test(handover);
-  const low = handover.toLowerCase();
-  return ids.every((id) => new RegExp(`(^|[^a-z0-9-])${String(id).toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9-])`).test(low));
+  if (!handover || typeof handover !== 'object' || handover.old) return false;
+  if (!ids.length) return handover.none && !handover.items.length;
+  if (handover.none || handover.items.some((i) => !i.topic)) return false;
+  const topics = handover.items.map((i) => i.topic.toLowerCase());
+  return ids.every((id) => topics.includes(String(id).toLowerCase()));
 }

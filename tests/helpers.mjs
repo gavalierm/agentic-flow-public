@@ -17,16 +17,62 @@ function gitq(cwd, ...args) {
   return r.stdout.trim();
 }
 
-/** The reply with the true Handover line inserted before its last line when that is a `Stav:` line without a Handover line before it. */
-export function withHandover(msg, brainDir, thread) {
+const OPERATOR_HEAD = /^([ \t]*\*\*(?:Otázky na operátora|Úlohy pre operátora):\*\*)[ \t]*(\S.*)?$/;
+/** A reply written shortly in a test (`Stav: …`, `- [ ] …` items, a text after an operator heading, the line
+ * `Handover: <ids> – <step>`) in the protocol form of D-0040: bold state line, numbered items, a **Handover:** section. */
+export function toProtocol(msg) {
   const lines = msg.replace(/\s+$/, '').split('\n');
+  const out = [];
+  let n = -1;
+  for (const line of lines) {
+    const head = OPERATOR_HEAD.exec(line);
+    if (head) { out.push(head[1]); n = 0; if (head[2]) out.push(`${++n}. ${head[2]}`); continue; }
+    const item = /^[ \t]*(?:[-*+][ \t]+(?:\[[ xX]?\][ \t]*)?|\d+[.)][ \t]+)(.*)$/.exec(line);
+    if (item && n >= 0) { out.push(`${++n}. ${item[1]}`); continue; }
+    if ((!line.trim() && n > 0) || line.trim()) n = -1;
+    const ho = /^[ \t]*Handover[ \t]*:[ \t]*(.*)$/.exec(line);
+    if (ho) {
+      const [ids, step] = ho[1].split(/\s+[–-]\s+/);
+      if (/^(žiadny|ziadny|-|–)/i.test(ho[1].trim())) out.push('**Handover:** žiadny');
+      else out.push('**Handover:**', ...ids.split(/,\s*/).map((id, i) => `${i + 1}. ${id.trim()} → ${step || 'ďalší krok'}`));
+      continue;
+    }
+    out.push(/^Stav[ \t]*:/.test(line) ? line.replace(/^Stav[ \t]*:/, '**Stav:**') : line);
+  }
+  return out.join('\n');
+}
+
+/** The reply (in the protocol form, toProtocol) with the true **Handover:** section inserted before its last line when that is a
+ * state line without a Handover section before it. */
+export function withHandover(msg, brainDir, thread) {
+  const lines = toProtocol(msg).split('\n');
   if (!/^stav\s*:/i.test(lines[lines.length - 1].replace(/[*_`>]/g, '').trim())) return msg;
+  if (lines.slice(0, -1).some((l) => /^\*\*Handover:\*\*/.test(l.trim()))) return lines.join('\n');
   const before = lines.slice(0, -1).filter((l) => l.trim()).pop() || '';
-  if (/^handover\s*:/i.test(before.replace(/[*_`>]/g, '').trim())) return msg;
   let ids = [];
   try { ids = heldTopics(brainDir, thread).filter((t) => !isMainTopic(t)).map((t) => t.id); } catch { /* no brain */ }
-  const line = ids.length ? `Handover: ${ids.join(', ')} – ďalší krok` : 'Handover: žiadny (po /clear nič nepokračuje)';
-  return [...lines.slice(0, -1), ...(before ? ['', line] : [line]), lines[lines.length - 1]].join('\n');
+  const section = ids.length ? ['**Handover:**', ...ids.map((id, i) => `${i + 1}. ${id} → ďalší krok`)] : ['**Handover:** žiadny'];
+  return [...lines.slice(0, -1), ...(before ? ['', ...section, ''] : [...section, '']), lines[lines.length - 1]].join('\n');
+}
+
+/** Files of the repo at root as git sees them: tracked, and untracked that are not ignored, present on disk (absolute paths).
+ * Static checks scan only these: a shared checkout holds ignored deployed files (.claude/skills/ with persona .sh scripts,
+ * local/, scratch/) that are not workflow files (release v0.9.92, 2026-11-13). Not a git repo: every file but .git, node_modules, local/. */
+export function repoFiles(root) {
+  const r = fs.existsSync(path.join(root, '.git')) ? spawnSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: root, encoding: 'utf8' }) : null;
+  if (r && r.status === 0) {
+    return [...new Set(r.stdout.split('\0').filter(Boolean))].map((f) => path.join(root, f)).filter((f) => fs.existsSync(f) && fs.statSync(f).isFile());
+  }
+  const out = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (['.git', 'node_modules', 'local'].includes(e.name)) continue;
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p); else out.push(p);
+    }
+  };
+  walk(root);
+  return out;
 }
 
 export function cleanEnv(extra = {}) {

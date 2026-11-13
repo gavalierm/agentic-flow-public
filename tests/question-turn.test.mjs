@@ -56,7 +56,7 @@ test('question turn with a handover next step: the line keeps the step open and 
     assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--task', 'x', '--next', 'nasadiť zmenu']).status, 0);
     const asked = fx.hook('user-prompt-submit.mjs', { prompt: 'aký je stav?' });
     assert.equal(stateOf(fx).turn_intent, 'question');
-    assert.match(asked.context, /topic alpha has a next step \("nasadiť zmenu"\)[^]*do not end "Stav: hotovo"/);
+    assert.match(asked.context, /topic alpha has a next step \("nasadiť zmenu"\)[^]*do not end "\*\*Stav:\*\* hotovo"/);
     const work = fx.hook('user-prompt-submit.mjs', { prompt: 'pridaj presmerovanie na /novy' });
     assert.doesNotMatch(work.context || '', /has a next step \("nasadiť/, 'an instruction turn gets no such line');
   } finally { fx.cleanup(); }

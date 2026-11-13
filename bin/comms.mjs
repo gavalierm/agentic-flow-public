@@ -300,7 +300,7 @@ function cmdSend(ctx) {
       // answered on its own (2026-11-12: hotovo on an unrelated message was refused).
       const pickedAt = (st.picked_assist || []).find((w) => w.id === replyTo)?.at || st.picked_at?.[replyTo];
       const pickedLater = !!pickedAt && !!st.last_end_at && pickedAt > st.last_end_at;
-      if (st.last_end_state === 'otázka' && st.turn_source !== 'operator' && !answeredHere && !pickedLater) fail(`--state hotovo refused: the previous turn of this thread ended "Stav: otázka" and this turn was not started by the operator (turn source ${st.turn_source || 'unknown'}), so the question is still open; the true state is otázka: send --state otázka with your recommendation (the sender waits for your operator), hotovo only after the operator answered (P-061)`);
+      if (st.last_end_state === 'otázka' && st.turn_source !== 'operator' && !answeredHere && !pickedLater) fail(`--state hotovo refused: the previous turn of this thread ended "**Stav:** otázka" and this turn was not started by the operator (turn source ${st.turn_source || 'unknown'}), so the question is still open; the true state is otázka: send --state otázka with your recommendation (the sender waits for your operator), hotovo only after the operator answered (P-061)`);
     }
     if (replyState === 'čakám' && ctx.brainDir && ctx.thread && !validWaker(readThreadState(ctx.brainDir, ctx.thread))) fail(`--state čakám without a waker in this thread: arm a timer first (${TIMER_CMD} set --in <30m|2h> --then "<step>") or start the background work, else nothing brings the final reply (P-061)`);
   } else if (replyState || waitFor) {

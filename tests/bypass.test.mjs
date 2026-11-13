@@ -141,7 +141,7 @@ test('hook: a bulk read of docs/principles is a hint and locks nothing; the refu
     fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: target, content: 'x' } });
     const around = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `node -e "1" ${target}` } });
     const reason = around.json.hookSpecificOutput.permissionDecisionReason;
-    assert.match(reason, /bypass \(P-054\).*with AskUserQuestion.*save handover --next.*Stav: čakám \(na nový ťah/);
+    assert.match(reason, /bypass \(P-054\).*with AskUserQuestion.*save handover --next.*\*\*Stav:\*\* čakám \(na nový ťah/);
     assert.doesNotMatch(reason, /end with Stav: hotovo/, 'hotovo with an undone step made bob ask the operator to write "pokračuj" (2026-11-11)');
     const viaSave = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: `node /x/workflow/bin/save.mjs memory project note --content "$(sed -n 1p ${target})"` } });
     assert.doesNotMatch(JSON.stringify(viaSave.json || {}), /P-054/, 'save.mjs is the way the refusal names, not a bypass');

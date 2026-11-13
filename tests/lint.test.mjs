@@ -4,22 +4,33 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PLUGIN_ROOT } from './helpers.mjs';
+import { spawnSync } from 'node:child_process';
+import { PLUGIN_ROOT, repoFiles } from './helpers.mjs';
 
-const SKIP_DIRS = new Set(['.git', 'node_modules', 'local']);
 const WORKFLOW_DIRS = ['rules', 'skills', 'hooks', 'bin', 'scripts', 'templates', 'agents', 'policy', 'adapters', '.claude-plugin'];
 
-function walk(dir, out = []) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (SKIP_DIRS.has(e.name)) continue;
-    const p = path.join(dir, e.name);
-    if (e.isDirectory()) walk(p, out); else out.push(p);
-  }
-  return out;
-}
+// Only the files git sees (tracked, and untracked that are not ignored): the shared checkout holds ignored deployed persona
+// skills with .sh scripts in .claude/skills/, local/ and scratch/ (release v0.9.92 stopped on P-034 there; a clean clone passed).
+const allFiles = repoFiles(PLUGIN_ROOT);
+const workflowFiles = [...allFiles.filter((f) => WORKFLOW_DIRS.includes(path.relative(PLUGIN_ROOT, f).split(path.sep)[0])), path.join(PLUGIN_ROOT, 'README.md')];
 
-const allFiles = walk(PLUGIN_ROOT);
-const workflowFiles = [...WORKFLOW_DIRS.flatMap((d) => (fs.existsSync(path.join(PLUGIN_ROOT, d)) ? walk(path.join(PLUGIN_ROOT, d)) : [])), path.join(PLUGIN_ROOT, 'README.md')];
+test('static checks scan only the files git sees: ignored .claude/skills/*.sh, local/ and scratch/ of a checkout are left out', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lint-files-'));
+  try {
+    const put = (rel, text = 'x\n') => { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), text); };
+    put('.gitignore', '.claude/skills/\nlocal/\nscratch/\n.workflow.json\n');
+    put('bin/tool.mjs');
+    put('.claude/skills/fix/test-clone.sh', '#!/bin/sh\n');
+    put('local/state.json', '{}');
+    put('scratch/old-code-test.sh', '#!/bin/sh\n');
+    put('.workflow.json', '{"brain":"../agent-alice"}');
+    assert.equal(spawnSync('git', ['init', '-q'], { cwd: root }).status, 0);
+    assert.equal(spawnSync('git', ['add', '.gitignore', 'bin/tool.mjs'], { cwd: root }).status, 0);
+    put('bin/new.sh', '#!/bin/sh\n');
+    const rel = repoFiles(root).map((f) => path.relative(root, f)).sort();
+    assert.deepEqual(rel, ['.gitignore', 'bin/new.sh', 'bin/tool.mjs'], 'an untracked file that is not ignored is still checked');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 test('P-004: no absolute home paths, emails, local hostname or username in workflow files', () => {
   const forbidden = [/\/home\/\w/, /\/Users\/\w/, /[A-Za-z]:\\(Users|home|[A-Za-z]+\\)/, /\/root\/\w/, /[\w.+-]+@[\w-]+\.[\w.]+/];

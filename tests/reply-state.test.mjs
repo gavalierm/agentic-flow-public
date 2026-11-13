@@ -254,7 +254,8 @@ test('hotovo guard (phase 2): the previous turn ended "otázka" and this one was
     const id = askedThenBell(x);
     const bad = x.reply(id, 'hotovo', 'variant A');
     assert.notEqual(bad.status, 0, 'hotovo must not pass');
-    assert.match(bad.stderr, /previous turn of this thread ended "Stav: otázka".*true state is otázka/s);
+    // D-0040: the refusal names the state line in its bold form.
+    assert.match(bad.stderr, /previous turn of this thread ended "\*\*Stav:\*\* otázka".*true state is otázka/s);
     assert.match(x.fx.runB('comms.mjs', ['message', '--id', id]).stdout, /\| no answer/, 'nothing was sent');
     assert.equal(x.reply(id, 'otázka', 'operator decides; I recommend A').status, 0);
     // The operator spoke: the next turn is theirs, hotovo is true.
@@ -286,7 +287,7 @@ test('hotovo guard (phase 2): a message picked after the turn ended "Stav: otáz
     assert.equal(ok.status, 0, ok.stderr);
     const bad = x.reply(id, 'hotovo', 'variant A');
     assert.notEqual(bad.status, 0, 'the message picked before the question still waits for the operator');
-    assert.match(bad.stderr, /previous turn of this thread ended "Stav: otázka"/);
+    assert.match(bad.stderr, /previous turn of this thread ended "\*\*Stav:\*\* otázka"/);
   } finally { await x.done(); }
 });
 

@@ -91,7 +91,7 @@ test('wake bell: triage only with new mail, else one line ending the turn; a quo
   try {
     assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     let r = fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
-    assert.equal(r.context.split('\n')[1], 'wake: no new mail; end the turn with only your Handover line and state line (P-061)');
+    assert.equal(r.context.split('\n')[1], 'wake: no new mail; end the turn with only your **Handover:** section and **Stav:** line (P-061)');
     assert.equal(fx.state().turn_source, 'wake');
     fx.stub.set({ messages: [{ id: 'm1', level: 'blocker' }] });
     fs.rmSync(path.join(fx.brain, 'local', 'comms'), { recursive: true, force: true });
@@ -283,7 +283,7 @@ test('idle step: a next step that only waits needs no waker; it rings in hours, 
       rings.push(val(closed, 'resume-at') ? Math.round(hoursAhead(val(closed, 'resume-at'))) : null);
       // The ring: the prompt says it is an idle check; the turn ends with only its state line.
       const ctx = fx.hook('user-prompt-submit.mjs', { prompt: 'turn ended with a next step, continue from handover' }).context;
-      if (i === 0) assert.match(ctx, /idle check: the next step of topic tk only waits.*"Handover: tk – <next step>" and "Stav: čakám \(na /);
+      if (i === 0) assert.match(ctx, /idle check: the next step of topic tk only waits.*"\*\*Handover:\*\*" with the line "1\. tk → <next step>" and "\*\*Stav:\*\* čakám \(na /);
       fx.stub.reset();
       assert.equal(fx.hook('stop.mjs', { last_assistant_message: 'Stav: čakám (na odpoveď)' }).json.decision, undefined);
     }
@@ -326,7 +326,7 @@ test('pause: a paused topic gets no continue ring and no auto timer; its end rin
     assert.match(val(closed, 'next'), /pause of topic pz ended/);
     assert.equal(Math.round(hoursAhead(val(closed, 'resume-at'))), 48);
     // A ring before the end (a clamped resume time) does not start the work.
-    assert.match(fx.hook('user-prompt-submit.mjs', { prompt: 'turn ended with a next step, continue from handover' }).context, /topic pz is still paused until .*end the turn with only "Handover: pz – <next step>" and "Stav: čakám \(na koniec pauzy témy pz\)"/);
+    assert.match(fx.hook('user-prompt-submit.mjs', { prompt: 'turn ended with a next step, continue from handover' }).context, /topic pz is still paused until .*end the turn with only "\*\*Handover:\*\*" with the line "1\. pz → <next step>" and "\*\*Stav:\*\* čakám \(na koniec pauzy témy pz\)"/);
     assert.equal(fx.run('topic.mjs', ['resume', 'pz']).status, 0);
     const back = JSON.parse(fs.readFileSync(path.join(fx.brain, 'topics', 'pz', 'topic.json'), 'utf8'));
     assert.equal(back.state, 'working');
@@ -374,7 +374,7 @@ test('no-reply bell: the bell of a message spends its mail waker; a later "čak�
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Správa ostáva pozdržaná.\n\nStav: čakám (na súbor scratch/done)' }).json.decision, undefined);
     const t = fx.state().timer;
     assert.ok(t?.auto, 'Stop armed the timer');
-    assert.match(t.then, /"Stav: čakám \(na súbor scratch\/done\)" without a waker: check it now/);
+    assert.match(t.then, /"\*\*Stav:\*\* čakám \(na súbor scratch\/done\)" without a waker: check it now/);
     sent('m9');
     fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m1' });
     assert.deepEqual(fx.state().wakers.map((w) => w.for), ['m9'], 'a bell of another message keeps its waker');

@@ -64,7 +64,7 @@ test('Stop: "Stav: čakám" without a waker passes and code arms the timer with 
     const st = stateOf(fx);
     assert.ok(activeTimer(st), 'the Stop hook armed the timer itself');
     assert.equal(st.timer.auto, true);
-    assert.match(st.timer.then, /Stav: čakám \(na odpoveď Carol\)" without a waker: check it now/, 'the timer carries the wait target');
+    assert.match(st.timer.then, /\*\*Stav:\*\* čakám \(na odpoveď Carol\)" without a waker: check it now/, 'the timer carries the wait target');
     assert.equal(st.auto_timer_n, 1);
     // An operator prompt keeps the timer (12 of 59 timers were dropped by one, audit 2026-11-11); its auto timer is spent at Stop.
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });

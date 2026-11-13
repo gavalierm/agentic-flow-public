@@ -55,7 +55,7 @@ try {
     const t = setTimer(ctx.brainDir, ctx.thread, { delayMs: ms, then, until: until || null, deadline });
     const clamped = ms < TIMER_MIN_MS || ms > TIMER_MAX_MS ? ` (clamped to ${TIMER_MIN_MS / 60_000}m..${TIMER_MAX_MS / 3600_000}h)` : '';
     const check = until ? `; code runs the check (exit 0 = met, at most ${UNTIL_TIMEOUT_MS / 1000} s) at each time without a turn and rings the step when it holds or at ${deadline}` : '';
-    out(`timer set: ${t.at}${clamped}; then: ${t.then}${check}. The wake module rings this thread then; end the turn with your Handover line ("Handover: <topic> – <next step>") and "Stav: čakám (na <what>)" (P-061)`);
+    out(`timer set: ${t.at}${clamped}; then: ${t.then}${check}. The wake module rings this thread then; end the turn with your **Handover:** section (a numbered line "1. <topic> → <next step>") and "**Stav:** čakám (na <what>)" (P-061)`);
   } else if (cmd === 'show') {
     const t = activeTimer(readThreadState(ctx.brainDir, ctx.thread));
     out(t ? `timer: ${t.at}; then: ${t.then}${t.until ? `; until: ${t.until} (deadline ${t.deadline})` : ''}${t.auto ? ' (armed by the Stop hook)' : ''}` : 'no timer');

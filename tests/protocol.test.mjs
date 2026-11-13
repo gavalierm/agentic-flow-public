@@ -13,7 +13,7 @@ import { mistakeClaim, AUTO_TIMER_THEN } from '../hooks/stop.mjs';
 const stateOf = (fx) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), 'utf8'));
 
 test('parseReply: the state is the last line only; diacritics and markdown are tolerated; the question is the first item under Operátor', () => {
-  assert.deepEqual(parseReply('Vydané.\n\nStav: hotovo'), { state: 'hotovo', handover: null, question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null });
+  assert.deepEqual(parseReply('Vydané.\n\nStav: hotovo'), { state: 'hotovo', handover: null, question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null, oldForm: ['state'], onlyProtocol: false });
   assert.equal(parseReply('Hotové.\n**Stav:** cakam').state, 'čakám');
   assert.equal(parseReply('x\nstav: Otázka.\n\n').state, 'otázka');
   assert.equal(parseReply('Stav: hotovo\nA ešte niečo urobím neskôr.').state, null, 'the state must be the last line');
@@ -22,7 +22,7 @@ test('parseReply: the state is the last line only; diacritics and markdown are t
   assert.equal(parseReply('').state, null);
   assert.equal(parseReply(undefined).state, null);
   const q = parseReply('Návrh je hotový.\n\n**Otázky na operátora:** Vydať teraz? Odporúčam áno.\n\nStav: otázka');
-  assert.deepEqual(q, { state: 'otázka', handover: null, question: 'Vydať teraz?', waitFor: null, operator: ['Vydať teraz? Odporúčam áno.'], questions: ['Vydať teraz? Odporúčam áno.'], tasks: null, legacyOperator: false, emptySection: null, step: null });
+  assert.deepEqual(q, { state: 'otázka', handover: null, question: 'Vydať teraz?', waitFor: null, operator: ['Vydať teraz? Odporúčam áno.'], questions: ['Vydať teraz? Odporúčam áno.'], tasks: null, legacyOperator: false, emptySection: null, step: null, oldForm: ['state', 'items'], onlyProtocol: false });
   assert.equal(parseReply('**Pre teba:** Vydať teraz?\n\nStav: otázka').question, 'Vydať teraz?', 'the marker before v0.9.43 still opens the block (legacy)');
   const list = parseReply('Hotové.\n\n**Otázky na operátora:**\n- [ ] Potvrď zmazanie starého priečinka (odporúčam áno)\n- [ ] Spusti wake install\n\nĎalší text.\n\nStav: otázka');
   assert.deepEqual(list.operator, ['Potvrď zmazanie starého priečinka (odporúčam áno)', 'Spusti wake install'], 'checklist items up to an empty line');
@@ -39,7 +39,7 @@ test('Stop: a reply without a state blocks once in every turn; ending anyway clo
     fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
     const r = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Opravené, testy prešli.' });
     assert.equal(r.json.decision, 'block');
-    assert.match(r.json.reason, /no state line.*Stav: hotovo/s);
+    assert.match(r.json.reason, /no state line.*\*\*Stav:\*\* hotovo/s);
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Opravené, testy prešli.' }).json.decision, undefined);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Opravené, testy prešli.\n\nStav: hotovo' }).json.decision, undefined);
@@ -116,7 +116,7 @@ test('Stop: a background task whose end was notified is no waker: "hotovo" with 
 test('parseReply: čakám carries what it waits for, in parentheses or after "na"; other states take no text', () => {
   assert.equal(parseReply('Pracovník beží.\n\nStav: čakám (na návrh od pracovníka)').waitFor, 'na návrh od pracovníka');
   assert.equal(parseReply('**Stav:** cakam na build.').waitFor, 'na build');
-  assert.deepEqual(parseReply('Stav: čakám'), { state: 'čakám', handover: null, question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null });
+  assert.deepEqual(parseReply('Stav: čakám'), { state: 'čakám', handover: null, question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null, step: null, oldForm: ['state'], onlyProtocol: true });
   assert.equal(parseReply('Stav: čakám ()').waitFor, null, 'empty parentheses name nothing');
   assert.equal(parseReply('Stav: hotovo (všetko)').state, null, 'only čakám may carry text');
 });
@@ -127,7 +127,7 @@ test('Stop: "Stav: čakám" without what it waits for blocks once, even with a w
     setTimer(fx.brain, fx.thread, { delayMs: 60_000, then: 'check the build' });
     const r = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Build beží.\n\nStav: čakám' });
     assert.equal(r.json.decision, 'block');
-    assert.match(r.json.reason, /not what it waits for.*"Stav: čakám \(na <what>\)"/);
+    assert.match(r.json.reason, /not what it waits for.*"\*\*Stav:\*\* čakám \(na <what>\)"/);
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Build beží.\n\nStav: čakám (na build)' }).json.decision, undefined);
   } finally {
     fx.cleanup();
@@ -154,7 +154,7 @@ test('Stop: a step written as prose or an Operátor item under "hotovo" blocks o
     const item = 'Presun je hotový.\n\n**Úlohy pre operátora:**\n- [ ] Potvrď zmazanie ~/Work/agenti/carol (odporúčam áno)\n\nStav: hotovo';
     const r2 = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: item });
     assert.equal(r2.json.decision, 'block');
-    assert.match(r2.json.reason, /under \*\*Otázky na operátora:\*\* \/ \*\*Úlohy pre operátora:\*\* but declares "Stav: hotovo".*Stav: otázka/s);
+    assert.match(r2.json.reason, /under \*\*Otázky na operátora:\*\* \/ \*\*Úlohy pre operátora:\*\* but declares "\*\*Stav:\*\* hotovo".*\*\*Stav:\*\* otázka/s);
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: item.replace('Stav: hotovo', 'Stav: čakám (na odpoveď)') }).json.decision, undefined, 'čakám may carry an operator item (D-0011)');
     // Ending anyway: the item still waits on the operator, so the thread gets the operator timer, in hours.
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: item }).json.decision, undefined);
@@ -217,7 +217,7 @@ test('Stop: the old heading and an empty section block once with their own reaso
     const tasks = 'Presun je hotový.\n\n**Úlohy pre operátora:**\n- [ ] Prihlás sa na stroji B\n\nStav: hotovo';
     const t = stop(tasks);
     assert.equal(t.json.decision, 'block');
-    assert.match(t.json.reason, /but declares "Stav: hotovo".*Stav: otázka/s);
+    assert.match(t.json.reason, /but declares "\*\*Stav:\*\* hotovo".*\*\*Stav:\*\* otázka/s);
   } finally { fx.cleanup(); }
 });
 
@@ -407,7 +407,7 @@ test('Stop: a named mistake does not block; it is queued once as a signal for th
 // flow-public#25 (2026-11-10): the operator asked how to hand a task to another agent; the Stop hook said "do the work now"
 // and "if you can do it yourself, do it", and the agent created and deployed a skill nobody asked for. Every message that
 // pushes to act is bound to the asked work; a change the operator did not ask for stays an offer under Operátor.
-const OFFER = /did not ask for[^]*operátora[^]*Stav: otázka/;
+const OFFER = /did not ask for[^]*operátora[^]*\*\*Stav:\*\* otázka/;
 
 test('Stop: after an operator question a proposed change is kept as an offer, never pushed to be done', () => {
   const fx = setup();

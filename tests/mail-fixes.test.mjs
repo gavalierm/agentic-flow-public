@@ -103,7 +103,7 @@ test('wake turn during an outage says mail is unavailable, not "no new mail"; th
     const lines = wake.context.split('\n');
     assert.match(lines[0], /\| mail: \?/, wake.context);
     assert.doesNotMatch(wake.context, /mail: 0/);
-    assert.equal(lines[1], 'wake: mail unavailable (comms unavailable): run comms receive when it is back, or end the turn with only your Handover line and state line (P-061)', wake.context);
+    assert.equal(lines[1], 'wake: mail unavailable (comms unavailable): run comms receive when it is back, or end the turn with only your **Handover:** section and **Stav:** line (P-061)', wake.context);
     assert.doesNotMatch(wake.context, /no new mail/);
   } finally { fx.cleanup(); }
 });

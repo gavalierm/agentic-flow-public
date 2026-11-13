@@ -80,7 +80,7 @@ export function threadOrchestrator(brainDir, thread) {
 }
 
 /** P-064: why a question to the operator is refused in a topic thread with an orchestrator, and what to do instead. */
-export const ORCHESTRATOR_QUESTION_REASON = (o) => `topic ${o.of} was created by another thread (its orchestrator, topic ${o.to}): the operator does not follow topic threads, so this thread never asks them (no AskUserQuestion, no **Otázky na operátora:**, no "Stav: otázka"). Send the question by mail to the orchestrator: comms send --to ${o.to} --level blocker (the work cannot go on without it) or assist, with the options and your recommendation; then go on with the recommended assumption and end the turn with "Stav: čakám (na odpoveď orchestrátora)". The orchestrator decides itself or asks the operator in its own thread and replies by mail (P-064)`;
+export const ORCHESTRATOR_QUESTION_REASON = (o) => `topic ${o.of} was created by another thread (its orchestrator, topic ${o.to}): the operator does not follow topic threads, so this thread never asks them (no AskUserQuestion, no **Otázky na operátora:**, no "**Stav:** otázka"). Send the question by mail to the orchestrator: comms send --to ${o.to} --level blocker (the work cannot go on without it) or assist, with the options and your recommendation; then go on with the recommended assumption and end the turn with "**Stav:** čakám (na odpoveď orchestrátora)". The orchestrator decides itself or asks the operator in its own thread and replies by mail (P-064)`;
 
 // P-064 (orchestrator 2026-11-13, option A): a step a hook leaves to the operator's confirmation (ask, P-018) waited in the
 // topic thread the operator does not follow. There it is refused; the orchestrator grants the exact call with

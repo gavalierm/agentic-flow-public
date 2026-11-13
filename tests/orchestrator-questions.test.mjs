@@ -36,7 +36,7 @@ test('D-0031: PreToolUse refuses AskUserQuestion in the thread of an orchestrate
     fx.hook('user-prompt-submit.mjs', { prompt: 'pokračuj' }, child(fx));
     const out = fx.hook('pre-tool-use.mjs', ASK, child(fx)).json?.hookSpecificOutput || {};
     assert.equal(out.permissionDecision, 'deny');
-    assert.match(out.permissionDecisionReason, /comms send --to lead --level blocker.*Stav: čakám \(na odpoveď orchestrátora\)/);
+    assert.match(out.permissionDecisionReason, /comms send --to lead --level blocker.*\*\*Stav:\*\* čakám \(na odpoveď orchestrátora\)/);
     // A decision id lives in one brain only: copied into a handover of another project, save refused it (pilot 2026-11-13).
     assert.doesNotMatch(out.permissionDecisionReason, /D-\d{4}/);
     assert.match(out.permissionDecisionReason, /\(P-064\)$/);
