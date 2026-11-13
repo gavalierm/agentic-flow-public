@@ -40,6 +40,15 @@ export function mailProjectName(ctx) {
   const name = ctx.projectName;
   return ctx.persona && PERSONA_REPO_RE.test(name || '') ? name.slice(PERSONA_PREFIX.length) : name;
 }
+/**
+ * Mail project of this project: `comms.project` of the workflow configuration, else the mail name (mailProjectName).
+ * Every mail address the workflow builds for this project uses it (the client settings, the report intake, the issue
+ * records), so a project with its own mail name is addressed the same way everywhere.
+ */
+export function commsProjectName(ctx) {
+  const raw = ctx.config?.comms;
+  return (raw && typeof raw === 'object' && raw.project) || mailProjectName(ctx);
+}
 export const LEVELS = ['blocker', 'steer', 'assist'];
 /** Mechanical categories of the prompt line (P-044, operator 2026-11-02): a reply (reply_to or thread-addressed), else the level.
  * An interim reply names its state after the category: `reply otázka`, `reply čakám` (P-061). */
@@ -79,7 +88,7 @@ export function commsSettings(ctx) {
     clientRel,
     instance: cfg.instance || null,
     configFile: configFile && fs.existsSync(configFile) ? configFile : null,
-    project: cfg.project || mailProjectName(ctx),
+    project: commsProjectName(ctx),
     outbox: ctx.brainDir ? path.join(ctx.brainDir, 'local', 'outbox') : null,
     clientDir: ctx.brainDir ? path.join(ctx.brainDir, 'local', 'comms') : null,
     waitMs: ctx.policy?.comms?.hook_wait_ms ?? 2000,

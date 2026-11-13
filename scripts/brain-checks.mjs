@@ -5,6 +5,9 @@ import { hasDiacritics } from './keys.mjs';
 
 export const HANDOVER_SECTIONS = ['## Zadanie', '## Hotové', '## Ďalší krok', '## Súbory', '## Otvorené otázky'];
 export const HANDOVER_FREE_TEXT = '(voľná)';
+// Optional section after "## Otvorené otázky" (3c.3, D-0023): the reporter's open issues, written by code from
+// local/reported-issues.json (save.mjs handover), never by the agent; not in HANDOVER_SECTIONS, old handovers stay valid.
+export const REPORTS_SECTION = '## Otvorené hlásenia';
 
 export function freeHandover() {
   return [
@@ -21,7 +24,7 @@ export function freeHandover() {
   ].join('\n') + '\n';
 }
 
-export function renderHandover({ task, done, next, files, questions }) {
+export function renderHandover({ task, done, next, files, questions, reports }) {
   const list = (v) => {
     const items = Array.isArray(v) ? v : String(v ?? '').split(/\s*;\s*|\n/).map((s) => s.trim()).filter(Boolean);
     return items.length ? items.map((s) => `- ${s}`) : ['-'];
@@ -37,15 +40,43 @@ export function renderHandover({ task, done, next, files, questions }) {
     ...list(files),
     '## Otvorené otázky',
     ...list(questions),
+    ...(Array.isArray(reports) && reports.length ? [REPORTS_SECTION, ...reports] : []),
   ].join('\n') + '\n';
+}
+
+/** Lines of the reports section in a handover (heading included); 0 without it. */
+function reportsSectionLines(lines) {
+  const i = lines.findIndex((l) => l.trim() === REPORTS_SECTION);
+  if (i === -1) return 0;
+  const end = lines.findIndex((l, j) => j > i && /^## /.test(l.trim()));
+  return (end === -1 ? lines.length : end) - i;
+}
+
+/**
+ * The reports section of `text` set to `reports` (lines `- <url> (stav: …)`): replaced, added after "## Otvorené
+ * otázky", or removed when there are none (the confirmed issue leaves the handover, 3c.3).
+ */
+export function withReports(text, reports = []) {
+  if (!reports.length && !String(text).split(/\r?\n/).some((l) => l.trim() === REPORTS_SECTION)) return text;
+  const lines = String(text).replace(/\r\n/g, '\n').replace(/\n+$/, '').split('\n');
+  const i = lines.findIndex((l) => l.trim() === REPORTS_SECTION);
+  if (i !== -1) lines.splice(i, reportsSectionLines(lines));
+  if (reports.length) {
+    const q = lines.findIndex((l) => l.trim() === '## Otvorené otázky');
+    const next = q === -1 ? -1 : lines.findIndex((l, j) => j > q && /^## /.test(l.trim()));
+    lines.splice(next === -1 ? lines.length : next, 0, REPORTS_SECTION, ...reports);
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 export function checkHandover(text, limitLines = 15) {
   const errors = [];
   const lines = String(text).replace(/\r\n/g, '\n').replace(/\n+$/, '').split('\n');
   // The budget in the refusal: a handover rewritten without it was refused again (flow-public#12).
-  const fixed = HANDOVER_SECTIONS.length + 2;
-  if (lines.length > limitLines) errors.push(`handover has ${lines.length} lines, limit ${limitLines} (P-011): the ${HANDOVER_SECTIONS.length} headings, --task and --next take ${fixed}, so --done, --files and --questions together hold at most ${limitLines - fixed} items (each "; " item is one line, an empty list one "-"); cut ${lines.length - limitLines}: merge items, keep only what the next session needs, durable knowledge goes through save (P-007)`);
+  const reports = reportsSectionLines(lines);
+  const fixed = HANDOVER_SECTIONS.length + 2 + reports;
+  const reportsNote = reports ? `, the section "${REPORTS_SECTION}" (${reports - 1} open issue(s), written by code until error.mjs confirm) ${reports}` : '';
+  if (lines.length > limitLines) errors.push(`handover has ${lines.length} lines, limit ${limitLines} (P-011): the ${HANDOVER_SECTIONS.length} headings, --task and --next take ${HANDOVER_SECTIONS.length + 2}${reportsNote}, so --done, --files and --questions together hold at most ${limitLines - fixed} items (each "; " item is one line, an empty list one "-"); cut ${lines.length - limitLines}: merge items, keep only what the next session needs, durable knowledge goes through save (P-007)`);
   for (const section of HANDOVER_SECTIONS) {
     if (!lines.some((l) => l.trim() === section)) errors.push(`handover missing section "${section}" (P-011)`);
   }

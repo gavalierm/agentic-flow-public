@@ -6,7 +6,13 @@
 //     message: { <id>: { ...GET /message fields } }
 //     register_fail: true (register-topic exits 2: comms unavailable), by_topic: true (count with --topic lists only the
 //     messages of that topic, thread-only count lists none), wake: { running, ... } (count field of comms >= 0.4.6),
-//     send_held: true (send to an unregistered topic: state held + notice), send_id: '<id>' (id of a sent message) }
+//     send_held: true (send to an unregistered topic: state held + notice), send_id: '<id>' (id of a sent message),
+//     project_known: true (the held answer carries project_known, comms with 3b), send_closed_topic: ['<p>/<t>', ...]
+//     (send to that topic: 410 closed), send_fail: true (send exits 1), sends: [] (each send: argv + stdin, appended),
+//     notices: [{ id, kind, state, project, topic, message_id }] (decide marks the notice decided and a deliver turns
+//     message[<message_id>].state to pending), decide_fail: true (decide exits 1), decide_expired: true (decide exits 1 with
+//     409 and details.expired_at: the held message expired), send_held_to: ['<p>/<t>' | '@<persona>', ...] (send to that
+//     address: held + notice), send_queued: true (mail unavailable: the client queued the send in its outbox, exit 0) }
 // Every call is appended to STUB_COMMS_LOG as one JSON line (argv). Interface as in hotfix-contract (count ids, send --ttl, turn).
 import fs from 'node:fs';
 
@@ -54,9 +60,14 @@ switch (cmd) {
     break;
   }
   case 'send':
+    if (state.sends) { state.sends.push({ argv, text: argv.includes('-') ? fs.readFileSync(0, 'utf8') : null }); save(); }
+    if (state.send_queued) { print({ queued: true, outbox_file: 'stub-outbox/1.json', message: 'comms unavailable; queued in the outbox' }); break; }
+    if (state.send_fail) { process.stderr.write(JSON.stringify({ error: 'stub send failed', status: 500 }) + '\n'); process.exit(1); }
+    if ((state.send_closed_topic || []).includes(`${opt('project')}/${opt('topic')}`)) { process.stderr.write(JSON.stringify({ error: `téma ${opt('project')}/${opt('topic')} je uzavretá`, code: 'ERROR', status: 410 }) + '\n'); process.exit(1); }
     if (state.send_no_path && argv.includes('--reply-to')) { process.stderr.write(JSON.stringify({ error: 'na pôvodnú správu sa nedá odpovedať: nemá vlákno ani zdrojovú tému', code: 'ERROR', status: 400 }) + '\n'); process.exit(1); }
     if (state.send_closed && argv.includes('--reply-to')) { process.stderr.write(JSON.stringify({ error: 'odosielateľ pôvodnej správy už tému uzavrel: project/gone uzavretá 2026-11-02T21:39:48.512Z', code: 'ERROR', status: 410, details: { closed_at: '2026-11-02T21:39:48.512Z' } }) + '\n'); process.exit(1); }
-    if (state.send_held) { print({ id: 'm-held', state: 'held', notice_id: 'n-1', expires_at: '2026-11-01T12:30:00.000Z' }); break; }
+    if ((state.send_held_to || []).includes(opt('persona') ? `@${opt('persona')}` : `${opt('project')}/${opt('topic')}`)) { print({ id: `m-held-${(state.sends || []).length}`, state: 'held', notice_id: 'n-held', expires_at: '2026-11-01T12:30:00.000Z', project_known: true }); break; }
+    if (state.send_held) { print({ id: 'm-held', state: 'held', notice_id: 'n-1', expires_at: '2026-11-01T12:30:00.000Z', ...(state.project_known ? { project_known: true } : {}) }); break; }
     print({ id: state.send_id || 'm-sent', state: 'pending', expires_at: opt('ttl') ? '2026-11-01T12:30:00.000Z' : null }); break;
   case 'turn':
     if (state.turn === 'unknown') { process.stderr.write('unknown command: turn\n'); process.exit(1); }
@@ -72,7 +83,20 @@ switch (cmd) {
     if (opt('state') === 'open') print({ ok: true, turn: { state: 'open', opened_at: state.opened_at || '2026-11-01T10:00:00.000Z' } });
     else print({ ok: true, ...(opt('opened-at') && state.opened_at && opt('opened-at') !== state.opened_at ? { stale: true } : {}) });
     break;
-  case 'decide': print({ notice_id: opt('notice'), decision: opt('decision') }); break;
+  case 'decide': {
+    if (state.decide_expired) { const n = (state.notices || []).find((x) => x.id === opt('notice')); process.stderr.write(JSON.stringify({ error: `správa ${n?.message_id} vypršala bez doručenia`, code: 'ERROR', status: 409, details: { message_id: n?.message_id, expired_at: '2026-11-01T12:30:00.000Z', decision: opt('decision') } }) + '\n'); process.exit(1); }
+    if (state.decide_fail) { process.stderr.write(JSON.stringify({ error: 'stub decide failed', status: 409 }) + '\n'); process.exit(1); }
+    const n = (state.notices || []).find((x) => x.id === opt('notice'));
+    if (n) {
+      n.state = 'decided'; n.decision = opt('decision');
+      const m = (state.message || {})[n.message_id];
+      if (m && opt('decision') === 'deliver') m.state = 'pending';
+      save();
+    }
+    print({ notice_id: opt('notice'), decision: opt('decision') });
+    break;
+  }
+  case 'notices': print({ notices: (state.notices || []).filter((n) => argv.includes('--all') || n.state === 'open') }); break;
   case 'message': {
     const m = (state.message || {})[opt('id')];
     if (!m) { process.stderr.write(JSON.stringify({ error: 'správa neexistuje' }) + '\n'); process.exit(1); }

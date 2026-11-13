@@ -84,6 +84,10 @@
   "comms": {
     "hook_wait_ms": 2000
   },
+  "issue_watch": {
+    "interval_s": 900,
+    "keep_days": 3
+  },
   "topics": {
     "default_holder_mode": "operator",
     "thread_start_command": "t3 thread start --json",

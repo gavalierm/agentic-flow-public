@@ -11,6 +11,7 @@ import { mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, 
 import { syncBrainSkills } from './skills-sync.mjs';
 import { gitAccessProblem } from './brain.mjs';
 import { readTopics } from './records.mjs';
+import { undeliveredIssues } from './issue-watch.mjs';
 import { sessionKnowledgeSources, skillSources, KNOWLEDGE_KINDS, REPO_HANDOVER } from './repo-knowledge.mjs';
 
 export const BOOT_MARKERS = ['## Pravidlá', '## Stav vlákna', '## Index pamäte', '## Index rozhodnutí', '## Otvorené témy', '## Workflow'];
@@ -29,8 +30,11 @@ export function statusInfo(ctx, { discussion = false } = {}) {
   // Open notices of the instance, in the persona main thread only (D-0011: 41 open, none decided, nobody saw them).
   const notices = held.some(isMainTopic) && mail.available ? noticesCount(ctx) : null;
   const thread = ctx.thread || '- (no stable id: start via thread.mjs or T3; topics cannot be claimed)';
+  // Answers on the reporter's own issues the check could not ring (project without persona, its topic closed; 3c.2).
+  let issues = 0;
+  try { issues = undeliveredIssues(ctx.brainDir || ctx.projectDir).length; } catch { /* only a notice */ }
   return {
-    line: `thread ${thread} | topic ${topic} | ${formatMail(mail)}${notices ? ` | notices: ${notices} open (comms notices; decide only on operator instruction, P-046)` : ''}`,
+    line: `thread ${thread} | topic ${topic} | ${formatMail(mail)}${notices ? ` | notices: ${notices} open (comms notices; decide only on operator instruction, P-046)` : ''}${issues ? ` | issues: ${issues} answer(s) not rung (error.mjs watch)` : ''}`,
     held,
     mail,
     notices,

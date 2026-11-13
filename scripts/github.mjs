@@ -14,13 +14,33 @@ export function readToken(tokenFile = DEFAULT_TOKEN_FILE) {
   return fs.readFileSync(tokenFile, 'utf8').trim();
 }
 
-export async function gh(apiUrl, token, method, route, body) {
-  const res = await fetch(`${apiUrl}${route}`, {
-    method,
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'agentic-flow' },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  return { status: res.status, json: await res.json().catch(() => ({})) };
+export const GITHUB_TIMEOUT_MS = 30000;
+
+/**
+ * One REST call; `headers` of the reply in lower case (rate limit, ETag), `extra` request headers (If-None-Match). The
+ * whole call (reply and body) has `timeoutMs` (default 30 s, `WORKFLOW_GITHUB_TIMEOUT_MS`): a GitHub that does not
+ * answer throws "no answer within …" instead of holding the caller (a wake job, a lock) open.
+ */
+export async function gh(apiUrl, token, method, route, body, extra = {}, { timeoutMs } = {}) {
+  const ms = Number(timeoutMs) || Number(process.env.WORKFLOW_GITHUB_TIMEOUT_MS) || GITHUB_TIMEOUT_MS;
+  const signal = AbortSignal.timeout(ms);
+  try {
+    const res = await fetch(`${apiUrl}${route}`, {
+      method,
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'agentic-flow', ...extra },
+      body: body ? JSON.stringify(body) : undefined,
+      signal,
+    });
+    const headers = {};
+    res.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+    const text = await res.text();
+    let json = {};
+    try { json = text ? JSON.parse(text) : {}; } catch { json = {}; }
+    return { status: res.status, headers, json };
+  } catch (err) {
+    if (signal.aborted) throw new Error(`GitHub ${method} ${route.split('?')[0]}: no answer within ${ms / 1000} s`);
+    throw err;
+  }
 }
 
 /** Login of the token's account. */

@@ -89,7 +89,10 @@ function t3Step(dirs, name) {
   if (args['no-t3']) return ['t3: skipped (--no-t3): trust, T3 project and welcome thread were not set up'];
   const lines = []; const update = {}; const deferred = {};
   for (const dir of dirs) {
-    const r = setupT3(dir, { name, policy: loadPolicy(brainOf(dir)), welcome: !args['no-welcome'], deferWelcome: !!args.adopt });
+    // wakeJob: the issue check job in this machine's wake.json (D-0024), idempotent for every project of the machine.
+    let wakeJob = null;
+    try { wakeJob = loadContext({ project: dir, requireBrain: false }); } catch { /* no context: no job line */ }
+    const r = setupT3(dir, { name, policy: loadPolicy(brainOf(dir)), welcome: !args['no-welcome'], deferWelcome: !!args.adopt, wakeJob });
     lines.push(...r.lines.map((l) => `${path.basename(dir)}: ${l}`));
     update[dir] = r.pending;
     if (r.deferred) deferred[dir] = name;

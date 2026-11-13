@@ -2,6 +2,7 @@
 // when this mail service has it, else an issue in the public workflow repo, else a draft for the operator. Only a
 // delivered message or a created issue counts as reported (operator 2026-11-07: an instance without the maintainer topic
 // said "reported" while the message stayed held on its own server).
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +12,7 @@ import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh } from './github.mjs';
 import { PLUGIN_ROOT, toPosix } from './util.mjs';
 import { SCRATCH_DIR, channelOf } from './config.mjs';
 import { parseFrontmatter, asList } from './frontmatter.mjs';
+import { recordIssue } from './issue-watch.mjs';
 
 // Defaults; `policy.maintainer` ({comms, repo}) of the brain overrides (another maintainer, a fork).
 export const MAINTAINER = { comms: 'maintainer/workflow-dev', repo: 'https://github.com/gavalierm/agentic-flow-public.git' };
@@ -54,10 +56,13 @@ function nameRe(name) {
 /**
  * Text for a public issue: machine paths, project and brain names, names of known people, addresses and secrets of this
  * instance removed. Client data in the wording (categories, figures) code cannot tell: the agent writes the report in
- * general terms (skill error, step 5, D-0009).
+ * general terms (skill error, step 5, D-0009). Idempotent: the mail path scrubs the report and the issue path scrubs it
+ * again (a project named `project` turned `<project>` into `<<project>>`), so placeholders already in the text stay.
  */
+const PLACEHOLDERS = ['<project>', '<brain>', '<person>', '<email>', '<secret>', '<ip>'];
 export function scrub(text, ctx = {}, env = process.env) {
   let s = String(text || '');
+  PLACEHOLDERS.forEach((p, i) => { s = s.split(p).join(`\u0002${i}\u0002`); });
   const home = env.HOME || os.homedir();
   const swap = (from, to) => { if (from && from.length > 1) s = s.split(from).join(to); };
   // Paths first, as sentinels the name pass below cannot touch; longer brain path before the project it may contain.
@@ -71,15 +76,17 @@ export function scrub(text, ctx = {}, env = process.env) {
   for (const name of names) s = s.replace(new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'), '<project>');
   for (const name of peopleNames(ctx.brainDir).sort((a, b) => b.length - a.length)) s = s.replace(nameRe(name), '<person>');
   s = s.split(B).join('<brain>').split(P).join('<project>');
-  return s
+  s = s
     .replace(/\/home\/[\w.-]+|\/Users\/[\w.-]+|[A-Za-z]:\\Users\\[\w.-]+/g, '~')
     .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '<email>')
     .replace(/ghp_[A-Za-z0-9]{20,}|github[_]pat_\w+|gho_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[bap]-[\w-]+|AKIA[0-9A-Z]{16}/g, '<secret>')
     // A private IPv4 has four parts; three (a Windows release such as 10.0.x in the meta line, #24) is no address.
     .replace(/\b(?:10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})\b/g, '<ip>');
+  PLACEHOLDERS.forEach((p, i) => { s = s.split(`\u0002${i}\u0002`).join(p); });
+  return s;
 }
 
-function version() {
+export function version() {
   try { return `v${JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'package.json'), 'utf8')).version}`; } catch { return '?'; }
 }
 
@@ -147,8 +154,23 @@ function rememberUnreachable(ctx, key) {
   try { fs.mkdirSync(path.dirname(unreachableFile(ctx)), { recursive: true }); fs.writeFileSync(unreachableFile(ctx), `${JSON.stringify(all, null, 2)}\n`); } catch { /* only saves a notice */ }
 }
 
-/** Mail to the maintainer topic; delivered = accepted pending in a registered topic (not held, not queued in the outbox). */
-export function mailReport(ctx, text, maintainer = maintainerOf(ctx.policy)) {
+/**
+ * Topic of a report at the maintainer (3b, D-0022): `report-<fp>`, fp = first 8 hex of sha256(lower-case scrubbed title |
+ * workflow version). No client data; the same report of another instance on the same version lands in the same topic, a
+ * release with the fix starts a new one.
+ */
+export function reportTopic(title, ctx = {}, env = process.env, ver = version()) {
+  const t = scrub(String(title || ''), ctx, env).trim().toLowerCase();
+  return `report-${crypto.createHash('sha256').update(`${t}|${ver}`).digest('hex').slice(0, 8)}`;
+}
+
+/**
+ * Mail of a report to the maintainer project, topic `topic` (default the maintainer topic itself); delivered = accepted
+ * pending in a registered topic (not queued in the outbox). Held with `project_known` (the maintainer's project is on this
+ * server, its intake creates the topic, 3b.2): counted as mailed, `pending_topic`. Held without it (an older server, or no
+ * maintainer here): not reachable, remembered for a week.
+ */
+export function mailReport(ctx, text, maintainer = maintainerOf(ctx.policy), { topic = null } = {}) {
   if (!maintainer.comms) return { ok: false, why: 'no maintainer topic configured' };
   const s = commsSettings(ctx);
   if (!s.enabled) return { ok: false, why: `mail not configured (${s.reason || 'off'})` };
@@ -157,14 +179,18 @@ export function mailReport(ctx, text, maintainer = maintainerOf(ctx.policy)) {
   const key = serverKey(s, addr);
   const seen = readUnreachable(ctx)[key];
   if (seen && Date.now() - Date.parse(seen) < UNREACHABLE_DAYS * 86400000) return { ok: false, why: `maintainer topic ${maintainer.comms} not on this mail server (held ${seen.slice(0, 10)}; mail skipped)` };
-  const res = runClient(ctx, ['send', '--text', '-', '--level', 'assist', '--project', addr.project, '--topic', addr.topic], { input: text });
+  const to = { project: addr.project, topic: topic || addr.topic };
+  const res = runClient(ctx, ['send', '--text', '-', '--level', 'assist', '--project', to.project, '--topic', to.topic], { input: text });
   if (!res.ok) return { ok: false, why: `mail ${res.error || 'failed'}` };
   const d = res.data || {};
   if (d.queued) return { ok: false, why: 'mail unavailable (queued in the outbox)', id: d.id };
+  if (d.state === 'held' && d.project_known === true && d.id) return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${to.project}/${to.topic}`, pending_topic: true, notice: d.notice_id || null };
   if (d.state === 'held') rememberUnreachable(ctx, key);
   if (d.state !== 'pending' || !d.id) return { ok: false, why: `maintainer topic ${maintainer.comms} not on this mail server (message ${d.state || '?'}${d.notice_id ? `, notice ${d.notice_id}` : ''})`, id: d.id, notice: d.state === 'held' ? d.notice_id || null : null };
-  return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${addr.project}/${addr.topic}` };
+  return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${to.project}/${to.topic}` };
 }
+
+const issueNumber = (url) => Number((/\/issues\/(\d+)/.exec(url) || [])[1]) || null;
 
 /** Issue in the maintainer repo with this machine's GitHub access: token file, else the gh CLI. */
 export async function issueReport(ctx, title, body, maintainer = maintainerOf(ctx.policy), env = process.env) {
@@ -178,13 +204,13 @@ export async function issueReport(ctx, title, body, maintainer = maintainerOf(ct
   if (token) {
     try {
       const r = await gh(env.WORKFLOW_GITHUB_API || DEFAULT_API_URL, token, 'POST', `/repos/${slug}/issues`, { title: t, body: b });
-      if (r.status === 201 && r.json.html_url) return { ok: true, url: r.json.html_url, slug };
+      if (r.status === 201 && r.json.html_url) return { ok: true, url: r.json.html_url, slug, number: r.json.number || issueNumber(r.json.html_url), id: r.json.id || null, login: r.json.user?.login || null };
       return { ok: false, why: `GitHub issue in ${slug} failed (HTTP ${r.status})` };
     } catch (err) { return { ok: false, why: `GitHub issue in ${slug} failed (${err.message})` }; }
   }
   const cli = spawnSync(env.WORKFLOW_GH_CLI || 'gh', ['issue', 'create', '-R', slug, '--title', t, '--body-file', '-'], { input: b, encoding: 'utf8', timeout: 30000 });
   const url = /https:\/\/\S+\/issues\/\d+/.exec(cli.stdout || '');
-  if (cli.status === 0 && url) return { ok: true, url: url[0], slug };
+  if (cli.status === 0 && url) return { ok: true, url: url[0], slug, number: issueNumber(url[0]), id: null, login: null };
   return { ok: false, why: cli.error ? `no GitHub access (no ${toPosix(tokenFile).replace(env.HOME || os.homedir(), '~')}, no gh)` : `gh issue create in ${slug} failed: ${(cli.stderr || '').trim().split('\n')[0]}` };
 }
 
@@ -210,11 +236,15 @@ export async function report(ctx, { text, title, fromId } = {}, env = process.en
     text = rec.text; title = rec.title;
     why.push(`mail ${fromId} not picked up by the maintainer`);
   } else {
-    // The environment travels with the text: the mail, the issue and the draft carry it, and so does --from later.
-    text = `${String(text || '').trimEnd()}\n\n${reportMeta(ctx, env)}`;
-    const mail = mailReport(ctx, text, m);
+    // The environment travels with the text: the mail, the issue and the draft carry it, and so does --from later. D-0009
+    // holds for mail too: the maintainer's topic and the record get the text an issue would (3b.2).
+    title = scrub(String(title || ''), ctx, env).trim();
+    text = scrub(`${String(text || '').trimEnd()}\n\n${reportMeta(ctx, env)}`, ctx, env);
+    const mail = mailReport(ctx, `title: ${title}\n\n${text}`, m, { topic: reportTopic(title, ctx, env) });
     if (mail.ok) {
-      writeReport(ctx, mail.id, { text, title, at: new Date().toISOString(), to: mail.to });
+      writeReport(ctx, mail.id, { text, title, at: new Date().toISOString(), to: mail.to, ...(mail.pending_topic ? { pending_topic: true } : {}) });
+      // Held for a topic the maintainer's intake creates (3b.2 point 4): the copy stays held, the expiry rings no reply.
+      if (mail.pending_topic) return { reported: true, line: `reported: mail ${mail.id} -> ${mail.to} (téma sa zakladá; bez prevzatia do ${mail.expires_at || 'lehoty'} zvonček povie no reply, potom error.mjs report --from ${mail.id}) (P-003)` };
       return { reported: true, line: `reported: mail ${mail.id} -> ${mail.to}; without pickup by ${mail.expires_at || 'the deadline'} the bell says no reply / undelivered: then error.mjs report --from ${mail.id} (P-003)` };
     }
     why.push(mail.why);
@@ -227,7 +257,10 @@ export async function report(ctx, { text, title, fromId } = {}, env = process.en
   if (held) tail = runClient(ctx, ['decide', '--notice', held, '--decision', 'discard']).ok ? `; held mail copy discarded (notice ${held})` : `; held mail copy stays (notice ${held}): the operator may discard it`;
   if (issue.ok) {
     if (fromId) writeReport(ctx, fromId, { issue: issue.url });
-    return { reported: true, line: `reported: issue ${issue.url} (${why.join('; ')})${tail}; tell the operator the link (P-003)` };
+    // The reporter watches its own issue (3c.1): the wake job issue-watch rings this topic on the maintainer's answer.
+    let watched = '';
+    try { if (recordIssue(ctx, issue, env)) watched = `; watched: the answer rings this topic, then error.mjs confirm|reopen ${issue.url} --text "..."`; } catch { /* reported anyway; only the watch is missing */ }
+    return { reported: true, line: `reported: issue ${issue.url} (${why.join('; ')})${tail}; tell the operator the link (P-003)${watched}` };
   }
   why.push(issue.why);
   const file = draft(ctx, title, text, why);

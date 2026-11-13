@@ -6,11 +6,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PLUGIN_ROOT, readJson, writeJson, shortSha, parseArgs, fail } from '../scripts/util.mjs';
-import { enabledPluginsFor, channelOf, WORKFLOW_CONFIG, resolveTargetProject, ensureWorkflowConfig, brainExists, loadPolicy, expandBrainPath, PERSONA_BRAIN, SCRATCH_DIR, NO_BRAIN_NOTE } from '../scripts/config.mjs';
+import { loadContext, enabledPluginsFor, channelOf, WORKFLOW_CONFIG, resolveTargetProject, ensureWorkflowConfig, brainExists, loadPolicy, expandBrainPath, PERSONA_BRAIN, SCRATCH_DIR, NO_BRAIN_NOTE } from '../scripts/config.mjs';
 import { commitPersonaFiles } from '../scripts/persona.mjs';
 import { syncBrainSkills, ensureGitignore } from '../scripts/skills-sync.mjs';
 import { adapterSkillSources } from '../scripts/repo-knowledge.mjs';
 import { generateCodex } from '../adapters/codex/generate.mjs';
+import { ensureIssueWatchJob } from '../scripts/wake-job.mjs';
 
 export const MANAGED_KEYS = ['enabledPlugins', 'autoMemoryEnabled', 'autoCompactWindow', 'permissions'];
 
@@ -115,6 +116,8 @@ if (process.argv[1]?.endsWith('adapter.mjs')) {
       const projectDir = resolveTargetProject(args.project);
       const res = generateClaudeCode({ projectDir, brainRel: typeof args.brain === 'string' ? args.brain : null, channel: typeof args.channel === 'string' ? args.channel : null });
       process.stdout.write(`generated in ${projectDir}:\n${res.written.map((w) => `- ${w}`).join('\n')}\n${res.notes.map((n) => `note: ${n}`).join('\n')}\n`);
+      // The reporter's issue check (D-0024): job issue-watch in this machine's wake.json; one job for all projects.
+      try { process.stdout.write(`note: ${ensureIssueWatchJob(loadContext({ project: projectDir, requireBrain: false })).line}\n`); } catch (err) { process.stdout.write(`note: wake job issue-watch not written (${err.message})\n`); }
       process.stdout.write(res.brainRel === '.' ? 'restart the session so the plugin loads\n' : `commit .claude/settings.json${res.brainRel ? ' and .workflow.json' : ''}; restart the session so the plugin loads\n`);
     } else if (harness === 'codex') {
       const projectDir = resolveTargetProject(args.project);

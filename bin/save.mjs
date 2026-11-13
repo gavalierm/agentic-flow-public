@@ -26,7 +26,8 @@ import { readDecisions, readSkills, nextDecisionId } from '../scripts/records.mj
 import { assembleRules } from '../scripts/rules.mjs';
 import { ruleCorpus, judgeRule, unanswered, onlyCondenses } from '../scripts/rule-gate.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
-import { renderHandover, checkHandover, handoverNextStep } from '../scripts/brain-checks.mjs';
+import { renderHandover, checkHandover, handoverNextStep, withReports } from '../scripts/brain-checks.mjs';
+import { openReportLines, baseOf } from '../scripts/issue-watch.mjs';
 import { reminderStep, armedSchedule, REMINDER_REFUSAL } from '../scripts/waker.mjs';
 import { removeNames } from '../scripts/logs.mjs';
 import { setTopicState, readTopic } from '../scripts/topic.mjs';
@@ -662,7 +663,9 @@ function saveHandover(ctx) {
   if (unknown.length) fail(`save.mjs handover: unknown option ${unknown.map((k) => `--${k}`).join(', ')}; nothing written, the current handover stays (usage: save.mjs handover <topic> --task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>)`);
   if (!args.file && !HANDOVER_FIELDS.some((k) => typeof args[k] === 'string' && args[k].trim())) fail('save.mjs handover: no content (--task, --done, --next, --files, --questions or --file); nothing written, the current handover stays');
   // Limits and the reminder need no remote state: refuse before the first fetch (53 limit refusals paid a whole sync cycle).
-  const content = args.file ? fs.readFileSync(args.file, 'utf8') : renderHandover({ task: args.task, done: args.done, next: args.next, files: args.files, questions: args.questions });
+  const written = args.file ? fs.readFileSync(args.file, 'utf8') : renderHandover({ task: args.task, done: args.done, next: args.next, files: args.files, questions: args.questions });
+  // The open issues of this topic (3c.3) come from the local records, also over --file: the agent neither writes nor drops them.
+  const content = withReports(written, openReportLines(baseOf(ctx), topic));
   const errors = checkHandover(content, ctx.policy.limits.handover_lines);
   // flow-public#49: a "; " inside the sentence of an item split it into two lines and the refusal came twice: name the items per option.
   if (!args.file && errors.some((e) => /lines, limit/.test(e))) errors.push(`items: ${['done', 'files', 'questions'].map((k) => `--${k} ${String(args[k] ?? '').split(/\s*;\s*|\n/).filter((s) => s.trim()).length}`).join(', ')}; a ";" inside the text of an item starts a new item: write "," there (flow-public#49)`);
