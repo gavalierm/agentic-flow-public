@@ -14,7 +14,7 @@ const QUESTION = /started this turn with a question[^]*P-063/;
 
 function started() {
   const fx = setup();
-  assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+  assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
   return fx;
 }
 

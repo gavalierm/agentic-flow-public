@@ -8,7 +8,7 @@ import { setup } from './helpers.mjs';
 test('two clones claim the same topic at once: exactly one wins, loser sees the holder', async () => {
   const fx = setup({ second: true });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'race', '--subject', 'Race', '--no-claim']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'race', '--subject', 'Race', '--no-claim', '--class', 'discussion']).status, 0);
     const [a, b] = await Promise.all([fx.runAsync('topic.mjs', ['claim', 'race']), fx.runAsyncB('topic.mjs', ['claim', 'race'])]);
     const winners = [a, b].filter((r) => r.status === 0);
     assert.equal(winners.length, 1, a.out + b.out);
@@ -23,7 +23,7 @@ test('two clones claim the same topic at once: exactly one wins, loser sees the 
 test('topic create claims in one write: one commit and one push-cycle, holder is already in the create commit', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'one', '--subject', 'One']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'one', '--subject', 'One', '--class', 'discussion']).status, 0);
     const log = fx.git(fx.brain, 'log', '--format=%s');
     assert.match(log, /topic create one/);
     assert.doesNotMatch(log, /topic claim one/);
@@ -35,7 +35,7 @@ test('topic create claims in one write: one commit and one push-cycle, holder is
 test('takeover needs --force and --operator-approved; idle time never takes over', () => {
   const fx = setup({ second: true });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 't1', '--subject', 'T1']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 't1', '--subject', 'T1', '--class', 'discussion']).status, 0);
     let r = fx.runB('topic.mjs', ['claim', 't1']);
     assert.equal(r.status, 1); assert.match(r.out, /held by thread a1/);
     // Pilot 2026-11-02: the refusal must not read as permission; a claim instruction is not a takeover instruction.
@@ -55,7 +55,7 @@ test('a topic this thread created is its own to clean up: takeover and release -
   const fx = setup({ second: true });
   try {
     // alice 2026-11-03: test topic tt-free went to a new thread; cleaning it up waited for the operator.
-    assert.equal(fx.run('topic.mjs', ['create', 'own', '--subject', 'Own test']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'own', '--subject', 'Own test', '--class', 'discussion']).status, 0);
     assert.equal(JSON.parse(fx.git(fx.origin, 'show', 'main:topics/own/topic.json')).created_by, 'a1');
     let r = fx.runB('topic.mjs', ['claim', 'own', '--force', '--operator-approved']);
     assert.equal(r.status, 0, r.out);
@@ -73,13 +73,13 @@ test('claim without a stable thread id and claim in a wake turn are refused; sub
   const fx = setup();
   try {
     const env = { ...fx.env }; delete env.WORKFLOW_THREAD_ID;
-    let r = fx.run('topic.mjs', ['create', 'noid', '--subject', 'x'], { env: { WORKFLOW_THREAD_ID: '' } });
+    let r = fx.run('topic.mjs', ['create', 'noid', '--subject', 'x', '--class', 'discussion'], { env: { WORKFLOW_THREAD_ID: '' } });
     assert.equal(r.status, 1); assert.match(r.out, /stable thread id/);
-    r = fx.run('topic.mjs', ['create', 'Bad_ID', '--subject', 'x']);
+    r = fx.run('topic.mjs', ['create', 'Bad_ID', '--subject', 'x', '--class', 'discussion']);
     assert.equal(r.status, 1); assert.match(r.out, /lowercase/);
     r = fx.run('topic.mjs', ['create', 'nosubj']);
     assert.equal(r.status, 1); assert.match(r.out, /subject/);
-    assert.equal(fx.run('topic.mjs', ['create', 'w1', '--subject', 'W', '--no-claim']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'w1', '--subject', 'W', '--no-claim', '--class', 'discussion']).status, 0);
     fs.mkdirSync(path.join(fx.brain, 'local', 'threads'), { recursive: true });
     fs.writeFileSync(path.join(fx.brain, 'local', 'threads', 'a1.json'), JSON.stringify({ thread: 'a1', turn_source: 'wake' }));
     r = fx.run('topic.mjs', ['claim', 'w1']);
@@ -90,7 +90,7 @@ test('claim without a stable thread id and claim in a wake turn are refused; sub
 test('code topic gets a separate clone next to the project on branch topic/<id>; list shows one line per topic', () => {
   const fx = setup();
   try {
-    const r = fx.run('topic.mjs', ['create', 'feat', '--subject', 'Feature', '--kind', 'code']);
+    const r = fx.run('topic.mjs', ['create', 'feat', '--subject', 'Feature', '--class', 'code']);
     assert.equal(r.status, 0, r.out);
     const copy = path.join(fx.root, 'project-topics', 'feat');
     assert.ok(fs.existsSync(path.join(copy, '.git')));
@@ -105,7 +105,7 @@ test('code topic gets a separate clone next to the project on branch topic/<id>;
 test('holder changes its own mode with claim --mode; same mode is a no-op', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'm1', '--subject', 'Mode']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'm1', '--subject', 'Mode', '--class', 'discussion']).status, 0);
     assert.equal(JSON.parse(fx.read('topics/m1/holder.json')).mode, 'operator');
     const r = fx.run('topic.mjs', ['claim', 'm1', '--mode', 'auto']);
     assert.equal(r.status, 0, r.stderr);
@@ -119,7 +119,7 @@ test('several threads on one brain clone create and claim topics at once: every 
   const fx = setup();
   try {
     const ids = ['t1', 't2', 't3', 't4'];
-    const res = await Promise.all(ids.map((id, i) => fx.runAsync('topic.mjs', ['create', id, '--subject', id, '--mode', 'auto'], { env: { WORKFLOW_THREAD_ID: `th${i}` } })));
+    const res = await Promise.all(ids.map((id, i) => fx.runAsync('topic.mjs', ['create', id, '--subject', id, '--mode', 'auto', '--class', 'discussion'], { env: { WORKFLOW_THREAD_ID: `th${i}` } })));
     res.forEach((r, i) => assert.equal(r.status, 0, `${ids[i]}: ${r.stderr}`));
     for (const [i, id] of ids.entries()) {
       const h = JSON.parse(fx.read(`topics/${id}/holder.json`));
@@ -138,7 +138,7 @@ test('several threads on one brain clone create and claim topics at once: every 
 test('lost claim race drops only the claim commit: uncommitted changes of the clone survive', () => {
   const fx = setup({ second: true });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'race', '--subject', 'Race', '--no-claim']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'race', '--subject', 'Race', '--no-claim', '--class', 'discussion']).status, 0);
     fx.git(fx.brainB, 'pull', '-q', '--rebase', 'origin', 'main');
     // After A's claim commit (before its push), B claims first: A's push then loses the race.
     const marker = path.join(fx.root, 'raced');
@@ -157,7 +157,7 @@ test('lost claim race drops only the claim commit: uncommitted changes of the cl
 test('claim is refused while the clone has commits it cannot push; the commits stay', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'off', '--subject', 'Off', '--no-claim']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'off', '--subject', 'Off', '--no-claim', '--class', 'discussion']).status, 0);
     fx.git(fx.brain, 'remote', 'set-url', 'origin', path.join(fx.root, 'missing.git'));
     assert.equal(fx.run('save.mjs', ['memory', 'tool', 'offline', '--content', 'x']).status, 0);
     const head = fx.git(fx.brain, 'rev-parse', 'HEAD');
@@ -174,7 +174,7 @@ test('one thread id on two machines is two holders: the other machine is refused
   try {
     const A = { WORKFLOW_MACHINE_ID: 'pc-a' };
     const sameIdOnB = { ...fx.envB, WORKFLOW_THREAD_ID: 'a1', WORKFLOW_MACHINE_ID: 'pc-b' };
-    assert.equal(fx.run('topic.mjs', ['create', 'mx', '--subject', 'Machines'], { env: A }).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'mx', '--subject', 'Machines', '--class', 'discussion'], { env: A }).status, 0);
     let r = fx.runB('topic.mjs', ['claim', 'mx'], { env: sameIdOnB });
     assert.equal(r.status, 1, r.out); assert.match(r.out, /held by thread a1 on pc-a/); assert.match(r.out, /not an instruction to take it over/);
     r = fx.runB('save.mjs', ['handover', 'mx', '--task', 'x', '--next', 'y'], { env: sameIdOnB });
@@ -196,7 +196,7 @@ test('handoff to another machine: handover, release and push; the other machine 
   try {
     const A = { WORKFLOW_MACHINE_ID: 'pc-a' };
     const B = { ...fx.envB, WORKFLOW_MACHINE_ID: 'pc-b' };
-    assert.equal(fx.run('topic.mjs', ['create', 'ho', '--subject', 'Handoff'], { env: A }).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'ho', '--subject', 'Handoff', '--class', 'discussion'], { env: A }).status, 0);
     let r = fx.runB('topic.mjs', ['handoff', 'ho'], { env: B });
     assert.equal(r.status, 1); assert.match(r.out, /only its holder on this machine hands it off/);
     r = fx.run('topic.mjs', ['handoff', 'ho'], { env: A });
@@ -227,13 +227,13 @@ test('topic create in a brain git refuses (dubious ownership): nothing half writ
   const fx = setup();
   try {
     const env = { GIT_TEST_ASSUME_DIFFERENT_OWNER: '1' };
-    let r = fx.run('topic.mjs', ['create', 'dub', '--subject', 'Dubious', '--no-claim'], { env });
+    let r = fx.run('topic.mjs', ['create', 'dub', '--subject', 'Dubious', '--no-claim', '--class', 'discussion'], { env });
     assert.notEqual(r.status, 0);
     assert.match(r.out, /dubious ownership.*git config --global --add safe\.directory \S*brain/);
     assert.ok(!fs.existsSync(path.join(fx.brain, 'topics', 'dub')), 'a failed create leaves no topic folder');
     const s = fx.hook('session-start.mjs', { source: 'startup' }, { env });
     assert.match(s.context, /git refuses .*safe\.directory/);
-    r = fx.run('topic.mjs', ['create', 'dub', '--subject', 'Dubious', '--no-claim']);
+    r = fx.run('topic.mjs', ['create', 'dub', '--subject', 'Dubious', '--no-claim', '--class', 'discussion']);
     assert.equal(r.status, 0, r.out);
   } finally { fx.cleanup(); }
 });

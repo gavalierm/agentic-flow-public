@@ -11,7 +11,7 @@ import { PLUGIN_ROOT } from '../scripts/util.mjs';
 test('save handover over the line limit names the items per option and that a ";" inside an item starts a new one (flow-public#49)', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'hl', '--subject', 'HL']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'hl', '--subject', 'HL', '--class', 'discussion']).status, 0);
     const r = fx.run('save.mjs', ['handover', 'hl', '--task', 'T', '--done', 'oprava hotová; test prešiel; vydané; nasadené; issue zavreté; pilot uprataný', '--files', 'a; b', '--next', 'n']);
     assert.notEqual(r.status, 0, r.out);
     assert.match(r.out, /items: --done 6, --files 2, --questions 0; a ";" inside the text of an item starts a new item: write "," there \(flow-public#49\)/);
@@ -45,7 +45,7 @@ test('logs/*.log changed on both sides merge by union', () => {
 test('write into a topic by a thread that is not the holder is refused', () => {
   const fx = setup({ second: true });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 't1', '--subject', 'Test topic']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 't1', '--subject', 'Test topic', '--class', 'discussion']).status, 0);
     const r = fx.runB('brain.mjs', ['write', 'topics/t1/handover.md', '--message', 'x', '--content', '## Zadanie\nx\n## Hotové\n-\n## Ďalší krok\n-\n## Súbory\n-\n## Otvorené otázky\n-\n']);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /held by thread a1/);
@@ -158,7 +158,7 @@ test('several disagreeing files: each resolve keeps the earlier choices until th
 test('topic.json changed on two machines: merged field by field, later updated time, no disagreement', () => {
   const fx = setup({ second: true });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'tj', '--subject', 'Tj']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'tj', '--subject', 'Tj', '--class', 'discussion']).status, 0);
     fx.git(fx.brainB, 'pull', '-q', '--rebase', 'origin', 'main');
     assert.equal(fx.run('topic.mjs', ['pause', 'tj', '--reason', 'later']).status, 0);
     const file = path.join(fx.brainB, 'topics/tj/topic.json');
@@ -177,7 +177,7 @@ test('topic.json changed on two machines: merged field by field, later updated t
 test('handover changed on two machines: both versions kept with a notice, pushed', () => {
   const fx = setup({ second: true });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'ho', '--subject', 'Ho']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'ho', '--subject', 'Ho', '--class', 'discussion']).status, 0);
     assert.equal(fx.run('save.mjs', ['handover', 'ho', '--task', 'T', '--done', 'x', '--next', 'base']).status, 0);
     fx.git(fx.brainB, 'pull', '-q', '--rebase', 'origin', 'main');
     assert.equal(fx.run('save.mjs', ['handover', 'ho', '--task', 'T', '--done', 'x', '--next', 'next from A']).status, 0);

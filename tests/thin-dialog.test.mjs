@@ -47,7 +47,7 @@ test('transcriptTurnText: only the assistant text of this turn; tool results and
 test('AskUserQuestion after a long plan written as text: a dialog that shows little is refused once, a repeat and a dialog with the content pass (P-061)', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     const ask = (tool_input, transcript_path) => fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input, transcript_path });
     const turn = (text) => {
       fx.hook('user-prompt-submit.mjs', { prompt: 'priprav plán zberu' });
@@ -75,7 +75,7 @@ test('AskUserQuestion after a long plan written as text: a dialog that shows lit
 test('AskUserQuestion in a question turn before the answer is written: refused once; a repeat, a dialog after the answer and an instruction turn pass (flow-public#44)', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     const UNANSWERED = /would decide about your proposal without your answer[^]*P-061/;
     const ask = (transcript_path) => fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: RICH_DIALOG, transcript_path });
     const turn = (prompt, text) => {
@@ -99,7 +99,7 @@ test('AskUserQuestion in a question turn before the answer is written: refused o
 test('AskUserQuestion right after an answered dialog: refused once per answer until the turn writes what the answer decided; a repeat passes (flow-public#45)', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     const CHAINED = /answered a dialog in this turn[^]*flow-public#45/;
     const NEXT = { questions: [{ question: 'Vydať opravu hneď?', options: [{ label: 'Áno' }, { label: 'Nie' }] }] };
     const LAST = { questions: [{ question: 'Nasadiť aj do projektov?', options: [{ label: 'Áno' }, { label: 'Nie' }] }] };
@@ -125,7 +125,7 @@ test('AskUserQuestion right after an answered dialog: refused once per answer un
 test('AskUserQuestion: the turn text reaches the transcript after PreToolUse starts, the check waits for this call (P-061, flow-public#32 pilot)', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'priprav plán zberu' });
     const at = new Date(Date.now() + 1000).toISOString();
     const file = transcript(fx, [line('user', 'priprav plán zberu', at)]);

@@ -39,7 +39,7 @@ function setHolder(fx, id, holder) {
 test('register: only the thread in holder.json registers; a foreign holder and an unheld topic are refused (P-037)', () => {
   const fx = stubbed({ messages: [] });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     setHolder(fx, 'alpha', { thread: 'other', machine: 'm', mode: 'operator', since: '2026-11-01T10:00:00Z' });
     fx.stub.reset();
     let r = fx.run('comms.mjs', ['register', 'alpha']);
@@ -65,7 +65,7 @@ test('register: only the thread in holder.json registers; a foreign holder and a
 test('register: bare register never registers a released (free-point) topic to this thread (P-044)', () => {
   const fx = stubbed({ messages: [msg('m1', 'beta')] });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'beta', '--subject', 'Beta']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'beta', '--subject', 'Beta', '--class', 'discussion']).status, 0);
     // The release sees one new message: the topic stays readable as free point of this thread.
     const rel = fx.run('topic.mjs', ['release', 'beta']);
     assert.equal(rel.status, 0, rel.out);
@@ -81,7 +81,7 @@ test('register: bare register never registers a released (free-point) topic to t
 test('claim --force registers the takeover with --takeover; a release clears the holder with --release (P-037)', () => {
   const fx = stubbed({ messages: [] });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'gamma', '--subject', 'Gamma']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'gamma', '--subject', 'Gamma', '--class', 'discussion']).status, 0);
     setHolder(fx, 'gamma', { thread: 'other', machine: 'm', mode: 'operator', since: '2026-11-01T10:00:00Z' });
     fx.stub.reset();
     const takeover = fx.run('topic.mjs', ['claim', 'gamma', '--force', '--operator-approved']);
@@ -97,7 +97,7 @@ test('claim --force registers the takeover with --takeover; a release clears the
 test('wake turn during an outage says mail is unavailable, not "no new mail"; the status line shows mail ?, not 0 (P-041)', () => {
   const fx = stubbed({ messages: [] });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'delta', '--subject', 'Delta']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'delta', '--subject', 'Delta', '--class', 'discussion']).status, 0);
     fx.stub.set({ messages: [], down: true });
     const wake = fx.hook('user-prompt-submit.mjs', { prompt: WAKE });
     const lines = wake.context.split('\n');
@@ -120,7 +120,7 @@ test('no thread and no held topic: the status line says mail is not checked, not
 test('the status line says wake: off when the wake of this machine stopped; running or never-ran wake shows nothing (comms-public#4)', () => {
   const fx = stubbed({ messages: [], wake: { running: false, pid: null, heartbeat_at: null } });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'delta', '--subject', 'Delta']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'delta', '--subject', 'Delta', '--class', 'discussion']).status, 0);
     let r = fx.hook('user-prompt-submit.mjs', { prompt: 'ahoj' });
     assert.match(r.context.split('\n')[0], /\| mail: 0 \| wake: off$/, r.context);
     fx.stub.set({ messages: [], wake: { running: true, pid: 1, heartbeat_at: '2026-11-07T10:00:00Z' } });
@@ -135,7 +135,7 @@ test('the status line says wake: off when the wake of this machine stopped; runn
 test('registration failure is printed; a repeated claim or release registers again (already is not a short-circuit) (P-041)', () => {
   const fx = stubbed({ messages: [], register_fail: true });
   try {
-    const created = fx.run('topic.mjs', ['create', 'epsilon', '--subject', 'Epsilon']);
+    const created = fx.run('topic.mjs', ['create', 'epsilon', '--subject', 'Epsilon', '--class', 'discussion']);
     assert.equal(created.status, 0, created.out);
     assert.match(created.out, /comms: topic not registered/);
     fx.stub.set({ messages: [], register_fail: true });
@@ -158,7 +158,7 @@ test('registration failure is printed; a repeated claim or release registers aga
 test('brain push failure before registration: the claim says mail registration was not done (P-041)', () => {
   const fx = stubbed({ messages: [] });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'zeta', '--subject', 'Zeta', '--no-claim']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'zeta', '--subject', 'Zeta', '--no-claim', '--class', 'discussion']).status, 0);
     const away = `${fx.origin}.away`;
     fs.renameSync(fx.origin, away);
     try {
@@ -174,7 +174,7 @@ test('brain push failure before registration: the claim says mail registration w
 test('free point during an outage: "mail: unknown (comms unavailable)" is said and the topic is still recorded (P-041, P-044)', () => {
   const fx = stubbed({ messages: [] });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'eta', '--subject', 'Eta']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'eta', '--subject', 'Eta', '--class', 'discussion']).status, 0);
     fx.stub.set({ messages: [], down: true });
     const rel = fx.run('topic.mjs', ['release', 'eta']);
     assert.equal(rel.status, 0, rel.out);
@@ -202,7 +202,7 @@ test('assist without a reply path is not waiting for an answer; settle closes on
     { id: 't1', level: 'assist', sender: 'carol', from_project: 'carol', from_topic: 'x', text: 'from a topic' },
   ] });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     assert.equal(fx.run('comms.mjs', ['receive']).status, 0);
     assert.deepEqual(fx.threadState().picked_assist.map((w) => w.id), ['h1', 't1'], 'a server event has nobody to answer');
     let r = fx.run('comms.mjs', ['settle', '--id', 'h1,zz']);
@@ -221,7 +221,7 @@ test('assist without a reply path is not waiting for an answer; settle closes on
 test('sender topic: --from a held topic, a reply from the topic the original was addressed to, never the alphabetical first (alice 2026-11-03)', () => {
   const fx = stubbed({ messages: [] });
   try {
-    for (const id of ['alpha', 'zulu']) assert.equal(fx.run('topic.mjs', ['create', id, '--subject', id]).status, 0);
+    for (const id of ['alpha', 'zulu']) assert.equal(fx.run('topic.mjs', ['create', id, '--subject', id, '--class', 'discussion']).status, 0);
     const fromOf = () => { const a = fx.stub.calls('send').at(-1); return a[a.indexOf('--from-topic') + 1]; };
     let r = fx.run('comms.mjs', ['send', '--level', 'assist', '--to', 'other', '--from', 'zulu', '--text', 'x']);
     assert.equal(r.status, 0, r.out);

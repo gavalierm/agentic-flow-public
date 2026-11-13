@@ -108,7 +108,7 @@ test('D-0022: discussionMail keeps blockers and replies; turnDiscussion: operato
 test('D-0015, D-0022: a discussion shows only the blocker (prompt and tool lines), tells the mail; after hotovo steer and assist show', () => {
   const fx = stubbed({ messages: MAIL });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     let r = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     assert.match(r.context, /mail: 1 waiting: bk9 blocker/);
     assert.doesNotMatch(r.context, /st9|ax9/);
@@ -146,7 +146,7 @@ test('D-0015, D-0022: a discussion shows only the blocker (prompt and tool lines
 test('D-0015: an older mail client that refuses --discussion gets the turn call again without it; the hooks do not fail', () => {
   const fx = stubbed({ messages: MAIL, turn_unknown: ['discussion'], opened_at: '2026-11-11T10:00:00.000Z' });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     const r = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     assert.equal(r.status, 0, r.out);
     const [first, retry] = turnCalls(fx);

@@ -611,7 +611,7 @@ function otherProjectHint(abs) {
       let project = dir;
       try { project = mainCheckout(dir); } catch { /* not a git checkout */ }
       const p = toPosix(project);
-      return `; it belongs to the workflow project ${p}: that work runs in a thread of that project, not here (topic.mjs create <topic> --kind code --project ${p} --new-thread --task "..." or topic.mjs thread <topic> --project ${p} --task "...")`;
+      return `; it belongs to the workflow project ${p}: that work runs in a thread of that project, not here (topic.mjs create <topic> --class code --project ${p} --new-thread --task "..." or topic.mjs thread <topic> --project ${p} --task "...")`;
     }
     if (path.dirname(dir) === dir) return '';
   }

@@ -90,7 +90,7 @@ test('the rules hook waits for the pull stamp of this boot, an old stamp is an e
 test('resume and clear keep the same thread id; compact adds the handover of the held topic', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'work', '--subject', 'Work']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'work', '--subject', 'Work', '--class', 'discussion']).status, 0);
     assert.equal(fx.run('save.mjs', ['handover', 'work', '--task', 'Do the thing', '--done', 'step 1', '--next', 'step 2', '--files', 'src/app.js', '--questions', '']).status, 0);
     for (const source of ['resume', 'clear']) {
       const r = fx.hook('session-start.mjs', { source });
@@ -172,7 +172,7 @@ test('P-050: first reply starts with the structured status block; free topics of
     assert.equal(block(r.context), 'project / bez témy\n\nDostupné témy:\n- žiadne\n\n**Otázky na operátora:** Aká bude téma?');
     // The question only for an unknown topic: a prompt that names the topic is claimed and answered with `Téma: <id>` (operator 2026-11-02).
     assert.match(r.context, /only for a topic that stays unknown[^\n]*start that reply instead with `project \/ <id>`/);
-    assert.equal(fx.run('topic.mjs', ['create', 'work', '--subject', 'Work']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'work', '--subject', 'Work', '--class', 'discussion']).status, 0);
     const held = fx.hook('session-start.mjs', { source: 'startup' }).context;
     assert.equal(block(held), 'project / work');
     assert.doesNotMatch(held, /stays unknown/, 'held topic: no question, no alternative');

@@ -16,7 +16,7 @@ const commitCopy = (copy, message) => {
 test('unit of work: verification required, logs written, handover free, repeats proposed, log lines cleared by save skill', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'd1', '--subject', 'Discussion']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'd1', '--subject', 'Discussion', '--class', 'discussion']).status, 0);
     assert.equal(fx.run('save.mjs', ['handover', 'd1', '--task', 'T', '--done', 'x', '--next', 'y']).status, 0);
     let r = fx.run('done.mjs', ['--procedures', 'deploy-web-docker']);
     assert.equal(r.status, 1); assert.match(r.stderr, /verified/);
@@ -58,7 +58,7 @@ test('unit of work: verification required, logs written, handover free, repeats 
 test('done --topic merges the code copy into the main branch, archives the topic, removes the copy', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'feat', '--subject', 'Feature', '--kind', 'code']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'feat', '--subject', 'Feature', '--class', 'code']).status, 0);
     const copy = path.join(fx.root, 'project-topics', 'feat');
     fs.writeFileSync(path.join(copy, 'feature.txt'), 'feature\n');
     commitCopy(copy, 'feat');
@@ -84,7 +84,7 @@ test('done --topic merges the code copy into the main branch, archives the topic
 test('done (unit) of a code topic merges the verified copy into the main branch, keeps the copy and the topic held (D-0011)', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'feat', '--subject', 'Feature', '--kind', 'code']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'feat', '--subject', 'Feature', '--class', 'code']).status, 0);
     const copy = path.join(fx.root, 'project-topics', 'feat');
     fs.writeFileSync(path.join(copy, 'feature.txt'), 'feature\n');
     commitCopy(copy, 'feat');
@@ -109,7 +109,7 @@ test('done --topic: uncommitted files of the main checkout equal to the topic br
     fs.writeFileSync(path.join(fx.project, 'settings.txt'), 'v1\n');
     fs.writeFileSync(path.join(fx.project, 'mine.txt'), 'a\n');
     fx.git(fx.project, 'add', '-A'); fx.git(fx.project, 'commit', '-q', '-m', 'base');
-    assert.equal(fx.run('topic.mjs', ['create', 'tidy', '--subject', 'Tidy', '--kind', 'code']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'tidy', '--subject', 'Tidy', '--class', 'code']).status, 0);
     const copy = path.join(fx.root, 'project-topics', 'tidy');
     fs.writeFileSync(path.join(copy, 'settings.txt'), 'v2\n');
     fs.writeFileSync(path.join(copy, 'gen.json'), '{}\n');
@@ -135,12 +135,12 @@ test('done --topic: uncommitted files of the main checkout equal to the topic br
 test('done --topic in T3 tells the agent to settle its thread, not archive it (P-036, flow-public#6), outside T3 not', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'd2', '--subject', 'D2']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'd2', '--subject', 'D2', '--class', 'discussion']).status, 0);
     let r = fx.run('done.mjs', ['--topic', '--verified', 'x'], { env: { T3CODE_THREAD_ID: 'a1' } });
     assert.equal(r.status, 0, r.out);
     assert.match(r.stdout, /settle this thread \(tool t3_thread_organize, action settle, no threadId\)/);
     assert.doesNotMatch(r.stdout, /action archive/);
-    assert.equal(fx.run('topic.mjs', ['create', 'd3', '--subject', 'D3']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'd3', '--subject', 'D3', '--class', 'discussion']).status, 0);
     r = fx.run('done.mjs', ['--topic', '--verified', 'x']);
     assert.equal(r.status, 0, r.out);
     assert.doesNotMatch(r.stdout, /t3_thread_organize/);
@@ -150,7 +150,7 @@ test('done --topic in T3 tells the agent to settle its thread, not archive it (P
 test('done --topic is refused in a wake turn and for a non-holder', () => {
   const fx = setup({ second: true });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'd', '--subject', 'D']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'd', '--subject', 'D', '--class', 'discussion']).status, 0);
     let r = fx.runB('done.mjs', ['--topic', '--topic-id', 'd', '--verified', 'x']);
     assert.equal(r.status, 1); assert.match(r.stderr, /held by a1/);
     fs.mkdirSync(path.join(fx.brain, 'local', 'threads'), { recursive: true });
@@ -175,7 +175,7 @@ test('done --topic is refused in a wake turn and for a non-holder', () => {
 test('done reminds of files changed in scratch/ since the claim or the last done, clones skipped (P-062, operator 2026-11-08)', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'd2', '--subject', 'Discussion']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'd2', '--subject', 'Discussion', '--class', 'discussion']).status, 0);
     const scratch = path.join(fx.project, 'scratch');
     fs.mkdirSync(path.join(scratch, 'clone', '.git'), { recursive: true });
     fs.writeFileSync(path.join(scratch, 'clone', 'code.js'), 'x\n');
@@ -203,8 +203,8 @@ test('done --topic closes the topic in the mail: waiting mail bounces, new mail 
   const fx = setup({ second: true });
   const comms = await startComms(fx, { senders: ['alice', 'bob'], brains: [[fx.project, fx.brain, 'alice'], [fx.projectB, fx.brainB, 'bob']] });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'gamma', '--subject', 'Gamma']).status, 0);
-    assert.equal(fx.runB('topic.mjs', ['create', 'beta', '--subject', 'Beta']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'gamma', '--subject', 'Gamma', '--class', 'discussion']).status, 0);
+    assert.equal(fx.runB('topic.mjs', ['create', 'beta', '--subject', 'Beta', '--class', 'discussion']).status, 0);
     const send = fx.runB('comms.mjs', ['send', '--level', 'assist', '--to', 'project/gamma', '--text', 'units?']);
     assert.equal(send.status, 0, send.out);
     const id = /sent (\S+) \(assist\)/.exec(send.stdout)?.[1];
@@ -227,7 +227,7 @@ test('done --topic closes the topic in the mail: waiting mail bounces, new mail 
     assert.match(late.out, /uzavretá/);
 
     // A topic archived before the mail knew `close`: the next session start closes it once.
-    assert.equal(fx.run('topic.mjs', ['create', 'delta', '--subject', 'Delta']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'delta', '--subject', 'Delta', '--class', 'discussion']).status, 0);
     const arch = path.join(fx.brain, 'topics', 'archive', 'delta');
     fs.mkdirSync(path.dirname(arch), { recursive: true });
     fs.renameSync(path.join(fx.brain, 'topics', 'delta'), arch);

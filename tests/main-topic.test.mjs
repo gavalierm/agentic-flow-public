@@ -75,13 +75,13 @@ test('persona main thread: topic main is held, registered as @<persona>/main, co
     assert.ok(p.client.lines().some((l) => /^count --persona bob --thread p1\b/.test(l)), 'mailbox @bob/main is counted');
 
     assert.equal(p.run('topic.mjs', ['main']).status, 0, 'idempotent');
-    assert.match(p.run('topic.mjs', ['create', 'main', '--subject', 'x']).out, /reserved for the persona main thread/);
+    assert.match(p.run('topic.mjs', ['create', 'main', '--subject', 'x', '--class', 'discussion']).out, /reserved for the persona main thread/);
     const fin = p.run('done.mjs', ['--topic', '--topic-id', 'main', '--verified', 'x']);
     assert.notEqual(fin.status, 0);
     assert.match(fin.out, /never closed or archived/);
 
     // A work topic of the main thread comes first; main is not offered as free to other threads.
-    assert.equal(p.run('topic.mjs', ['create', 'work', '--subject', 'Work']).status, 0);
+    assert.equal(p.run('topic.mjs', ['create', 'work', '--subject', 'Work', '--class', 'discussion']).status, 0);
     assert.equal(block(p.hook('session-start.mjs', { source: 'startup' })).split('\n')[0], 'bob / work');
     assert.equal(p.client.lines().filter((l) => /^notices\b/.test(l)).length, 1, 'notices cached for comms.notices_ttl_s');
   } finally { p.cleanup(); }
@@ -99,7 +99,7 @@ test('topic main outside a persona is refused', () => {
 test('topic create --for-thread: the new thread holds the topic from its first turn', () => {
   const fx = setup();
   try {
-    const r = fx.run('topic.mjs', ['create', 'beszel', '--subject', 'Beszel', '--for-thread', 'mcp:launch:abc']);
+    const r = fx.run('topic.mjs', ['create', 'beszel', '--subject', 'Beszel', '--for-thread', 'mcp:launch:abc', '--class', 'discussion']);
     assert.equal(r.status, 0, r.out);
     assert.match(r.out, /assigned to mcp:launch:abc/);
     const holder = JSON.parse(fx.read('topics/beszel/holder.json'));
@@ -107,7 +107,7 @@ test('topic create --for-thread: the new thread holds the topic from its first t
     assert.equal(holder.assigned_by, 'a1');
     const ctx = fx.hook('session-start.mjs', { source: 'startup' }, { env: { WORKFLOW_THREAD_ID: 'mcp:launch:abc' } }).context;
     assert.equal(block(ctx), 'project / beszel');
-    assert.match(fx.run('topic.mjs', ['create', 'x', '--subject', 'X', '--for-thread', 'bad id']).out, /is not a thread id/);
+    assert.match(fx.run('topic.mjs', ['create', 'x', '--subject', 'X', '--for-thread', 'bad id', '--class', 'discussion']).out, /is not a thread id/);
   } finally { fx.cleanup(); }
 });
 
@@ -120,12 +120,12 @@ test('topic create in T3 starts the topic thread titled by the topic, with its c
     fs.writeFileSync(fake, `import fs from 'node:fs';\nconst input = fs.readFileSync(0, 'utf8');\nfs.writeFileSync(${JSON.stringify(log)}, JSON.stringify({ argv: process.argv.slice(2), input }));\nconsole.log(JSON.stringify({ threadId: 'mcp:launch:new1' }));\n`);
     fs.writeFileSync(path.join(fx.brain, 'policy.json'), JSON.stringify({ topics: { thread_start_command: `${process.execPath} ${fake}` } }));
     // a thread without a topic takes the new topic itself: the operator gave the task in it (alice 2026-11-03)
-    const free = fx.run('topic.mjs', ['create', 'own', '--subject', 'Own'], { env: { T3CODE_THREAD_ID: 'a0', WORKFLOW_THREAD_ID: 'a0' } });
+    const free = fx.run('topic.mjs', ['create', 'own', '--subject', 'Own', '--class', 'discussion'], { env: { T3CODE_THREAD_ID: 'a0', WORKFLOW_THREAD_ID: 'a0' } });
     assert.match(free.out, /claimed by a0/);
     assert.ok(!fs.existsSync(log), 'no thread started for a thread without a topic');
     const t3 = { env: { T3CODE_THREAD_ID: 'a1' } };
-    assert.match(fx.run('topic.mjs', ['create', 'base', '--subject', 'Base', '--here'], t3).out, /claimed by a1/);
-    const r = fx.run('topic.mjs', ['create', 'tracker-owner', '--subject', 'Vlastník Trackera'], t3);
+    assert.match(fx.run('topic.mjs', ['create', 'base', '--subject', 'Base', '--here', '--class', 'discussion'], t3).out, /claimed by a1/);
+    const r = fx.run('topic.mjs', ['create', 'tracker-owner', '--subject', 'Vlastník Trackera', '--class', 'discussion'], t3);
     assert.equal(r.status, 0, r.out);
     assert.match(r.out, /thread mcp:launch:new1 started with title tracker-owner/);
     const call = JSON.parse(fs.readFileSync(log, 'utf8'));
@@ -135,19 +135,19 @@ test('topic create in T3 starts the topic thread titled by the topic, with its c
     assert.equal(JSON.parse(fx.read('topics/tracker-owner/holder.json')).thread, 'mcp:launch:new1');
     // --task: the operator already gave the work, so the thread does it now instead of waiting (operator 2026-11-02)
     fs.rmSync(log);
-    const tk = fx.run('topic.mjs', ['create', 'playbook', '--subject', 'Playbook', '--task', 'Aktualizuj playbook a pushni'], t3);
+    const tk = fx.run('topic.mjs', ['create', 'playbook', '--subject', 'Playbook', '--task', 'Aktualizuj playbook a pushni', '--class', 'discussion'], t3);
     assert.equal(tk.status, 0, tk.out);
     const tcall = JSON.parse(fs.readFileSync(log, 'utf8'));
     assert.match(tcall.input, /Zadanie operátora:\nAktualizuj playbook a pushni[\s\S]*vykonaj hneď/);
     assert.doesNotMatch(tcall.input, /počkaj na jeho pokyn/);
     // --here keeps the old way: this thread claims it, no thread is started
     fs.rmSync(log);
-    const h = fx.run('topic.mjs', ['create', 'stay', '--subject', 'Stay', '--here'], t3);
+    const h = fx.run('topic.mjs', ['create', 'stay', '--subject', 'Stay', '--here', '--class', 'discussion'], t3);
     assert.match(h.out, /claimed by a1/);
     assert.ok(!fs.existsSync(log));
     // a failing start leaves the topic free and says how to go on
     fs.writeFileSync(path.join(fx.brain, 'policy.json'), JSON.stringify({ topics: { thread_start_command: `${process.execPath} -e process.exit(3)` } }));
-    const f = fx.run('topic.mjs', ['create', 'broken', '--subject', 'Broken'], t3);
+    const f = fx.run('topic.mjs', ['create', 'broken', '--subject', 'Broken', '--class', 'discussion'], t3);
     assert.equal(f.status, 1);
     assert.match(f.out, /no thread was started.*t3_thread_launch .*title broken.*topic.mjs thread broken .*--for-thread <new thread id>.*topic.mjs claim broken/);
     assert.equal(fx.read('topics/broken/holder.json').trim(), '{}');
@@ -260,12 +260,12 @@ test('code topic from a persona session without --project is refused; a discussi
   const p = persona();
   try {
     // bob/main created code topic t3-workarounds-check in project bob instead of the managed project.
-    const r = p.run('topic.mjs', ['create', 'wa-check', '--subject', 'x', '--kind', 'code', '--no-claim']);
+    const r = p.run('topic.mjs', ['create', 'wa-check', '--subject', 'x', '--class', 'code', '--no-claim']);
     assert.equal(r.status, 1, r.out);
     assert.match(r.out, /persona project bob.*--project/);
     assert.ok(!fs.existsSync(path.join(p.dir, 'topics/wa-check')));
-    assert.equal(p.run('topic.mjs', ['create', 'talk', '--subject', 'x', '--no-claim']).status, 0);
-    const own = p.run('topic.mjs', ['create', 'own-code', '--subject', 'x', '--kind', 'code', '--no-claim', '--no-copy', '--project', p.dir]);
+    assert.equal(p.run('topic.mjs', ['create', 'talk', '--subject', 'x', '--no-claim', '--class', 'discussion']).status, 0);
+    const own = p.run('topic.mjs', ['create', 'own-code', '--subject', 'x', '--class', 'code', '--no-claim', '--no-copy', '--project', p.dir]);
     assert.equal(own.status, 0, own.out);
   } finally { p.cleanup(); }
 });

@@ -23,7 +23,7 @@ function owned(value = 'dev-work') {
   fs.writeFileSync(path.join(fx.brain, 'policy.json'), JSON.stringify({ topic_owned: { '../owned': value } }));
   fx.git(fx.brain, 'add', '-A');
   fx.git(fx.brain, 'commit', '-q', '--no-verify', '-m', 'policy for test');
-  const r = fx.run('topic.mjs', ['create', 'dev-work', '--subject', 'dev', '--here', '--no-copy']);
+  const r = fx.run('topic.mjs', ['create', 'dev-work', '--subject', 'dev', '--here', '--no-copy', '--class', 'discussion']);
   if (r.status !== 0) throw new Error(r.out);
   return { fx, repo };
 }

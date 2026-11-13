@@ -129,17 +129,53 @@ export function isPersonaProject(ctx) {
   try { return !!ctx.brainDir && fs.realpathSync(ctx.projectDir) === fs.realpathSync(ctx.brainDir); } catch { return false; }
 }
 
-function createTopicUnlocked(ctx, { id, subject, kind = 'discussion', mode, claim = true, copy = true, forThread = null, newThread = false, task = null, explicitProject = false }) {
+/**
+ * Topic classes (D-0020, D-0021): what the topic is for decides its kind (a code copy or not) and the model of its thread.
+ * The four classes and when to pick each are fixed here; kind, thread (provider, model, effort) and subagent_model come
+ * from policy topics.classes, which a brain policy.json overrides key by key (deepMerge in loadPolicy).
+ */
+export const TOPIC_CLASSES = {
+  web: { kind: 'code', when: 'website and content (pages, texts, images)' },
+  code: { kind: 'code', when: 'code and workflow development with a release' },
+  ops: { kind: 'discussion', when: 'operations and deployment: server, DNS, cron' },
+  discussion: { kind: 'discussion', when: 'discussion and design with the operator' },
+};
+
+export const CLASS_HELP = `--class web|code|ops|discussion is required (D-0021): ${Object.entries(TOPIC_CLASSES).map(([c, v]) => `${c} = ${v.when} (kind ${v.kind})`).join('; ')}. Research is not a class: a worker (subagent) does it`;
+
+/** Settings of a class: kind (policy, else built in), thread {provider, model, effort}, subagent_model; null for an unknown class. */
+export function topicClass(ctx, cls) {
+  if (!cls || !Object.hasOwn(TOPIC_CLASSES, cls)) return null;
+  const p = ctx?.policy?.topics?.classes?.[cls] || {};
+  const t = p.thread && typeof p.thread === 'object' ? p.thread : {};
+  return {
+    class: cls,
+    kind: ['code', 'discussion'].includes(p.kind) ? p.kind : TOPIC_CLASSES[cls].kind,
+    thread: { provider: t.provider || null, model: t.model || null, effort: t.effort || null },
+    subagent_model: p.subagent_model ?? null,
+  };
+}
+
+/** Class of a new topic (--class required); --kind alone is refused, --kind that disagrees with the class too. */
+export function resolveClass(ctx, cls, kind = null) {
+  if (!cls || cls === true) throw new Error(kind ? `--kind alone is not enough, the class decides the kind: ${CLASS_HELP}` : `topic create needs a class: ${CLASS_HELP}`);
+  const c = topicClass(ctx, String(cls));
+  if (!c) throw new Error(`unknown class "${cls}": ${CLASS_HELP}`);
+  if (kind && kind !== c.kind) throw new Error(`--kind ${kind} contradicts --class ${cls} (kind ${c.kind}): leave out --kind, the class decides it`);
+  return c;
+}
+
+function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedKind = null, mode, claim = true, copy = true, forThread = null, newThread = false, task = null, explicitProject = false, run = spawnSync }) {
   if (!isValidId(id)) throw new Error(`topic id "${id}" must be lowercase letters, digits and hyphens (P-036)`);
   if (id === MAIN_TOPIC) throw new Error('topic id "main" is reserved for the persona main thread: use topic.mjs main (P-045)');
   if (!subject || !String(subject).trim()) throw new Error('topic needs --subject "<one sentence>" (P-045)');
-  if (!['code', 'discussion'].includes(kind)) throw new Error('kind must be code or discussion');
+  const { kind } = resolveClass(ctx, cls, askedKind);
   // A persona has no project code (P-025): a code topic from its session without --project went to the persona repo
   // instead of the managed project (bob 2026-11-03, t3-workarounds-check in bob, not the managed project).
   if (kind === 'code' && !explicitProject && isPersonaProject(ctx)) throw new Error(`code topic ${id} would be created in persona project ${path.basename(ctx.projectDir)}: a persona has no project code (P-025). Pass --project <managed project dir> (or --project ${ctx.projectDir} if the persona repo itself is the code)`);
   guardThread(ctx, 'create');
   if (topicExists(ctx.brainDir, id) || fs.existsSync(path.join(ctx.brainDir, 'topics', 'archive', id))) throw new Error(`topic ${id} already exists`);
-  const topic = { id, subject: String(subject).trim(), kind, state: 'working', created: nowIso() };
+  const topic = { id, subject: String(subject).trim(), class: String(cls), kind, state: 'working', created: nowIso() };
   // The creating thread may clean up its own topic (test, mistake) without operator approval (P-018).
   if (ctx.thread) topic.created_by = ctx.thread;
   if (kind === 'code') {
@@ -159,19 +195,22 @@ function createTopicUnlocked(ctx, { id, subject, kind = 'discussion', mode, clai
     ],
     message: `topic create ${id}${holder ? ` (claimed by ${ctx.thread})` : ''}`,
   });
-  const out = { topic, write: res, claim: null, copy: null, thread: null };
+  const out = { topic, write: res, claim: null, copy: null, thread: null, effortNote: null };
+  let model = null;
   if (newThread && !forThread) {
     // P-036: a new topic gets its own T3 thread titled by the topic; its first message shows what the topic holds, so the
     // operator does not have to prompt it (alice 2026-11-02). Failure keeps the topic free and says why.
-    const started = startTopicThread(ctx, topic, undefined, { task });
+    const started = startTopicThread(ctx, topic, run, { task });
     if (!started.ok) { out.claim = { ok: false, reason: `topic ${id} created, but no thread was started (${started.reason}); ${started.fallback}; or claim it here with topic.mjs claim ${id}` }; return out; }
     out.thread = started.thread;
+    out.effortNote = started.effortNote;
+    model = started.model;
     forThread = started.thread;
   }
   if (forThread) {
     // Topic for a new thread (P-037): the new thread holds it from its first turn, so its status block shows the topic
     // instead of `Téma: žiadna` (Bob 2026-11-01: topic beszel created for a new thread that then asked for a topic).
-    out.claim = assignTopic(ctx, id, String(forThread), { mode });
+    out.claim = assignTopic(ctx, id, String(forThread), { mode, model });
     if (kind === 'code' && copy) out.copy = ensureCodeCopy(ctx, id);
     return out;
   }
@@ -196,7 +235,8 @@ function createTopicUnlocked(ctx, { id, subject, kind = 'discussion', mode, clai
 export function topicThreadMessage(topic, { task = null } = {}) {
   const t = task && String(task).trim();
   return [
-    `Téma ${topic.id} (${topic.kind}) je pridelená tomuto vláknu.`,
+    // The class (D-0021) next to the kind; a topic from before the classes has none.
+    `Téma ${topic.id} (${topic.kind})${topic.class ? `, trieda ${topic.class},` : ''} je pridelená tomuto vláknu.`,
     `Predmet: ${topic.subject}`,
     ...(topic.copy ? [`Kópia kódu: ${topic.copy}`] : []),
     '',
@@ -232,7 +272,28 @@ export function threadMessageFile(ctx, id) {
   return path.join(ctx.projectDir, 'scratch', `topic-${id}-thread.md`);
 }
 
-/** T3-WORKAROUND(t3-cli-title) Start a T3 thread for the topic via `topics.thread_start_command` (default `t3 thread start --json`); returns its id. */
+/**
+ * Model of the thread of a topic's class (D-0021): {provider, model, effort}; null for a topic without a class (created
+ * before the classes), whose thread starts on the project's default model as before.
+ */
+export function classThread(ctx, topic) {
+  return topic?.class ? topicClass(ctx, topic.class)?.thread || null : null;
+}
+
+/**
+ * T3-WORKAROUND(t3-cli-effort) `t3 thread start` has --provider and --model but no --effort (T3 issue #29863): one line
+ * telling the agent to set the class's effort on the new thread with the T3 tool t3_thread_configure; null when nothing to set.
+ */
+export function effortNote(topic, sel, thread) {
+  if (!sel?.effort || !sel.provider || !sel.model || !thread) return null;
+  const modelSelection = { instanceId: sel.provider, model: sel.model, options: [{ id: 'effort', value: sel.effort }] };
+  return `effort: class ${topic.class} wants effort ${sel.effort}, the T3 CLI cannot set it (T3 issue #29863): set it now with the T3 tool t3_thread_configure, threadId ${thread}, modelSelection ${JSON.stringify(modelSelection)}`;
+}
+
+/**
+ * T3-WORKAROUND(t3-cli-title) Start a T3 thread for the topic via `topics.thread_start_command` (default `t3 thread start --json`); returns its id.
+ * The class's provider and model go along (`--provider <id> --model <slug>`); `model` in the result is the one passed, else null.
+ */
 export function startTopicThread(ctx, topic, run = spawnSync, { task = null, platform } = {}) {
   const cmd = String(ctx.policy?.topics?.thread_start_command || '').trim().split(/\s+/).filter(Boolean);
   const input = topicThreadMessage(topic, { task });
@@ -244,7 +305,10 @@ export function startTopicThread(ctx, topic, run = spawnSync, { task = null, pla
     return { ok: false, reason, fallback };
   };
   if (!cmd.length) return failed('topics.thread_start_command not set');
-  const t = spawnTarget(cmd[0], [...cmd.slice(1), '--title', topic.id, ctx.projectDir, '-'], { platform });
+  // `--provider` only with `--model` (t3 thread start --help: "Provider instance id. Pass with --model").
+  const sel = classThread(ctx, topic);
+  const modelArgs = sel?.model ? [...(sel.provider ? ['--provider', sel.provider] : []), '--model', sel.model] : [];
+  const t = spawnTarget(cmd[0], [...cmd.slice(1), '--title', topic.id, ...modelArgs, ctx.projectDir, '-'], { platform });
   const r = run(t.file, t.args, { encoding: 'utf8', input, timeout: 30000, shell: t.shell });
   if (r.error || r.status !== 0) return failed((r.error?.message || r.stderr || `exit ${r.status}`).trim().split('\n')[0]);
   let thread = null;
@@ -253,7 +317,7 @@ export function startTopicThread(ctx, topic, run = spawnSync, { task = null, pla
     thread = d?.threadId ?? d?.thread?.threadId ?? d?.thread?.id ?? d?.id ?? null;
   } catch { thread = String(r.stdout || '').trim().split(/\s+/)[0] || null; }
   if (!thread || !/^[A-Za-z0-9._:-]{1,200}$/.test(thread)) return failed(`no thread id in output of ${cmd.join(' ')}`);
-  return { ok: true, thread };
+  return { ok: true, thread, model: modelArgs.length ? sel.model : null, effortNote: modelArgs.length ? effortNote(topic, sel, thread) : null };
 }
 
 /**
@@ -268,18 +332,22 @@ export function startThreadForTopic(ctx, id, { task = null, mode, run, forThread
   if (holder.thread) return { ok: false, reason: `topic ${id} ${heldBy(holder)}; a new thread needs a free topic: write to the holder (comms send --to ${id}) or ask the operator about a takeover (P-037)` };
   // --for-thread: the thread was started by the T3 tool (fallback of a failed CLI start); it only gets the topic.
   if (forThread) return { ok: true, thread: String(forThread), claim: assignTopic(ctx, id, String(forThread), { mode }) };
+  // The class comes from topic.json (D-0021); a topic from before the classes starts on the project's default model.
   const topic = readTopic(ctx.brainDir, id);
   const started = startTopicThread(ctx, topic, run, { task });
   if (!started.ok) return { ok: false, reason: `no thread was started (${started.reason}); ${started.fallback}` };
-  const claim = assignTopic(ctx, id, started.thread, { mode });
-  return { ok: true, thread: started.thread, claim };
+  const claim = assignTopic(ctx, id, started.thread, { mode, model: started.model });
+  return { ok: true, thread: started.thread, claim, effortNote: started.effortNote };
 }
 
-/** Holder of a just-created topic is another (new) thread; the topic has no holder yet, so no takeover is possible. */
-function assignTopic(ctx, id, thread, { mode } = {}) {
+/**
+ * Holder of a just-created topic is another (new) thread; the topic has no holder yet, so no takeover is possible.
+ * `model` is the one passed to the T3 CLI (else null); `effort` stays null while the CLI cannot set it (T3 issue #29863).
+ */
+function assignTopic(ctx, id, thread, { mode, model = null } = {}) {
   if (!/^[A-Za-z0-9._:-]{1,200}$/.test(thread)) throw new Error(`--for-thread "${thread}" is not a thread id`);
   const policyMode = ctx.policy?.topics?.default_holder_mode || 'operator';
-  const holder = { thread, machine: machineName(), mode: mode || policyMode, since: nowIso(), assigned_by: ctx.thread };
+  const holder = { thread, machine: machineName(), mode: mode || policyMode, since: nowIso(), assigned_by: ctx.thread, model: model || null, effort: null };
   const res = brainWrite(ctx, {
     internal: true,
     ops: [{ path: `topics/${id}/holder.json`, content: JSON.stringify(holder, null, 2) + '\n' }],

@@ -89,7 +89,13 @@
     "thread_start_command": "t3 thread start --json",
     "brain_path_default": "../<brain-name>",
     "code_copy_path": "../<project>-topics/<id>/",
-    "stale_machine_hours": 12
+    "stale_machine_hours": 12,
+    "classes": {
+      "web": { "kind": "code", "thread": { "provider": "claudeAgent", "model": "claude-sonnet-5-5", "effort": "medium" }, "subagent_model": "sonnet" },
+      "code": { "kind": "code", "thread": { "provider": "claudeAgent", "model": "claude-opus-5-5", "effort": "high" }, "subagent_model": "opus" },
+      "ops": { "kind": "discussion", "thread": { "provider": "claudeAgent", "model": "claude-sonnet-5-5", "effort": "medium" }, "subagent_model": "sonnet" },
+      "discussion": { "kind": "discussion", "thread": { "provider": "claudeAgent", "model": "claude-opus-5-5", "effort": "medium" }, "subagent_model": null }
+    }
   },
   "subagents": {
     "default_model": "haiku",

@@ -50,7 +50,7 @@ test('Stop: a reply without a state blocks once in every turn; ending anyway clo
 test('Stop: "otázka" is asked in the dialog; a reply after the dialog needs an item under Operátor and rings in hours', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     assert.match(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Vydať teraz?\n\nStav: otázka' }).json.reason, /with AskUserQuestion now/);
     fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [] } });
@@ -65,7 +65,7 @@ test('Stop: "otázka" is asked in the dialog; a reply after the dialog needs an 
 test('Stop: "hotovo" while the handover has a next step blocks, also in a bell turn; a waker or done step passes', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--task', 'Oprava', '--done', 'Oprava je v dev.', '--next', 'Vydať v0.9.29.']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
     const r = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Odpovedal som.\n\nStav: hotovo' });
@@ -201,7 +201,7 @@ const stopOf = (fx, msg, active = false) => fx.hook('stop.mjs', { stop_hook_acti
 /** A fresh thread holding topic alpha whose first operator prompt ('začni') has been seen. */
 function started() {
   const fx = setup();
-  assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+  assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
   fx.hook('user-prompt-submit.mjs', { prompt: 'začni' });
   return fx;
 }

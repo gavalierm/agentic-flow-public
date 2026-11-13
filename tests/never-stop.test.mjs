@@ -121,7 +121,7 @@ test('PreToolUse: AskUserQuestion passes in every turn, so T3 shows "Awaiting In
 test('Stop: a question to the operator only in text blocks once with the dialog; after a dialog in the turn the text passes', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     const text = 'Návrh je hotový.\n\n**Otázky na operátora:** Vydať teraz? Odporúčam áno.\n\nStav: otázka';
     const r = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: text }).json;
@@ -193,7 +193,7 @@ test('Stop: "<project> / bez témy" in a reply blocks once unless it ends with t
     fx.hook('user-prompt-submit.mjs', { prompt: 'ahoj' });
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: `${block}**Otázky na operátora:** Aká bude téma?\n\nStav: otázka` }).json.decision, undefined);
     // A topic created in the turn: the block must name it.
-    assert.equal(fx.run('topic.mjs', ['create', 'predaj-pneumatik', '--subject', 'Predaj pneumatík']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'predaj-pneumatik', '--subject', 'Predaj pneumatík', '--class', 'discussion']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     const stale = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: `${block}Návrhy sú hotové.\n\nStav: hotovo` }).json;
     assert.equal(stale.decision, 'block');
@@ -225,7 +225,7 @@ test('Stop: a thread without a topic asking the operator for one gets no auto ti
     const ask = 'pilot / bez témy\n\nDostupné témy:\n- žiadne\n\n**Otázky na operátora:** Aká bude téma?\n\nStav: otázka';
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: ask }).json.decision, undefined);
     assert.equal(activeTimer(stateOf(fx)), null, 'no timer: nothing to continue, the operator answers the topic question');
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Hotová prvá časť.\n\n**Otázky na operátora:** Pokračovať variantom A? Odporúčam A.\n\nStav: otázka' });
     assert.equal(stateOf(fx).timer?.auto, true, 'a held topic still gets the P-061 timer');

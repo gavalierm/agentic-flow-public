@@ -19,7 +19,7 @@ test('reminderStep: a reminder word, a clock time, a date with a preposition, ho
 test('save handover: a reminder step without an armed schedule is refused; schedule_task arms it', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'r1', '--subject', 'Login']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'r1', '--subject', 'Login', '--class', 'discussion']).status, 0);
     const save = () => fx.run('save.mjs', ['handover', 'r1', '--task', 'T', '--done', 'x', '--next', 'pripomeň re-auth claude CLI pred expiráciou']);
     const r = save();
     assert.notEqual(r.status, 0);

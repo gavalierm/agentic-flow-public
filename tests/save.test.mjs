@@ -124,7 +124,7 @@ test('exception: immutable refused, written per layer; rule saved; handover only
     assert.equal(r.status, 1); assert.match(r.stderr, /does not exist/);
     r = fx.run('save.mjs', ['rule', 'tests', '--remove', '--reason', 'superseded by P-058']);
     assert.equal(r.status, 0, r.out); assert.equal(fx.exists('rules/tests.md'), false);
-    assert.equal(fx.run('topic.mjs', ['create', 'w', '--subject', 'W']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'w', '--subject', 'W', '--class', 'discussion']).status, 0);
     r = fx.run('save.mjs', ['handover', 'w', '--task', 'Task', '--done', 'a; b', '--next', 'c', '--files', 'f1; f2', '--questions', 'q1']);
     assert.equal(r.status, 0, r.out);
     assert.match(fx.read('topics/w/handover.md'), /## Hotové\n- a\n- b\n## Ďalší krok\nc/);
@@ -139,7 +139,7 @@ test('exception: immutable refused, written per layer; rule saved; handover only
 test('handover: an unknown option or no content is refused and the current handover stays', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'hh', '--subject', 'H']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'hh', '--subject', 'H', '--class', 'discussion']).status, 0);
     assert.equal(fx.run('save.mjs', ['handover', 'hh', '--task', 'Task', '--next', 'step two']).status, 0);
     const before = fx.read('topics/hh/handover.md');
     let r = fx.run('save.mjs', ['handover', 'hh', '--help']);
@@ -155,7 +155,7 @@ test('handover: an unknown option or no content is refused and the current hando
 test('handover: over-limit content is refused before any fetch; a valid handover syncs twice, not three times', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'hl', '--subject', 'HL']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'hl', '--subject', 'HL', '--class', 'discussion']).status, 0);
     const trace = path.join(fx.root, 'git-trace.log');
     const fetches = () => (fs.existsSync(trace) ? fs.readFileSync(trace, 'utf8').split('\n').filter((l) => /git fetch/.test(l)).length : 0);
     const env = { GIT_TRACE: trace };

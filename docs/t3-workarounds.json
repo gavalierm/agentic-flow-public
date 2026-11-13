@@ -38,6 +38,19 @@
       "auto": ["cli-show"],
       "pilot": "pilot: `topic create` from a thread holding a topic opens a new T3 thread titled by the topic",
       "remove_when": "hooks can rename threads (no CLI dependency)"
+    },
+    {
+      "id": "t3-cli-effort",
+      "title": "`t3 thread start` sets provider and model of a topic class (D-0021) but has no --effort; topic create/thread print a line to set the effort with t3_thread_configure",
+      "upstream": { "repo": "pingdotgg/t3code", "issue": 29863, "fix_pr": null },
+      "files": ["scripts/topic.mjs"],
+      "depends_on": [
+        "`t3 thread start` takes `--provider <instance id>` with `--model <slug>`",
+        "t3_thread_configure takes threadId and modelSelection {instanceId, model, options: [{id: \"effort\", value}]}"
+      ],
+      "auto": [],
+      "pilot": "pilot: `t3 thread start --help` after a T3 upgrade; if it lists --effort, pass it from the class and drop the t3_thread_configure line",
+      "remove_when": "`t3 thread start` takes --effort (T3 issue #29863 closed and in the installed T3)"
     }
   ]
 }

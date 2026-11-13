@@ -37,7 +37,7 @@ test('readNudge: one line per 80 KB step, one web line at the second web call', 
 test('PostToolUse hook: main thread gets the line, a subagent does not, session start resets the budget', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     let r = fx.hook('post-tool-use.mjs', READ(READ_STEP_CHARS + 1));
     assert.match(r.context, /took in ~80 KB.*workflow:delegate/);
     r = fx.hook('post-tool-use.mjs', { ...READ(READ_STEP_CHARS * 3), agent_id: 'w1', agent_type: 'workflow:worker' });

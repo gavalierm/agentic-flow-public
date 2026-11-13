@@ -25,8 +25,8 @@ const patchState = (brain, thread, patch) => {
 async function exchange() {
   const fx = setup({ second: true });
   const comms = await startComms(fx, { senders: ['alice', 'bob'], brains: [[fx.project, fx.brain, 'alice'], [fx.projectB, fx.brainB, 'bob']] });
-  assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
-  assert.equal(fx.runB('topic.mjs', ['create', 'beta', '--subject', 'Beta']).status, 0);
+  assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
+  assert.equal(fx.runB('topic.mjs', ['create', 'beta', '--subject', 'Beta', '--class', 'discussion']).status, 0);
   const ask = (text = 'which variant, A or B?') => {
     const send = fx.runB('comms.mjs', ['send', '--level', 'assist', '--to', 'project/alpha', '--text', text]);
     assert.equal(send.status, 0, send.out);

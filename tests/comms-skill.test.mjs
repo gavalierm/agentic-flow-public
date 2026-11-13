@@ -20,8 +20,8 @@ test('assist and reply between two threads; list takes nothing, receive --id sho
   const fx = setup({ second: true });
   const comms = await startComms(fx, { senders: ['alice', 'bob'], brains: [[fx.project, fx.brain, 'alice'], [fx.projectB, fx.brainB, 'bob']] });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
-    assert.equal(fx.runB('topic.mjs', ['create', 'beta', '--subject', 'Beta']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
+    assert.equal(fx.runB('topic.mjs', ['create', 'beta', '--subject', 'Beta', '--class', 'discussion']).status, 0);
     assert.equal(comms.topic('project', 'alpha')?.holder, 'a1');
     assert.equal(comms.topic('project-b', 'beta')?.holder, 'b2');
 
@@ -89,7 +89,7 @@ test('send needs a level (a reply excepted); info is refused with the valid leve
   const fx = setup();
   const comms = await startComms(fx, { senders: ['alice', 'bob'] });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     const noLevel = fx.run('comms.mjs', ['send', '--to', 'project/alpha', '--text', 'x']);
     assert.equal(noLevel.status, 1);
     assert.match(noLevel.out, /--level is required.*P-042/);

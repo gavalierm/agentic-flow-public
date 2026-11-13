@@ -53,7 +53,7 @@ test('domain: sibling repos inside pass; Write, redirects and tool output dirs o
     fs.writeFileSync(path.join(other, '.workflow.json'), '{}\n');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: `git -C "${other}" rm -q CLAUDE.md; mv x "${other}/config/"` } });
     assert.equal(decision(r), 'deny');
-    assert.match(reason(r), /belongs to the workflow project .*Home assistant\/home-assistant: that work runs in a thread of that project.*topic\.mjs create <topic> --kind code --project/);
+    assert.match(reason(r), /belongs to the workflow project .*Home assistant\/home-assistant: that work runs in a thread of that project.*topic\.mjs create <topic> --class code --project/);
     // alice 2026-11-04: `wrangler deploy --dry-run --outdir /tmp/claude-1007/wr` wrote to the system temp dir
     for (const command of [`npx wrangler deploy --dry-run --outdir ${d.outside}/wr`, `echo x > ${d.outside}/f`, `cp a.txt ${d.outside}/`, `mkdir -p ${d.outside}/n`, `rm -rf ${d.outside}/old`, `tsc --outDir=${d.outside}/o`]) {
       r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } });
@@ -177,7 +177,7 @@ test('code topic in a domain: git worktree <domain>/.worktrees/<repo>/<id> on to
   const fx = setup();
   try {
     fs.writeFileSync(path.join(fx.root, '.agentic-domain'), '{"brain":"brain"}');
-    const r0 = fx.run('topic.mjs', ['create', 'feat', '--subject', 'Feature', '--kind', 'code']);
+    const r0 = fx.run('topic.mjs', ['create', 'feat', '--subject', 'Feature', '--class', 'code']);
     assert.equal(r0.status, 0, r0.out);
     const wt = path.join(fx.root, '.worktrees', 'project', 'feat');
     assert.ok(fs.statSync(path.join(wt, '.git')).isFile(), 'a worktree, not a clone');

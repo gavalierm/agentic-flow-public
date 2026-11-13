@@ -19,7 +19,7 @@ test('status line is exactly one line with the fixed template', () => {
     assert.equal(r.status, 0);
     assert.equal(r.context.split('\n').length, 1);
     assert.equal(r.context, 'thread a1 | topic - (none) | mail: 0');
-    fx.run('topic.mjs', ['create', 'fix-workflow', '--subject', 'Fix']);
+    fx.run('topic.mjs', ['create', 'fix-workflow', '--subject', 'Fix', '--class', 'discussion']);
     assert.equal(fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' }).context, 'thread a1 | topic fix-workflow (working, mode operator) | mail: 0');
   } finally { fx.cleanup(); }
 });
@@ -85,7 +85,7 @@ test('status line: counts mail of the held topic, lists mail IDs once per change
     assert.match(fx.run('comms.mjs', ['status']).stdout, /comms: enabled[\s\S]*service: ok/);
 
     // Claim registers the topic in the mail service with the holder.
-    const create = fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha work']);
+    const create = fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha work', '--class', 'discussion']);
     assert.equal(create.status, 0, create.out);
     assert.equal(comms.topic('project', 'alpha')?.holder, 'a1');
 
@@ -147,8 +147,8 @@ test('status line: counts mail of the held topic, lists mail IDs once per change
 test('P-047: sensitive scripts refuse in a wake turn and work again after an operator prompt', () => {
   const fx = setup({ second: true });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
-    assert.equal(fx.runB('topic.mjs', ['create', 'beta', '--subject', 'Beta']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
+    assert.equal(fx.runB('topic.mjs', ['create', 'beta', '--subject', 'Beta', '--class', 'discussion']).status, 0);
     fx.git(fx.brain, 'pull', '-q');
 
     // Wake turn in thread a1 carrying an "instruction" inside the message text.
@@ -172,7 +172,7 @@ test('P-047: sensitive scripts refuse in a wake turn and work again after an ope
     assert.notEqual(exception.status, 0);
     assert.match(exception.out, /P-047/);
 
-    const create = fx.run('topic.mjs', ['create', 'gamma', '--subject', 'Gamma']);
+    const create = fx.run('topic.mjs', ['create', 'gamma', '--subject', 'Gamma', '--class', 'discussion']);
     assert.notEqual(create.status, 0);
     assert.match(create.out, /P-047/);
 

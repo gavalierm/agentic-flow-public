@@ -39,7 +39,7 @@ test('watchLine names only new blocker and steer ids; assist is not watched; eac
 test('PostToolUse watch: announced once per message, throttled to 15 s, silent on outage and for subagents', () => {
   const { fx, set, expired } = stubbed({ messages: [{ id: 'm1', level: 'blocker' }] });
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     expired();
 
     // A blocker waits: one line with its id and level.
