@@ -54,13 +54,14 @@ test('waker: a harness schedule stays a waker in later turns until removed; a on
   } finally { fx.cleanup(); }
 });
 
-test('Stop: "Stav: čakám" without a waker passes and code arms the timer with the wait target; an operator prompt keeps a timer until Stop', () => {
+test('Stop: "Stav: čakám" without a waker is blocked once, ended so anyway code arms the timer with the wait target; an operator prompt keeps a timer until Stop', () => {
   const fx = setup();
   try {
     fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
     const msg = 'Poslal som otázku Carol.\n\nStav: čakám (na odpoveď Carol)';
-    // No block (7 of 8 such blocks only led to timer.mjs, audit 2026-11-11): the thread is never left idle, code arms the timer.
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.decision, undefined);
+    // Blocked once (pilot nudge-why 2026-11-14); ending so anyway leaves the thread never idle, code arms the timer.
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg }).json.decision, 'block');
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: msg }).json.decision, undefined);
     const st = stateOf(fx);
     assert.ok(activeTimer(st), 'the Stop hook armed the timer itself');
     assert.equal(st.timer.auto, true);

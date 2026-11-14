@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
 import { parseReply, repeatsAnswered } from '../scripts/protocol.mjs';
-import { setTimer } from '../scripts/waker.mjs';
+import { setTimer, clearTimer } from '../scripts/waker.mjs';
 import { mistakeClaim, AUTO_TIMER_THEN } from '../hooks/stop.mjs';
 
 const stateOf = (fx) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), 'utf8'));
@@ -155,7 +155,9 @@ test('Stop: a step written as prose or an Operátor item under "hotovo" blocks o
     const r2 = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: item });
     assert.equal(r2.json.decision, 'block');
     assert.match(r2.json.reason, /under \*\*Otázky na operátora:\*\* \/ \*\*Úlohy pre operátora:\*\* but declares "\*\*Stav:\*\* hotovo".*\*\*Stav:\*\* otázka/s);
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: item.replace('Stav: hotovo', 'Stav: čakám (na odpoveď)') }).json.decision, undefined, 'čakám may carry an operator item (D-0011)');
+    setTimer(fx.brain, fx.thread, { delayMs: 30 * 60_000, then: 'check the answer' });
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: item.replace('Stav: hotovo', 'Stav: čakám (na odpoveď)') }).json.decision, undefined, 'čakám with a waker may carry an operator item (D-0011)');
+    clearTimer(fx.brain, fx.thread);
     // Ending anyway: the item still waits on the operator, so the thread gets the operator timer, in hours.
     assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: item }).json.decision, undefined);
     const t = stateOf(fx).timer;

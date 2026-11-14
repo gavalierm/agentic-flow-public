@@ -77,6 +77,7 @@ Každý princíp je v samostatnom súbore `P-NNN.md`. Agent číta jeden súbor,
 - [P-063](P-063.md): Zámer operátora (operator intent)
 - [P-064](P-064.md): Otázky vlákna témy idú orchestrátorovi (orchestrator questions)
 - [P-065](P-065.md): Spoločný checkout iba zbiera (shared checkout collects only)
+- [P-066](P-066.md): Hlavná verzia je upgrade, nie update (major version is an upgrade)
 
 ## Predvolené hodnoty politiky
 

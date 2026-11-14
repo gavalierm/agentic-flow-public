@@ -372,7 +372,8 @@ test('no-reply bell: the bell of a message spends its mail waker; a later "čak�
     sent('m1');
     fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m1' });
     assert.deepEqual(fx.state().wakers, [], 'its own bell spent the mail waker');
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Správa ostáva pozdržaná.\n\nStav: čakám (na súbor scratch/done)' }).json.decision, undefined);
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Správa ostáva pozdržaná.\n\nStav: čakám (na súbor scratch/done)' }).json.decision, 'block', 'no waker left: blocked once');
+    assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Správa ostáva pozdržaná.\n\nStav: čakám (na súbor scratch/done)' }).json.decision, undefined);
     const t = fx.state().timer;
     assert.ok(t?.auto, 'Stop armed the timer');
     assert.match(t.then, /"\*\*Stav:\*\* čakám \(na súbor scratch\/done\)" without a waker: check it now/);

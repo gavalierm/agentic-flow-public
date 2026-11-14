@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
 import { topicThreadMessage } from '../scripts/topic.mjs';
+import { setTimer } from '../scripts/waker.mjs';
 
 const ASK = { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Ktorú možnosť zvolíme pre ďalší postup tejto témy, A alebo B, a prečo by sme mali pokračovať práve takto?', options: [{ label: 'A (Recommended)', description: 'možnosť A, lebo je kratšia' },{ label: 'B', description: 'možnosť B' }] }] } };
 const topicJson = (fx, id) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'topics', id, 'topic.json'), 'utf8'));
@@ -52,6 +53,8 @@ test('D-0031: Stop blocks **Otázky na operátora:** / "Stav: otázka" in an orc
     const out = fx.hook('stop.mjs', { last_assistant_message: QUESTION_REPLY }, child(fx)).json || {};
     assert.equal(out.decision, 'block');
     assert.match(out.reason, /orchestrator, topic lead.*comms send --to lead/);
+    // The question went by mail with a deadline: that waker lets "čakám" pass (P-061).
+    setTimer(fx.brain, 'child-1', { delayMs: 30 * 60_000, then: 'check the answer of the orchestrator' });
     const waiting = fx.hook('stop.mjs', { last_assistant_message: 'Otázku som poslal orchestrátorovi, pokračujem s A.\n\nStav: čakám (na odpoveď orchestrátora)' }, child(fx)).json || {};
     assert.notEqual(waiting.decision, 'block', waiting.reason);
   } finally { fx.cleanup(); }

@@ -21,6 +21,19 @@ import { listTopics } from '../scripts/topic.mjs';
 export const HOOK_META = { event: 'UserPromptSubmit', class: 'e+c', limit: '2 lines', principles: ['P-012', 'P-023', 'P-036', 'P-038', 'P-043', 'P-044', 'P-047', 'P-003', 'P-013', 'P-008'] };
 
 const escapeRe = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Pilot nudge-why 2026-11-14: a task quoting „to je chyba“ or saying „ak je to chyba hooku“ got „error reported“ although
+// the operator reported nothing. An error report is a phrase starting at a word boundary, outside quotes and code, not after
+// a conditional (ak, či, if, whether).
+const QUOTED = /"[^"\n]*"|„[^“”"\n]*[“”"]|“[^”\n]*”|«[^»\n]*»|`[^`\n]*`/g;
+const CONDITIONAL = /(?:^|[^\p{L}\p{N}])(?:ak|či|ci|keby|if|whether)\s+(?:[\p{L}']+\s+)?$/u;
+export function reportsError(low, phrases) {
+  const text = String(low).replace(QUOTED, ' ');
+  return (phrases || []).some((f) => {
+    const re = new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(String(f).toLowerCase().trim()).replace(/ /g, '\\s+')}`, 'gu');
+    for (const m of text.matchAll(re)) if (!CONDITIONAL.test(text.slice(Math.max(0, m.index - 40), m.index))) return true;
+    return false;
+  });
+}
 // A message id holds a digit (service ids are timestamps), so „no reply yet“ or „undelivered mail“ are not bells.
 const ID = '((?=[A-Za-z0-9_.:-]*\\d)[A-Za-z0-9][A-Za-z0-9_.:-]*)';
 // The wake service labels a bell `project/topic`, `@persona/topic` (main thread of a persona) or `thread/<thread id>` (ids
@@ -52,7 +65,7 @@ export function parsePrompt(prompt, policy) {
   // Operator 2026-11-09 (P-063): „nie tak“, „to som nemyslel“ is a misreading of the operator, checked before error and
   // reject, which would have the agent save its own reading at once.
   if ((cfg.misread_phrases || []).some((f) => low.includes(f.toLowerCase()))) return { kind: 'misread' };
-  if ((cfg.error_phrases || []).some((f) => low.includes(f.toLowerCase()))) return { kind: 'error' };
+  if (reportsError(low, cfg.error_phrases)) return { kind: 'error' };
   // mojprojekt-web 2026-11-09: the operator rejected the years of the projects, nothing was saved, a later session put
   // them back with a timeline. Before save: „nepáči sa mi“ holds „páči sa mi“.
   if ((cfg.reject_phrases || []).some((f) => low.includes(f.toLowerCase()))) return { kind: 'reject' };

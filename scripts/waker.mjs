@@ -194,9 +194,10 @@ export function activeTimer(state, now = Date.now()) {
   return threadTimers(state).find((t) => Date.parse(t.at) > now) || null;
 }
 
-/** A waker for this turn: armed since the turn started, still running, or the thread timer ahead. */
+/** A waker for this turn: armed since the turn started, still running, or a thread timer (one already due rings as the turn
+ * closes: the Stop hook sends the earliest timer as resume_at, pilot nudge-why 2026-11-14). */
 export function validWaker(state, now = Date.now()) {
-  const timer = activeTimer(state, now);
+  const timer = threadTimers(state)[0] || null;
   if (timer) return { kind: 'timer', at: timer.at };
   const started = Date.parse(state?.turn_started_at || '') || 0;
   return (state?.wakers || []).find((w) => w.recurring || Date.parse(w.at) >= started || (w.until && Date.parse(w.until) > now)) || null;

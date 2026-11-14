@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // check.mjs --loaded <sha> [--harness claude-code|codex]
-// Suspected workflow malfunction: first update a release install to the newest release tag, then compare the version
+// Suspected workflow malfunction: first update a release install to the newest release tag of its major version (a new
+// major version is only announced, P-066), then compare the version
 // loaded in this session (boot line `workflow <sha>`) with the installed plugin clone. Newer clone: print the current
 // rules (they replace the loaded ones).
 // Same version: the problem must be reported to the workflow maintainer.
 import { parseArgs, fail, shortSha, git, PLUGIN_ROOT } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
-import { updateClone, pinClone, newerThanPin } from '../scripts/update.mjs';
+import { updateClone, pinClone, newerReleases, upgradeNote } from '../scripts/update.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const loaded = typeof args.loaded === 'string' ? args.loaded.trim() : '';
@@ -19,11 +20,14 @@ let pin = null;
 try { pin = loadContext({ requireBrain: false }).policy?.workflow_version || null; } catch { /* no context: newest release */ }
 const up = pin ? pinClone(PLUGIN_ROOT, pin) : updateClone(PLUGIN_ROOT);
 if (up.status === 'updated') out(`updated: workflow ${up.from} -> ${up.to}${pin ? ' (brain policy workflow_version)' : ''}`);
-else if (up.status === 'current') out(pin && pin !== 'latest' ? `release ${up.to} is the version pinned by the brain policy (workflow_version)` : `release ${up.to} is the newest`);
+else if (up.status === 'current') out(pin && pin !== 'latest' && !/^v?\d+$/.test(String(pin)) ? `release ${up.to} is the version pinned by the brain policy (workflow_version)` : `release ${up.to} is the newest of its major version`);
 else out(`not updated: ${up.reason}${up.status === 'failed' ? ' (report it with the output)' : ''}`);
 // A fixed pin behind the newest release is no "up to date": the problem may be fixed in a release the pin holds back.
-const held = up.status === 'updated' || up.status === 'current' ? newerThanPin(PLUGIN_ROOT, pin) : null;
-if (held) out(`held back: the brain policy pins ${up.to}, the newest release is ${held}; tell the operator that the pin holds this machine back (every release from now on: brain.mjs pin latest; one release: brain.mjs pin ${held}) before reporting the problem`);
+// A new major version is an upgrade: announced, never done here (D-0050, P-066).
+const newer = up.status === 'updated' || up.status === 'current' ? newerReleases(PLUGIN_ROOT, up.to) : null;
+const held = newer?.update || null;
+if (held) out(`held back: the brain policy pins ${up.to}, the newest release of this major version is ${held}; tell the operator that the pin holds this machine back (every release of this major version from now on: brain.mjs pin latest; one release: brain.mjs pin ${held}) before reporting the problem`);
+if (newer?.upgrade) out(`upgrade available: ${upgradeNote(up.to, newer.upgrade)}`);
 const installed = shortSha(PLUGIN_ROOT);
 const tag = git(['describe', '--tags', '--exact-match'], { cwd: PLUGIN_ROOT }).stdout || 'untagged';
 const same = installed.startsWith(loaded) || loaded.startsWith(installed);

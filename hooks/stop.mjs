@@ -34,8 +34,9 @@ export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to
 
 // A recommended option is chosen only inside the asked work: an offered change the operator did not ask for waits for them (flow-public#25).
 export const AUTO_TIMER_THEN = 'the last turn ended waiting without a timer: continue the asked work now; decide with your recommended option, except an offered change the operator did not ask for: that waits for their answer (P-061, P-002)';
-// "Stav: čakám" without a waker is not blocked: the timer carries what the turn waits for (7 of 8 such blocks only led to
-// timer.mjs, audit 2026-11-11).
+// "Stav: čakám" without a waker is blocked once (pilot nudge-why 2026-11-14: the thread reported waiting with nothing armed);
+// ending so anyway gets the code timer carrying what the turn waits for, the thread is never left idle.
+export const NO_WAKER_REASON = (what) => `the reply declares "**Stav:** čakám (${String(what || '').replace(/\s+/g, ' ').trim().slice(0, 120)})" but no waker is armed: arm one for that event (<plugin>/bin/timer.mjs --in <min>m --then "<step>" [--until "<check>" --deadline <2h> | --topic <id>], mail with a deadline, run_in_background, schedule_task), or do the work now and end with the true state (P-061)`;
 export const WAIT_TIMER_THEN = (what) => `the last turn ended "**Stav:** čakám (${String(what).replace(/\s+/g, ' ').trim().slice(0, 120)})" without a waker: check it now; if it came, continue the work; if not, end with your **Handover:** section and the same state, the timer comes back later (P-061)`;
 
 // T3 shows the operator only the last message of a turn and folds the earlier ones under "Worked for …": a note written
@@ -155,7 +156,10 @@ export function run(input) {
       // when the previous turn ended `otázka` (P-061, phase 2).
       if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_end_state: reply.state || null, last_end_at: new Date().toISOString(), last_questions: reply.state === 'otázka' ? (reply.questions || []).slice(0, 5).map((q) => q.replace(/\s+/g, ' ').trim().slice(0, 300)) : [] });
       const st = ctx.brainDir ? readThreadState(ctx.brainDir, ctx.thread) : {};
-      const timer = activeTimer(st);
+      // The earliest timer, also one already due: it came due while this turn ran (wake does not ring a running thread), so the
+      // closed turn carries it and wake rings it at once (pilot nudge-why 2026-11-14: timers of 02:21, 07:53 and 08:37 rang only
+      // at 11:51, with the next new timer).
+      const timer = threadTimers(st)[0] || null;
       if (!timer && snooze) return close({ next: `pause of topic ${snooze.id} ended: run topic.mjs resume ${snooze.id}, then continue from handover`, resumeAt: snooze.paused_until });
       // An armed waker (schedule, background task, mail) rings the thread itself: no continue bell on top of it
       // (2026-11-03: rung 2 min after arming the check for 06:00, only to say there is nothing to do).
@@ -269,6 +273,8 @@ export function run(input) {
     else if (reply.state === 'otázka' && !reply.question) violation = NO_QUESTION_REASON;
     else if (repeated) violation = repeated;
     else if (reply.state === 'čakám' && !reply.waitFor) violation = NO_WAIT_TARGET_REASON;
+    // The idle ring of a step that only waits is a waker armed by code (closeTurn, operator 2026-11-03).
+    else if (reply.state === 'čakám' && !waker && !paused && !idleWait) violation = NO_WAKER_REASON(reply.waitFor);
     else if (reply.state === 'hotovo' && work && !idleWait && !waker) violation = NEXT_STEP_REASON(work.id, work.next);
     else if (!handoverMatches(reply.handover, held.filter((t) => !isMainTopic(t)).map((t) => t.id))) violation = HANDOVER_REASON(held.filter((t) => !isMainTopic(t)), reply.handover);
     // Trust, T3 project and welcome thread that project.mjs could not do without the `t3` CLI (skipped by hand, 2026-11-08).

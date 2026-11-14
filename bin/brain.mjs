@@ -3,7 +3,8 @@
 //   brain.mjs write <path> --message "..." (--content "..." | --file <src> | --stdin)
 //   brain.mjs remove <path> --message "..."
 //   brain.mjs sync | status
-//   brain.mjs pin <vX.Y.Z|latest> [--all]   set policy workflow_version (one install per machine: --all pins every brain it knows)
+//   brain.mjs pin <vX.Y.Z|N|latest> [--all]   set policy workflow_version (N: newest release of major N, the deliberate
+//                                            upgrade, P-066; one install per machine: --all pins every brain it knows)
 //   brain.mjs maintainer [--comms <project>/<topic>|none] [--repo <github url>|none]   where error reports go (policy maintainer)
 //   brain.mjs resolve <file> --keep local|remote   settle a disagreement on one file (this machine's version or origin's)
 import fs from 'node:fs';
@@ -56,7 +57,7 @@ try {
     // blocks the brain update from origin. The pin goes through the brain writer, in every brain of this machine with --all.
     const version = target ?? (typeof args.all === 'string' ? args.all : undefined); // `pin --all v1.2.3`
     const { want, error } = pinValue(version ?? '');
-    if (!version || error) fail(error && version ? error : 'usage: brain.mjs pin <vX.Y.Z|latest> [--all]');
+    if (!version || error) fail(error && version ? error : 'usage: brain.mjs pin <vX.Y.Z|N|latest> [--all]');
     const real = (d) => { try { return fs.realpathSync(d); } catch { return path.resolve(d); } };
     const brains = [...new Set([ctx.brainDir, ...(args.all ? knownBrains() : [])].filter(Boolean).map(real))];
     if (!brains.length) fail('brain unavailable');
