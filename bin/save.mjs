@@ -3,7 +3,9 @@
 // The agent classifies; this script only writes in a fixed format, deduplicates via find, commits via brain.mjs, regenerates indexes.
 //   save.mjs memory <type> <name> --content "..." [--origin operator|derived|observed] [--aliases a,b] [--relates-to x,y] [--unrelate x,y] [--sources f1,f2] [--summary "..."] [--new]
 //   save.mjs memory <type> <name> (--relates-to x,y | --unrelate x,y)   existing record: changes only its links, the body stays
-//   save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y [--supersedes D-0001]
+//   save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y [--origin operator|agent] [--sources f1,f2] [--supersedes D-0001]
+//   sources (D-0036) of memory (derived: required, observed: optional, operator: none) and of a decision: a file tracked
+//   in git, D-NNNN, P-NNN or a URL; a new source in scratch/, local/, outside git or missing is refused (scripts/links.mjs)
 //   save.mjs decision --relink D-XXXX [--repo [<repo>]] (--relates-to x,y | --unrelate x,y)   changes only the links of a decision
 //   relates_to (D-0029): a record key (<type>-<name>), a decision (D-NNNN, <store>/D-NNNN), a principle (P-NNN) or a file
 //   tracked in git; a new link that resolves to none of them is refused (scripts/links.mjs)
@@ -27,7 +29,7 @@ import { brainWrite, formatWriteResult, syncAndCheckHolder, checkHolder, withBra
 import { parseFrontmatter, serializeFrontmatter, asList } from '../scripts/frontmatter.mjs';
 import { makeKey, normalizeKey, hasDiacritics, isValidId, KEY_TYPES } from '../scripts/keys.mjs';
 import { find, findSimilar } from '../scripts/find.mjs';
-import { checkLinks, linkProblems } from '../scripts/links.mjs';
+import { checkLinks, linkProblems, checkSources, sourceProblems } from '../scripts/links.mjs';
 import { readDecisions, readSkills, nextDecisionId } from '../scripts/records.mjs';
 import { DECISION_REMOVED_ENV } from './brain-precommit.mjs';
 import { recordAuthors, foreignAuthor } from '../scripts/authors.mjs';
@@ -196,6 +198,8 @@ function saveMemory(ctx) {
   if (!['operator', 'derived', 'observed'].includes(origin)) fail('origin must be operator | derived | observed (P-009)');
   let sources = asList(args.sources);
   if (!linksOnly && origin === 'derived' && !sources.length) fail('derived record needs --sources f1,f2 (P-009)');
+  // An operator record is what the operator said: it has no source to check, and --sources was dropped silently (D-0036).
+  if (!linksOnly && origin === 'operator' && sources.length) fail('--sources belong to a derived or observed record (what it was derived from or checked against); an operator record has none (D-0036)');
   const repo = repoTarget(ctx);
   if (repo && BRAIN_ONLY_TYPES.includes(type)) fail(`${type} records stay in brain: knowledge about the operator and people is not knowledge of one repo (D-0002, P-007)`);
   if (!repo) brainGuard(ctx, key, [...asList(args['relates-to']), ...sources]);
@@ -253,6 +257,11 @@ function saveMemory(ctx) {
   const added = asList(args['relates-to']).filter((v) => !linked.includes(v));
   const badLinks = checkLinks(ctx, target, added);
   if (badLinks) fail(badLinks);
+  // A new source must last (D-0036); sources the record already has are named, like old links.
+  const hadSources = asList(existing?.data.sources);
+  const badSources = linksOnly ? null : checkSources(ctx, target, sources.filter((s) => !hadSources.includes(s)));
+  if (badSources) fail(badSources);
+  const oldBadSources = linksOnly ? [] : sourceProblems(ctx, target, sources.filter((s) => hadSources.includes(s)));
   const kept = linked.filter((v) => !unrelate.includes(v));
   const oldBad = linkProblems(ctx, target, kept);
   const data = {
@@ -271,9 +280,13 @@ function saveMemory(ctx) {
     // Sources of a repo record are paths in that repo (D-0002), so consolidate checks them from any session. A links-only
     // edit keeps the fingerprint: the sources were not read again.
     data.fingerprint = linksOnly ? existing.data.fingerprint : fingerprint(repo ? path.join(ctx.domain.root, repo) : ctx.projectDir, sources);
-  }
+  } else if (origin === 'observed' && sources.length) data.sources = sources; // where it was checked; no fingerprint (D-0036)
   const op = { path: rel, content: serializeFrontmatter(data, linksOnly ? existing.body : String(args.content)) };
-  const note = oldBad.length ? `note: links of ${data.key} that resolve to nothing (drop or replace them: --unrelate x [--relates-to <key>]): ${oldBad.join('; ')}` : null;
+  const notes = [
+    oldBad.length ? `links of ${data.key} that resolve to nothing (drop or replace them: --unrelate x [--relates-to <key>]): ${oldBad.join('; ')}` : null,
+    oldBadSources.length ? `sources of ${data.key} that do not last (replace them in --sources: a file in git, materialy/<topic>/, D-NNNN, P-NNN or a URL): ${oldBadSources.join('; ')}` : null,
+  ].filter(Boolean);
+  const note = notes.length ? `note: ${notes.join('; ')}` : null;
   if (repo) { out(formatRepoWrite(repoWrite(ctx, repo, { ops: [op], message: `save memory ${data.key}` }))); if (note) out(note); return; }
   const res = brainWrite(ctx, { ops: [op], message: `save memory ${data.key}` });
   finish(ctx, res, [rel]);
@@ -390,7 +403,14 @@ function saveDecision(ctx) {
   if (refs) fail(refs);
   const badLinks = checkLinks(ctx, targetStore(ctx, repo), relates);
   if (badLinks) fail(badLinks);
-  if (repo) return saveRepoDecision(ctx, repo, title, relates);
+  // Who decided and on what basis (D-0036): the origin was only free text in the body, so nobody could check or filter it.
+  const origin = args.origin || 'operator';
+  if (!['operator', 'agent'].includes(origin)) fail('decision origin must be operator | agent (who decided, D-0036)');
+  const sources = asList(args.sources);
+  const badSources = checkSources(ctx, targetStore(ctx, repo), sources);
+  if (badSources) fail(badSources);
+  const meta = { origin, sources: sources.length ? sources : undefined };
+  if (repo) return saveRepoDecision(ctx, repo, title, relates, meta);
   brainGuard(ctx, '', relates);
   if (args.supersedes && !readDecisions(ctx.brainDir).some((d) => (d.id || d.key) === args.supersedes)) fail(`decision ${args.supersedes} not found`);
   const slug = normalizeKey(title).slice(0, 40);
@@ -407,7 +427,7 @@ function saveDecision(ctx) {
       const parsed = parseFrontmatter(readText(path.join(ctx.brainDir, old.path), ''));
       ops.push({ path: old.path, content: serializeFrontmatter({ ...parsed.data, status: `superseded-by ${id}`, updated: today() }, parsed.body) });
     }
-    const data = { key: id, id, title, status: 'valid', relates_to: relates, aliases: asList(args.aliases), supersedes: args.supersedes || undefined, created: today() };
+    const data = { key: id, id, title, status: 'valid', ...meta, relates_to: relates, aliases: asList(args.aliases), supersedes: args.supersedes || undefined, created: today() };
     const body = `**Rozhodnuté:** ${args.what}\n\n**Zamietnuté alternatívy:** ${args.alternatives || '-'}\n\n**Dôvod:** ${args.reason}\n`;
     ops.push({ path: rel, content: serializeFrontmatter(data, body) });
     return brainWrite(ctx, { ops, message: `save decision ${id} ${slug}` });
@@ -420,7 +440,7 @@ function saveDecision(ctx) {
 // from the checkout and a topic worktree, would both get the next ID (decision-id-race, 2026-11-13). Checks that fail()
 // run before the lock: process.exit skips its release.
 /** Decision of one repo: numbered within the repo over its main checkout and all topic worktrees (`<repo>/D-0001`). */
-function saveRepoDecision(ctx, repo, title, relates) {
+function saveRepoDecision(ctx, repo, title, relates, meta) {
   let old = null;
   if (args.supersedes) {
     const held = heldRepoTopic(ctx, repo)?.topic || null;
@@ -428,10 +448,10 @@ function saveRepoDecision(ctx, repo, title, relates) {
       .find((m) => m.kind === 'decision' && m.repo === repo && (!m.topic || m.topic === held));
     if (!old) fail(`decision ${args.supersedes} not found in repo ${repo}`);
   }
-  withBrainLock(repoByName(ctx.domain, repo, ctx.brainDir).dir, () => saveRepoDecisionLocked(ctx, repo, title, relates, old));
+  withBrainLock(repoByName(ctx.domain, repo, ctx.brainDir).dir, () => saveRepoDecisionLocked(ctx, repo, title, relates, old, meta));
 }
 
-function saveRepoDecisionLocked(ctx, repo, title, relates, old) {
+function saveRepoDecisionLocked(ctx, repo, title, relates, old, meta) {
   const id = nextRepoDecisionId(ctx.domain, repo);
   const slug = normalizeKey(title).slice(0, 40);
   const rel = `decisions/${id.toLowerCase()}-${slug}.md`;
@@ -440,7 +460,7 @@ function saveRepoDecisionLocked(ctx, repo, title, relates, old) {
     const parsed = parseFrontmatter(readText(path.resolve(ctx.brainDir, old.path), ''));
     ops.push({ path: knowledgeRel(ctx, old.path), content: serializeFrontmatter({ ...parsed.data, status: `superseded-by ${id}`, updated: today() }, parsed.body) });
   }
-  const data = { key: id, id, title, status: 'valid', relates_to: relates, aliases: asList(args.aliases), supersedes: args.supersedes ? String(args.supersedes).replace(new RegExp(`^${repo}/`), '') : undefined, created: today() };
+  const data = { key: id, id, title, status: 'valid', ...meta, relates_to: relates, aliases: asList(args.aliases), supersedes: args.supersedes ? String(args.supersedes).replace(new RegExp(`^${repo}/`), '') : undefined, created: today() };
   const body = `**Rozhodnuté:** ${args.what}\n\n**Zamietnuté alternatívy:** ${args.alternatives || '-'}\n\n**Dôvod:** ${args.reason}\n`;
   ops.push({ path: rel, content: serializeFrontmatter(data, body) });
   out(formatRepoWrite(repoWrite(ctx, repo, { ops, message: `save decision ${id} ${slug}` })));

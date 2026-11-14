@@ -8,7 +8,7 @@ import path from 'node:path';
 import { setup, PLUGIN_ROOT } from './helpers.mjs';
 import { classifyPrompt, parsePrompt, messageBellLine } from '../hooks/user-prompt-submit.mjs';
 import { proposalKey } from '../scripts/logs.mjs';
-import { setTimer, recordWaker, wakerFromTool } from '../scripts/waker.mjs';
+import { setTimer, threadTimers, recordWaker, wakerFromTool } from '../scripts/waker.mjs';
 
 const STUB = path.join(PLUGIN_ROOT, 'tests', 'fixtures', 'comms-stub.mjs');
 const policy = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'policy', 'policy.json'), 'utf8'));
@@ -357,10 +357,11 @@ test('no-reply bell: the bell of the message a reply-window timer waits for spen
     setTimer(fx.brain, fx.thread, { delayMs: 60 * 60_000, then: 'check the reply to m1', forId: 'm1' });
     const r = fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m1' });
     assert.match(r.context, /no reply, held/);
-    assert.equal(fx.state().timer, undefined, 'its own bell spent the reply-window timer');
+    const fors = () => threadTimers(fx.state()).map((t) => t.for);
+    assert.deepEqual(fors(), ['m9'], 'its own bell spent the reply-window timer; the timer of m9 stays (2026-11-13)');
     setTimer(fx.brain, fx.thread, { delayMs: 60 * 60_000, then: 'check the reply to m1', forId: 'm1' });
     fx.hook('user-prompt-submit.mjs', { prompt: 'undelivered m1' });
-    assert.equal(fx.state().timer, undefined, 'undelivered too');
+    assert.deepEqual(fors(), ['m9'], 'undelivered too');
   } finally { fx.cleanup(); }
 });
 

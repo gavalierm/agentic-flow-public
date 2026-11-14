@@ -15,7 +15,7 @@ import { buildIndexes } from '../scripts/index.mjs';
 import { tokens } from '../scripts/keys.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { checkProject } from '../scripts/skill-check.mjs';
-import { isDecisionLink, linkProblem, linkFix, FORMS } from '../scripts/links.mjs';
+import { isDecisionLink, linkProblem, linkFix, FORMS, sourceProblem, scratchPaths, SOURCE_FORMS } from '../scripts/links.mjs';
 import { machineStores, sessionStores, machineRecords, storeRecords, sameStore, subjectMatch, subjectNames, recordType, decisionRefs, refProblem, refFiles, displayPath, isTombstone, SUBJECT_TYPES, ID_LINE } from '../scripts/stores.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -78,6 +78,8 @@ export function identityReport(ctx) {
   const refs = [];
   const links = [];
   const ids = [];
+  const sources = [];
+  const scratch = [];
   for (const s of mine) {
     const recs = storeRecords(s, ctx.brainDir).filter((r) => !r.topic);
     // Two decisions with one ID in a store: two threads saving at once both got D-0033 (decision-id-race, 2026-11-13);
@@ -111,9 +113,16 @@ export function identityReport(ctx) {
         const problem = linkProblem(ctx, s, v);
         if (problem) links.push({ path: displayPath(r), value: v, problem, fix: linkFix(ctx, r, v) });
       }
+      // D-0036: a source must outlive the work files, and a body naming scratch/ points at what the cleaning removes.
+      for (const v of [r.data?.sources ?? r.sources ?? []].flat().filter((x) => x !== undefined && x !== null)) {
+        const problem = sourceProblem(ctx, s, String(v));
+        if (problem) sources.push(`${displayPath(r)}: ${problem}`);
+      }
+      const named = scratchPaths(r.body);
+      if (named.length) scratch.push(`${displayPath(r)}: ${named.join(', ')}`);
     }
   }
-  return { duplicates, tombstones, refs: [...new Set(refs)], links, ids };
+  return { duplicates, tombstones, refs: [...new Set(refs)], links, ids, sources, scratch };
 }
 
 export function report(ctx) {
@@ -177,6 +186,8 @@ try {
     out(`decision IDs used twice in one store (renumber one to the next free ID and fix its references): ${r.identity.ids.length ? r.identity.ids.map((d) => `${d.id} (${d.store}): ${d.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`decision references that do not resolve (a bare D-NNNN is the own store, another store's decision is <store>/D-NNNN): ${r.identity.refs.length ? r.identity.refs.join('; ') : 'none'}`);
     out(`relates_to links that resolve to nothing (${FORMS}; run the command under each, a free word goes into the body): ${r.identity.links.length ? r.identity.links.map((l) => `\n  ${l.path}: ${l.problem}\n    ${l.fix}`).join('') : 'none'}`);
+    out(`sources that do not last (${SOURCE_FORMS}; rewrite the record with --sources): ${r.identity.sources.length ? r.identity.sources.join('; ') : 'none'}`);
+    out(`work files named in a body (scratch/ is cleaned: save what matters to materialy/<topic>/ and name that, or drop the path): ${r.identity.scratch.length ? r.identity.scratch.join('; ') : 'none'}`);
     out(`agentic skills sharing a tool/work token (merge only same tool): ${r.mergeable.length ? r.mergeable.map((m) => `${m.token}: ${m.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`skill health (skill-check.mjs <name> for details, skill workflow:skill-check): ${r.health.length ? r.health.map((h) => `${h.name} ${h.errors}e/${h.warns}w`).join(', ') : 'all ok'}`);
     out(`untracked docs/ and materialy/ (not in git, lost with the disk: commit them in that repo, keep one version of a document): ${r.untracked.length ? r.untracked.map((u) => `\n  ${u.repo}: ${u.files.slice(0, 5).join(', ')}${u.files.length > 5 ? `, … (+${u.files.length - 5})` : ''}\n    git -C ${u.dir} add docs materialy && git -C ${u.dir} commit -m "docs: track project knowledge"`).join('') : 'none'}`);

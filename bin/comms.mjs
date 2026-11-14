@@ -21,7 +21,7 @@ import { loadContext, inSubagent, readThreadState, writeThreadState } from '../s
 import { commsSettings, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, categoryLabel, LEVELS, dropNoticesCache } from '../scripts/comms.mjs';
 import { readTopic, mailboxTopics, heldTopics, heldBy, topicMailProject } from '../scripts/topic.mjs';
 import { readHolder, isHolderOf } from '../scripts/brain.mjs';
-import { setTimer, clearTimer, activeTimer, validWaker, withoutMailWaker, TIMER_CMD, REPLY_WINDOW_MS, REPLY_STATE_TIMER_MS } from '../scripts/waker.mjs';
+import { setTimer, clearTimer, threadTimers, validWaker, withoutMailWaker, TIMER_CMD, REPLY_WINDOW_MS, REPLY_STATE_TIMER_MS } from '../scripts/waker.mjs';
 import { STATES } from '../scripts/protocol.mjs';
 
 const FINAL_STATE = STATES[0];
@@ -91,7 +91,7 @@ function header(m) {
 /**
  * Sender timer after an interim answer (`otázka`, `čakám`) to message `id`: it replaces the reply-window timer of that
  * message and doubles with every check that finds the same state, up to the maximum of the state (P-061). The step only
- * checks the state: an interim answer is never a reason to resend or escalate. Another earlier timer of the thread is kept.
+ * checks the state: an interim answer is never a reason to resend or escalate. Other timers of the thread stay (setTimer).
  */
 function armStateTimer(ctx, id, replyState, waitFor = null) {
   const [base, max] = REPLY_STATE_TIMER_MS[replyState];
@@ -100,8 +100,6 @@ function armStateTimer(ctx, id, replyState, waitFor = null) {
   const prev = state.reply_wait?.[id];
   const n = prev && prev.state === replyState ? prev.n : 0;
   const delayMs = Math.min(base * 2 ** n, max);
-  const cur = activeTimer(state, now);
-  if (cur && cur.for !== id && Date.parse(cur.at) <= now + delayMs) return null;
   const why = replyState === 'otázka' ? 'its operator decides' : `the recipient waits${waitFor ? ` for ${waitFor}` : ''}`;
   const timer = setTimer(ctx.brainDir, ctx.thread, { delayMs, then: `check the state of ${id}: comms message --id ${id} (reply ${replyState}: ${why}); do not resend or escalate it`, forId: id }, now);
   const after = readThreadState(ctx.brainDir, ctx.thread);
@@ -112,7 +110,7 @@ function armStateTimer(ctx, id, replyState, waitFor = null) {
 /** The exchange about `id` is closed (final reply): its timer, its doubling record and its mail waker are spent. */
 function closeReplyWait(ctx, id) {
   const state = readThreadState(ctx.brainDir, ctx.thread);
-  if (state.timer?.for === id) clearTimer(ctx.brainDir, ctx.thread);
+  clearTimer(ctx.brainDir, ctx.thread, (t) => t.for === id);
   const after = readThreadState(ctx.brainDir, ctx.thread);
   const { [id]: gone, ...rest } = after.reply_wait || {};
   const wakers = withoutMailWaker(after.wakers, id);
@@ -226,7 +224,7 @@ function cmdMessage(ctx) {
   if (m.answer_state === FINAL_STATE) return closeReplyWait(ctx, id);
   if (!REPLY_STATE_TIMER_MS[m.answer_state]) return;
   const t = armStateTimer(ctx, id, m.answer_state);
-  out(t ? `timer set: ${localTime(t.at)} for the next check of ${id}; the answer is interim, do not resend or escalate (P-061)` : `an earlier timer of this thread stays; ${id} is checked then`);
+  out(`timer set: ${localTime(t.at)} for the next check of ${id}; the answer is interim, do not resend or escalate (P-061)`);
 }
 
 /** `settle --id <id>`: a picked assist answered another way (one reply for several messages, a new message naming it). */
@@ -273,8 +271,14 @@ function fromNote(ctx, from) {
   return from && work.length > 1 ? `; from ${from} (this thread also holds ${work.filter((id) => id !== from).join(', ')}; another sender: --from <topic>)` : '';
 }
 
+/** Options `send` reads; an unknown one was dropped silently and the error named only the next missing option (report-66bf5f76). */
+const SEND_OPTIONS = ['level', 'to', 'topic', 'text', 'file', 'reply-to', 'state', 'wait-for', 'cancels', 'key', 'ttl', 'from', 'project'];
+const SEND_SUGGEST = { body: 'text', message: 'text', category: 'level', kind: 'level', priority: 'level', reply: 'reply-to', 'reply_to': 'reply-to' };
+
 function cmdSend(ctx) {
   guardMain('send');
+  const unknown = Object.keys(args).filter((k) => k !== '_' && !SEND_OPTIONS.includes(k));
+  if (unknown.length) fail(`comms send: unknown option ${unknown.map((k) => `--${k}${SEND_SUGGEST[k] ? ` (use --${SEND_SUGGEST[k]})` : ''}`).join(', ')}; nothing sent (usage: send --level blocker|steer|assist --to [<project>/]<topic> --text "..." | --file <path>; reply: send --reply-to <id> --state hotovo|otázka|čakám --text "...")`);
   const replyTo = args['reply-to'] !== undefined && args['reply-to'] !== true ? String(args['reply-to']) : null;
   let level = args.level === true ? undefined : args.level;
   // A reply names its state (P-061), with no default: a reply sent as final by default was the fault (2026-11-11).
@@ -378,14 +382,12 @@ function cmdSend(ctx) {
   }
   const finalLevel = data.level || level;
   if (finalLevel === 'assist' && !replyTo && data.expires_at) out(`assist sent: continue other work; the reply wakes you; without pickup by ${localTime(data.expires_at)} the expiry wakes you (P-042)`);
-  // P-061: a picked message may stay unanswered; the thread timer rings the sender after the reply window anyway.
+  // P-061: a picked message may stay unanswered; the thread timer rings the sender after the reply window anyway. It is
+  // added next to the other timers of the thread, never in place of one (2026-11-13: it replaced a timer.mjs step unseen).
   if (REPLY_WINDOW_MS[finalLevel] && !replyTo && data.id && !data.queued && !data.warning && ctx.brainDir && ctx.thread && !inSubagent()) {
-    const now = Date.now();
-    const cur = activeTimer(readThreadState(ctx.brainDir, ctx.thread), now);
-    if (!cur || Date.parse(cur.at) > now + REPLY_WINDOW_MS[finalLevel]) {
-      const t = setTimer(ctx.brainDir, ctx.thread, { delayMs: REPLY_WINDOW_MS[finalLevel], then: `check the reply to ${data.id} (${finalLevel} to ${destination}); without one continue on your own decision or send the question elsewhere`, forId: data.id }, now);
-      out(`timer set: ${localTime(t.at)} in case ${data.id} gets no reply (P-061)`);
-    }
+    const t = setTimer(ctx.brainDir, ctx.thread, { delayMs: REPLY_WINDOW_MS[finalLevel], then: `check the reply to ${data.id} (${finalLevel} to ${destination}); without one continue on your own decision or send the question elsewhere`, forId: data.id });
+    const others = threadTimers(readThreadState(ctx.brainDir, ctx.thread)).length - 1;
+    out(`timer set: ${localTime(t.at)} in case ${data.id} gets no reply (P-061)${others ? `; ${others} other timer(s) of this thread stay (timer.mjs show)` : ''}`);
   }
   if (finalLevel === 'blocker' && !replyTo) out('blocker sent: continue with work that does not need the answer (or your recommended assumption, say it); the reply or the timer wakes you; a message never stops the work (P-061)');
 }

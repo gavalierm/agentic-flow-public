@@ -9,7 +9,7 @@ import { withAnswered } from '../scripts/protocol.mjs';
 import { statusInfo, rulesHash, rulesSections, changedRules, BOOT_MARKERS } from '../scripts/boot.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { recordTurn, runClient, mailNoticeLine, isMainTopic, turnDiscussion } from '../scripts/comms.mjs';
-import { waitOnlyStep, setTimer, untilMet, withoutMailWaker, finishedTasks, withoutFinished, AUTO_TIMER_MS } from '../scripts/waker.mjs';
+import { waitOnlyStep, setTimer, untilMet, threadTimers, timersPatch, sameTimer, withoutMailWaker, finishedTasks, withoutFinished, AUTO_TIMER_MS } from '../scripts/waker.mjs';
 import { readReports } from '../scripts/report.mjs';
 import { PLUGIN_ROOT, toPosix, localTime } from '../scripts/util.mjs';
 import { threadTitleSignal } from '../scripts/thread-title.mjs';
@@ -61,7 +61,9 @@ export function parsePrompt(prompt, policy) {
 
 const plain = (s) => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 const wordsRe = (list) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${list.map((w) => escapeRe(plain(w).trim()).replace(/ /g, '\\s+')).join('|')})(?![\\p{L}\\p{N}])`, 'u');
-const ownPlain = (prompt) => plain(String(prompt || '').replace(/<pasted_content\b[^>]*>[\s\S]*?<\/pasted_content[^>]*>/gi, ' ').replace(/```[\s\S]*?```/g, ' ').replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, ' ')).trim();
+// A harness notice (a task end, a system reminder) is no operator text: a background release made the reading line of an
+// instruction turn (notify-not-instruction, 2026-11-14).
+const ownPlain = (prompt) => plain(String(prompt || '').replace(/<(system-reminder|task-notification)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ').replace(/<pasted_content\b[^>]*>[\s\S]*?<\/pasted_content[^>]*>/gi, ' ').replace(/```[\s\S]*?```/g, ' ').replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, ' ')).trim();
 const wordList = (policy, k) => (Array.isArray(policy?.prompt?.[k]) ? policy.prompt[k] : []).filter((w) => String(w || '').trim());
 
 /** P-063 (report-e640905d): an operator instruction turn: a word with two readings gets the reading said before the first change. */
@@ -167,7 +169,7 @@ export function run(input) {
   // P-061 (audit 2026-11-11, M1): a turn that is only protocol ends here without a model call. The turn opened above (wake
   // rings an idle thread again only after a turn opened) is closed with the step and time the last Stop sent; without them
   // (a state from before) the turn runs, a close without its resume time would drop the thread timer.
-  const lastClose = state?.last_close || (state?.timer ? { next: state.timer.then, resume_at: state.timer.at } : null);
+  const lastClose = state?.last_close || (threadTimers(state)[0] ? { next: threadTimers(state)[0].then, resume_at: threadTimers(state)[0].at } : null);
   const quietEnd = (reason, close) => {
     writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_close: { next: close.next ?? null, resume_at: close.resume_at ?? null } });
     recordTurn(ctx, 'closed', info.held, { openedAt, next: close.next ?? null, resumeAt: close.resume_at ?? null, discussion });
@@ -190,8 +192,11 @@ export function run(input) {
       ? `${messageBellLine(kind, parsed.id, res.ok ? res.data : null).replace(P047_ACTIONS, '')}: this is an error report to the workflow maintainer; run node ${toPosix(PLUGIN_ROOT)}/bin/error.mjs report --from ${parsed.id} and tell the operator its line (P-003)`
       : messageBellLine(kind, parsed.id, res.ok ? res.data : null));
   }
-  // P-061: the thread timer fired (the wake module rang at resume_at): its step comes first; the timer is spent.
-  const timer = state?.timer && Date.parse(state.timer.at) <= Date.now() + 90_000 ? state.timer : null;
+  // P-061: the thread timer fired (the wake module rang at resume_at): its step comes first; the timer is spent. Other timers
+  // due by now ring in the same turn with their steps (merged, none lost, 2026-11-13); later ones stay.
+  const dueTimers = threadTimers(state).filter((t) => Date.parse(t.at) <= Date.now() + 90_000);
+  const timer = dueTimers[0] || null;
+  const alsoDue = kind === 'continue' ? dueTimers.slice(1).filter((t) => !t.until) : [];
   // P-061: a timer with a condition (timer.mjs --until) is checked here by code: not met before its deadline -> re-armed and
   // the turn ends without a model call (22 of 44 timer turns only saw the same state, audit 2026-11-11).
   let rearmed = null;
@@ -201,9 +206,10 @@ export function run(input) {
     const met = untilMet(timer.until, ctx.projectDir || process.cwd());
     if (met === false && Date.now() < dl) {
       rearmed = setTimer(ctx.brainDir, ctx.thread, { delayMs: Math.min(timer.every_ms || AUTO_TIMER_MS, dl - Date.now()), then: timer.then, reason: timer.reason || null, forId: timer.for || null, until: timer.until, deadline: timer.deadline, everyMs: timer.every_ms });
-      if (!(info.mail.count > 0)) return quietEnd(`timer: its condition does not hold yet (${timer.until}); next check ${localTime(rearmed.at)}, without a model turn (P-061)`, { next: rearmed.then, resume_at: rearmed.at });
+      const next = threadTimers(readThreadState(ctx.brainDir, ctx.thread))[0] || rearmed;
+      if (!(info.mail.count > 0) && !alsoDue.length) return quietEnd(`timer: its condition does not hold yet (${timer.until}); next check ${localTime(rearmed.at)}, without a model turn (P-061)`, { next: next.then, resume_at: next.at });
     }
-    untilLine = rearmed ? `timer: its condition does not hold yet (${timer.until}), the next check is at ${localTime(rearmed.at)}; mail waits: handle it (P-061)`
+    untilLine = rearmed ? `timer: its condition does not hold yet (${timer.until}), the next check is at ${localTime(rearmed.at)}${info.mail.count > 0 ? '; mail waits: handle it' : ''} (P-061)`
       : met ? `timer fired, its condition holds (${timer.until}): ${timer.then}; do it now (P-061)`
         : met === null ? `timer fired, its condition could not run here (${timer.until}): check it yourself, then: ${timer.then} (P-061)`
           : `timer deadline ${localTime(timer.deadline)} passed, its condition still does not hold (${timer.until}): ${timer.then}; decide now (P-061)`;
@@ -214,7 +220,7 @@ export function run(input) {
   const idle = (info.held || []).find((t) => !isMainTopic(t) && t.state !== 'paused' && waitOnlyStep(t.next));
   if (paused && !snoozeEnded && !BELLS.includes(kind)) extras.push(`topic ${paused.id} is paused${paused.paused_until ? ` until ${paused.paused_until}` : ''}: work the operator gives on it starts with topic.mjs resume ${paused.id}`);
   if (snoozeEnded) extras.unshift(`pause of topic ${paused.id} ended: run topic.mjs resume ${paused.id}, then continue from handover (P-026)`);
-  else if (kind === 'continue' && timer) extras.unshift(untilLine || `timer fired (set ${localTime(timer.set_at)}): ${timer.then}; do it now, the work never stops (P-061)`);
+  else if (kind === 'continue' && timer) extras.unshift(`${untilLine || `timer fired (set ${localTime(timer.set_at)}): ${timer.then}; do it now, the work never stops (P-061)`}${alsoDue.map((t) => `; timer also fired (set ${localTime(t.set_at)}): ${t.then}`).join('')}`);
   else if (kind === 'continue' && paused && !idle && !(info.held || []).some((t) => !isMainTopic(t) && t.state !== 'paused' && t.next)) extras.unshift(`topic ${paused.id} is still paused${paused.paused_until ? ` until ${paused.paused_until}` : ''}: nothing to do, end the turn with only "**Handover:**" with the line "1. ${paused.id} → <next step>" and "**Stav:** čakám (na koniec pauzy témy ${paused.id})" (P-061)`);
   else if (kind === 'continue' && idle) extras.unshift(`idle check: the next step of topic ${idle.id} only waits ("${waitOnlyStep(idle.next)}"): check whether it happened (mail, topic state); if nothing changed, end the turn with only "**Handover:**" with the line "1. ${idle.id} → <next step>" and "**Stav:** čakám (na <what the step waits for>)" (P-061)`);
   else if (kind === 'continue') extras.unshift('turn ended with a next step in the handover: do that step now (P-026); end only with a true state line (P-061)');
@@ -254,13 +260,15 @@ export function run(input) {
   // (12 of 59 timers were dropped by an operator prompt, audit 2026-11-11). A no-reply/undelivered bell of the message a
   // reply-window timer waits for is that timer's event: spent, else it rang once more for a settled message (pilot 2026-11-12);
   // so is the mail waker of that message, else it kept Stop from arming the timer of a later "čakám" for 2 h.
-  const bellSpent = messageBell && !!state?.timer?.for && state.timer.for === parsed.id;
+  const bellSpent = (t) => messageBell && !!t.for && t.for === parsed.id;
   const mailSpent = messageBell && (state?.wakers || []).some((w) => w.kind === 'mail' && w.for === parsed.id) ? { wakers: withoutMailWaker(state.wakers, parsed.id) } : {};
   // A task notification (the harness rings an idle thread when a background task or agent ends) spends the waker of that
   // task: it rings nobody any more (operator 2026-11-13: it let "hotovo" pass with a next step for 2 h).
   const ended = finishedTasks(input.prompt);
   const taskSpent = ended.size && state ? { wakers: withoutFinished(mailSpent.wakers || state.wakers, ended) } : {};
-  const keepTimer = rearmed ? { timer: rearmed } : state?.timer && !(kind === 'continue' && timer) && !bellSpent ? { timer: state.timer } : { timer: undefined };
+  // Only the timers that rang (or whose message bell came) are spent; every other timer of the thread stays.
+  const rang = kind === 'continue' && timer && !rearmed ? [timer, ...alsoDue] : alsoDue;
+  const keepTimer = timersPatch(threadTimers(rearmed ? readThreadState(ctx.brainDir, ctx.thread) : state).filter((t) => !bellSpent(t) && !rang.some((r) => sameTimer(r, t))));
   // P-021: the installed workflow changed during the session: one line; the rules come above only when their text changed
   // (rules hash), not at every update (tokens, operator 2026-11-03).
   const upd = state ? updateNotice(state) : null;

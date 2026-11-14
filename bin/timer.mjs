@@ -2,7 +2,10 @@
 // Thread timer (P-061): work is deferred to a set time, never stopped. The Stop hook sends the timer with the closed turn
 // (resume_at); the wake module rings the thread then ("turn ended with a next step, continue from handover") and the
 // prompt hook names the step.
-//   timer.mjs --in <30m|2h|90s|15> --then "<step to do when it fires>"   set (replaces the previous timer)
+//   timer.mjs --in <30m|2h|90s|15> --then "<step to do when it fires>"   add a timer; other timers of the thread stay (one with
+//                                                                       the same step is moved); timers due together ring in one
+//                                                                       turn with all their steps (2026-11-13: one slot let the
+//                                                                       reply window of a mail replace a timer step unseen)
 //   timer.mjs --in 5m --until "<check>" --deadline 2h --then "<step>"     a condition: code runs the check every --in, without
 //                                                                       a model turn, and rings the step only when it exits 0
 //                                                                       or the deadline passed (22 of 44 timer turns only saw
@@ -10,14 +13,15 @@
 //   timer.mjs --in 10m --topic <id> --then "<step>"                      waiting for another topic: the check is topic.mjs closed
 //                                                                       <id> (deadline 24h unless --deadline); over 30m without a
 //                                                                       condition needs --blind (a step bound to the clock itself)
-//   timer.mjs show                                                      the timer of this thread
-//   timer.mjs clear                                                      remove it (the awaited event came)
+//   timer.mjs show                                                      every timer of this thread, earliest first, numbered
+//   timer.mjs clear [<n>]                                                remove timer n of show (the awaited event came); without n
+//                                                                       all of them, each removed step is printed
 import path from 'node:path';
 import { parseArgs, fail, PLUGIN_ROOT, localTime } from '../scripts/util.mjs';
 import { readTopic } from '../scripts/topic.mjs';
 import { loadContext, readThreadState } from '../scripts/config.mjs';
 import { commsSettings } from '../scripts/comms.mjs';
-import { parseDelay, setTimer, clearTimer, activeTimer, TIMER_MIN_MS, TIMER_MAX_MS, UNTIL_TIMEOUT_MS } from '../scripts/waker.mjs';
+import { parseDelay, setTimer, clearTimer, threadTimers, TIMER_MIN_MS, TIMER_MAX_MS, UNTIL_TIMEOUT_MS } from '../scripts/waker.mjs';
 import { run as guard } from '../hooks/pre-tool-use.mjs';
 
 /** Longer than this without a condition is a blind wait (report-32db110e): --topic, --until, mail, or --blind. */
@@ -25,6 +29,7 @@ const BLIND_MAX_MS = 30 * 60_000;
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._[0] || (args.in !== undefined ? 'set' : 'show');
 const out = (s) => process.stdout.write(`${s}\n`);
+const line = (t) => `timer: ${localTime(t.at)}; then: ${t.then}${t.until ? `; until: ${t.until} (deadline ${localTime(t.deadline)})` : ''}${t.for ? ` (reply window of ${t.for})` : ''}${t.auto ? ' (armed by the Stop hook)' : ''}`;
 const str = (v) => (v === true || v === undefined ? '' : String(v).trim());
 try {
   const ctx = loadContext({ project: args.project });
@@ -55,12 +60,17 @@ try {
     const t = setTimer(ctx.brainDir, ctx.thread, { delayMs: ms, then, until: until || null, deadline });
     const clamped = ms < TIMER_MIN_MS || ms > TIMER_MAX_MS ? ` (clamped to ${TIMER_MIN_MS / 60_000}m..${TIMER_MAX_MS / 3600_000}h)` : '';
     const check = until ? `; code runs the check (exit 0 = met, at most ${UNTIL_TIMEOUT_MS / 1000} s) at each time without a turn and rings the step when it holds or at ${localTime(deadline)}` : '';
-    out(`timer set: ${localTime(t.at)}${clamped}; then: ${t.then}${check}. The wake module rings this thread then; end the turn with your **Handover:** section (a numbered line "1. <topic> → <next step>") and "**Stav:** čakám (na <what>)" (P-061)`);
+    const others = threadTimers(readThreadState(ctx.brainDir, ctx.thread)).filter((x) => x !== t && !(x.at === t.at && x.set_at === t.set_at)).length;
+    out(`timer set: ${localTime(t.at)}${clamped}; then: ${t.then}${check}${others ? `; ${others} other timer(s) of this thread stay (timer.mjs show)` : ''}. The wake module rings this thread then; end the turn with your **Handover:** section (a numbered line "1. <topic> → <next step>") and "**Stav:** čakám (na <what>)" (P-061)`);
   } else if (cmd === 'show') {
-    const t = activeTimer(readThreadState(ctx.brainDir, ctx.thread));
-    out(t ? `timer: ${localTime(t.at)}; then: ${t.then}${t.until ? `; until: ${t.until} (deadline ${localTime(t.deadline)})` : ''}${t.auto ? ' (armed by the Stop hook)' : ''}` : 'no timer');
+    const all = threadTimers(readThreadState(ctx.brainDir, ctx.thread));
+    out(all.length ? all.map((t, i) => `${i + 1}. ${line(t)}`).join('\n') : 'no timer');
   } else if (cmd === 'clear') {
-    out(clearTimer(ctx.brainDir, ctx.thread) ? 'timer cleared' : 'no timer');
+    const n = args._[1] === undefined ? null : Number(args._[1]);
+    const all = threadTimers(readThreadState(ctx.brainDir, ctx.thread));
+    if (n !== null && !(Number.isInteger(n) && n >= 1 && n <= all.length)) fail(`timer.mjs clear [<n>]: n is the number of a timer in timer.mjs show (1..${all.length})`);
+    const gone = clearTimer(ctx.brainDir, ctx.thread, n === null ? () => true : (t) => t === all[n - 1] || (t.at === all[n - 1].at && t.set_at === all[n - 1].set_at && t.then === all[n - 1].then));
+    out(gone.length ? gone.map((t) => `timer cleared: ${line(t)}`).join('\n') : 'no timer');
   } else {
     fail('usage: timer.mjs --in <30m|2h> --then "<step>" [--until "<check>" --deadline <2h> | --topic <id>] [--blind] | show | clear');
   }

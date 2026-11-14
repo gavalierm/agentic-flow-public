@@ -90,6 +90,42 @@ export function checkLinks(ctx, store, values) {
   return problems.length ? `relates_to: ${problems.join('; ')}; ${FORMS}; nothing saved` : null;
 }
 
+// Sources (D-0036): what a record was derived from or checked against must outlive the work files. scratch/, local/ and
+// ignored files have no history (the one derived record of the machine pointed into scratch/), so a source is a file git
+// tracks (material from outside goes to materialy/<topic>/ first), a decision, a principle or a URL. A record key is no
+// source: the fingerprint reads files, and a key would never turn stale.
+const URL_RE = /^https?:\/\/\S+$/i;
+export const SOURCE_FORMS = 'a source is a file tracked in git (material from outside: save it to materialy/<topic>/ first, skill materialy), a decision (D-NNNN), a principle (P-NNN) or a URL';
+
+/** What is wrong with one source of a record in store, or null when it lasts. */
+export function sourceProblem(ctx, store, value) {
+  const v = String(value ?? '').trim();
+  if (!v) return 'an empty source';
+  if (URL_RE.test(v)) return null;
+  if (DECISION.test(v) || PRINCIPLE.test(v)) return linkProblem(ctx, store, v);
+  const file = fileState(ctx, store, v);
+  if (file === 'tracked') return null;
+  if (file === 'untracked') return `${v}: git does not track it (scratch/, local/ and ignored files have no history)`;
+  return `${v}: no such file${memoryKeys(ctx).has(v) ? ' (a record key is no source: name the file the record is in)' : ''}`;
+}
+
+/** Problems of the sources values (each value once), [] when all last. */
+export function sourceProblems(ctx, store, values) {
+  return [...new Set(values.map((v) => String(v).trim()))].map((v) => sourceProblem(ctx, store, v)).filter(Boolean);
+}
+
+/** Refusal text of save for new sources that do not last, or null. */
+export function checkSources(ctx, store, values) {
+  const problems = sourceProblems(ctx, store, values);
+  return problems.length ? `sources: ${problems.join('; ')}; ${SOURCE_FORMS}; nothing saved` : null;
+}
+
+/** Work-file paths (scratch/) named in a body: they vanish when the work files are cleaned (consolidate, D-0036). */
+export function scratchPaths(body) {
+  const found = [...String(body || '').matchAll(/(?:^|[\s(`'"[])(\/?(?:[\w.~-]+\/)*scratch\/[^\s)`'"\],;]+)/gm)].map((m) => m[1].replace(/[.,;:]+$/, ''));
+  return [...new Set(found)];
+}
+
 const arg = (v) => (/[\s"'$`\\]/.test(v) ? `"${v.replace(/(["$`\\])/g, '\\$1')}"` : v);
 
 /** The save command that drops (or replaces) a link that does not resolve (consolidate, D-0029). */

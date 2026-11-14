@@ -27,7 +27,7 @@ import { heldTopics, threadOrchestrator, ORCHESTRATOR_QUESTION_REASON } from '..
 import { parseReply, repeatsAnswered, REPEATED_QUESTION_REASON, HANDOVER_LINE, HANDOVER_NONE_LINE, PROTOCOL_EXAMPLE, handoverMatches } from '../scripts/protocol.mjs';
 export { REPEATED_QUESTION_REASON };
 import { TOPIC_QUESTION } from '../scripts/boot.mjs';
-import { waitOnlyStep, validWaker, activeTimer, setTimer, clearTimer, finishedTasks, withoutFinished, AUTO_TIMER_MS, AUTO_TIMER_MAX_MS, OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS, IDLE_RING_MS } from '../scripts/waker.mjs';
+import { waitOnlyStep, validWaker, activeTimer, setTimer, clearTimer, threadTimers, timersPatch, sameTimer, finishedTasks, withoutFinished, AUTO_TIMER_MS, AUTO_TIMER_MAX_MS, OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS, IDLE_RING_MS } from '../scripts/waker.mjs';
 import { transcriptTail } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to next prompt); 1 block reason', principles: ['P-003', 'P-026', 'P-030', 'P-040', 'P-042', 'P-043', 'P-061'] };
@@ -228,7 +228,8 @@ export function run(input) {
     if (live !== recorded.wakers && live.length !== recorded.wakers.length) writeThreadState(ctx.brainDir, ctx.thread, { ...recorded, wakers: live });
     const before = readThreadState(ctx.brainDir, ctx.thread);
     const spent = !!before.timer && before.turn_source === 'operator' && !(before.turn_started_at && before.timer.set_at >= before.turn_started_at) && (before.timer.auto || reply.state !== 'čakám');
-    const waker = validWaker(spent ? { ...before, timer: undefined } : before);
+    // Only that timer (the earliest) is spent; later ones of the thread stay (2026-11-13).
+    const waker = validWaker(spent ? { ...before, ...timersPatch(threadTimers(before).filter((t) => !sameTimer(t, before.timer))) } : before);
     const paused = held.some((t) => t.state === 'paused') && !work;
     // A dialog asked in this turn (PreToolUse keeps the time) that failed or was declined leaves the text question as fallback; one
     // the operator answered does not (flow-public#35 pilot: a consent answered, the next consent asked in text ended the turn).
@@ -272,7 +273,7 @@ export function run(input) {
     if (stateOnly) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), state_only_blocked_at: turnKey });
     const reasons = [!input.stop_hook_active && violation, stateOnly && STATE_ONLY_REASON, t3Left].filter(Boolean);
     if (reasons.length) return end({ decision: 'block', reason: reasons.join('\n') });
-    if (spent) clearTimer(ctx.brainDir, ctx.thread);
+    if (spent) clearTimer(ctx.brainDir, ctx.thread, (t) => sameTimer(t, before.timer));
     // Ending waiting without a waker, or without a true state, keeps the loop alive: code arms the thread timer, no note about it (P-061). The start
     // question of a thread without a topic (which topic?) gets none: a timer turn told to "decide with your recommended option"
     // would pick the topic itself (flow-public#1). An unfinished step under "hotovo" gets the continue ring in closeTurn.

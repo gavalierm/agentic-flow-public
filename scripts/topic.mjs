@@ -465,7 +465,7 @@ export function startThreadForTopic(ctx, id, { task = null, mode, run, forThread
   guardThread(ctx, 'thread', { codeStart: !forThread });
   if (!topicExists(ctx.brainDir, id)) throw new Error(`topic ${id} does not exist (archived or never created)`);
   const holder = readHolder(ctx.brainDir, id);
-  if (holder.thread) return { ok: false, reason: `topic ${id} ${heldBy(holder)}; a new thread needs a free topic: write to the holder (comms send --to ${id}) or ask the operator about a takeover (P-037)` };
+  if (holder.thread) return { ok: false, reason: `topic ${id} ${heldBy(holder)}; a new thread needs a free topic: write to the holder (comms send --to ${topicMailProject(ctx.brainDir, id) || commsProjectName(ctx)}/${id}) or ask the operator about a takeover (P-037)` };
   // --for-thread: the thread was started by the T3 tool (fallback of a failed CLI start); it only gets the topic.
   if (forThread) return { ok: true, thread: String(forThread), claim: assignTopic(ctx, id, String(forThread), { mode }) };
   // The class comes from topic.json (D-0021); a topic from before the classes starts on the project's default model.

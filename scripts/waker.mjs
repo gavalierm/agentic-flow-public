@@ -173,10 +173,25 @@ export function armedSchedule(state, now = Date.now()) {
 
 export const REMINDER_REFUSAL = (phrase) => `handover not saved: the next step names a reminder or a time ("${phrase}"), and no schedule is armed in this thread. A reminder is a T3 timer, not text in the handover or memory (operator 2026-11-11): arm it first with schedule_task (or CronCreate), at a time before the event, then save the handover again. A reminder that is due is moved to the next time, never closed without a new timer`;
 
+/** Every timer of the thread, earliest first. `timer` is the next one (the Stop hook sends its time as resume_at, the prompt
+ * hook rings its step), `timers` holds the later ones: one slot let the reply window of an assist replace an earlier
+ * timer.mjs step unseen (2026-11-13). */
+export function threadTimers(state) {
+  return [state?.timer, ...(Array.isArray(state?.timers) ? state.timers : [])].filter((t) => t && t.at).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+}
+
+/** State patch that holds `list` as the timers of the thread (the earliest in `timer`). */
+export function timersPatch(list) {
+  const s = [...list].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).slice(0, 20);
+  return { timer: s[0], timers: s.length > 1 ? s.slice(1) : undefined };
+}
+
+/** The same timer entry (a copy read from another state). */
+export const sameTimer = (a, b) => !!a && !!b && a.at === b.at && a.set_at === b.set_at && a.then === b.then;
+
 /** Thread timer still ahead, or null. */
 export function activeTimer(state, now = Date.now()) {
-  const t = state?.timer;
-  return t && Date.parse(t.at) > now ? t : null;
+  return threadTimers(state).find((t) => Date.parse(t.at) > now) || null;
 }
 
 /** A waker for this turn: armed since the turn started, still running, or the thread timer ahead. */
@@ -202,14 +217,17 @@ export function recordWaker(brainDir, thread, waker) {
   writeThreadState(brainDir, thread, { ...state, wakers: waker.remove ? keep : [...keep.filter((w) => !(waker.id && w.id === waker.id)), waker] });
 }
 
-/** Set the thread timer: the wake module rings the thread at `at` with the step `then` (via the closed turn, P-061). */
+/** Add a thread timer: the wake module rings the thread at `at` with the step `then` (via the closed turn, P-061). Other
+ * timers stay, none is lost (2026-11-13); it replaces only its own earlier entry: the same message (`forId`), the same step of
+ * a plain timer, or the auto timer of code (any own timer of the agent replaces that one, it only stood in for a waker). */
 export function setTimer(brainDir, thread, { delayMs, then, reason = null, auto = false, forId = null, until = null, deadline = null, everyMs = null }, now = Date.now()) {
   const ms = Math.min(Math.max(delayMs, TIMER_MIN_MS), TIMER_MAX_MS);
   const state = readThreadState(brainDir, thread);
   // A condition (--until): the prompt hook runs it at `at` and rings the model only when it holds or `deadline` passed.
   const cond = until ? { until: String(until).slice(0, 300), deadline, every_ms: everyMs || ms } : {};
   const timer = { at: new Date(now + ms).toISOString(), then: String(then || '').slice(0, 300), set_at: new Date(now).toISOString(), ...(reason ? { reason } : {}), ...(auto ? { auto: true } : {}), ...(forId ? { for: forId } : {}), ...cond };
-  writeThreadState(brainDir, thread, { ...state, timer, ...(auto ? {} : { auto_timer_n: 0 }) });
+  const replaced = (t) => t.auto || (forId ? t.for === forId : !t.for && t.then === timer.then);
+  writeThreadState(brainDir, thread, { ...state, ...timersPatch([...threadTimers(state).filter((t) => !replaced(t)), timer]), ...(auto ? {} : { auto_timer_n: 0 }) });
   return timer;
 }
 
@@ -223,11 +241,14 @@ export function untilMet(cmd, cwd) {
   return r.status === 0;
 }
 
-export function clearTimer(brainDir, thread) {
+/** Remove the timers `which` selects (all without it); the removed entries, [] when none matched. */
+export function clearTimer(brainDir, thread, which = () => true) {
   const state = readThreadState(brainDir, thread);
-  if (!state.timer) return false;
-  const { timer, ...rest } = state;
-  writeThreadState(brainDir, thread, rest);
-  return true;
+  const all = threadTimers(state);
+  const gone = all.filter(which);
+  if (!gone.length) return [];
+  const { timer, timers, ...rest } = state;
+  writeThreadState(brainDir, thread, { ...rest, ...timersPatch(all.filter((t) => !gone.includes(t))) });
+  return gone;
 }
 

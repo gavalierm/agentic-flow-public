@@ -13,7 +13,8 @@ test('instruction turn: the reading line comes also without a work topic; a bare
     assert.match(fx.hook('user-prompt-submit.mjs', { prompt: 'sprav, nech sa efekt po odchode kurzora ustáli vo vrstve' }).context, LINE, 'no topic');
     assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Web efekt', '--class', 'discussion']).status, 0);
     assert.match(fx.hook('user-prompt-submit.mjs', { prompt: 'sprav, nech sa efekt po odchode kurzora ustáli vo vrstve' }).context, LINE, 'work topic');
-    for (const prompt of ['ďalej', 'pokračuj', 'prosím, pokračuj', 'čo robí ten efekt?', 'nie tak, to som nemyslel', 'you have mail in topic alpha']) {
+    const notice = '<system-reminder>\n[SYSTEM NOTIFICATION - NOT USER INPUT]\n<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Background command "Release workflow v1" completed (exit code 0)</summary>\n</task-notification>\n</system-reminder>';
+    for (const prompt of ['ďalej', 'pokračuj', 'prosím, pokračuj', 'čo robí ten efekt?', 'nie tak, to som nemyslel', 'you have mail in topic alpha', notice]) {
       assert.doesNotMatch(fx.hook('user-prompt-submit.mjs', { prompt }).context || '', LINE, prompt);
     }
   } finally { fx.cleanup(); }
