@@ -1,12 +1,19 @@
 ---
 name: comms
-description: Použi, keď stavový riadok ohlási čakajúce správy („mail: n waiting“), keď ťah začal zvončekom („you have mail in topic“, „no reply“, „undelivered“, „continue from handover“), alebo keď treba poslať správu inej téme či agentovi (blocker, steer, assist) alebo odpovedať.
+description: Použi, keď stavový riadok ohlási čakajúce správy („mail: n waiting“), keď ťah začal zvončekom („you have mail in topic“, „no reply“, „undelivered“, „continue from handover“, „up“), alebo keď treba poslať správu inej téme či agentovi (blocker, steer, assist) alebo odpovedať.
 argument-hint: "count | list | receive --id <id> | ack --id <id> | send --level blocker|steer|assist --to [<project>/]<topic>|@<persona>/main --text \"...\" [--ttl 5m] | send --reply-to <id> --state hotovo|otázka|čakám ... | message --id <id> | notices | status"
 ---
 
 # comms – pošta medzi témami (P-041, P-042, P-044, P-047)
 
 Skript: `node ${CLAUDE_PLUGIN_ROOT}/bin/comms.mjs` (konfiguráciu pošty rieši skript; `status` ukáže, či je zapnutá). Bez pošty skript skončí „comms off“ a nič nečaká.
+
+## Budíček operátora („up“, „?“, „check“)
+Budíček znamená, že vlákno nezobudil žiadny zvonček ani časovač. Hook dá riadok „operator nudge“ s príkazom `node ${CLAUDE_PLUGIN_ROOT}/bin/nudge-why.mjs --thread <id> --transcript <súbor>`.
+1. Spusti ho; vypíše fakty (koniec posledného ťahu so Stav a budíkom, časovače po čase, zvončeky, čakajúcu a pozdržanú poštu, volanie nástroja, ktoré čakalo na schválenie či dialóg, dlhú prácu na pozadí) a riadky `cause:`.
+2. Jednou vetou v odpovedi pomenuj príčinu, prečo operátor musel budiť. Bez príčiny v záznamoch to povedz.
+3. `cause: … (workflow error)` (časovač nezazvonil, okno či dialóg zastavil ťah, ťah skončil čakám bez budíka): oprav ju (skill `fix`) alebo zaraď opravu do kódovej témy a nahlás ju (`workflow:error`).
+4. Potom pošta (nižšie) a ďalší krok handoveru. Nie hlásenie stavu namiesto práce, lebo operátor budí na prácu.
 
 ## Čakajúce správy (P-044)
 Hook dá jeden riadok `mail: <n> waiting: <id> <kategória>, …`. Kategória je úroveň správy (`blocker`, `steer`, `assist`) alebo `reply` (odpoveď na tvoju správu alebo správa do tvojho vlákna). Riadok nesie iba ID a kategóriu, nikdy text.

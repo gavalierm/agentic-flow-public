@@ -3,6 +3,7 @@
 // (P-023 c): wake flag (P-047; the waiting mail as mechanical `<id> <category>` lines when new mail waits), no-reply/undelivered line for the sender (P-042, P-046),
 // keepalive resume (P-043), the mail line once per change of the count (P-044, no bodies), error/save hint
 // (P-003, P-013), queued Stop signals, topic drift judge started detached for an operator task (P-012), thread title after a topic change (P-036). Bells are recognised only as the exact whole prompt. Opens the turn record (P-043).
+import path from 'node:path';
 import { readHookInput, emit, contextOutput, isMain, enforceLines } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { withAnswered } from '../scripts/protocol.mjs';
@@ -109,6 +110,17 @@ function formatTtl(s) {
   if (n % 3600 === 0) return `${n / 3600}h`;
   if (n % 60 === 0) return `${n / 60}m`;
   return `${n}s`;
+}
+
+/** Command that lists why nothing happened in this thread before an operator nudge (bin/nudge-why.mjs, read only). */
+export function nudgeWhyCommand(thread, transcriptPath) {
+  const q = (s) => `"${toPosix(String(s)).replace(/"/g, '\\"')}"`;
+  return `node ${q(path.join(PLUGIN_ROOT, 'bin', 'nudge-why.mjs'))}${thread ? ` --thread ${q(thread)}` : ''}${transcriptPath ? ` --transcript ${q(transcriptPath)}` : ''}`;
+}
+
+/** The line of an operator nudge („up“): first find out why the operator had to wake the thread (operator 2026-11-14). */
+export function nudgeLine(thread, transcriptPath) {
+  return `operator nudge: the operator had to wake you, nothing rang you. First run ${nudgeWhyCommand(thread, transcriptPath)} and name in one sentence of your reply why the operator had to wake you (its cause lines). When it is a workflow error (a timer that did not ring, an approval window or dialog that stopped the turn, a turn that ended waiting without a waker), fix it (skill fix) or queue the fix in a code topic, and report it (skill workflow:error). Then handle mail (the mail lines; skill workflow:comms) and do the next step of the handover; the operator wakes you to work, not for a report (P-026, P-003)`;
 }
 
 /**
@@ -224,7 +236,7 @@ export function run(input) {
   else if (kind === 'continue' && paused && !idle && !(info.held || []).some((t) => !isMainTopic(t) && t.state !== 'paused' && t.next)) extras.unshift(`topic ${paused.id} is still paused${paused.paused_until ? ` until ${paused.paused_until}` : ''}: nothing to do, end the turn with only "**Handover:**" with the line "1. ${paused.id} → <next step>" and "**Stav:** čakám (na koniec pauzy témy ${paused.id})" (P-061)`);
   else if (kind === 'continue' && idle) extras.unshift(`idle check: the next step of topic ${idle.id} only waits ("${waitOnlyStep(idle.next)}"): check whether it happened (mail, topic state); if nothing changed, end the turn with only "**Handover:**" with the line "1. ${idle.id} → <next step>" and "**Stav:** čakám (na <what the step waits for>)" (P-061)`);
   else if (kind === 'continue') extras.unshift('turn ended with a next step in the handover: do that step now (P-026); end only with a true state line (P-061)');
-  if (kind === 'nudge') extras.unshift('operator nudge: the operator wakes you to work, not for a report. Handle mail first (the mail lines; skill workflow:comms), then do the next step of the handover and continue the work of the topic (P-026)');
+  if (kind === 'nudge') extras.unshift(nudgeLine(ctx.thread, input?.transcript_path));
   if (kind === 'keepalive') extras.unshift('turn resumed after interruption (server restart): continue the interrupted work from your context/handover');
   else if (kind === 'error') extras.unshift('error reported: use skill workflow:error (P-003)');
   else if (kind === 'save') extras.unshift('save requested: use skill workflow:save (P-013)');
