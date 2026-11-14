@@ -5,22 +5,22 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
-import { loadContext, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR, resolveBrain, threadStateFile } from '../scripts/config.mjs';
+import { loadContext, loadPolicy, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, SCRATCH_DIR, resolveBrain, threadStateFile } from '../scripts/config.mjs';
 import { git, isInside, toPosix } from '../scripts/util.mjs';
 import { readDrift } from '../scripts/drift.mjs';
 import { parse, programIndex } from '../scripts/shell-parse.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
-import { SUBAGENT_ALLOWED, recordWaitingOperator } from '../scripts/comms.mjs';
+import { SUBAGENT_ALLOWED, recordWaitingOperator, isMainTopic } from '../scripts/comms.mjs';
 import { repeatsAnswered, REPEATED_QUESTION_REASON } from '../scripts/protocol.mjs';
 import { knowledgeDirOf, PROJECT_KNOWLEDGE } from '../scripts/repo-knowledge.mjs';
 import { findSecret } from '../scripts/secrets.mjs';
 import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell, foreignScratch } from '../scripts/own-files.mjs';
 import { catalogPreTool } from '../scripts/catalog/pretool.mjs';
 import { bigWriteDeny } from '../scripts/materialy.mjs';
-import { heldTopics, threadOrchestrator, ORCHESTRATOR_QUESTION_REASON, ORCHESTRATOR_CONSENT_REASON, findConsent,topicCopyPath,expectedImplementation, implementMarkers, IMPLEMENT_CLASSES } from '../scripts/topic.mjs';
+import { heldTopics, listTopics, threadOrchestrator, ORCHESTRATOR_QUESTION_REASON, endedProgrammaticThread, PROGRAMMATIC_END_REASON, ORCHESTRATOR_CONSENT_REASON, findConsent,topicCopyPath,expectedImplementation, implementMarkers, IMPLEMENT_CLASSES } from '../scripts/topic.mjs';
 import { logDecision } from '../scripts/denials.mjs';
 import { republishDeny } from '../scripts/artifacts.mjs';
-import { analyze, bypassOf, bypassReason, callKey, closedTargets, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, openByAnswers, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, transcriptTurnText, turnLifts, awaitTranscriptToolUse, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
+import { analyze, bypassOf, bypassReason, callKey, closedTargets, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, namesPath, openByAnswers, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, transcriptTurnText, turnLifts, awaitTranscriptToolUse, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-036', 'P-052', 'P-053', 'P-054', 'P-055'] };
 
@@ -170,6 +170,31 @@ export function classifyTarget(file) {
   if (status.trim()) return { dangerous: true, reason: 'uncommitted changes', exists, repo };
   return { dangerous: false, reason: 'tracked and clean', exists, repo };
 }
+
+/**
+ * D-0042: a leftover of a workflow test is disposable, not data (P-018 counts it as recoverable): a fixture dir
+ * (`wf-test-*`) or an orphaned git worktree (a `.git` file whose gitdir no longer exists), named as the target itself:
+ * a file inside one stays protected, the fixtures of the tests themselves live under wf-test-* (operator 2026-11-14:
+ * the removal of two orphaned test worktrees waited 5 hours for a confirmation window).
+ */
+export function testLeftover(file) {
+  try {
+    if (!fs.lstatSync(file).isDirectory()) return false;
+    if (/^wf-test-/.test(path.basename(file))) return true;
+    const dotgit = path.join(file, '.git');
+    if (!fs.lstatSync(dotgit).isFile()) return false;
+    const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotgit, 'utf8'));
+    return !!m && !fs.existsSync(path.resolve(file, m[1]));
+  } catch { return false; }
+}
+
+
+/** Internal mark of a step that needs a consent; run() never lets it out as `ask` (D-0042). */
+const needsConsent = (reason) => permissionOutput('ask', reason);
+
+/** D-0042: the way a refused step that needs the operator's consent names, instead of a window that holds the thread. */
+export const NO_ASK_WAY = 'this step needs the operator\'s consent and the workflow never holds the thread with a confirmation window: if the work really needs it, ask with a question in the protocol (AskUserQuestion in the operator\'s turn naming the exact targets; after the yes the same call passes once), otherwise go on with other work (P-042, D-0042)';
+export const noAskReason = (why) => `${String(why || '').replace(/[\s.]+$/, '')}. ${NO_ASK_WAY}`;
 
 export function removedLines(toolInput, file) {
   if (toolInput.old_string !== undefined) {
@@ -1057,9 +1082,11 @@ export const SHARED_CHECKOUT_GIT = new Set(['commit', 'merge', 'checkout', 'swit
 
 /**
  * D-0038: the shared checkout dir lies in, or null. A shared checkout is the main checkout (a `.git` directory) of a code
- * repo whose topic worktrees live in `<domain>/.worktrees/<repo>/` (the directory exists), or one listed in policy
- * `topics.shared_checkouts` (relative to the domain, else to the project). Topic worktrees (a `.git` file) and topic
- * clones (`../<project>-topics/`) are no shared checkout.
+ * repo the brain policy names: a repo of `topics.auto.projects` (relative to the brain, D-0035) or of
+ * `topics.shared_checkouts` (relative to the domain, else to the project). The brain is never one, and a project repo
+ * that once got a topic worktree stays writable for its own project thread (checkout-guard-scope 2026-11-14: the
+ * `.worktrees/<repo>/` directory alone made the brain and a client project repo refuse their own writes). Topic
+ * worktrees (a `.git` file) and topic clones (`../<project>-topics/`) are no shared checkout.
  */
 export function sharedCheckoutOf(ctx, dir) {
   const abs = path.resolve(dir);
@@ -1072,12 +1099,13 @@ export function sharedCheckoutOf(ctx, dir) {
     if (st) { if (st.isDirectory()) top = d; break; }
     if (path.dirname(d) === d) break;
   }
-  if (!top) return null;
+  const brain = ctx.domain?.brain || ctx.brainDir;
+  if (!top || [ctx.brainDir, ctx.domain?.brain].some((b) => b && samePath(b, top))) return null;
   const base = ctx.domain?.root || ctx.projectDir;
   const listed = (ctx.policy?.topics?.shared_checkouts || []).map((p) => path.resolve(base, String(p)));
-  if (listed.some((p) => samePath(p, top))) return top;
-  const roots = [...new Set([ctx.domain?.root, path.dirname(top)].filter(Boolean))];
-  return roots.some((r) => fs.existsSync(path.join(r, WORKTREES_DIR, path.basename(top)))) ? top : null;
+  // The domain brain's policy: a call from the domain root (git -C <repo>) has no project policy of its own.
+  const auto = Object.keys((brain ? loadPolicy(brain) : ctx.policy)?.topics?.auto?.projects || {}).map((p) => path.resolve(brain || base, p));
+  return [...listed, ...auto].some((p) => samePath(p, top)) ? top : null;
 }
 
 /** Where this thread writes instead of the shared checkout top: the worktree of a topic it holds, else a new code topic. */
@@ -1269,6 +1297,54 @@ export const dialogText = (toolInput) => (Array.isArray(toolInput?.questions) ? 
   .flatMap((q) => (typeof q === 'string' ? [q] : [q?.question, ...(Array.isArray(q?.options) ? q.options.flatMap((o) => [o?.label, o?.description, o?.preview]) : [])]))
   .filter((s) => typeof s === 'string' && s.trim()).join('\n');
 
+// D-0039 (operator 2026-11-13): a question to the operator reads without the thread: what is being done and why it came up,
+// what it decides, what each option does, one recommended option with its reason; no internal marks the operator did not use.
+export const MIN_QUESTION_TEXT = 80;
+const RECOMMENDED_RE = /\((?:recommended|odporúčané)\)\s*$/i;
+const REASON_RE = /(?<![\p{L}])(?:lebo|pretože|keďže|preto|aby|dôvod\p{L}*|inak|because|since|so that|otherwise|reason)(?![\p{L}])/iu;
+const MARKS = [
+  ['mail message ID', /\b\d{8}T\d{6,9}Z-[0-9a-f]{8}\b/g],
+  ['decision or rule ID', /\b[A-Z]-\d{3,4}\b/g],
+  ['command flag', /(?<![\w-])--[a-z][\w-]*/gi],
+  ['file path', /(?<![\w/.~-])(?:(?:\.{1,2}|~)\/[^\s"'`)\]]*|[\w.-]*\/[\w./-]*\.[a-z0-9]{1,6}\b)/gi],
+  ['commit hash', /\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b/g],
+];
+/** D-0039: the internal marks the dialog shows (question, labels, descriptions; not previews) that the operator's prompts do not contain. */
+export function dialogMarks(toolInput, operatorText = '', topicIds = []) {
+  const qs = Array.isArray(toolInput?.questions) ? toolInput.questions : [];
+  let text = qs.flatMap((q) => (typeof q === 'string' ? [q] : [q?.question, ...(Array.isArray(q?.options) ? q.options.flatMap((o) => [o?.label, o?.description]) : [])]))
+    .filter((x) => typeof x === 'string').join('\n').replace(URL_RE, ' ');
+  const found = [];
+  const add = (kind, raw) => { const m = raw.replace(/[.,;:!?]+$/, ''); if (!String(operatorText).includes(m) && !found.some((f) => f.mark === m)) found.push({ kind, mark: m }); };
+  for (const [kind, re] of MARKS) text = text.replace(re, (m) => { add(kind, m); return ' '; });
+  for (const id of topicIds) {
+    const re = new RegExp(`(?<![\\w-])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`);
+    if (re.test(text)) add('topic ID', id);
+  }
+  return found;
+}
+/** D-0039: what the dialog's structure lacks: a short question, an option without a description, not exactly one recommended option, no reason. */
+export function dialogGaps(toolInput) {
+  const qs = Array.isArray(toolInput?.questions) ? toolInput.questions : [];
+  const gaps = [];
+  qs.forEach((q, i) => {
+    const n = qs.length > 1 ? `question ${i + 1}: ` : '';
+    const text = (typeof q === 'string' ? q : String(q?.question || '')).trim();
+    const opts = Array.isArray(q?.options) ? q.options : [];
+    if (text.length < MIN_QUESTION_TEXT) gaps.push(`${n}the question has ${text.length} characters, at least ${MIN_QUESTION_TEXT}: say what is being done and why it came up, and what the answer decides`);
+    const bare = opts.filter((o) => !String(o?.description || '').trim()).map((o) => `"${o?.label || '?'}"`);
+    if (bare.length) gaps.push(`${n}option(s) ${bare.join(', ')} without a description: say what the option does, as its result`);
+    const rec = opts.filter((o) => RECOMMENDED_RE.test(String(o?.label || '')));
+    if (rec.length !== 1) gaps.push(`${n}${rec.length} options are marked recommended, exactly one must be: end its label with "(Recommended)" or "(odporúčané)"`);
+    else if (String(rec[0].description || '').trim() && !REASON_RE.test(rec[0].description)) gaps.push(`${n}the recommended option's description gives no reason: say why (e.g. "…, lebo …")`);
+  });
+  return gaps;
+}
+export const UNCLEAR_DIALOG_REASON = (marks, gaps) => `the operator reads this dialog without the thread, so it must stand on its own (D-0039): ${[
+  ...(marks.length ? [`replace these internal marks with a description in words (what they are, not their ID): ${marks.map((m) => `${m.mark} (${m.kind})`).join(', ')}`] : []),
+  ...gaps,
+].join('; ')}. A mark the operator wrote in their prompt may stay. Then ask again; a repeat in this turn passes (D-0039, P-061)`;
+
 // P-061 (flow-public#32): a turn that wrote this much text before the dialog, with a dialog that shows less than the minimum.
 export const LONG_TURN_TEXT = 1200;
 export const MIN_DIALOG_TEXT = 200;
@@ -1331,6 +1407,9 @@ export function run(input) {
     // P-064: a thread of a topic another thread created asks its orchestrator by mail, never the operator.
     const orchestrator = threadOrchestrator(ctx.brainDir, ctx.thread);
     if (orchestrator) return permissionOutput('deny', ORCHESTRATOR_QUESTION_REASON(orchestrator));
+    // D-0043: a thread code started for a topic that is closed ends settled, it asks nobody.
+    const ended = endedProgrammaticThread(ctx.brainDir, ctx.thread);
+    if (ended) return permissionOutput('deny', PROGRAMMATIC_END_REASON(ended));
     // P-059: a dialog that repeats a question the operator answered in this thread is refused once per turn (the operator sees
     // the dialog before any Stop check); a second call in the turn passes: the agent then holds the step for serious.
     const before = readThreadState(ctx.brainDir, ctx.thread);
@@ -1385,6 +1464,17 @@ export function run(input) {
       if (written < MIN_ANSWER_TEXT) {
         writeThreadState(ctx.brainDir, ctx.thread, { ...before, chained_dialog_denied_at: answeredAt });
         return permissionOutput('deny', CHAINED_DIALOG_REASON(written));
+      }
+    }
+    // D-0039: internal marks the operator did not use and a structure that does not read on its own are refused once per
+    // turn (the agent then keeps the dialog it holds for right, it does not freeze); a repeat passes.
+    if (before.question_marks_denied_at !== turnKey) {
+      const topicIds = listTopics(ctx.brainDir).filter((t) => t?.id && !isMainTopic(t)).map((t) => t.id);
+      const marks = dialogMarks(toolInput, (before.operator_prompts || []).join('\n'), topicIds);
+      const gaps = dialogGaps(toolInput);
+      if (marks.length || gaps.length) {
+        writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), question_marks_denied_at: turnKey });
+        return permissionOutput('deny', UNCLEAR_DIALOG_REASON(marks, gaps));
       }
     }
     const st ={ ...readThreadState(ctx.brainDir, ctx.thread), dialog_at: new Date().toISOString(), dialog_questions: dialogQuestions(toolInput) };
@@ -1522,20 +1612,42 @@ export function run(input) {
       out = permissionOutput('deny', ORCHESTRATOR_CONSENT_REASON(orchestrator, out.hookSpecificOutput.permissionDecisionReason, tool));
     }
   }
+  // D-0042 (operator 2026-11-14: "never ask me for a confirmation in your routine work"): a step that needs a consent is
+  // refused with its reason and the way, never asked in a window that holds the thread until the operator comes. The
+  // operator's yes in a dialog (AskUserQuestion) of the same turn that names the targets lets the same call pass once.
+  if (out?.hookSpecificOutput?.permissionDecision === 'ask') {
+    const why = out.hookSpecificOutput.permissionDecisionReason;
+    if (!input.agent_id && !input.agent_type && ctx.brainDir && ctx.thread) {
+      const st = readThreadState(ctx.brainDir, ctx.thread);
+      const since = st.turn_started_at || '';
+      const key = callKey(tool, toolInput);
+      const pending = (Array.isArray(st.consent_denied) ? st.consent_denied : []).filter((d) => d && (!since || d.at >= since));
+      const prior = pending.find((d) => d.key === key);
+      const targets = analyze(tool, toolInput, cwd, anchors).paths;
+      const lifts = prior ? turnLifts(st).filter((l) => l.at >= prior.at) : [];
+      if (lifts.length && targets.every((t) => lifts.some((l) => namesPath(l.text, t, cwd)))) {
+        writeThreadState(ctx.brainDir, ctx.thread, { ...st, consent_denied: pending.filter((d) => d !== prior) });
+        return permissionOutput('allow', 'granted by the operator\'s answer in the dialog of this turn (D-0042)');
+      }
+      if (!prior) writeThreadState(ctx.brainDir, ctx.thread, { ...st, consent_denied: [...pending, { key, at: new Date().toISOString() }].slice(-20) });
+    }
+    out = permissionOutput('deny', noAskReason(why), out.hookSpecificOutput.additionalContext || null);
+  }
   const decision = out?.hookSpecificOutput?.permissionDecision;
   // P-001 bulk read of docs/principles/ is a hint, not a deny: the check reads the command text and cannot tell a
   // search over the directory from a mention of it, and a wrong deny stopped the work (operator 2026-11-08, hooks
   // review: heuristic checks hint, only structural ones deny). The hint rides on an allow, never on a deny or ask.
   const bulk = principlesBulkRead(tool, toolInput, cwd);
-  if (bulk && decision !== 'deny' && decision !== 'ask') {
+  if (bulk && decision !== 'deny') {
     const prev = out?.hookSpecificOutput?.additionalContext;
     return { ...out, hookSpecificOutput: { ...(out?.hookSpecificOutput || {}), hookEventName: 'PreToolUse', additionalContext: prev ? `${bulk}\n${prev}` : bulk } };
   }
   // A refused forced add names its own way (git add without -f, a named file) on the same paths: it locks nothing.
   // So does a command form the brain forbids (deny_commands): it names the tool for the same file (Edit, multi-replace),
   // and its lock denied that Edit as a bypass until the end of the turn (report-14a1f628, 2026-11-13).
-  // A confirmation sent to the orchestrator (P-064) locks nothing either: its consent lets the same call pass.
-  if (decision === 'deny' && state && !/ adds ignored files too |\(policy harness\.deny_commands of the brain\)$|passes once \(P-064\)$/.test(out.hookSpecificOutput.permissionDecisionReason || '')) {
+  // A confirmation sent to the orchestrator (P-064) locks nothing either: its consent lets the same call pass. Nor does a
+  // step that needs the operator's consent (D-0042): it locked nothing while it was a window, the same check guards every call.
+  if (decision === 'deny' && state && !/ adds ignored files too |\(policy harness\.deny_commands of the brain\)$|passes once \(P-064\)$|\(P-042, D-0042\)$/.test(out.hookSpecificOutput.permissionDecisionReason || '')) {
     const found = analyze(tool, toolInput, cwd, anchors);
     const write = found.write;
     // A P-052 refusal (write outside the project) is about the outside target only: the way it names, a work file in
@@ -1624,7 +1736,7 @@ function pathChecks(input, ctx, cwd) {
       return permissionOutput('deny', `target ${outsideReason(ctx, abs)}`);
     }
     const guard = guardConfigWrite(ctx.projectDir, [abs]);
-    if (guard) return permissionOutput('ask', guard);
+    if (guard) return needsConsent( guard);
     const generatedSkills = /[\\/]\.(claude|agents)[\\/]skills[\\/]/.exec(abs);
     if (tool !== 'NotebookEdit' && generatedSkills && isInside(ctx.projectDir, abs)) {
       return permissionOutput('deny', `.${generatedSkills[1]}/skills/ in the project is generated from brain at session start; edit skills in brain via workflow:save (P-017)`);
@@ -1641,7 +1753,7 @@ function pathChecks(input, ctx, cwd) {
       const whole = tool === 'Write' || tool === 'NotebookEdit';
       const thr = policy.destructive || {};
       if (whole || removed > (thr.removed_lines_threshold ?? 50) || (total && removed > total * (thr.removed_fraction_threshold ?? 0.5))) {
-        out = permissionOutput('ask', `target ${toPosix(path.relative(cwd, abs))} is ${cls.reason} (not recoverable from git); ${whole ? 'overwriting the whole file' : `removing ${removed} of ${total} lines`} needs operator confirmation with the exact target list (P-018)`);
+        out = needsConsent( `target ${toPosix(path.relative(cwd, abs))} is ${cls.reason} (not recoverable from git); ${whole ? 'overwriting the whole file' : `removing ${removed} of ${total} lines`} needs operator confirmation with the exact target list (P-018)`);
       }
     }
     // Decision binding (P-031): one line, once per file per thread.
@@ -1685,9 +1797,9 @@ function pathChecks(input, ctx, cwd) {
     const asks = policy.harness?.ask_commands || [];
     const normalized = executedText(cmd).replace(/\s+/g, ' ');
     const historyOp = historyOperation(normalized, asks, policy.harness?.ask_commands_except || []);
-    if (historyOp && !restoresOnlyOwn(ctx, cmd, cwd)) return permissionOutput('ask', `"${historyOp}" rewrites or drops git history; always needs explicit operator confirmation (P-018)`);
+    if (historyOp && !restoresOnlyOwn(ctx, cmd, cwd)) return needsConsent( `"${historyOp}" rewrites or drops git history; always needs explicit operator confirmation (P-018)`);
     const recursive = recursiveModeChange(cmd, cwd, path.join(ctx.projectDir, SCRATCH_DIR));
-    if (recursive) return permissionOutput('ask', `recursive owner/mode change (${recursive.join('; ').slice(0, 160)}) rewrites every file under the target and git does not record it; confirm the exact target with the operator, or name only the files that need it (P-018)`);
+    if (recursive) return needsConsent( `recursive owner/mode change (${recursive.join('; ').slice(0, 160)}) rewrites every file under the target and git does not record it; confirm the exact target with the operator, or name only the files that need it (P-018)`);
     // An untracked file in brain is not brain data (git has none of it): removing such stray output goes through P-018
     // below, not the P-013 deny (Bob 2026-11-01: `rm 0` in the persona root was denied as a brain write). The same holds for
     // ignored files: an old `.scratch/` left by a migration is no brain data and asks instead of a deny (Carol 2026-11-02).
@@ -1712,7 +1824,7 @@ function pathChecks(input, ctx, cwd) {
     if (sudo) return permissionOutput('deny', sudo);
     // A domain move writes outside the domain (mv of the domain, ~/.claude history and trust): the operator's step, confirmed
     // with the exact command; the plan (--dry) needs nothing (carol 2026-11-09).
-    if (runsDomainMove(cmd)) return permissionOutput('ask', `domain-move.mjs moves a domain folder and writes into ~/.claude outside the domain (P-052): the operator confirms this exact command; show the plan first (domain-move.mjs <dir> --dry)`);
+    if (runsDomainMove(cmd)) return needsConsent( `domain-move.mjs moves a domain folder and writes into ~/.claude outside the domain (P-052): the operator confirms this exact command; show the plan first (domain-move.mjs <dir> --dry)`);
     const marker = domainMarkerWrite(ctx, [...targets, ...edits, ...shellWrites(cmd, cwd)]) || servicesWrite([...targets, ...edits, ...shellWrites(cmd, cwd)], process.env, outsideAllowed(ctx));
     if (marker) return permissionOutput('deny', marker);
     if (boundaryActive(ctx)) {
@@ -1721,35 +1833,35 @@ function pathChecks(input, ctx, cwd) {
       if (outside) return permissionOutput('deny', `command writes ${outsideReason(ctx, outside)}`);
       // An output option of a program the table does not know: maybe a write, so the operator decides (hooks review C3).
       const guess = writes.find((w) => !w.sure && !insideProject(ctx, w.path));
-      if (guess) return permissionOutput('ask', `command may write ${toPosix(guess.path)} (an output option of a program the hook does not know) outside ${ctx.domain ? `the domain ${toPosix(ctx.domain.root)}` : 'the project'}; work files go to ${toPosix(path.join(ctx.projectDir, SCRATCH_DIR))}/ (P-052)`);
+      if (guess) return needsConsent( `command may write ${toPosix(guess.path)} (an output option of a program the hook does not know) outside ${ctx.domain ? `the domain ${toPosix(ctx.domain.root)}` : 'the project'}; work files go to ${toPosix(path.join(ctx.projectDir, SCRATCH_DIR))}/ (P-052)`);
     }
     const guard = guardConfigWrite(ctx.projectDir, [...shellWrites(cmd, cwd), ...edits, ...targets]);
-    if (guard) return permissionOutput('ask', guard);
+    if (guard) return needsConsent( guard);
     const forced = forcedAddIgnored(cmd, cwd);
     if (forced) return permissionOutput('deny', forced);
     const hookSkip = gitHookBypass(executedText(cmd));
-    if (hookSkip) return permissionOutput('ask', `git with ${hookSkip} runs past the git hooks that guard brain and repos (brain pre-commit, repo checks); the operator confirms it (P-054)`);
+    if (hookSkip) return needsConsent( `git with ${hookSkip} runs past the git hooks that guard brain and repos (brain pre-commit, repo checks); the operator confirms it (P-054)`);
     const isCreated = (t) => created.has(t) || [...created].some((c) => isInside(c, t));
     // Appending (`>>`) loses nothing, rmdir removes only an empty directory (skarper 2026-11-10: `rm docs/firma/x.md && rmdir docs/firma docs` asked)
     // and the same file named twice is one file: none of them asks as an overwrite of many files.
     const overwritten = [...new Set(bashTargets(cmd, cwd, { skipRmdir: true, skipAppend: true }))];
-    const dangerous = overwritten.filter((t) => !isCreated(t) && fs.existsSync(t) && !ownWork(ctx, t) && classifyTarget(t).dangerous);
+    const dangerous = overwritten.filter((t) => !isCreated(t) && fs.existsSync(t) && !ownWork(ctx, t) && !testLeftover(t) && classifyTarget(t).dangerous);
     // report-143e7cdb: a scratch/ file is disposable only for the thread that wrote it; removing a directory that holds files
     // another thread recorded there lost that thread's drafts (rm -rf of a shared scratch dir instead of its own files).
     const foreign = overwritten.filter((t) => fs.existsSync(t) && ownWork(ctx, t)).flatMap((t) => foreignScratch(ctx, t));
     if (foreign.length) {
       const list = [...new Set(foreign.map((f) => toPosix(path.relative(cwd, f.file))))];
-      return permissionOutput('ask', `targets hold ${list.length} work file(s) of another thread (${[...new Set(foreign.map((f) => f.thread))].join(', ')}): ${list.slice(0, 5).join(', ')}${list.length > 5 ? ', …' : ''}; remove only the files this thread made, name work dirs after the topic (scratch/<topic>-…), or confirm with the operator (P-018)`);
+      return needsConsent( `targets hold ${list.length} work file(s) of another thread (${[...new Set(foreign.map((f) => f.thread))].join(', ')}): ${list.slice(0, 5).join(', ')}${list.length > 5 ? ', …' : ''}; remove only the files this thread made, name work dirs after the topic (scratch/<topic>-…), or confirm with the operator (P-018)`);
     }
     const thr = policy.destructive || {};
     // The threshold counts files the command changes or removes: not the ones it creates, not missing ones and not the
     // thread's own work files (6 files in scratch/wt asked and waited 6 896 s for the operator, audit M2 2026-11-11).
-    const changed = overwritten.filter((t) => !isCreated(t) && fs.existsSync(t) && !ownWork(ctx, t));
+    const changed = overwritten.filter((t) => !isCreated(t) && fs.existsSync(t) && !ownWork(ctx, t) && !testLeftover(t));
     if (changed.length > (thr.files_threshold ?? 5)) {
-      return permissionOutput('ask', `operation on ${changed.length} files (> ${thr.files_threshold}); confirm the exact target list with the operator (P-018)`);
+      return needsConsent( `operation on ${changed.length} files (> ${thr.files_threshold}); confirm the exact target list with the operator (P-018)`);
     }
     if (dangerous.length) {
-      return permissionOutput('ask', `targets not recoverable from git: ${dangerous.map((t) => toPosix(path.relative(cwd, t))).join(', ')}; confirm with the operator before deleting or overwriting (P-018)`);
+      return needsConsent( `targets not recoverable from git: ${dangerous.map((t) => toPosix(path.relative(cwd, t))).join(', ')}; confirm with the operator before deleting or overwriting (P-018)`);
     }
     // A file this command creates (redirect, cp to a new target) is the thread's own: removing a stray one later needs
     // no confirmation (operator 2026-11-01: a file born by mistake is cleaned up, P-018).

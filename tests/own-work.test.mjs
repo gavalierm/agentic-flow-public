@@ -33,12 +33,12 @@ test('work files under the ignored scratch/ of any repo the thread works in are 
     fs.mkdirSync(path.join(flow, 'notes'));
     fs.writeFileSync(path.join(flow, 'notes', 'n.md'), 'x');
     r = fx.hook('pre-tool-use.mjs', { cwd: fx.project, tool_name: 'Bash', tool_input: { command: `rm -rf ${path.join(flow, 'notes')}` } });
-    assert.equal(decision(r), 'ask', 'untracked data outside scratch/ still asks');
+    assert.equal(decision(r), 'deny', 'untracked data outside scratch/ still asks');
     const plain = repo(fx, 'plain', false);
     fs.mkdirSync(path.join(plain, 'scratch'));
     fs.writeFileSync(path.join(plain, 'scratch', 'keep.md'), 'x');
     r = fx.hook('pre-tool-use.mjs', { cwd: fx.project, tool_name: 'Bash', tool_input: { command: `rm -rf ${path.join(plain, 'scratch', 'keep.md')}` } });
-    assert.equal(decision(r), 'ask', 'a scratch/ the repo does not ignore is not a work dir');
+    assert.equal(decision(r), 'deny', 'a scratch/ the repo does not ignore is not a work dir');
   } finally { fx.cleanup(); }
 });
 
@@ -65,9 +65,9 @@ test('restoring a file whose uncommitted changes are the thread\'s own does not 
     assert.equal(decision(r), null, 'after sed -i by the thread');
     fs.appendFileSync(f, 'other thread\n');
     r = fx.hook('pre-tool-use.mjs', restore);
-    assert.equal(decision(r), 'ask', 'content changed by someone else after the thread is not the thread\'s');
+    assert.equal(decision(r), 'deny', 'content changed by someone else after the thread is not the thread\'s');
     r = fx.hook('pre-tool-use.mjs', restore, { env: { WORKFLOW_THREAD_ID: 'b2' } });
-    assert.equal(decision(r), 'ask', 'another thread does not inherit the edit');
+    assert.equal(decision(r), 'deny', 'another thread does not inherit the edit');
   } finally { fx.cleanup(); }
 });
 
@@ -84,7 +84,7 @@ test('a file that was already dirty before the thread touched it stays protected
     fs.writeFileSync(f, 'h\nwork of someone\n');
     fx.hook('post-tool-use.mjs', edit);
     const r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'rm g.txt' } });
-    assert.equal(decision(r), 'ask');
+    assert.equal(decision(r), 'deny');
   } finally { fx.cleanup(); }
 });
 
@@ -114,10 +114,10 @@ test('git restore / checkout -- of the thread\'s own edits does not ask; other d
     assert.equal(ask(`git -C ${fx.project} checkout -- own.txt`), null);
     assert.equal(ask('git restore .'), null, 'only own edits are dirty');
     fs.writeFileSync(g, 'someone\n');
-    assert.equal(ask('git restore .'), 'ask', 'another dirty file under the path');
-    assert.equal(ask('git restore other.txt'), 'ask');
-    assert.equal(ask('git restore own.txt && git reset --hard'), 'ask', 'another history op in the same command');
-    assert.equal(ask('git restore --source HEAD~1 own.txt'), 'ask');
+    assert.equal(ask('git restore .'), 'deny', 'another dirty file under the path');
+    assert.equal(ask('git restore other.txt'), 'deny');
+    assert.equal(ask('git restore own.txt && git reset --hard'), 'deny', 'another history op in the same command');
+    assert.equal(ask('git restore --source HEAD~1 own.txt'), 'deny');
   } finally { fx.cleanup(); }
 });
 
@@ -137,9 +137,9 @@ test('a file a script changed from clean (python heredoc in another repo) is own
     fx.hook('post-tool-use.mjs', py);
     const ask = (command, id) => decision(fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_use_id: id, tool_input: { command } }));
     assert.equal(ask(`cd ${flow} && git restore a.txt`, 'tu2'), null, 'clean before, changed by the command');
-    assert.equal(ask(`cd ${flow} && git restore b.txt`, 'tu3'), 'ask', 'dirty before the command: not the thread\'s');
+    assert.equal(ask(`cd ${flow} && git restore b.txt`, 'tu3'), 'deny', 'dirty before the command: not the thread\'s');
     fs.appendFileSync(a, 'other\n');
-    assert.equal(ask(`cd ${flow} && git restore a.txt`, 'tu4'), 'ask', 'changed after the thread by someone else');
+    assert.equal(ask(`cd ${flow} && git restore a.txt`, 'tu4'), 'deny', 'changed after the thread by someone else');
   } finally { fx.cleanup(); }
 });
 
@@ -149,8 +149,8 @@ test('git history text inside a heredoc written to a file does not ask; a heredo
     const ask = askOf(fx);
     assert.equal(ask(`mkdir -p scratch && cat > scratch/release.sh <<'EOF'\ngit checkout -- package.json\ngit reset --hard\nEOF\nsh -n scratch/release.sh`), null, 'script text is data');
     assert.equal(ask(`python3 - <<'EOF'\nprint("git reset --hard")\nEOF`), null);
-    assert.equal(ask(`bash <<'EOF'\ngit reset --hard\nEOF`), 'ask', 'a shell runs the body');
-    assert.equal(ask(`cat > f <<'EOF'\nx\nEOF\ngit reset --hard`), 'ask', 'a history op after the heredoc still asks');
+    assert.equal(ask(`bash <<'EOF'\ngit reset --hard\nEOF`), 'deny', 'a shell runs the body');
+    assert.equal(ask(`cat > f <<'EOF'\nx\nEOF\ngit reset --hard`), 'deny', 'a history op after the heredoc still asks');
   } finally { fx.cleanup(); }
 });
 
@@ -162,9 +162,9 @@ test('git history text in quoted arguments (commit message, topic subject) does 
     assert.equal(ask(`node topic.mjs create t --subject "git restore bez potvrdenia"`), null, 'topic subject');
     assert.equal(ask(`echo 'git reset --hard' && ls`), null);
     assert.equal(ask(`python3 - <<'PYEOF'\nrep(P, "git checkout -- x", "y")\nPYEOF`), null, 'python heredoc editing hook code');
-    assert.equal(ask(`bash -c "git reset --hard"`), 'ask', 'bash -c runs its argument');
-    assert.equal(ask(`ssh h "git clean -fd"`), 'ask');
-    assert.equal(ask(`echo "x" && git reset --hard`), 'ask', 'the executed part still asks');
+    assert.equal(ask(`bash -c "git reset --hard"`), 'deny', 'bash -c runs its argument');
+    assert.equal(ask(`ssh h "git clean -fd"`), 'deny');
+    assert.equal(ask(`echo "x" && git reset --hard`), 'deny', 'the executed part still asks');
   } finally { fx.cleanup(); }
 });
 

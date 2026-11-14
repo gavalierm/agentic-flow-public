@@ -8,7 +8,7 @@ import path from 'node:path';
 import { setup } from './helpers.mjs';
 import { topicThreadMessage } from '../scripts/topic.mjs';
 
-const ASK = { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Ktorú možnosť zvolíme pre ďalší postup tejto témy, A alebo B, a prečo by sme mali pokračovať práve takto?', options: [{ label: 'A', description: 'možnosť A' }, { label: 'B', description: 'možnosť B' }] }] } };
+const ASK = { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Ktorú možnosť zvolíme pre ďalší postup tejto témy, A alebo B, a prečo by sme mali pokračovať práve takto?', options: [{ label: 'A (Recommended)', description: 'možnosť A, lebo je kratšia' },{ label: 'B', description: 'možnosť B' }] }] } };
 const topicJson = (fx, id) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'topics', id, 'topic.json'), 'utf8'));
 const child = (fx) => ({ env: { WORKFLOW_THREAD_ID: 'child-1' } });
 const QUESTION_REPLY = 'Výsledok: návrh.\n\n**Otázky na operátora:**\n- [ ] Zvolíme A? (odporúčam A)\n\nStav: otázka';
@@ -92,6 +92,6 @@ test('P-064: an ask in an orchestrated topic thread is refused toward the orches
     assert.equal(fx.hook('pre-tool-use.mjs', call, child(fx)).json?.hookSpecificOutput?.permissionDecision, 'deny', 'a consent is spent');
     // The orchestrator's own thread still gets the ask (it talks to the operator).
     fx.hook('user-prompt-submit.mjs', { prompt: 'pokračuj' });
-    assert.equal(fx.hook('pre-tool-use.mjs', call).json?.hookSpecificOutput?.permissionDecision, 'ask');
+    assert.equal(fx.hook('pre-tool-use.mjs', call).json?.hookSpecificOutput?.permissionDecision, 'deny');
   } finally { fx.cleanup(); }
 });

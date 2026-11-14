@@ -7,7 +7,7 @@ import { WORKFLOW_CONFIG, SCRATCH_DIR, readThreadState, writeThreadState } from 
 import { assembleRules } from './rules.mjs';
 import { buildIndexes, shownIndexes, topicLine } from './index.mjs';
 import { recordAuthors, foreignAuthor } from './authors.mjs';
-import { heldTopics, mailboxTopics } from './topic.mjs';
+import { heldTopics, mailboxTopics, endedProgrammaticThread, PROGRAMMATIC_END_REASON } from './topic.mjs';
 import { mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics, isMainTopic, noticesCount, discussionMail } from './comms.mjs';
 import { syncBrainSkills } from './skills-sync.mjs';
 import { policyIgnoredLine } from './policy-layers.mjs';
@@ -171,13 +171,15 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
 
   // 3. status line (+ the waiting mail as mechanical lines, P-044; + handover of the held topic after compaction, P-026)
   const info = statusInfo(ctx);
+  info.ended = ctx.brainDir && !info.held.length ? endedProgrammaticThread(ctx.brainDir, ctx.thread) : null;
   let status = info.line;
   const mailLine = mailNoticeLine(info.mail);
   // A brain git refuses (dubious ownership) fails every save, log and topic write: say it with the fix at start (#23).
   const gitProblem = ctx.brainDir ? gitAccessProblem(ctx.brainDir, who.git) : null;
   if (gitProblem) status += `\n${gitProblem}`;
   if (mailLine) status += `\n${mailLine}`;
-  if (ctx.thread) status += `\n${statusBlockInstruction(operatorStatus(ctx, info), !info.held.length, ctx.projectName)}`;
+  if (ctx.thread) status += `\n${statusBlockInstruction(operatorStatus(ctx, info), !info.held.length && !info.ended, ctx.projectName)}`;
+  if (info.ended) status += `\n${PROGRAMMATIC_END_REASON(info.ended)}`;
   if (ctx.brainDir && ctx.thread) {
     const state = readThreadState(ctx.brainDir, ctx.thread);
     writeThreadState(ctx.brainDir, ctx.thread, { ...state, turn_source: 'operator', session_source: source, mail_signaled: info.mail.count, last_status: info.line, rules_hash: recordRules ? rulesHash(rules.text) : state.rules_hash ?? null, rules_sections: recordRules ? rulesSections(rules.text) : state.rules_sections ?? null, rules_hook: rulesHook });
@@ -279,6 +281,9 @@ export function operatorStatus(ctx, info) {
   // The project leads the line (operator 2026-11-04: "skarper-web / bez témy", "skarper-web / <téma>").
   if (info.held.length) {
     lines.push(`${ctx.projectName} / ${info.held[0].id}`);
+  } else if (info.ended) {
+    // D-0043: a thread code started for a topic that is closed shows neither "bez témy" nor the topic question.
+    lines.push(`${ctx.projectName} / ${info.ended} (uzavretá)`);
   } else {
     lines.push(`${ctx.projectName} / bez témy`, '', 'Dostupné témy:');
     const free = freeTopics(ctx);

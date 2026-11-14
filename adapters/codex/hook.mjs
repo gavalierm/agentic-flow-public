@@ -7,7 +7,7 @@ import { readHookInput, emit, contextOutput, permissionOutput, isMain } from '..
 import { loadContext } from '../../scripts/config.mjs';
 import { buildBootContext } from '../../scripts/boot.mjs';
 import { readText } from '../../scripts/util.mjs';
-import { run as preToolUse } from '../../hooks/pre-tool-use.mjs';
+import { run as preToolUse, NO_ASK_WAY } from '../../hooks/pre-tool-use.mjs';
 import { run as stop } from '../../hooks/stop.mjs';
 import { agentsBlock, extractAgentsBlock } from './generate.mjs';
 
@@ -40,8 +40,8 @@ export function patchTargets(patch) {
 }
 
 /**
- * PreToolUse: `apply_patch` is translated into one Edit/Write check per file; `ask` has no Codex equivalent
- * (PreToolUse output knows allow and deny), so it becomes deny with the reason and the way out (P-017, P-018).
+ * PreToolUse: `apply_patch` is translated into one Edit/Write check per file; a step that needs the operator's consent
+ * is a deny already (D-0042), Codex has no dialog, so its way becomes the Codex one (P-017, P-018).
  */
 export function preToolUseCodex(input) {
   let results;
@@ -56,11 +56,11 @@ export function preToolUseCodex(input) {
   }
   const decided = (d) => results.find((r) => r.hookSpecificOutput?.permissionDecision === d);
   const deny = decided('deny');
-  if (deny) return deny;
-  const ask = decided('ask');
-  if (ask) {
-    return permissionOutput('deny', `${ask.hookSpecificOutput.permissionDecisionReason}. Codex cannot ask: commit the target first so it is recoverable from git, or let the operator perform this step (P-018)`);
+  const why = deny?.hookSpecificOutput?.permissionDecisionReason || '';
+  if (why.endsWith(NO_ASK_WAY)) {
+    return permissionOutput('deny', `${why.slice(0, -NO_ASK_WAY.length).replace(/[\s.]+$/, '')}. Codex cannot ask: commit the target first so it is recoverable from git, or let the operator perform this step (P-018, D-0042)`);
   }
+  if (deny) return deny;
   const context = results.map((r) => r.hookSpecificOutput?.additionalContext).filter(Boolean);
   return context.length ? contextOutput('PreToolUse', context[0]) : {};
 }

@@ -90,6 +90,29 @@ export function threadOrchestrator(brainDir, thread) {
   return null;
 }
 
+/**
+ * D-0043: a thread code started for a topic (topic.mjs create for a new thread, auto, intake, issue watch: the topic has an
+ * orchestrator) whose topic done --topic closed. It holds no topic any more and ends settled, never with a question
+ * (operator 2026-11-14: threads started programmatically must not end with input, they end settled). The closed topic id,
+ * or null (an operator thread, or the thread holds a topic again).
+ */
+export function endedProgrammaticThread(brainDir, thread) {
+  if (!brainDir || !thread) return null;
+  const id = readThreadState(brainDir, thread).programmatic_closed;
+  if (!id) return null;
+  let held = [];
+  try { held = heldTopics(brainDir, thread); } catch { held = []; }
+  return held.length ? null : String(id);
+}
+
+/** D-0043: done --topic records that code started this thread for topic `id` and the thread ends with it. */
+export function markProgrammaticClosed(brainDir, thread, id) {
+  writeThreadState(brainDir, thread, { ...readThreadState(brainDir, thread), programmatic_closed: id, programmatic_closed_at: nowIso() });
+}
+
+/** D-0043: why the final reply of an ended programmatic thread is refused. */
+export const PROGRAMMATIC_END_REASON = (id) => `vlákno spustil kód: skonči Stav: hotovo a nastav vlákno ako vybavené (D-0043). Code started this thread for topic ${id}, which is closed: no question to the operator (no **Otázky na operátora:**, no AskUserQuestion, no "**Stav:** otázka", no question about a next topic) and no "**Stav:** čakám" without what it waits for and a waker; end with the result, "**Handover:** žiadny" and "**Stav:** hotovo", and as the last step settle this thread (t3_thread_organize, action settle, no threadId)`;
+
 /** P-064: why a question to the operator is refused in a topic thread with an orchestrator, and what to do instead. */
 export const ORCHESTRATOR_QUESTION_REASON = (o) => `topic ${o.of} was created by another thread (its orchestrator, topic ${o.to}): the operator does not follow topic threads, so this thread never asks them (no AskUserQuestion, no **Otázky na operátora:**, no "**Stav:** otázka"). Send the question by mail to the orchestrator: comms send --to ${o.to} --level blocker (the work cannot go on without it) or assist, with the options and your recommendation; then go on with the recommended assumption and end the turn with "**Stav:** čakám (na odpoveď orchestrátora)". The orchestrator decides itself or asks the operator in its own thread and replies by mail (P-064)`;
 

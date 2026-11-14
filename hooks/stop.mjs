@@ -23,7 +23,7 @@ import { logDecision } from '../scripts/denials.mjs';
 import { flushBuffer, proposalKey } from '../scripts/logs.mjs';
 import { unpushedCount, brainSync, oldestUnpushedAgeMs } from '../scripts/brain.mjs';
 import { recordTurn, isMainTopic } from '../scripts/comms.mjs';
-import { heldTopics, threadOrchestrator, ORCHESTRATOR_QUESTION_REASON } from '../scripts/topic.mjs';
+import { heldTopics, threadOrchestrator, ORCHESTRATOR_QUESTION_REASON, endedProgrammaticThread, PROGRAMMATIC_END_REASON } from '../scripts/topic.mjs';
 import { parseReply, repeatsAnswered, REPEATED_QUESTION_REASON, HANDOVER_LINE, HANDOVER_NONE_LINE, PROTOCOL_EXAMPLE, handoverMatches } from '../scripts/protocol.mjs';
 export { REPEATED_QUESTION_REASON };
 import { TOPIC_QUESTION } from '../scripts/boot.mjs';
@@ -75,6 +75,9 @@ export const NO_WAIT_TARGET_REASON = `the reply declares "**Stav:** čakám" but
 // Operator: he could not tell what continues after /clear or in a new session. The section before the state line names every topic the thread holds, or says it holds none (D-0040).
 export const HANDOVER_REASON = (topics, said) => `the final reply has ${said ? `a wrong **Handover:** section ("${said.text.slice(0, 80)}"${said.items.length ? `, lines: ${said.items.map((i) => i.topic ? `${i.topic} → …` : `"${String(i.text).slice(0, 60)}" (not "<topic> → <step>")`).join(', ')}` : ''})` : 'no **Handover:** section'}: right before the state line comes the section ${HANDOVER_LINE} (what continues after /clear or in a new session), ${topics.length ? `and it must have a line for every topic this thread holds: ${topics.map((t) => `${t.id} (saved next step: ${t.next ? `"${String(t.next).slice(0, 160)}"` : 'none'})`).join('; ')}` : `this thread holds no topic, so write exactly "${HANDOVER_NONE_LINE}"`} (P-061, D-0040)`;
 export const NEXT_STEP_REASON = (topic, next) => `the reply declares "**Stav:** hotovo", but the handover of topic ${topic} has a next step: "${next}". Do it now in this turn. If it waits for an event, arm a waker and declare "**Stav:** čakám (na <what>)"; if it needs the operator, ask with AskUserQuestion; if it is done, save the handover without it (P-061, P-026)`;
+
+// D-0043 (operator 2026-11-14): "Akú tému má toto vlákno viesť ďalej?" ended a thread code started; a question about a next topic.
+export const NEXT_TOPIC_QUESTION = /(?<!\p{L})(ak[úáa]|ktor[úáa])\s+(\p{L}+\s+){0,3}tém\p{L}*[^?\n]*\?/iu;
 
 // Words that admit a mistake (sk, cs, en). `\b` is ASCII-only, so letter boundaries use \p{L}.
 const MISTAKE = /(?<!\p{L})(omylom|omylem|nedopatrením|nechtiac|by mistake|accidentally|mistakenly|inadvertently|unintentionally)(?!\p{L})/iu;
@@ -246,8 +249,11 @@ export function run(input) {
     if (reply.state === 'otázka' && !repeatDenied) for (const item of reply.questions || []) { const old = repeatsAnswered(item, earlier); if (old) { repeated = REPEATED_QUESTION_REASON(old, item.replace(/\s+/g, ' ').trim()); break; } }
     let violation = null;
     let orchestrator = null;
+    let ended = null;
     // A harness that sends no reply text (field missing) cannot be checked; an empty reply is no state.
     if (typeof msg !== 'string') violation = null;
+    // D-0043: a thread code started for a topic that done --topic closed ends settled: no question, no wait without a waker.
+    else if ((ended = endedProgrammaticThread(ctx.brainDir, ctx.thread)) && (reply.state === 'otázka' || reply.questions?.length || reply.operator?.length || noTopicBlock || NEXT_TOPIC_QUESTION.test(msg) || (!!turnState.dialog_at && (!turnState.turn_started_at || turnState.dialog_at >= turnState.turn_started_at)) || (reply.state === 'čakám' && (!reply.waitFor || !waker)))) violation = PROGRAMMATIC_END_REASON(ended);
     else if (noTopicBlock && held.length) violation = STALE_STATUS_REASON(ctx.projectName, held[0].id);
     // Pilot 2026-11-12: the operator chose "Bez témy" in the topic dialog and the hook asked for the topic again (D-0010).
     else if (noTopicBlock && !topicStart && !turnState.no_topic_chosen_at) violation = NO_TOPIC_REASON(ctx.projectName);

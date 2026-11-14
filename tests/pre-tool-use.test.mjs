@@ -26,13 +26,13 @@ test('writes into brain are denied; tracked clean files pass silently; untracked
     assert.deepEqual(r.json, {}, 'creating a new file is not destructive');
     fs.writeFileSync(path.join(fx.project, 'notes.md'), 'untracked\n');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.project, 'notes.md'), content: 'x' } });
-    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /notes\.md is untracked/);
     fs.mkdirSync(path.join(fx.project, 'local'), { recursive: true });
     fs.writeFileSync(path.join(fx.project, 'local', 'n.md'), 'x\n');
     fs.appendFileSync(path.join(fx.project, '.gitignore'), 'local/\n');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'rm local/n.md' } });
-    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /local\/n\.md/);
   } finally { fx.cleanup(); }
 });
@@ -44,22 +44,22 @@ test('non-trivial edit of a modified file asks; small edit passes; history opera
     fs.writeFileSync(file, Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n') + '\n');
     const big = Array.from({ length: 60 }, (_, i) => `line ${i}`).join('\n');
     let r = fx.hook('pre-tool-use.mjs', { tool_name: 'Edit', tool_input: { file_path: file, old_string: big, new_string: 'x' } });
-    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /removing 59 of 101 lines/);
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Edit', tool_input: { file_path: file, old_string: 'line 1\nline 2', new_string: 'x' } });
     assert.deepEqual(r.json, {});
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'git reset --hard HEAD~1' } });
-    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny');
     for (const f of 'abcdef') fs.writeFileSync(path.join(fx.project, f), 'x\n');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'rm a b c d e f' } });
-    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /6 files/);
     // Own work files, files the command creates and missing ones are not counted (audit M2 2026-11-11).
     fs.mkdirSync(path.join(fx.project, 'scratch', 'wt'), { recursive: true });
     for (const f of 'abcdef') fs.writeFileSync(path.join(fx.project, 'scratch', 'wt', f), 'x\n');
     for (const command of ['rm scratch/wt/a scratch/wt/b scratch/wt/c scratch/wt/d scratch/wt/e scratch/wt/f', 'echo 1 > n1; echo 2 > n2; echo 3 > n3; echo 4 > n4; echo 5 > n5; echo 6 > n6', 'rm -f g1 g2 g3 g4 g5 g6']) {
       r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } });
-      assert.notEqual(r.json.hookSpecificOutput?.permissionDecision, 'ask', command);
+      assert.notEqual(r.json.hookSpecificOutput?.permissionDecision, 'deny', command);
     }
   } finally { fx.cleanup(); }
 });
@@ -89,7 +89,7 @@ test('redirects to /dev/null, /dev/stderr and >&2 are not file targets (P-018)',
       assert.deepEqual(r.json, {}, command);
     }
     const r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'rm /dev/null' } });
-    assert.equal(r.json.hookSpecificOutput?.permissionDecision, 'ask', 'deleting a device still asks');
+    assert.equal(r.json.hookSpecificOutput?.permissionDecision, 'deny', 'deleting a device still asks');
   } finally { fx.cleanup(); }
 });
 
@@ -132,7 +132,7 @@ test('a file the thread created is rewritten and deleted without confirmation; f
     assert.deepEqual(r.json, {}, 'own new file deleted');
     fs.writeFileSync(path.join(fx.project, 'foreign.md'), 'x\n');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.project, 'foreign.md'), content: 'y' } });
-    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'ask');
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny');
     // A stray file a shell redirect of this thread created (e.g. `> 0`) is cleaned up without confirmation.
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'echo x > 0' } });
     assert.deepEqual(r.json, {});
@@ -140,7 +140,7 @@ test('a file the thread created is rewritten and deleted without confirmation; f
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'rm 0' } });
     assert.deepEqual(r.json, {}, 'own stray file deleted');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'rm foreign.md' } });
-    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'ask', 'foreign untracked still asks');
+    assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny', 'foreign untracked still asks');
   } finally { fx.cleanup(); }
 });
 
@@ -509,21 +509,21 @@ test('redirect operands, -t, appends and repeated targets are no overwrites of m
     fs.mkdirSync(path.join(fx.project, 'dst'));
     const decision = (command) => fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }).json.hookSpecificOutput?.permissionDecision;
     // appending to a file the thread did not make loses nothing; one file named six times is one file
-    assert.notEqual(decision('echo more >> u1'), 'ask');
-    assert.notEqual(decision('echo 1 >> u2; echo 2 >> u2; echo 3 >> u2; echo 4 >> u2; echo 5 >> u2; echo 6 >> u2'), 'ask');
-    assert.notEqual(decision('cp -t dst README.md u3'), 'ask');
-    assert.notEqual(decision('rm -f nothere 2> /dev/null'), 'ask');
-    assert.notEqual(decision('cp -a src/. dst/'), 'ask');
+    assert.notEqual(decision('echo more >> u1'), 'deny');
+    assert.notEqual(decision('echo 1 >> u2; echo 2 >> u2; echo 3 >> u2; echo 4 >> u2; echo 5 >> u2; echo 6 >> u2'), 'deny');
+    assert.notEqual(decision('cp -t dst README.md u3'), 'deny');
+    assert.notEqual(decision('rm -f nothere 2> /dev/null'), 'deny');
+    assert.notEqual(decision('cp -a src/. dst/'), 'deny');
     // the cleanup of what the thread made with mkdir, touch and tee is its own
-    assert.notEqual(decision('mkdir -p made/sub && touch made/sub/f && touch t1'), 'ask');
+    assert.notEqual(decision('mkdir -p made/sub && touch made/sub/f && touch t1'), 'deny');
     fs.mkdirSync(path.join(fx.project, 'made', 'sub'), { recursive: true });
     fs.writeFileSync(path.join(fx.project, 'made', 'sub', 'f'), '');
     fs.writeFileSync(path.join(fx.project, 't1'), '');
-    assert.notEqual(decision('rm -rf made'), 'ask');
-    assert.notEqual(decision('rm t1'), 'ask');
+    assert.notEqual(decision('rm -rf made'), 'deny');
+    assert.notEqual(decision('rm t1'), 'deny');
     // overwriting a file the thread did not make still asks
-    assert.equal(decision('echo new > u4'), 'ask');
-    assert.equal(decision('rm u3'), 'ask');
+    assert.equal(decision('echo new > u4'), 'deny');
+    assert.equal(decision('rm u3'), 'deny');
   } finally { fx.cleanup(); }
 });
 
@@ -591,8 +591,8 @@ test('rmdir of a folder holding an untracked file asks nothing (it cannot remove
     fs.writeFileSync(path.join(fx.project, 'docs', 'firma', 'a.md'), 'x\n');
     const ask = (command) => fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }).json.hookSpecificOutput?.permissionDecision;
     assert.equal(ask('rmdir docs/firma docs'), undefined);
-    assert.equal(ask('rm docs/firma/a.md'), 'ask', 'a foreign untracked file still asks');
-    assert.equal(ask('rm -r docs && rmdir docs'), 'ask');
+    assert.equal(ask('rm docs/firma/a.md'), 'deny', 'a foreign untracked file still asks');
+    assert.equal(ask('rm -r docs && rmdir docs'), 'deny');
   } finally { fx.cleanup(); }
 });
 

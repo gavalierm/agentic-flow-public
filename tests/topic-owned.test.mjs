@@ -82,7 +82,7 @@ test('P-018: persona: removing an ignored leftover (.scratch/) asks instead of t
     fs.writeFileSync(path.join(dir, '.scratch', 'old.md'), 'x\n');
     const hook = (command) => JSON.parse(spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'hooks', 'pre-tool-use.mjs')], { cwd: dir, env: { ...env, CLAUDE_PROJECT_DIR: dir }, encoding: 'utf8', input: JSON.stringify({ session_id: 's1', cwd: dir, tool_name: 'Bash', tool_input: { command } }) }).stdout.trim() || '{}');
     let out = hook('rm -rf .scratch');
-    assert.equal(out.hookSpecificOutput?.permissionDecision, 'ask', JSON.stringify(out));
+    assert.equal(out.hookSpecificOutput?.permissionDecision, 'deny', JSON.stringify(out));
     assert.match(out.hookSpecificOutput.permissionDecisionReason, /\.scratch/);
     out = hook('rm -rf decisions');
     assert.equal(out.hookSpecificOutput?.permissionDecision, 'deny', 'tracked brain data stays denied');

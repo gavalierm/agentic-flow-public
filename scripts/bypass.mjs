@@ -384,7 +384,7 @@ export function withLift(state, question, answer, at = new Date().toISOString())
 }
 
 /** Whether the text names the path: absolute, relative to cwd or by its file name, as a whole word. */
-function namesPath(text, p, cwd) {
+export function namesPath(text, p, cwd) {
   const names = [toPosix(p), toPosix(path.relative(cwd, p)), path.basename(p)].filter((n) => n && n.length >= 3 && n !== '..');
   return names.some((n) => new RegExp('(^|[^\\w.-])' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\w-])').test(toPosix(text)));
 }

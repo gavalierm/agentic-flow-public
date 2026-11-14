@@ -14,7 +14,10 @@ const reason = (r) => r.json?.hookSpecificOutput?.permissionDecisionReason || ''
 function domainFx({ worktrees = true } = {}) {
   const fx = setup();
   fs.writeFileSync(path.join(fx.root, '.agentic-domain'), '{"brain":"brain"}');
-  if (worktrees) fs.mkdirSync(path.join(fx.root, '.worktrees', 'project'), { recursive: true });
+  if (worktrees) {
+    fs.mkdirSync(path.join(fx.root, '.worktrees', 'project'), { recursive: true });
+    fs.writeFileSync(path.join(fx.brain, 'policy.json'), JSON.stringify({ topics: { auto: { projects: { '../project': ['project'] } } } }));
+  }
   fs.writeFileSync(path.join(fx.project, 'tracked.txt'), 'a\n');
   return fx;
 }
@@ -75,6 +78,18 @@ test('shared checkout: reads, scratch/, workflow scripts and the topic worktree 
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.project, 'src', 'a.js'), content: 'x' } });
     assert.equal(decision(r), 'deny');
     assert.ok(reason(r).includes(`worktree of the topic this thread holds: ${path.join(wt, 'src', 'a.js')}`), reason(r));
+  } finally { fx.cleanup(); }
+});
+
+test('a topic worktree directory alone makes no shared checkout: a project repo and the brain write their own files', () => {
+  const fx = domainFx({ worktrees: false });
+  try {
+    fs.mkdirSync(path.join(fx.root, '.worktrees', 'project'), { recursive: true });
+    fs.mkdirSync(path.join(fx.root, '.worktrees', 'brain'), { recursive: true });
+    for (const file of [path.join(fx.project, 'page.html'), path.join(fx.brain, 'materialy', 'x', 'a.md')]) {
+      const r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: file, content: 'x' } });
+      assert.doesNotMatch(reason(r), /shared checkout/, file);
+    }
   } finally { fx.cleanup(); }
 });
 

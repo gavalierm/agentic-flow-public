@@ -63,7 +63,7 @@ test('domain: sibling repos inside pass; Write, redirects and tool output dirs o
     assert.equal(decision(r), null, 'tool output into scratch passes');
     // hooks review C3: an output option of a program the hook does not know is a guess: ask, not deny
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: `mytool build -o ${d.outside}/out.bin` } });
-    assert.equal(decision(r), 'ask');
+    assert.equal(decision(r), 'deny');
     assert.match(reason(r), /may write .*out\.bin \(an output option of a program the hook does not know\)/);
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: `cat > scratch/n.md <<'EOF'\necho x > ${d.outside}/f; rm -rf ${d.outside}\nEOF` } });
     assert.equal(decision(r), null, 'a heredoc body is data, not a command');
@@ -110,7 +110,7 @@ test('P-018: a directory a shell command creates (program side effect) is the th
     fs.mkdirSync(path.join(fx.project, 'notes'));
     fs.writeFileSync(path.join(fx.project, 'notes', 'n.md'), 'x');
     r = fx.hook('pre-tool-use.mjs', call('t3', 'rm -rf notes'));
-    assert.equal(decision(r), 'ask', 'untracked data the thread did not make still asks');
+    assert.equal(decision(r), 'deny', 'untracked data the thread did not make still asks');
   } finally { fx.cleanup(); }
 });
 
@@ -136,7 +136,7 @@ test('P-018: thread state a workflow script of the command creates for another t
     fx.hook('pre-tool-use.mjs', run2);
     fx.hook('post-tool-use.mjs', run2);
     r = fx.hook('pre-tool-use.mjs', call('t4', `rm -f ${other}`));
-    assert.equal(decision(r), 'ask', 'state of a thread that existed before the command still asks');
+    assert.equal(decision(r), 'deny', 'state of a thread that existed before the command still asks');
   } finally { d.cleanup(); pilot.cleanup(); }
 });
 

@@ -240,9 +240,12 @@ function started() {
   const fx = setup();
   assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
   fx.hook('user-prompt-submit.mjs', { prompt: 'začni' });
+  spend(fx);
   return fx;
 }
-const dialog = (fx) => fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'x' }] } });
+// D-0039 refuses a short dialog without options once per turn; these tests check other things, so the refusal is spent first.
+const spend = (fx) => fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'x' }] } });
+const dialog = (fx) => { spend(fx); return fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'x' }] } }); };
 
 test('Stop: a question repeating one the operator answered blocks once; an unrelated one and a bell turn do not move it', () => {
   const fx = started();
@@ -311,6 +314,7 @@ test('AskUserQuestion: a dialog repeating an answered question is refused once p
     assert.notEqual(decision(fx.hook('pre-tool-use.mjs', ask(B))), 'deny', 'once per turn');
     assert.equal(stopOf(fx, REPEAT).decision, undefined, 'the Stop hook does not challenge the same turn again');
     fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+    spend(fx);
     assert.notEqual(decision(fx.hook('pre-tool-use.mjs', ask('Ktorý z dvoch účtov Cloudflare mám použiť?'))), 'deny', 'an unrelated question');
     assert.equal(decision(fx.hook('pre-tool-use.mjs', ask(B))), 'deny', 'a new turn is challenged again');
   } finally { fx.cleanup(); }
@@ -328,6 +332,7 @@ test('AskUserQuestion: after a refused repeat both hooks say the same dialog ask
     fx.hook('pre-tool-use.mjs', ask(DRAFTS));
     fx.hook('post-tool-use.mjs', ask(DRAFTS, { [DRAFTS]: 'áno' }));
     fx.hook('user-prompt-submit.mjs', { prompt: 'návrhy sedia' });
+    spend(fx);
     const r = fx.hook('pre-tool-use.mjs', ask(WRITE));
     assert.equal(decision(r), 'deny', 'both of the consent kind');
     assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /a write to an external service or account[^]*ask the same question again now: a repeat in this turn passes/);

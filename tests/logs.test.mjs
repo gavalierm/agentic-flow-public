@@ -3,8 +3,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { setup } from './helpers.mjs';
-import { normalizeCommand, sequencesFrom, rotateLines, isReadonly, readLog, bufferAppend, failureId } from '../scripts/logs.mjs';
+import { normalizeCommand, sequencesFrom, rotateLines, isReadonly, readLog, bufferAppend, failureId, sessionsByName, rotationOps } from '../scripts/logs.mjs';
 import { loadPolicy } from '../scripts/config.mjs';
 const logView = (fx, name) => { const l = readLog(fx.brain, name, { rotationDays: 30 }); return l.length ? l.join('\n') + '\n' : ''; };
 
@@ -184,4 +185,126 @@ test('two machines flush into their own day files: no conflict, the combined vie
     assert.match(fx.git(fx.origin, 'show', `main:logs/pc-b/${day}.log`), /^failures .*curl b/m);
     assert.match(fx.git(fx.origin, 'show', `main:logs/pc-a/${day}.log`), /^drop failures .*curl b/m);
   } finally { fx.cleanup(); }
+});
+
+// D-0034: the fast readLog, rotation and session count give the same result as the plain implementation they replaced.
+const refDayFiles = (brain) => {
+  const out = [];
+  const root = path.join(brain, 'logs');
+  for (const machine of fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name)) {
+    for (const f of fs.readdirSync(path.join(root, machine))) { const m = /^(\d{4}-\d{2}-\d{2})\.log$/.exec(f); if (m) out.push({ machine, date: m[1], file: path.join(root, machine, f) }); }
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date) || a.machine.localeCompare(b.machine));
+};
+const refRotate = (lines, days) => { const cutoff = Date.now() - days * 864e5; return lines.filter((l) => { const d = Date.parse(l.slice(0, 10)); return Number.isNaN(d) || d >= cutoff; }); };
+const refReadLog = (brain, logName, { rotationDays = null } = {}) => {
+  const kind = logName.replace(/\.log$/, '');
+  const read = (f) => { try { return fs.readFileSync(f, 'utf8'); } catch { return ''; } };
+  const entries = read(path.join(brain, 'logs', logName)).split('\n').filter(Boolean).map((text) => ({ text, machine: null }));
+  const drops = []; const undrops = []; let seq = 0;
+  for (const d of refDayFiles(brain)) {
+    for (const raw of read(d.file).split('\n')) {
+      const sp = raw.indexOf(' '); if (sp < 0) continue;
+      const head = raw.slice(0, sp); const rest = raw.slice(sp + 1); seq += 1;
+      if (head === kind) entries.push({ text: rest, machine: d.machine, date: d.date, seq });
+      else if (head === 'drop' && rest.startsWith(`${kind} `)) drops.push({ what: rest.slice(kind.length + 1), machine: d.machine, date: d.date, seq });
+      else if (head === 'undrop' && rest.startsWith(`${kind} `)) undrops.push(rest.slice(kind.length + 1));
+    }
+  }
+  const gone = (e) => (kind === 'failures'
+    ? drops.filter((x) => x.what === e.text).length > undrops.filter((u) => u === e.text).length
+    : drops.some((x) => x.what === e.text.split(' ')[1] && (!e.machine || (e.machine === x.machine ? e.seq < x.seq : e.date < x.date))));
+  const lines = entries.filter((e) => !gone(e)).map((e) => e.text);
+  return rotationDays ? refRotate(lines, rotationDays) : lines;
+};
+const refSessions = (lines) => { const m = new Map(); for (const l of lines) { const [, name, sid] = l.split(' '); if (!name) continue; if (!m.has(name)) m.set(name, new Set()); m.get(name).add(sid || '-'); } return m; };
+
+function randomBrain(seed) {
+  let s = seed >>> 0; // mulberry32: the low bits of a plain LCG repeat, so some kinds of line never came up
+  const rnd = (n) => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return Math.floor((((t ^ (t >>> 14)) >>> 0) / 4294967296) * n);
+  };
+  const pick = (a) => a[rnd(a.length)];
+  const day = (back) => new Date(Date.now() - back * 864e5).toISOString().slice(0, 10);
+  const names = ['a+b', 'git-x+git-y', 'npm-ci+npm-test', 'c+d+e', 'x', 'yy+zz', 'k+l', 'ab+b'];
+  const heads = () => pick([day(rnd(45)), day(rnd(45)), day(30), day(29), day(31), day(rnd(45)).replace(/-/g, '/'), 'junk-head!', 'Nov 1 2026', '2026-13-45', '9999-99-99']);
+  const seqLine = () => pick([`${heads()} ${pick(names)} s${rnd(6)}`, `${heads()} ${pick(names)}`, `${heads()}  ${pick(names)} s1`, `${day(rnd(45))} ${pick(names)} s${rnd(6)} extra`, 'short', `${day(3)}`, `${day(2)} `]);
+  const failLine = () => `${day(rnd(20))}T10:0${rnd(9)}:00Z main s${rnd(4)} cmd${rnd(5)} :: err`;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-readlog-'));
+  const brain = path.join(root, 'brain');
+  fs.mkdirSync(path.join(brain, 'logs'), { recursive: true });
+  fs.writeFileSync(path.join(brain, 'logs', 'sequences.log'), Array.from({ length: 300 }, seqLine).join('\n') + '\n\n');
+  fs.writeFileSync(path.join(brain, 'logs', 'failures.log'), Array.from({ length: 20 }, failLine).join('\n') + '\n');
+  const fails = [];
+  for (const machine of ['pc-a', 'pc-b']) {
+    for (let back = 40; back >= 0; back -= 1 + rnd(4)) {
+      const lines = [];
+      for (let i = 0; i < 15; i++) {
+        const r = rnd(12);
+        if (r < 5) lines.push(`sequences ${seqLine()}`);
+        else if (r === 5) { const f = failLine(); fails.push(f); lines.push(`failures ${f}`); }
+        else if (r === 6) lines.push(`drop sequences ${pick(names)}`);
+        else if (r === 7 && fails.length) lines.push(`drop failures ${pick(fails)}`);
+        else if (r === 8 && fails.length) lines.push(`undrop failures ${pick(fails)}`);
+        else lines.push(pick(['', 'junk', 'sequences ', 'drop sequencesx a+b', 'procedures p1 t', `drop procedures ${pick(names)}`]));
+      }
+      fs.mkdirSync(path.join(brain, 'logs', machine), { recursive: true });
+      fs.writeFileSync(path.join(brain, 'logs', machine, `${day(back)}.log`), lines.join('\n') + '\n');
+    }
+  }
+  return { root, brain, names };
+}
+
+test('D-0034: readLog, rotation and session counts give the same lines as the plain implementation (drop, undrop, rotation)', () => {
+  for (let seed = 1; seed <= 40; seed++) {
+    const { root, brain, names } = randomBrain(seed);
+    try {
+      for (const [name, opts] of [['sequences.log', { rotationDays: 30 }], ['sequences.log', {}], ['failures.log', {}], ['procedures.log', { rotationDays: 30 }]]) {
+        const got = readLog(brain, name, opts);
+        assert.deepEqual(got, refReadLog(brain, name, opts), `seed ${seed} ${name}`);
+        assert.equal(fs.readFileSync(path.join(brain, 'local', 'logs', name), 'utf8'), got.length ? got.join('\n') + '\n' : '', `view seed ${seed} ${name}`);
+      }
+      const lines = readLog(brain, 'sequences.log', { rotationDays: 30 });
+      assert.deepEqual(rotateLines(lines, 7), refRotate(lines, 7), `rotate seed ${seed}`);
+      const ref = refSessions(lines);
+      const only = new Set([...names.slice(seed % 4, seed % 4 + 3), 'none+such']);
+      assert.deepEqual(sessionsByName(lines, { only }), new Map([...ref].filter(([k]) => only.has(k))), `sessions seed ${seed}`);
+      assert.deepEqual(sessionsByName(lines), ref, `all sessions seed ${seed}`);
+      const day = new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10);
+      const shared = fs.readFileSync(path.join(brain, 'logs', 'sequences.log'), 'utf8').split('\n').filter(Boolean);
+      const kept = shared.filter((l) => !/^\d{4}-\d{2}-\d{2}$/.test(l.slice(0, 10)) || l.slice(0, 10) >= day);
+      assert.deepEqual(rotationOps(brain, 30, 'nobody'), kept.length === shared.length ? [] : [{ path: 'logs/sequences.log', content: kept.join('\n') + '\n' }], `rotationOps seed ${seed}`);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+test('D-0034: the view in local/logs/ is rewritten only when its sources change or it was changed', () => {
+  const { root, brain } = randomBrain(7);
+  try {
+    const today0 = new Date().toISOString().slice(0, 10);
+    const view = path.join(brain, 'local', 'logs', 'sequences.log');
+    readLog(brain, 'sequences.log', { rotationDays: 30 });
+    const t0 = fs.statSync(view).mtimeMs;
+    const unchanged = readLog(brain, 'sequences.log', { rotationDays: 30 });
+    assert.equal(fs.statSync(view).mtimeMs, t0, 'no change: the view is not written again');
+    assert.equal(fs.readFileSync(view, 'utf8'), unchanged.join('\n') + '\n');
+    const dayFile = path.join(brain, 'logs', 'pc-a', `${today0}.log`);
+    fs.appendFileSync(dayFile, `sequences ${today0} fresh+seq s9\n`);
+    const appended = readLog(brain, 'sequences.log', { rotationDays: 30 });
+    assert.ok(appended.includes(`${today0} fresh+seq s9`));
+    assert.equal(fs.readFileSync(view, 'utf8'), appended.join('\n') + '\n', 'an appended line reaches the view');
+    fs.appendFileSync(dayFile, 'drop sequences fresh+seq\n');
+    const dropped = readLog(brain, 'sequences.log', { rotationDays: 30 });
+    assert.ok(!dropped.some((l) => l.includes('fresh+seq')));
+    assert.equal(fs.readFileSync(view, 'utf8'), dropped.join('\n') + '\n', 'a drop reaches the view');
+    fs.writeFileSync(view, 'edited\n');
+    readLog(brain, 'sequences.log', { rotationDays: 30 });
+    assert.equal(fs.readFileSync(view, 'utf8'), dropped.join('\n') + '\n', 'an edited view is rewritten');
+    fs.rmSync(view);
+    readLog(brain, 'sequences.log', { rotationDays: 30 });
+    assert.equal(fs.readFileSync(view, 'utf8'), dropped.join('\n') + '\n', 'a removed view is rewritten');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

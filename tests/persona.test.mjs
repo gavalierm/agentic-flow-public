@@ -111,7 +111,7 @@ test('persona: brain files denied, scratch/ writable, README is not project data
     // Stray untracked output in the persona root is not brain data: removing it is P-018 (ask), not a P-013 deny.
     fs.writeFileSync(path.join(p.dir, '0'), 'x\n');
     out = p.hook({ tool_name: 'Bash', tool_input: { command: 'rm 0' } });
-    assert.equal(out.hookSpecificOutput.permissionDecision, 'ask', JSON.stringify(out));
+    assert.equal(out.hookSpecificOutput.permissionDecision, 'deny', JSON.stringify(out));
     assert.match(out.hookSpecificOutput.permissionDecisionReason, /not recoverable from git: 0/);
     // An empty dir (left by a removed skill) holds no data: rmdir passes.
     fs.mkdirSync(path.join(p.dir, 'skills', 'agentic', 'gone'), { recursive: true });
@@ -131,7 +131,7 @@ test('P-052: write outside the project is denied with the scratch route (operato
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(os.tmpdir(), 'claude-x', 'scratchpad', 'a.txt'), content: 'x' } });
     assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.root, 'project-topics', 't1', 'new.js'), content: 'x' } });
-    assert.notEqual(r.json.hookSpecificOutput?.permissionDecision, 'ask');
+    assert.notEqual(r.json.hookSpecificOutput?.permissionDecision, 'deny');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.project, 'scratch', 'a.txt'), content: 'x' } });
     assert.deepEqual(r.json, {});
   } finally { fx.cleanup(); }
@@ -188,9 +188,9 @@ test('persona: writes into a managed sibling project and its topic copies pass; 
     fs.mkdirSync(managed); fs.writeFileSync(path.join(managed, '.workflow.json'), '{"brain":"../srv-brain"}');
     git(managed, 'init', '-q');
     let out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(managed, 'new.sh'), content: 'x' } });
-    assert.notEqual(out.hookSpecificOutput?.permissionDecision, 'ask');
+    assert.notEqual(out.hookSpecificOutput?.permissionDecision, 'deny');
     out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(p.root, 'srv-topics', 't1', 'new.sh'), content: 'x' } });
-    assert.notEqual(out.hookSpecificOutput?.permissionDecision, 'ask');
+    assert.notEqual(out.hookSpecificOutput?.permissionDecision, 'deny');
     out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(p.root, 'plain', 'x.txt'), content: 'x' } });
     assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
     out = p.hook({ tool_name: 'Bash', tool_input: { command: `cd ${managed} && echo x > notes.txt` } });
@@ -207,7 +207,7 @@ test('persona: a managed project without brain (no .workflow.json, plugin in set
     fs.writeFileSync(path.join(flow, '.claude', 'settings.json'), '{"enabledPlugins":{"workflow@skills-dir":true}}');
     git(flow, 'init', '-q');
     let out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(flow, 'hooks', 'new.mjs'), content: 'x' } });
-    assert.notEqual(out.hookSpecificOutput?.permissionDecision, 'ask');
+    assert.notEqual(out.hookSpecificOutput?.permissionDecision, 'deny');
     const other = path.join(p.root, 'other');
     fs.mkdirSync(path.join(other, '.claude'), { recursive: true });
     fs.writeFileSync(path.join(other, '.claude', 'settings.json'), '{"enabledPlugins":{"x@y":true}}');
@@ -217,7 +217,7 @@ test('persona: a managed project without brain (no .workflow.json, plugin in set
     fs.mkdirSync(pilot, { recursive: true }); fs.writeFileSync(path.join(pilot, '.workflow.json'), '{"brain":"../brain-1"}');
     git(pilot, 'init', '-q');
     out = p.hook({ tool_name: 'Write', tool_input: { file_path: path.join(pilot, 'scratch', 'x.txt'), content: 'x' } });
-    assert.notEqual(out.hookSpecificOutput?.permissionDecision, 'ask', 'nested workflow project (pilot)');
+    assert.notEqual(out.hookSpecificOutput?.permissionDecision, 'deny', 'nested workflow project (pilot)');
   } finally { p.cleanup(); }
 });
 

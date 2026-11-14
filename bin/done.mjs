@@ -13,7 +13,7 @@ import { brainWrite, brainSync, formatWriteResult, readHolder, isHolderOf } from
 import { freeHandover } from '../scripts/brain-checks.mjs';
 import { recordNames, existingNames } from '../scripts/logs.mjs';
 import { rejectedProposal } from '../scripts/find.mjs';
-import { heldTopics, readTopic, freePointMail, hasCodeCopy, codeCopyPath } from '../scripts/topic.mjs';
+import { heldTopics, readTopic, freePointMail, hasCodeCopy, codeCopyPath, topicOrchestrator, markProgrammaticClosed } from '../scripts/topic.mjs';
 import { registerTopic } from '../scripts/comms.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
 import { asList } from '../scripts/frontmatter.mjs';
@@ -60,6 +60,7 @@ function guardThread(ctx) {
 
 // P-036: the closed thread leaves the active list. `settle` applies when the turn ends; `archive` of the own thread
 // ends the provider stream at once and the turn fails (flow-public#6, seen on Windows and Linux).
+const PROGRAMMATIC_END =(id) => `thread: code started this thread for topic ${id} and it ends here (D-0043): end the reply with the result, "**Handover:** žiadny" and "**Stav:** hotovo", and as the last step of this turn settle this thread (tool t3_thread_organize, action settle, no threadId; do not archive it). No next step and no question to the operator, least of all about a next topic`;
 const SETTLE_THREAD = 'thread: as the last step of this turn settle this thread (tool t3_thread_organize, action settle, no threadId); do not archive it, archiving the own thread fails the running turn (P-036)';
 
 function doneUnit(ctx, id) {
@@ -252,7 +253,9 @@ function doneTopic(ctx, id) {
   const res = brainWrite(ctx, { ops, internal: true, message: `done --topic ${id}: archived (verified: ${String(args.verified).slice(0, 60)})` });
   out(formatWriteResult(res, [`topics/archive/${id}/`]));
   out(merge.note);
-  out(`topic ${id} closed and archived. Start a new session for the next topic (P-026).`);
+  // D-0043: a topic code created for this thread (it has an orchestrator) ends the thread; no next topic is asked for.
+  const programmatic = !!topicOrchestrator(ctx.brainDir, topic, ctx.thread) && !heldTopics(ctx.brainDir, ctx.thread).length;
+  out(programmatic ? `topic ${id} closed and archived.` : `topic ${id} closed and archived. Start a new session for the next topic (P-026).`);
   const scratch = scratchReminder(ctx.projectDir, unitStart(ctx, id, topic), id);
   if (scratch) out(scratch);
   const cited = citedResults(ctx, id);
@@ -268,7 +271,11 @@ function doneTopic(ctx, id) {
   const holdsMain = held.some((t) => t.kind === 'main');
   if (holdsMain) out('thread: this thread holds the persona main topic, so it stays open: do not settle or archive it (P-045)');
   else if (held.length) out(`thread: this thread still holds topic ${held.map((t) => t.id).join(', ')}, so it stays open: do not settle or archive it (P-036)`);
-  else if (process.env.T3CODE_THREAD_ID) out(SETTLE_THREAD);
+  else if (programmatic) {
+    // D-0043: code started this thread for the topic; it ends with it. The t3 CLI cannot settle a thread, so done names the step.
+    markProgrammaticClosed(ctx.brainDir, ctx.thread, id);
+    out(PROGRAMMATIC_END(id));
+  } else if (process.env.T3CODE_THREAD_ID) out(SETTLE_THREAD);
   // A topic taken over (claim --force) leaves the previous holder's thread open in T3: settle it too. The t3 CLI has no
   // settle (t3 thread: list, start, send, show), so done names the step.
   for (const prev of previousHolders(ctx, id, holder)) out(`thread: settle the previous holder thread ${prev} (t3_thread_organize action settle threadId ${prev}; an archived thread first unarchive)`);

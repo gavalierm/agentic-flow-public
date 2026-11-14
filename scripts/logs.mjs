@@ -42,20 +42,27 @@ function dayFiles(brainDir) {
  */
 export function readLog(brainDir, logName, { rotationDays = null } = {}) {
   const kind = kindOf(logName);
-  const entries = readText(path.join(brainDir, 'logs', logName), '').split('\n').filter(Boolean).map((text) => ({ text, machine: null }));
+  const days = dayFiles(brainDir);
+  // Sources are stated before they are read: a line appended meanwhile changes the stat, so the next read rewrites the view.
+  const sources = [path.join(brainDir, 'logs', logName), ...days.map((d) => d.file)].map(statSig);
+  // Lines of the old shared file are plain strings (no machine): one object per line of a 100k-line file cost time (D-0034).
+  const shared = fileLines(path.join(brainDir, 'logs', logName));
+  const entries = [];
   const drops = [];
   const undrops = [];
   let seq = 0;
-  for (const d of dayFiles(brainDir)) {
-    for (const raw of readText(d.file, '').split('\n')) {
-      const sp = raw.indexOf(' ');
-      if (sp < 0) continue;
-      const head = raw.slice(0, sp);
-      const rest = raw.slice(sp + 1);
+  // Prefix tests instead of slicing every line into head and rest (a kind has no space, so `head === kind` is a prefix).
+  const own = `${kind} `;
+  const drop = `drop ${kind} `;
+  const undrop = `undrop ${kind} `;
+  for (const d of days) {
+    // An empty line has no space and is skipped either way, so the cached non-empty lines give the same entries.
+    for (const raw of fileLines(d.file)) {
+      if (raw.indexOf(' ') < 0) continue;
       seq += 1;
-      if (head === kind) entries.push({ text: rest, machine: d.machine, date: d.date, seq });
-      else if (head === 'drop' && rest.startsWith(`${kind} `)) drops.push({ what: rest.slice(kind.length + 1), machine: d.machine, date: d.date, seq });
-      else if (head === 'undrop' && rest.startsWith(`${kind} `)) undrops.push(rest.slice(kind.length + 1));
+      if (raw.startsWith(own)) entries.push({ text: raw.slice(own.length), machine: d.machine, date: d.date, seq });
+      else if (raw.startsWith(drop)) drops.push({ what: raw.slice(drop.length), machine: d.machine, date: d.date, seq });
+      else if (raw.startsWith(undrop)) undrops.push(raw.slice(undrop.length));
     }
   }
   // A failure line is gone while its drops outnumber its undrops (error.mjs restore appends an undrop, append-only).
@@ -64,17 +71,87 @@ export function readLog(brainDir, logName, { rotationDays = null } = {}) {
   for (const x of drops) byWhat.set(x.what, [...(byWhat.get(x.what) || []), x]);
   const undropCount = new Map();
   for (const u of undrops) undropCount.set(u, (undropCount.get(u) || 0) + 1);
+  const failureGone = (text) => (byWhat.get(text) || []).length > (undropCount.get(text) || 0);
+  // A line of the old shared file is removed by any drop of its name (no machine, no order).
+  const dropped = nameMatcher(byWhat.keys());
+  const sharedGone = kind === 'failures' ? failureGone : (text) => dropped(text) !== undefined;
   const gone = (e) => (kind === 'failures'
-    ? (byWhat.get(e.text) || []).length > (undropCount.get(e.text) || 0)
-    : (byWhat.get(e.text.split(' ')[1]) || []).some((x) => !e.machine || (e.machine === x.machine ? e.seq < x.seq : e.date < x.date)));
-  let lines = (drops.length || undrops.length ? entries.filter((e) => !gone(e)) : entries).map((e) => e.text);
+    ? failureGone(e.text)
+    : (byWhat.get(dropped(e.text)) || []).some((x) => (e.machine === x.machine ? e.seq < x.seq : e.date < x.date)));
+  const filtering = drops.length || undrops.length;
+  let lines = filtering ? shared.filter((t) => !sharedGone(t)) : shared.slice();
+  for (const e of entries) if (!filtering || !gone(e)) lines.push(e.text);
   if (rotationDays) lines = rotateLines(lines, rotationDays);
+  writeView(brainDir, logName, lines, JSON.stringify({ sources, rotationDays, n: lines.length }));
+  return lines;
+}
+
+/** Field `i` of a space-separated line, as `line.split(' ')[i]` (undefined past the end), without splitting the whole line. */
+export function field(line, i) {
+  let start = 0;
+  for (let k = 0; k < i; k++) {
+    const sp = line.indexOf(' ', start);
+    if (sp < 0) return undefined;
+    start = sp + 1;
+  }
+  const end = line.indexOf(' ', start);
+  return end < 0 ? line.slice(start) : line.slice(start, end);
+}
+
+/**
+ * Which of `names` is field 1 of a line (`field(line, 1)`, undefined when none), without slicing the line: a name is
+ * compared in place only when its length is the field's length. Empty names never match (an empty field is no name).
+ */
+export function nameMatcher(names) {
+  const byLen = new Map();
+  for (const n of names) {
+    if (typeof n !== 'string' || !n) continue;
+    if (!byLen.has(n.length)) byLen.set(n.length, []);
+    byLen.get(n.length).push(n);
+  }
+  return (line) => {
+    const a = line.indexOf(' ');
+    if (a < 0 || !byLen.size) return undefined;
+    const b = line.indexOf(' ', a + 1);
+    const candidates = byLen.get((b < 0 ? line.length : b) - a - 1);
+    if (candidates) for (const n of candidates) if (line.startsWith(n, a + 1)) return n;
+    return undefined;
+  };
+}
+
+function statSig(file) {
+  try { const s = fs.statSync(file); return [path.basename(path.dirname(file)), path.basename(file), s.size, s.mtimeMs]; } catch { return null; }
+}
+
+// Non-empty lines of a log file, kept for the process while the file's size and mtime stay: one turn end reads the day
+// files for sequences and failures and the old shared file for readLog and rotationOps (one read per flush, D-0034).
+// Callers get the array read-only (they filter or copy it).
+const linesCache = new Map();
+function fileLines(file) {
+  const sig = JSON.stringify(statSig(file));
+  const hit = linesCache.get(file);
+  if (hit && hit.sig === sig) return hit.lines;
+  const lines = readText(file, '').split('\n').filter(Boolean);
+  linesCache.set(file, { sig, lines });
+  return lines;
+}
+
+/**
+ * The combined view in local/logs/ is rewritten only when its result can differ: the sources (size, mtime), the rotation
+ * or the line count changed (rotation only removes lines as time goes on, so the same sources and count give the same
+ * lines), or the view was changed or removed. Writing 10 MB at every read cost every turn end (D-0034).
+ */
+function writeView(brainDir, logName, lines, sig) {
   try {
     const view = path.join(brainDir, 'local', 'logs', logName);
+    const sigFile = `${view}.sig`;
+    const viewSig = () => JSON.stringify(statSig(view));
+    const stored = readText(sigFile, '');
+    if (stored === `${sig}\n${viewSig()}\n`) return;
     fs.mkdirSync(path.dirname(view), { recursive: true });
     fs.writeFileSync(view, lines.length ? lines.join('\n') + '\n' : '');
+    fs.writeFileSync(sigFile, `${sig}\n${viewSig()}\n`);
   } catch { /* the view is a convenience */ }
-  return lines;
 }
 
 /** Append op for this machine's day file (entries of one log). */
@@ -123,8 +200,8 @@ export function rotationOps(brainDir, days, machine = machineName()) {
   const ops = dayFiles(brainDir).filter((d) => d.machine === machine && Date.parse(d.date) < cutoff).map((d) => ({ path: d.rel, remove: true }));
   const cutDay = new Date(cutoff).toISOString().slice(0, 10);
   for (const name of ROTATED_SHARED_LOGS) {
-    const lines = readText(path.join(brainDir, 'logs', name), '').split('\n').filter(Boolean);
-    const kept = lines.filter((l) => !/^\d{4}-\d{2}-\d{2}$/.test(l.slice(0, 10)) || l.slice(0, 10) >= cutDay);
+    const lines = fileLines(path.join(brainDir, 'logs', name));
+    const kept = lines.filter(byHead((head) => !/^\d{4}-\d{2}-\d{2}$/.test(head) || head >= cutDay));
     if (kept.length === lines.length) continue;
     ops.push(kept.length ? { path: `logs/${name}`, content: kept.join('\n') + '\n' } : { path: `logs/${name}`, remove: true });
   }
@@ -214,27 +291,49 @@ export function sequencesFrom(commands, { min = 2, max = 5 } = {}) {
 
 export function rotateLines(lines, days) {
   const cutoff = Date.now() - days * 864e5;
-  return lines.filter((l) => {
-    const d = Date.parse(l.slice(0, 10));
+  // Date.parse once per distinct 10-character head (a log has a few dozen days): per line it cost ~45 ms (D-0034).
+  return lines.filter(byHead((head) => {
+    const d = Date.parse(head);
     return Number.isNaN(d) || d >= cutoff;
-  });
+  }));
+}
+
+/**
+ * A line test that depends only on the line's first 10 characters, computed once per distinct head: a run of lines of
+ * one day repeats the previous head, recognised by a prefix test without slicing the line.
+ */
+function byHead(test) {
+  const memo = new Map();
+  let prev = null;
+  let prevKeep = false;
+  return (l) => {
+    if (prev !== null && l.startsWith(prev)) return prevKeep;
+    const head = l.slice(0, 10);
+    let k = memo.get(head);
+    if (k === undefined) { k = test(head); memo.set(head, k); }
+    prev = head.length === 10 ? head : null;
+    prevKeep = k;
+    return k;
+  };
 }
 
 export function countByField(lines, index = 1) {
   const counts = new Map();
   for (const l of lines) {
-    const f = l.split(' ')[index];
+    const f = field(l, index);
     if (f) counts.set(f, (counts.get(f) || 0) + 1);
   }
   return counts;
 }
 
 /** Distinct sessions per sequence name (3rd field of a sequences.log line): repeats inside one session are one routine. */
-export function sessionsByName(lines) {
-  const m = new Map();
+export function sessionsByName(lines, { only = null, into = new Map() } = {}) {
+  const m = into;
+  const match = only ? nameMatcher(only) : null;
   for (const l of lines) {
-    const [, name, sid] = l.split(' ');
+    const name = match ? match(l) : field(l, 1);
     if (!name) continue;
+    const sid = field(l, 2);
     if (!m.has(name)) m.set(name, new Set());
     m.get(name).add(sid || '-');
   }
@@ -262,7 +361,6 @@ export function flushBuffer(ctx, sessionId, { sync = true } = {}) {
   if (!entries.length) return { written: false, signals };
   const seqLines = readLog(brainDir, 'sequences.log', { rotationDays: policy.logs.rotation_days });
   const failLines = readLog(brainDir, 'failures.log');
-  const before = sessionsByName(seqLines);
   const newFails = [];
 
   // Sequences: consecutive successful shell commands per agent; a failure breaks the run.
@@ -287,9 +385,13 @@ export function flushBuffer(ctx, sessionId, { sync = true } = {}) {
   for (const agent of runs.keys()) push(agent);
   const date = today();
   const seqEntries = newSeqs.map((q) => `${date} ${q} ${sessionId}`);
-  seqLines.push(...seqEntries);
   failLines.push(...newFails);
-  const after = sessionsByName(seqLines);
+  // Sessions are counted only for this flush's names (the log holds ~70k names, a Set for each cost ~120 ms per pass,
+  // D-0034); `after` adds this flush's lines to a copy of `before`.
+  const only = new Set(newSeqs);
+  const before = sessionsByName(seqLines, { only });
+  const after = sessionsByName(seqEntries, { only, into: new Map([...before].map(([k, v]) => [k, new Set(v)])) });
+  seqLines.push(...seqEntries);
   const threshold = policy.thresholds.sequence_repeats;
   for (const s of newProposals(before, after, newSeqs, threshold)) {
     if (!rejectedProposal(brainDir, s)) {

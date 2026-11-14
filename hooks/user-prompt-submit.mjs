@@ -295,7 +295,9 @@ export function run(input) {
   }
   // P-059: the operator started this turn: the questions the last reply ended with are answered (a bell does not answer them).
   const answered = state && turnSource === 'operator' && state.last_questions?.length ? { ...withAnswered(state, state.last_questions, state.turn_started_at || new Date(Date.now() - 1).toISOString()), last_questions: [] } : state;
-  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...answered, ...keepTimer, ...mailSpent, ...taskSpent, ...(upd?.patch || {}), turn_started_at: startedAt, ...(title?.patch || {}), turn_source: turnSource, discussion, turn_intent: turnIntent, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
+  // D-0039: the operator's own words (this prompt and the one before) let a dialog use the marks the operator used.
+  const operatorPrompts = state && turnSource === 'operator' && typeof input.prompt === 'string' ? { operator_prompts: [input.prompt.slice(0, 20000), ...(state.operator_prompts || []).slice(0, 1)] } : {};
+  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...answered, ...keepTimer, ...mailSpent, ...taskSpent, ...(upd?.patch || {}), ...operatorPrompts, turn_started_at: startedAt, ...(title?.patch || {}), turn_source: turnSource, discussion, turn_intent: turnIntent, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
   if (extras.length) lines.push(extras.join('; '));
   const limited = enforceLines(lines.join('\n'), ctx.policy?.limits?.hook_signal_lines ?? 2);
   // Nothing new: empty context (contextOutput leaves additionalContext out).

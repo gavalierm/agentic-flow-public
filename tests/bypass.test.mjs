@@ -287,10 +287,10 @@ test('hook: settings that enforce the workflow and git past its hooks ask the op
   const fx = setup();
   try {
     const s = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: path.join(fx.project, '.claude', 'settings.json'), old_string: 'a', new_string: 'b' } });
-    assert.equal(s.json.hookSpecificOutput?.permissionDecision, 'ask', s.stderr);
+    assert.equal(s.json.hookSpecificOutput?.permissionDecision, 'deny', s.stderr);
     assert.match(s.json.hookSpecificOutput.permissionDecisionReason, /enforce the workflow/);
     const g = fx.hook('pre-tool-use.mjs', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git commit --no-verify -m x' } });
-    assert.equal(g.json.hookSpecificOutput?.permissionDecision, 'ask', g.stderr);
+    assert.equal(g.json.hookSpecificOutput?.permissionDecision, 'deny', g.stderr);
   } finally { fx.cleanup(); }
 });
 

@@ -25,8 +25,8 @@ test('rm -rf of a scratch dir holding files another thread wrote asks; the threa
     write(mine, fx.thread);
     write(theirs, 'other-thread');
     const rm = (command) => decision(fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }));
-    assert.equal(rm(`rm -rf ${dir}`), 'ask', 'the dir holds a draft of another thread');
-    assert.equal(rm(`rm -f ${theirs}`), 'ask', 'another thread\'s scratch file');
+    assert.equal(rm(`rm -rf ${dir}`), 'deny', 'the dir holds a draft of another thread');
+    assert.equal(rm(`rm -f ${theirs}`), 'deny', 'another thread\'s scratch file');
     assert.equal(rm(`rm -f ${mine}`), null, 'own scratch file is removed without asking');
     fs.rmSync(theirs);
     assert.equal(rm(`rm -rf ${dir}`), null, 'once the other thread\'s file is gone the dir is disposable again');

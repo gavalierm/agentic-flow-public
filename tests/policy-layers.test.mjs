@@ -85,9 +85,9 @@ test('policy layers: the project layer adds bans; plugin and domain bans stay; n
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'DomTool', tool_input: {} }, { cwd: repoA });
     assert.equal(decision(r), 'deny', 'ban of the domain brain');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'npm publish' } }, { cwd: repoA });
-    assert.equal(decision(r), 'ask', 'ask of the repo layer');
+    assert.equal(decision(r), 'deny', 'ask of the repo layer');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'git reset --hard HEAD' } }, { cwd: repoA });
-    assert.equal(decision(r), 'ask', 'the exception the layer tried to add is not applied');
+    assert.equal(decision(r), 'deny', 'the exception the layer tried to add is not applied');
   } finally { fx.cleanup(); }
 });
 

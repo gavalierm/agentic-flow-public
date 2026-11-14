@@ -104,8 +104,8 @@ test('domain move: the write hook asks the operator before a move, the plan runs
   const fx = setup();
   try {
     const decision = (command) => fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command } }).json.hookSpecificOutput?.permissionDecision || null;
-    assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs ~/agentic/Carol'), 'ask');
-    assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs finish ~/agentic/Carol'), 'ask');
+    assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs ~/agentic/Carol'), 'deny');
+    assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs finish ~/agentic/Carol'), 'deny');
     assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs ~/agentic/Carol --dry'), null);
     // operator 2026-11-09: the name of the script in a quoted text is no move
     assert.equal(decision('node ~/.claude/skills/workflow/bin/save.mjs handover t --task "vydané: domain-move.mjs presun domény"'), null);
@@ -121,6 +121,6 @@ test('domain move: the script without a domain argument (usage only) asks nothin
     assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs'), null);
     assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs finish'), null);
     assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs --to /x'), null);
-    assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs ~/agentic/Carol --to /x'), 'ask');
+    assert.equal(decision('node ~/.claude/skills/workflow/bin/domain-move.mjs ~/agentic/Carol --to /x'), 'deny');
   } finally { fx.cleanup(); }
 });
