@@ -11,7 +11,7 @@ import { assembleRules } from '../scripts/rules.mjs';
 import { recordTurn, runClient, mailNoticeLine, isMainTopic, turnDiscussion } from '../scripts/comms.mjs';
 import { waitOnlyStep, setTimer, untilMet, withoutMailWaker, finishedTasks, withoutFinished, AUTO_TIMER_MS } from '../scripts/waker.mjs';
 import { readReports } from '../scripts/report.mjs';
-import { PLUGIN_ROOT, toPosix } from '../scripts/util.mjs';
+import { PLUGIN_ROOT, toPosix, localTime } from '../scripts/util.mjs';
 import { threadTitleSignal } from '../scripts/thread-title.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 import { startDriftJudge, ownWords } from '../scripts/drift.mjs';
@@ -61,6 +61,22 @@ export function parsePrompt(prompt, policy) {
 
 const plain = (s) => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 const wordsRe = (list) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${list.map((w) => escapeRe(plain(w).trim()).replace(/ /g, '\\s+')).join('|')})(?![\\p{L}\\p{N}])`, 'u');
+const ownPlain = (prompt) => plain(String(prompt || '').replace(/<pasted_content\b[^>]*>[\s\S]*?<\/pasted_content[^>]*>/gi, ' ').replace(/```[\s\S]*?```/g, ' ').replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, ' ')).trim();
+const wordList = (policy, k) => (Array.isArray(policy?.prompt?.[k]) ? policy.prompt[k] : []).filter((w) => String(w || '').trim());
+
+/** P-063 (report-e640905d): an operator instruction turn: a word with two readings gets the reading said before the first change. */
+export const INSTRUCTION_READING_LINE = 'if a word of the instruction allows two readings with different results, say in one sentence which reading you take before the first change; if the task and topic do not tell which one, ask (P-063, P-059); add no behaviour the instruction does not ask for';
+
+/**
+ * An instruction to change: the operator's own words hold a word of `prompt.action_words` (a bare "ďalej" is none) and
+ * something besides those words: a bare "pokračuj" or "prosím, pokračuj" names nothing that could be read two ways.
+ */
+export function isInstructionPrompt(prompt, policy) {
+  const own = ownPlain(prompt);
+  const words = wordList(policy, 'action_words');
+  if (!own || !words.length || !wordsRe(words).test(own)) return false;
+  return own.replace(new RegExp(wordsRe(words).source, 'gu'), ' ').replace(/[^\p{L}\p{N}]+/gu, ' ').trim() !== '';
+}
 
 /**
  * P-063 (agentic-flow-public#30): the operator asks (a question, an explanation, a check) and gives no instruction to
@@ -69,11 +85,10 @@ const wordsRe = (list) => new RegExp(`(?<![\\p{L}\\p{N}])(?:${list.map((w) => es
  * Pasted material, code blocks and links are not the operator's own words. Only a backstop for common wording (P-063).
  */
 export function isQuestionPrompt(prompt, policy) {
-  const cfg = policy?.prompt || {};
-  const list = (k) => (Array.isArray(cfg[k]) ? cfg[k] : []).filter((w) => String(w || '').trim());
-  const own = plain(String(prompt || '').replace(/<pasted_content\b[^>]*>[\s\S]*?<\/pasted_content[^>]*>/gi, ' ').replace(/```[\s\S]*?```/g, ' ').replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, ' ')).trim();
+  const list = (k) => wordList(policy, k);
+  const own = ownPlain(prompt);
   if (!own) return false;
-  if (list('action_words').length && wordsRe(list('action_words')).test(own)) return false;
+  if (isInstructionPrompt(prompt, policy)) return false;
   const first = (own.match(/[\p{L}\p{N}]+/u) || [''])[0];
   return own.includes('?') || list('question_starts').some((w) => plain(w).trim() === first)
     || (list('question_phrases').length > 0 && wordsRe(list('question_phrases')).test(own));
@@ -186,12 +201,12 @@ export function run(input) {
     const met = untilMet(timer.until, ctx.projectDir || process.cwd());
     if (met === false && Date.now() < dl) {
       rearmed = setTimer(ctx.brainDir, ctx.thread, { delayMs: Math.min(timer.every_ms || AUTO_TIMER_MS, dl - Date.now()), then: timer.then, reason: timer.reason || null, forId: timer.for || null, until: timer.until, deadline: timer.deadline, everyMs: timer.every_ms });
-      if (!(info.mail.count > 0)) return quietEnd(`timer: its condition does not hold yet (${timer.until}); next check ${rearmed.at}, without a model turn (P-061)`, { next: rearmed.then, resume_at: rearmed.at });
+      if (!(info.mail.count > 0)) return quietEnd(`timer: its condition does not hold yet (${timer.until}); next check ${localTime(rearmed.at)}, without a model turn (P-061)`, { next: rearmed.then, resume_at: rearmed.at });
     }
-    untilLine = rearmed ? `timer: its condition does not hold yet (${timer.until}), the next check is at ${rearmed.at}; mail waits: handle it (P-061)`
+    untilLine = rearmed ? `timer: its condition does not hold yet (${timer.until}), the next check is at ${localTime(rearmed.at)}; mail waits: handle it (P-061)`
       : met ? `timer fired, its condition holds (${timer.until}): ${timer.then}; do it now (P-061)`
         : met === null ? `timer fired, its condition could not run here (${timer.until}): check it yourself, then: ${timer.then} (P-061)`
-          : `timer deadline ${timer.deadline} passed, its condition still does not hold (${timer.until}): ${timer.then}; decide now (P-061)`;
+          : `timer deadline ${localTime(timer.deadline)} passed, its condition still does not hold (${timer.until}): ${timer.then}; decide now (P-061)`;
   }
   // A paused topic (snooze): its end rings the thread once; an operator prompt with work on it resumes it.
   const paused = (info.held || []).find((t) => t.state === 'paused');
@@ -199,7 +214,7 @@ export function run(input) {
   const idle = (info.held || []).find((t) => !isMainTopic(t) && t.state !== 'paused' && waitOnlyStep(t.next));
   if (paused && !snoozeEnded && !BELLS.includes(kind)) extras.push(`topic ${paused.id} is paused${paused.paused_until ? ` until ${paused.paused_until}` : ''}: work the operator gives on it starts with topic.mjs resume ${paused.id}`);
   if (snoozeEnded) extras.unshift(`pause of topic ${paused.id} ended: run topic.mjs resume ${paused.id}, then continue from handover (P-026)`);
-  else if (kind === 'continue' && timer) extras.unshift(untilLine || `timer fired (set ${timer.set_at}): ${timer.then}; do it now, the work never stops (P-061)`);
+  else if (kind === 'continue' && timer) extras.unshift(untilLine || `timer fired (set ${localTime(timer.set_at)}): ${timer.then}; do it now, the work never stops (P-061)`);
   else if (kind === 'continue' && paused && !idle && !(info.held || []).some((t) => !isMainTopic(t) && t.state !== 'paused' && t.next)) extras.unshift(`topic ${paused.id} is still paused${paused.paused_until ? ` until ${paused.paused_until}` : ''}: nothing to do, end the turn with only "**Handover:**" with the line "1. ${paused.id} → <next step>" and "**Stav:** čakám (na koniec pauzy témy ${paused.id})" (P-061)`);
   else if (kind === 'continue' && idle) extras.unshift(`idle check: the next step of topic ${idle.id} only waits ("${waitOnlyStep(idle.next)}"): check whether it happened (mail, topic state); if nothing changed, end the turn with only "**Handover:**" with the line "1. ${idle.id} → <next step>" and "**Stav:** čakám (na <what the step waits for>)" (P-061)`);
   else if (kind === 'continue') extras.unshift('turn ended with a next step in the handover: do that step now (P-026); end only with a true state line (P-061)');
@@ -255,15 +270,20 @@ export function run(input) {
   const turnIntent = turnSource === 'operator' && kind === 'misread' ? 'misread' : turnSource === 'operator' && kind === null && isQuestionPrompt(input.prompt, ctx.policy) ? 'question' : null;
   if (turnIntent === 'misread') extras.push('starting a worker or subagent before the new reading is restated or chosen in a dialog is refused once in this turn (P-063)');
   if (turnIntent === 'question') extras.push('the operator asks (question, explanation, check) and gives no instruction to change: answer it and propose a change, do not make it; the first write or change in this turn is refused once (P-063)');
+  // report-e640905d: "settle the layer" meant folding into the last chosen layer; the agent kept the effect open longer and added a pin.
+  if (turnSource === 'operator' && kind === null && !turnIntent && isInstructionPrompt(input.prompt, ctx.policy)) extras.push(INSTRUCTION_READING_LINE);
   // report-e2d5cf30: the question line read as "leave the handover step" let the turn end "hotovo" with that step open.
   const openStep = turnIntent === 'question' && (info.held || []).find((t) => !isMainTopic(t) && t.state !== 'paused' && t.next);
   if (openStep) extras.push(`the handover of topic ${openStep.id} has a next step ("${openStep.next}"): the question does not close or cancel it, so do not end "**Stav:** hotovo"; a step the operator already approved for the topic is no new change: do it after the answer (repeat the refused write, P-059, P-026); else end "**Stav:** čakám (na <what>)" with a waker or "**Stav:** otázka" with the step as a numbered item (P-061)`);
   // P-012: an operator task (no bell, no question, no done/nudge/save/error phrase) while the thread holds a work topic: a judge
   // compares the task with the topic subject in the background; PreToolUse refuses the first write of the turn once on a mismatch.
   const startedAt = new Date().toISOString();
-  const heldTopic = info.held?.[0];
-  if (state && turnSource === 'operator' && kind === null && !turnIntent && heldTopic && !isMainTopic(heldTopic) && heldTopic.subject) {
-    startDriftJudge({ brainDir: ctx.brainDir, thread: ctx.thread, startedAt, topic: heldTopic.id, subject: heldTopic.subject, state: heldTopic.state, next: heldTopic.next, handover: heldTopic.handover, task: ownWords(input.prompt), others: listTopics(ctx.brainDir).filter((t) => t.id !== heldTopic.id && !isMainTopic(t) && t.subject).map((t) => ({ id: t.id, subject: t.subject })) });
+  // flow-public#72: a thread holding several work topics: the task is judged against all of them, not only the first.
+  const heldWork = (info.held || []).filter((t) => t && !isMainTopic(t) && t.subject);
+  const heldTopic = heldWork[0];
+  if (state && turnSource === 'operator' && kind === null && !turnIntent && heldTopic) {
+    const heldIds = new Set(heldWork.map((t) => t.id));
+    startDriftJudge({ brainDir: ctx.brainDir, thread: ctx.thread, startedAt, topic: heldTopic.id, subject: heldTopic.subject, state: heldTopic.state, next: heldTopic.next, handover: heldTopic.handover, task: ownWords(input.prompt), held: heldWork.slice(1).map((t) => ({ id: t.id, subject: t.subject })), others: listTopics(ctx.brainDir).filter((t) => !heldIds.has(t.id) && !isMainTopic(t) && t.subject).map((t) => ({ id: t.id, subject: t.subject })) });
   }
   // P-059: the operator started this turn: the questions the last reply ended with are answered (a bell does not answer them).
   const answered = state && turnSource === 'operator' && state.last_questions?.length ? { ...withAnswered(state, state.last_questions, state.turn_started_at || new Date(Date.now() - 1).toISOString()), last_questions: [] } : state;

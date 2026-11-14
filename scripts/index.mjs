@@ -1,13 +1,13 @@
 // Generated local indexes (P-039, P-010, P-022). Never committed: <brain>/local/index/.
 import path from 'node:path';
-import { writeText } from './util.mjs';
+import { writeText, localTime } from './util.mjs';
 import { readMemory, readDecisions, readRules, readSkills, readTopics } from './records.mjs';
 import { foreignAuthor, byTag, isOperatorMemory } from './authors.mjs';
 
 export function topicLine(t) {
   const holder = t.holder?.thread || '-';
   const next = t.next ? `, next: ${t.next}` : '';
-  const state = t.state === 'paused' && t.paused_until ? `paused until ${t.paused_until.slice(0, 16)}Z` : t.state || 'working';
+  const state = t.state === 'paused' && t.paused_until ? `paused until ${localTime(t.paused_until)}` : t.state || 'working';
   return `${t.id} (${state}, ${holder}${next})`;
 }
 

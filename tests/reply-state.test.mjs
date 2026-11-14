@@ -213,7 +213,7 @@ test('sender side: the mail line names the interim state, the timer is re-armed 
 
     // the check finds the same interim state: the delay doubles, nothing is resent
     const check = x.fx.runB('comms.mjs', ['message', '--id', id]);
-    assert.match(check.stdout, new RegExp(`^${id} \\| assist \\| to project/alpha \\| picked \\S+ \\| answer otázka since `, 'm'));
+    assert.match(check.stdout, new RegExp(`^${id} \\| assist \\| to project/alpha \\| picked \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d \\S+ \\| answer otázka since \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\d `, 'm'));
     assert.ok(left() > 2 * OPERATOR_TIMER_MS - MIN && left() <= 2 * OPERATOR_TIMER_MS, 'doubled');
 
     // a1 moves to čakám (interim to interim), then closes with hotovo; b2's timer follows and is cleared at the end

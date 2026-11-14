@@ -46,8 +46,17 @@ export function orchestratorFor(ctx, origin = ctx, { holderThread = null } = {})
 /**
  * Mail project of a topic created with --project in another project of the same brain (D-0035): it is registered in the
  * mail service under that project, so a bare `comms send --to <topic>` from the creating project addresses it there.
+ * With `thread`: a bare address that names the orchestrator topic of a topic this thread holds goes to the orchestrator's
+ * project (P-064); not the sender's project, because a topic thread in another project sent its question to the
+ * unregistered `<project>/workflow-dev` and the mail held it (report-785024c3).
  */
-export function topicMailProject(brainDir, id) {
+export function topicMailProject(brainDir, id, thread = null) {
+  if (thread) {
+    for (const t of heldTopics(brainDir, thread)) {
+      const o = t?.orchestrator && typeof t.orchestrator === 'object' ? t.orchestrator : null;
+      if (o?.topic === id && typeof o.project === 'string' && o.project) return o.project;
+    }
+  }
   const p = readTopic(brainDir, id)?.project;
   return typeof p === 'string' && p ? p : null;
 }

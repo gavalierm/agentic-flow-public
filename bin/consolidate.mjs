@@ -64,6 +64,7 @@ export function repoReport(ctx, brainRecords) {
  * a project, service, person or tool record whose key, name or alias another store of the machine has too (both
  * paths); tombstones (a memory or decision body under 300 characters that only says where the record went); decision
  * references that do not resolve: a bare D-NNNN its own store lacks, a <store>/D-NNNN the named store lacks (path:line);
+ * IDs two decisions of one store share;
  * relates_to links of memory and decisions that resolve to none of the four forms, each with the save command that
  * drops or replaces it (D-0029; a decision link is in the decision reference list).
  */
@@ -76,8 +77,17 @@ export function identityReport(ctx) {
   const tombstones = [];
   const refs = [];
   const links = [];
+  const ids = [];
   for (const s of mine) {
     const recs = storeRecords(s, ctx.brainDir).filter((r) => !r.topic);
+    // Two decisions with one ID in a store: two threads saving at once both got D-0033 (decision-id-race, 2026-11-13);
+    // a bare D-NNNN reference then names two choices.
+    const byId = new Map();
+    for (const r of recs.filter((x) => x.kind === 'decision')) {
+      const id = String(r.id || r.key || '').toUpperCase();
+      if (id) byId.set(id, [...(byId.get(id) || []), displayPath(r)]);
+    }
+    for (const [id, paths] of byId) if (paths.length > 1) ids.push({ id, store: s.name, paths });
     for (const r of recs.filter((x) => x.kind === 'memory' && SUBJECT_TYPES.includes(recordType(x)))) {
       for (const o of others) {
         if (sameStore(o.storeOf, s)) continue;
@@ -103,7 +113,7 @@ export function identityReport(ctx) {
       }
     }
   }
-  return { duplicates, tombstones, refs: [...new Set(refs)], links };
+  return { duplicates, tombstones, refs: [...new Set(refs)], links, ids };
 }
 
 export function report(ctx) {
@@ -164,6 +174,7 @@ try {
     out(`possible duplicate subjects (merge): ${r.duplicates.length ? r.duplicates.map((d) => `${d.token}: ${d.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`same subject in another store (one subject, one record: keep one, fold the other into it): ${r.identity.duplicates.length ? r.identity.duplicates.map((d) => `${d.key} (${d.how}, ${d.store} + ${d.other}): ${d.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`tombstones (short body pointing elsewhere: remove it with save.mjs memory <type> <name> --remove --reason "<why>", the record it names holds the subject): ${r.identity.tombstones.length ? r.identity.tombstones.join(', ') : 'none'}`);
+    out(`decision IDs used twice in one store (renumber one to the next free ID and fix its references): ${r.identity.ids.length ? r.identity.ids.map((d) => `${d.id} (${d.store}): ${d.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`decision references that do not resolve (a bare D-NNNN is the own store, another store's decision is <store>/D-NNNN): ${r.identity.refs.length ? r.identity.refs.join('; ') : 'none'}`);
     out(`relates_to links that resolve to nothing (${FORMS}; run the command under each, a free word goes into the body): ${r.identity.links.length ? r.identity.links.map((l) => `\n  ${l.path}: ${l.problem}\n    ${l.fix}`).join('') : 'none'}`);
     out(`agentic skills sharing a tool/work token (merge only same tool): ${r.mergeable.length ? r.mergeable.map((m) => `${m.token}: ${m.paths.join(' + ')}`).join('; ') : 'none'}`);

@@ -152,8 +152,13 @@ test('PreToolUse reminder: once per session, only Bash ls/find/grep/rg/cat over 
     assert.equal(pre(fx, 'Bash', { command: `echo ${fx.data}` }).context, '', 'echo is not a reader');
     assert.equal(pre(fx, 'Bash', { command: `node ${path.join(fx.project, 'bin', 'catalog.mjs')} find x ${fx.data}` }).context, '', 'the catalog command itself is fine');
     const first = pre(fx, 'Bash', { command: `ls -R ${fx.data}` });
-    assert.match(first.context, /^katalóg: pre dáta v data najprv node \S+\/bin\/catalog\.mjs find <slová> alebo show <cesta>; CSV dotazuj cez catalog\.mjs sql, nečítaj ich \(P-031\)$/);
-    assert.equal(first.context.split('\n').length, 1);
+    assert.equal(decision(first), 'deny', 'flow-public#66: the first listing is refused before it runs');
+    const reason = first.json.hookSpecificOutput.permissionDecisionReason;
+    assert.match(reason, /^katalóg: pre dáta v data najprv node \S+\/bin\/catalog\.mjs find <slová> alebo show <cesta>; CSV dotazuj cez catalog\.mjs sql, nečítaj ich \(P-031\); prvý výpis zdroja v session je preto zamietnutý, keď katalóg nestačí, zopakovaný príkaz prejde$/);
+    assert.equal(reason.split('\n').length, 1);
+    const again = pre(fx, 'Bash', { command: `ls -R ${fx.data}` });
+    assert.notEqual(decision(again), 'deny', 'the repeat passes');
+    assert.equal(again.context, '');
     assert.equal(pre(fx, 'Bash', { command: `grep -r Acme ${fx.data}` }).context, '', 'only once per session');
     assert.equal(pre(fx, 'Bash', { command: `cat ${fx.data}/export/objednavky.csv` }, { env: { WORKFLOW_THREAD_ID: 'a1' } }).context, '');
   } finally { fx.cleanup(); }
@@ -176,11 +181,13 @@ const readerCases = [
   ['cat', (d) => `cat ${d}/notes/readme.txt`],
 ];
 for (const [name, cmd] of readerCases) {
-  test(`PreToolUse reminder: Bash ${name} over the source gets the reminder in a new session`, () => {
+  test(`PreToolUse reminder: Bash ${name} over the source is refused with the reminder in a new session`, () => {
     const fx = catalogFixture();
     try {
       scanAll(fx.cfg());
-      assert.match(pre(fx, 'Bash', { command: cmd(fx.data) }).context, /^katalóg: /);
+      const r = pre(fx, 'Bash', { command: cmd(fx.data) });
+      assert.equal(decision(r), 'deny');
+      assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /^katalóg: /);
     } finally { fx.cleanup(); }
   });
 }

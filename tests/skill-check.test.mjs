@@ -63,10 +63,10 @@ test('save skill: a broken skill is not saved; operator skill: cosmetic edit pas
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'SKILL.md'), skill('1. Spusti `npm test`.\n## Doplnenie 1\nPotom `git push origin dev`.', '', 'deploy'));
     fx.git(fx.brain, 'add', '-A'); fx.git(fx.brain, 'commit', '-qm', 'operator skill', '--no-verify');
-    r = fx.run('save.mjs', ['skill', 'deploy', '--replace', '--content', '1. Spusti `npm test`, potom `git push origin dev`.']);
+    r = fx.run('save.mjs', ['skill', 'deploy', '--origin', 'routine', '--replace', '--content', '1. Spusti `npm test`, potom `git push origin dev`.']);
     assert.equal(r.status, 0, r.out);
     assert.match(fx.read('skills/operator/deploy/SKILL.md'), /potom `git push origin dev`/);
-    r = fx.run('save.mjs', ['skill', 'deploy', '--sed', 's/npm test/npm run lint/']);
+    r = fx.run('save.mjs', ['skill', 'deploy', '--origin', 'routine', '--sed', 's/npm test/npm run lint/']);
     assert.equal(r.status, 1); assert.match(r.stderr, /changes its meaning \(lost code:npm test.*--approved/);
     r = fx.run('save.mjs', ['skill', 'deploy', '--sed', 's/npm test/npm run lint/', '--approved', 'áno, lint']);
     assert.equal(r.status, 0, r.out);

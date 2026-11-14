@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isInside } from './util.mjs';
+import { isInside, localTime } from './util.mjs';
 
 export const MATERIALY_DIR = 'materialy';
 export const DEFAULT_MAX_MB = 50;
@@ -114,7 +114,7 @@ export function scratchReminder(projectDir, sinceMs, topic) {
   const { count, files } = scratchSince(projectDir, sinceMs);
   if (!count) return null;
   const shown = files.slice(0, 5).join(', ') + (count > 5 ? `, … (+${count - 5})` : '');
-  return `scratch: ${count} file(s) changed since ${new Date(sinceMs).toISOString().slice(0, 16)} are only in scratch/ (not in git): ${shown}. Inputs from outside and results of work move now to materialy/${topic || '<téma>'}/ (skill workflow:materialy), procedures to a skill; intermediate results stay (P-062, P-052)`;
+  return `scratch: ${count} file(s) changed since ${localTime(sinceMs)} are only in scratch/ (not in git): ${shown}. Inputs from outside and results of work move now to materialy/${topic || '<téma>'}/ (skill workflow:materialy), procedures to a skill; intermediate results stay (P-062, P-052)`;
 }
 
 // D-0032 (knowledge point 4): a worker result lived only in the conversation; the hook keeps it with the topic.

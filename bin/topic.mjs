@@ -16,7 +16,7 @@
 //                        exact call of the topic's thread that a hook left to a confirmation (P-064)
 //           copy <id> [--operator-approved]   code copy (branch topic/<id>); a discussion topic gets one only after the
 //                        operator approved its implementation (D-0020), recorded in topics/<id>/topic.json; done merges it
-import { parseArgs, fail } from '../scripts/util.mjs';
+import { parseArgs, fail, localTime } from '../scripts/util.mjs';
 import { loadContext, foreignProjectCwd } from '../scripts/config.mjs';
 import { createTopic, CLASS_HELP, startThreadForTopic, claimTopic, claimMain, releaseTopic, handoffTopic, listTopics, heldTopics, ensureCodeCopy, copyTopic, readTopic, pauseTopic, resumeTopic, grantConsent } from '../scripts/topic.mjs';
 import fs from 'node:fs';
@@ -111,7 +111,7 @@ try {
     const rel = /^(\d+)\s*([dh])$/i.exec(String(args.until || ''));
     const until = rel ? new Date(Date.now() + Number(rel[1]) * (rel[2].toLowerCase() === 'd' ? 86400_000 : 3600_000)).toISOString() : args.until || null;
     const res = pauseTopic(ctx, id, { until, reason: args.reason || null });
-    out(`topic ${id} paused${res.topic.paused_until ? ` until ${res.topic.paused_until}` : ''}`);
+    out(`topic ${id} paused${res.topic.paused_until ? ` until ${localTime(res.topic.paused_until)}` : ''}`);
   } else if (cmd === 'resume') {
     if (!id) fail('usage: topic.mjs resume <id>');
     const res = resumeTopic(ctx, id);

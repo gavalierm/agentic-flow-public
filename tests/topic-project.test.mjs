@@ -23,6 +23,21 @@ test('D-0035: topic create --project records the mail project of the repo and th
   } finally { fx.cleanup(); }
 });
 
+test('report-785024c3: a bare --to naming the orchestrator topic of a held topic resolves to the orchestrator project', async () => {
+  const { topicMailProject } = await import('../scripts/topic.mjs');
+  const fx = setup({ thread: 'orch-1' });
+  try {
+    const repo = path.join(fx.root, 'code-repo');
+    initProject(repo, { brainRel: '../brain' });
+    assert.equal(fx.run('topic.mjs', ['create', 'lead', '--subject', 'Lead', '--class', 'discussion', '--here']).status, 0);
+    const r = fx.run('topic.mjs', ['create', 'sub', '--subject', 'Sub', '--class', 'discussion', '--project', repo, '--for-thread', 'child-1']);
+    assert.equal(r.status, 0, r.out);
+    assert.equal(topicMailProject(fx.brain, 'lead', 'child-1'), 'project', 'the topic thread addresses its orchestrator in the orchestrator project');
+    assert.equal(topicMailProject(fx.brain, 'lead', 'other-thread'), null, 'a thread without that orchestrator keeps its own project');
+    assert.equal(topicMailProject(fx.brain, 'sub', 'orch-1'), 'code-repo', 'the recorded topic project still applies');
+  } finally { fx.cleanup(); }
+});
+
 test('D-0035: a new topic branch starts on origin/<branch> when the checkout lags it', async () => {
   const { newBranchBase } = await import('../scripts/topic.mjs');
   const fx = setup({ thread: 'orch-1' });

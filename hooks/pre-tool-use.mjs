@@ -98,9 +98,27 @@ export function executedText(command) {
  * With the shell's directory the text is the command as run from there (`cd '<cwd>'` line first): a cd of an earlier call
  * persists in the main session, so a command run in a clone without naming its path passed (report-23c6fb63).
  * An entry whose regex does not compile is skipped.
+ * Quoted text with spaces given as an argument to a program that does not run it (`comms.mjs send --text "..."`,
+ * `git commit -m "..."`) is data and counts as `Q`: a rule over `sed ... -i` denied a message that only quoted it
+ * (report-b14eac28). Quotes of a shell (`bash -c`), a string runner (`ssh`) or inline code (`python3 -c`, `node -e`,
+ * `perl -e`) stay, and so does all text from the first `<<` on (heredoc bodies are code or data the rule decides).
  */
+const INLINE_CODE = /^(?:python[\d.]*|node|nodejs|perl|ruby|php|deno|bun|awk|gawk|osascript)$/;
+function dataQuotesMasked(command) {
+  const cut = command.indexOf('<<');
+  const head = cut < 0 ? command : command.slice(0, cut);
+  const quoted = [];
+  const held = head.replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, (q) => `\u0006${quoted.push(q) - 1}\u0006`);
+  const out = [];
+  for (const seg of held.split(/(\s*(?:&&|\|\||;|\n|\|)\s*)/)) {
+    const words = seg.trim().split(/\s+/);
+    const code = runsText(words) || words.some((w, i) => INLINE_CODE.test(w.replace(/^\(+/, '').split('/').pop()) && /^-[A-Za-z]*[ceE]$|^--eval$|^-[pr]$/.test(words[i + 1] || ''));
+    out.push(seg.replace(/\u0006(\d+)\u0006/g, (m, i) => (code || !/\s/.test(quoted[i]) ? quoted[i] : 'Q')));
+  }
+  return out.join('') + (cut < 0 ? '' : command.slice(cut));
+}
 export function deniedCommand(command, rules, cwd = '') {
-  const text = `${cwd ? `cd '${cwd}'\n` : ''}${String(command || '')}`;
+  const text = `${cwd ? `cd '${cwd}'\n` : ''}${dataQuotesMasked(String(command || ''))}`;
   for (const r of Array.isArray(rules) ? rules : []) {
     if (!r || typeof r.match !== 'string' || !r.match) continue;
     let re;
@@ -1034,6 +1052,70 @@ export function inTopicCopy(ctx, abs) {
   return topicCopyRoots(ctx).some((root) => path.relative(path.resolve(root), path.resolve(abs)) !== '' && isInside(root, abs));
 }
 
+// D-0038: git subcommands that change the working tree, index or branch of a checkout.
+export const SHARED_CHECKOUT_GIT = new Set(['commit', 'merge', 'checkout', 'switch', 'reset', 'rebase', 'stash', 'cherry-pick', 'am', 'revert', 'apply', 'restore', 'pull', 'clean', 'rm', 'mv', 'add']);
+
+/**
+ * D-0038: the shared checkout dir lies in, or null. A shared checkout is the main checkout (a `.git` directory) of a code
+ * repo whose topic worktrees live in `<domain>/.worktrees/<repo>/` (the directory exists), or one listed in policy
+ * `topics.shared_checkouts` (relative to the domain, else to the project). Topic worktrees (a `.git` file) and topic
+ * clones (`../<project>-topics/`) are no shared checkout.
+ */
+export function sharedCheckoutOf(ctx, dir) {
+  const abs = path.resolve(dir);
+  if (inTopicCopy(ctx, abs)) return null;
+  let top = null;
+  for (let d = abs; ; d = path.dirname(d)) {
+    const dotGit = path.join(d, '.git');
+    let st = null;
+    try { st = fs.statSync(dotGit); } catch { /* none here */ }
+    if (st) { if (st.isDirectory()) top = d; break; }
+    if (path.dirname(d) === d) break;
+  }
+  if (!top) return null;
+  const base = ctx.domain?.root || ctx.projectDir;
+  const listed = (ctx.policy?.topics?.shared_checkouts || []).map((p) => path.resolve(base, String(p)));
+  if (listed.some((p) => samePath(p, top))) return top;
+  const roots = [...new Set([ctx.domain?.root, path.dirname(top)].filter(Boolean))];
+  return roots.some((r) => fs.existsSync(path.join(r, WORKTREES_DIR, path.basename(top)))) ? top : null;
+}
+
+/** Where this thread writes instead of the shared checkout top: the worktree of a topic it holds, else a new code topic. */
+function sharedCheckoutHint(ctx, top, abs) {
+  const copies = (ctx.brainDir && ctx.thread ? heldTopics(ctx.brainDir, ctx.thread) : []).map((t) => topicCopyPath(ctx, t)).filter((c) => c && fs.existsSync(c));
+  const copy = copies.find((c) => samePath(mainCheckout(c), top)) || copies[0];
+  if (copy) {
+    const rel = abs && isInside(top, abs) ? path.relative(top, abs) : '';
+    return `write in the worktree of the topic this thread holds: ${toPosix(rel ? path.join(copy, rel) : copy)}`;
+  }
+  return `this thread holds no topic with a worktree: create one with topic.mjs create <id> --class code --project ${path.basename(top)} --task "..." and work in its worktree`;
+}
+
+const SHARED_REASON = (what, top, hint) => `${what} the shared checkout ${toPosix(top)}: its branch only collects done --topic merges and releases, topic work happens only in the topic's worktree (D-0038); ${hint}`;
+
+/** D-0038: deny reason for a write into the working tree of a shared checkout (scratch/, local/ and other ignored paths and .git/ pass). */
+export function sharedCheckoutWrite(ctx, absPaths) {
+  for (const abs of absPaths) {
+    if (String(abs).startsWith('/dev/')) continue;
+    const top = sharedCheckoutOf(ctx, abs);
+    if (!top) continue;
+    const rel = toPosix(path.relative(top, abs));
+    if (['.git', SCRATCH_DIR].some((d) => rel === d || rel.startsWith(`${d}/`))) continue;
+    if (rel && git(['check-ignore', '-q', '--', rel], { cwd: top }).ok) continue;
+    return SHARED_REASON(`${toPosix(abs)} lies in`, top, sharedCheckoutHint(ctx, top, abs));
+  }
+  return null;
+}
+
+/** D-0038: deny reason for `git [-C dir] commit|merge|checkout|reset|rebase|stash|...` run in a shared checkout. */
+export function sharedCheckoutGit(ctx, command, cwd) {
+  for (const dir of gitWriteDirs(command, cwd, SHARED_CHECKOUT_GIT)) {
+    const top = sharedCheckoutOf(ctx, dir);
+    if (top) return SHARED_REASON('git changes', top, sharedCheckoutHint(ctx, top, null));
+  }
+  return null;
+}
+
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const realOr = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
 const samePath = (a, b) => toPosix(realOr(path.resolve(gitBashPath(String(a))))) === toPosix(realOr(path.resolve(gitBashPath(String(b)))));
@@ -1479,7 +1561,7 @@ export function run(input) {
   return out;
 }
 
-/** Catalog of project data (scripts/catalog/pretool.mjs): deny of a write into a read-only source, one reminder per session. Never throws. */
+/** Catalog of project data (scripts/catalog/pretool.mjs): deny of a write into a read-only source, one refused reader command per session. Never throws. */
 function catalogCheck(input, ctx, cwd) {
   try {
     return catalogPreTool(input, ctx, cwd, { bashTargets, bashEdits, shellWrites, maskShell, unmask, leadOf, readThreadState, writeThreadState });
@@ -1529,6 +1611,8 @@ function pathChecks(input, ctx, cwd) {
       const persona = ctx.persona ? `; in a persona only ${SCRATCH_DIR}/, local/, docs/ and materialy/ are written directly (docs/ and materialy/ committed by save.mjs docs), outputs belong to the managed projects (P-024)` : '';
       return permissionOutput('deny', `direct write into brain is not allowed; use workflow:save, topic or done (P-013, P-040)${persona}`);
     }
+    const shared = sharedCheckoutWrite(ctx, [abs]);
+    if (shared) return permissionOutput('deny', shared);
     const harnessPath = harnessPathWrite(ctx, [abs]);
     if (harnessPath) return permissionOutput('deny', harnessPath);
     // P-052: work files stay in the project; topic copies ../<project>-topics/ are part of the project's work (P-036).
@@ -1584,6 +1668,9 @@ function pathChecks(input, ctx, cwd) {
     snapshotShell(ctx, input.tool_use_id, shellDirs(cmd, cwd), threadStateBirths(cmd, cwd, ctx.thread));
     const cat = catalogCheck(input, ctx, cwd);
     if (cat?.deny) return permissionOutput('deny', cat.deny);
+    // flow-public#66: a reminder next to the listing came too late (the listing was already in context); the first
+    // reader command over a source in a session is refused with it, the repeat passes.
+    if (cat?.remind) return permissionOutput('deny', cat.remind);
     const forbidden = deniedCommand(cmd, policy.harness?.deny_commands, cwd);
     if (forbidden) return permissionOutput('deny', forbidden);
     const targets = bashTargets(cmd, cwd);
@@ -1614,6 +1701,8 @@ function pathChecks(input, ctx, cwd) {
     if (ctx.brainDir && shellTargets.some((t) => isInside(ctx.brainDir, t) && !personaWritable(ctx, t) && !stray(t) && !ignoredInBrain(t))) {
       return permissionOutput('deny', `shell write into brain is not allowed; use workflow:save, topic or done (P-013, P-040)`);
     }
+    const shared = sharedCheckoutWrite(ctx, [...targets, ...edits, ...shellWriteTargets(cmd, cwd).filter((w) => w.sure).map((w) => w.path)]) || sharedCheckoutGit(ctx, cmd, cwd);
+    if (shared) return permissionOutput('deny', shared);
     const harnessPath = harnessPathWrite(ctx, shellTargets);
     if (harnessPath) return permissionOutput('deny', harnessPath);
     const skillsWrite = shellTargets.find((t) => isInside(ctx.projectDir, t) && ['/.claude/skills/', '/.agents/skills/'].some((d) => toPosix(t).includes(d)));
@@ -1677,7 +1766,7 @@ function pathChecks(input, ctx, cwd) {
     claimOwn(ctx, [...targets, ...edits].filter((t) => fs.existsSync(t) && !ownWork(ctx, t) && classifyTarget(t).reason === 'tracked and clean'));
     const grepHint = grepNoFilename(cmd);
     if (grepHint) return contextOutput('PreToolUse', grepHint);
-    if (cat?.remind) return contextOutput('PreToolUse', cat.remind);
+
   }
   return {};
 }

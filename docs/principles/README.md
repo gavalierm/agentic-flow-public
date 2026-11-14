@@ -76,6 +76,7 @@ Každý princíp je v samostatnom súbore `P-NNN.md`. Agent číta jeden súbor,
 - [P-062](P-062.md): Materiály témy (topic materials)
 - [P-063](P-063.md): Zámer operátora (operator intent)
 - [P-064](P-064.md): Otázky vlákna témy idú orchestrátorovi (orchestrator questions)
+- [P-065](P-065.md): Spoločný checkout iba zbiera (shared checkout collects only)
 
 ## Predvolené hodnoty politiky
 
@@ -109,3 +110,4 @@ Hodnoty určil agent (operátor delegoval rozhodnutie, 2026-10-31). Sú to vých
 | Umiestnenie brain | `../<nazov-brain>` relatívne k projektu | P-024 | brain vedľa projektu, bez absolútnych ciest |
 | Kópia kódu témy | `../<project>-topics/<id>/` | P-036 | vždy samostatný klon vedľa projektu, aj v T3 |
 | Automatické témy kódu (`topics.auto`) | žiadne: téma hlásenia či issue ostáva v projekte bez kópie | D-0035 | brain ich smeruje do projektu repa: `projects` (`{"<priečinok relatívne k brainu>": ["<repo>", …]}`), `default_project` (hlásenie, nezaradené repo), `orchestrator` (téma brainu, ktorej vlákno dostáva otázky a zlyhania) |
+| Spoločné checkouty (`topics.shared_checkouts`) | žiadne navyše: spoločný je hlavný checkout repa s `<doména>/.worktrees/<repo>/` | P-065 | zoznam ciest (relatívne k doméne) pridá repo bez worktree tém |

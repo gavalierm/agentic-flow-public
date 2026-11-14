@@ -102,6 +102,21 @@ export function nowIso() {
   return new Date().toISOString();
 }
 
+/**
+ * A time for a human (agent text the operator reads): the machine's local time with its zone, "2026-11-14 00:30 CET".
+ * Stored data (state JSON, mail, logs) stays ISO UTC; only text changes. Takes an ISO string, ms or Date; anything
+ * unparsable comes back as given. `timeZone` overrides the process zone (tests).
+ */
+export function localTime(value, { timeZone } = {}) {
+  if (value === null || value === undefined || value === '') return value;
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short',
+  }).formatToParts(d).map((p) => [p.type, p.value]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} ${parts.timeZoneName}`;
+}
+
 /** Run git synchronously. Returns { status, stdout, stderr, ok }. */
 export function git(args, { cwd, env, input } = {}) {
   const res = spawnSync('git', args, {

@@ -16,7 +16,7 @@
 //   comms.mjs notices [--all] | decide --notice <id> --decision <id> [--target <project>/<topic>]
 //   comms.mjs register [<topic>]                        idempotent registration of held topics in the mail service
 import fs from 'node:fs';
-import { parseArgs, fail, nowIso, readStdin } from '../scripts/util.mjs';
+import { parseArgs, fail, nowIso, readStdin, localTime } from '../scripts/util.mjs';
 import { loadContext, inSubagent, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { commsSettings, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, categoryLabel, LEVELS, dropNoticesCache } from '../scripts/comms.mjs';
 import { readTopic, mailboxTopics, heldTopics, heldBy, topicMailProject } from '../scripts/topic.mjs';
@@ -220,13 +220,13 @@ function cmdMessage(ctx) {
   const [id, ...more] = ids();
   if (!id || more.length) fail('usage: comms.mjs message --id <id>  (state of one message you sent)');
   const m = must(runClient(ctx, ['message', '--id', id]));
-  const answer = m.answer_state ? `answer ${m.answer_state} since ${m.answer_at}` : 'no answer';
-  out(`${m.id} | ${m.level} | to ${m.to} | ${m.picked_at ? `picked ${m.picked_at}` : 'not picked'} | ${answer}${m.outcome ? ` | ${m.outcome}` : ''}${m.cancelled_by ? ` | cancelled by ${m.cancelled_by}` : ''}`);
+  const answer = m.answer_state ? `answer ${m.answer_state} since ${localTime(m.answer_at)}` : 'no answer';
+  out(`${m.id} | ${m.level} | to ${m.to} | ${m.picked_at ? `picked ${localTime(m.picked_at)}` : 'not picked'} | ${answer}${m.outcome ? ` | ${m.outcome}` : ''}${m.cancelled_by ? ` | cancelled by ${m.cancelled_by}` : ''}`);
   if (!ctx.brainDir || !ctx.thread || inSubagent()) return;
   if (m.answer_state === FINAL_STATE) return closeReplyWait(ctx, id);
   if (!REPLY_STATE_TIMER_MS[m.answer_state]) return;
   const t = armStateTimer(ctx, id, m.answer_state);
-  out(t ? `timer set: ${t.at} for the next check of ${id}; the answer is interim, do not resend or escalate (P-061)` : `an earlier timer of this thread stays; ${id} is checked then`);
+  out(t ? `timer set: ${localTime(t.at)} for the next check of ${id}; the answer is interim, do not resend or escalate (P-061)` : `an earlier timer of this thread stays; ${id} is checked then`);
 }
 
 /** `settle --id <id>`: a picked assist answered another way (one reply for several messages, a new message naming it). */
@@ -324,7 +324,7 @@ function cmdSend(ctx) {
   } else {
     const addr = parseAddress(args.to || args.topic, s.project);
     // D-0035: a bare topic of this brain created for another project (--project) lives there in the mail service.
-    if (addr?.topic && !String(args.to || args.topic).includes('/') && ctx.brainDir) addr.project = topicMailProject(ctx.brainDir, addr.topic) || addr.project;
+    if (addr?.topic && !String(args.to || args.topic).includes('/') && ctx.brainDir) addr.project = topicMailProject(ctx.brainDir, addr.topic, ctx.thread) || addr.project;
     if (!addr) fail('usage: comms.mjs send --level <level> --to [<project>/]<topic> | @<persona>/main --text "..."  |  --reply-to <id>');
     if (addr.persona) {
       clientArgs.push('--persona', addr.persona);
@@ -377,14 +377,14 @@ function cmdSend(ctx) {
     out(`reply ${replyState}: the exchange stays open; send --reply-to ${replyTo} --state hotovo when it is closed (P-061)`);
   }
   const finalLevel = data.level || level;
-  if (finalLevel === 'assist' && !replyTo && data.expires_at) out(`assist sent: continue other work; the reply wakes you; without pickup by ${data.expires_at} the expiry wakes you (P-042)`);
+  if (finalLevel === 'assist' && !replyTo && data.expires_at) out(`assist sent: continue other work; the reply wakes you; without pickup by ${localTime(data.expires_at)} the expiry wakes you (P-042)`);
   // P-061: a picked message may stay unanswered; the thread timer rings the sender after the reply window anyway.
   if (REPLY_WINDOW_MS[finalLevel] && !replyTo && data.id && !data.queued && !data.warning && ctx.brainDir && ctx.thread && !inSubagent()) {
     const now = Date.now();
     const cur = activeTimer(readThreadState(ctx.brainDir, ctx.thread), now);
     if (!cur || Date.parse(cur.at) > now + REPLY_WINDOW_MS[finalLevel]) {
       const t = setTimer(ctx.brainDir, ctx.thread, { delayMs: REPLY_WINDOW_MS[finalLevel], then: `check the reply to ${data.id} (${finalLevel} to ${destination}); without one continue on your own decision or send the question elsewhere`, forId: data.id }, now);
-      out(`timer set: ${t.at} in case ${data.id} gets no reply (P-061)`);
+      out(`timer set: ${localTime(t.at)} in case ${data.id} gets no reply (P-061)`);
     }
   }
   if (finalLevel === 'blocker' && !replyTo) out('blocker sent: continue with work that does not need the answer (or your recommended assumption, say it); the reply or the timer wakes you; a message never stops the work (P-061)');

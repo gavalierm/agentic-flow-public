@@ -74,3 +74,16 @@ test('a deny_commands refusal locks nothing: the Edit of the same file passes af
     assert.doesNotMatch(JSON.stringify(edit.json || {}), /P-054/, 'Edit is the way the refusal names, not a bypass');
   } finally { fx.cleanup(); }
 });
+
+// report-b14eac28 (2026-11-14): a rule over in-place sed denied `comms send` whose message only quoted `(sed ... -i`;
+// quoted text with spaces given to a program that does not run it is data, quotes of a shell or inline code still count.
+test('deny_commands: quoted message text is data; shell, inline code and heredoc bodies still count', () => {
+  const SED = { match: "^(?=[\\s\\S]*flow-repo)(?:[\\s\\S]*[;&|(\\n`])?\\s*(?:[\\w./~-]*/)?(?:sed|perl)\\s(?:(?:[^;&|\\n()'\"]|'[^'\\n]*'|\"[^\"\\n]*\")*?\\s)?(?:-[a-zA-Z]*i[a-zA-Z.]*|--in-place(?:=\\S*)?)(?=\\s|$)", reason: 'sed in place: use Edit' };
+  const msg = 'node bin/comms.mjs send --level assist --to flow-repo/x --text "the rule (sed and -i after a parenthesis) denied it"';
+  assert.equal(deniedCommand(msg, [SED]), null, 'a message that quotes sed -i is no command');
+  assert.equal(deniedCommand(`git commit -m "fix (sed -i in flow-repo)"`, [SED]), null);
+  assert.match(deniedCommand("sed -i 's/a b/c/' /work/flow-repo/x.mjs", [SED]), /use Edit/);
+  assert.match(deniedCommand('bash -c "cd /work/flow-repo && sed -i s/a/b/ x"', [SED]), /use Edit/, 'a shell runs its quoted text');
+  assert.match(deniedCommand(`python3 -c "open('/work/flow-repo/a', 'w').write('x y')"`, [RULE]), /multi-replace/, 'inline code counts');
+  assert.match(deniedCommand(HEREDOC, [RULE]), /multi-replace/, 'heredoc body counts');
+});

@@ -213,6 +213,25 @@ function citedResults(ctx, id) {
   return `results: ${cited.length} scratch/ path(s) cited in worker results of ${id} exist only in scratch/ (not in git): ${shown}. Move data that cannot be fetched again to materialy/${id}/ (skill workflow:materialy); the rest may stay (D-0032)`;
 }
 
+/**
+ * Threads that held the topic before a takeover (claim --force): `took_over_from` of holder.json and, from the claim
+ * history (commits of topics/<id>/holder.json), the holder before each forced claim. Never this thread.
+ */
+function previousHolders(ctx, id, holder = {}) {
+  const found = [];
+  if (holder?.took_over_from) found.push(String(holder.took_over_from).split(' on ')[0]);
+  const log = git(['log', '--reverse', '--format=%s', '--', `topics/${id}/holder.json`], { cwd: ctx.brainDir });
+  let current = null;
+  const claim = new RegExp(`^topic claim ${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} by (\\S+)( \\(force)?`);
+  for (const line of log.ok ? log.stdout.split('\n') : []) {
+    const m = claim.exec(line);
+    if (!m) continue;
+    if (m[2] && current && current !== m[1]) found.push(current);
+    current = m[1];
+  }
+  return [...new Set(found)].filter((t) => t && t !== ctx.thread);
+}
+
 function doneTopic(ctx, id) {
   guard(ctx, id);
   // An answer of the operator in a dialog of this turn is the operator's instruction, the message never is (P-047; D-0011:
@@ -221,6 +240,7 @@ function doneTopic(ctx, id) {
   const topic = readTopic(ctx.brainDir, id);
   if (!topic) fail(`topic ${id} does not exist`);
   if (topic.kind === 'main') fail('topic main is the persona main thread: it is never closed or archived (P-045)');
+  const holder = readHolder(ctx.brainDir, id);
   let merge = { merged: false, note: 'discussion topic, no code' };
   if (hasCodeCopy(topic)) merge = mergeCode(ctx, id, topic);
   const closed = { ...topic, state: 'closed', closed: nowIso(), closed_by: ctx.thread, verified: String(args.verified), merged: merge.merged };
@@ -243,9 +263,15 @@ function doneTopic(ctx, id) {
   else if (!comms.skipped) out(`mail: closing ${id} in the mail service failed (${comms.reason}); the next session start retries`);
   // P-036: the topic's T3 thread is settled with the topic (only inside T3). A thread that also holds the persona main
   // topic is never settled or archived (P-045; alice 2026-11-02: main stayed held by an archived thread and @alice/main went unread).
-  const holdsMain = heldTopics(ctx.brainDir, ctx.thread).some((t) => t.kind === 'main');
+  // The thread is settled only when it holds no other open topic after this one.
+  const held = heldTopics(ctx.brainDir, ctx.thread);
+  const holdsMain = held.some((t) => t.kind === 'main');
   if (holdsMain) out('thread: this thread holds the persona main topic, so it stays open: do not settle or archive it (P-045)');
+  else if (held.length) out(`thread: this thread still holds topic ${held.map((t) => t.id).join(', ')}, so it stays open: do not settle or archive it (P-036)`);
   else if (process.env.T3CODE_THREAD_ID) out(SETTLE_THREAD);
+  // A topic taken over (claim --force) leaves the previous holder's thread open in T3: settle it too. The t3 CLI has no
+  // settle (t3 thread: list, start, send, show), so done names the step.
+  for (const prev of previousHolders(ctx, id, holder)) out(`thread: settle the previous holder thread ${prev} (t3_thread_organize action settle threadId ${prev}; an archived thread first unarchive)`);
   for (const w of buildIndexes(ctx.brainDir, ctx.policy).warnings) out(`limit: ${w}`);
 }
 

@@ -7,10 +7,10 @@
 //   save.mjs decision --relink D-XXXX [--repo [<repo>]] (--relates-to x,y | --unrelate x,y)   changes only the links of a decision
 //   relates_to (D-0029): a record key (<type>-<name>), a decision (D-NNNN, <store>/D-NNNN), a principle (P-NNN) or a file
 //   tracked in git; a new link that resolves to none of them is refused (scripts/links.mjs)
-//   save.mjs decision --remove D-XXXX [--repo [<repo>]] --reason "operator <YYYY-MM-DD>: <why>"   only on an explicit operator order (P-008)
+//   save.mjs decision --remove D-XXXX [--repo [<repo>]] [--path <file>] --reason "operator <YYYY-MM-DD>: <why>"   only on an explicit operator order (P-008); --path when two decisions share the ID
 //   save.mjs rule <name> [--repo [<repo>]] --content "..." (--enforced-by <file>[:<symbol>][,...] | --unenforced "<why code cannot check it>") [--title "..."] | --remove --reason "..."
 //   save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local] [--title "..."]
-//   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]' ...] (existing skill: --script alone keeps the body) [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
+//   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]' ...] (existing skill: --script alone keeps the body; an edit needs --origin error|routine|operator, operator with --reason "operator <date>: ...") [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
 //   save.mjs handover <topic> (--task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>)
 //   save.mjs docs [--message "..."]   persona only: commits the files written directly into docs/ (P-024)
 //   memory, decision, rule, skill: --repo [<name>] writes into <repo>/agentic/ of the domain (bare: the session repo); --brain "<why>" keeps a repo's record in brain
@@ -301,8 +301,14 @@ function removeDecision(ctx) {
     return out(`decision ${repo}/${key} removed; references to it elsewhere stay as they are`);
   }
   const key = id.toUpperCase();
-  const old = readDecisions(ctx.brainDir).find((d) => (d.id || d.key) === key);
-  if (!old) fail(`decision ${key} not found`);
+  // Two decisions with one ID (two saves at once, decision-id-race): --path names the one to remove; the first match
+  // would have removed either of them.
+  const hits = readDecisions(ctx.brainDir).filter((d) => (d.id || d.key) === key);
+  if (!hits.length) fail(`decision ${key} not found`);
+  const want = typeof args.path === 'string' ? toPosixPath(args.path).replace(/^\.\//, '') : null;
+  if (want && !hits.some((d) => toPosixPath(d.path) === want)) fail(`decision ${key} has no file ${want}; its files: ${hits.map((d) => d.path).join(', ')}`);
+  if (!want && hits.length > 1) fail(`decision ${key} has ${hits.length} files (one ID, two decisions): name the one to remove with --path <file>: ${hits.map((d) => d.path).join(', ')}`);
+  const old = want ? hits.find((d) => toPosixPath(d.path) === want) : hits[0];
   const res = brainWrite(ctx, { ops: [{ path: old.path, remove: true }], message: `remove decision ${key}: ${args.reason}`, env: { [DECISION_REMOVED_ENV]: old.path } });
   finish(ctx, res, [old.path]);
   out(`decision ${key} removed; references to it elsewhere (relates_to, supersedes, commit messages) stay as they are`);
@@ -410,17 +416,27 @@ function saveDecision(ctx) {
   out(`decision ${id}: reference it in the commit message of the change it drives (P-008)`);
 }
 
+// The ID is assigned under the repo lock (repoWrite takes it again, re-entrant): two threads saving into one repo at once,
+// from the checkout and a topic worktree, would both get the next ID (decision-id-race, 2026-11-13). Checks that fail()
+// run before the lock: process.exit skips its release.
 /** Decision of one repo: numbered within the repo over its main checkout and all topic worktrees (`<repo>/D-0001`). */
 function saveRepoDecision(ctx, repo, title, relates) {
+  let old = null;
+  if (args.supersedes) {
+    const held = heldRepoTopic(ctx, repo)?.topic || null;
+    old = find(ctx.brainDir, String(args.supersedes).replace(new RegExp(`^${repo}/`), ''), ctx.domain)
+      .find((m) => m.kind === 'decision' && m.repo === repo && (!m.topic || m.topic === held));
+    if (!old) fail(`decision ${args.supersedes} not found in repo ${repo}`);
+  }
+  withBrainLock(repoByName(ctx.domain, repo, ctx.brainDir).dir, () => saveRepoDecisionLocked(ctx, repo, title, relates, old));
+}
+
+function saveRepoDecisionLocked(ctx, repo, title, relates, old) {
   const id = nextRepoDecisionId(ctx.domain, repo);
   const slug = normalizeKey(title).slice(0, 40);
   const rel = `decisions/${id.toLowerCase()}-${slug}.md`;
   const ops = [];
-  if (args.supersedes) {
-    const held = heldRepoTopic(ctx, repo)?.topic || null;
-    const old = find(ctx.brainDir, String(args.supersedes).replace(new RegExp(`^${repo}/`), ''), ctx.domain)
-      .find((m) => m.kind === 'decision' && m.repo === repo && (!m.topic || m.topic === held));
-    if (!old) fail(`decision ${args.supersedes} not found in repo ${repo}`);
+  if (old) {
     const parsed = parseFrontmatter(readText(path.resolve(ctx.brainDir, old.path), ''));
     ops.push({ path: knowledgeRel(ctx, old.path), content: serializeFrontmatter({ ...parsed.data, status: `superseded-by ${id}`, updated: today() }, parsed.body) });
   }
@@ -568,7 +584,9 @@ function applySed(body, expr) {
   }
   parts.push(cur);
   if (parts.length !== 3 || /[^gim]/.test(parts[2])) throw new Error(`--sed ${expr}: expected s/<pattern>/<replacement>/[gim]`);
-  const re = new RegExp(parts[0], parts[2]);
+  // Line-oriented like sed: ^ and $ match at every line, not only at the start and end of the body (report-fb996133:
+  // `s/^- Krok/.../` reported "pattern not found" for a line inside the body).
+  const re = new RegExp(parts[0], parts[2].includes('m') ? parts[2] : `${parts[2]}m`);
   if (!re.test(body)) throw new Error(`--sed ${expr}: pattern not found in the skill body; nothing changed`);
   re.lastIndex = 0;
   // sed group references \1..\9 are honoured like $1..$9 (report-46e5fd4c: `\1` was written into the skill verbatim
@@ -635,12 +653,27 @@ function removeSkill(ctx, name) {
   if (notDeployed) out(`not removed from the project (${notDeployed}); it leaves at the next session start`);
 }
 
+/**
+ * issue #64: after a test an agent changed an existing skill on its own (a lesson read as a permission, P-002); an edit
+ * of an existing skill names its basis: error (a mistake, P-003), routine (repeated procedure, consolidate, P-005) or
+ * operator with their order in --reason "operator <YYYY-MM-DD>: <their words>" (or --approved of P-032). The basis
+ * goes into the commit message of the brain or repo.
+ */
+function editBasis(name) {
+  const o = args.origin;
+  if (o === undefined && typeof args.approved === 'string' && args.approved.trim().length >= 2) return `operator: ${args.approved.trim().slice(0, 120)}`;
+  if (!['error', 'routine', 'operator'].includes(o)) fail(`skill ${name} exists: an edit names its basis with --origin error (a mistake of this session, P-003) | routine (repeated procedure, consolidate, P-005) | operator with --reason "operator <YYYY-MM-DD>: <their words>"; a lesson from a test or your own idea is no basis: propose the change to the operator (P-002)`);
+  if (o !== 'operator') return o;
+  if (!OPERATOR_REASON_RE.test(String(args.reason || ''))) fail('--origin operator needs --reason "operator <YYYY-MM-DD>: <their words>" (the order the edit carries out, P-002)');
+  return `operator: ${String(args.reason).replace(/^operator\b[:\s]*/i, '').slice(0, 120)}`;
+}
+
 function saveSkill(ctx) {
   const [name] = rest;
   // report-5d6c4ce2: the usage listed only the new-skill form, so an agent editing an existing skill passed a
   // placeholder --description and it replaced the real one; the edit forms keep the description without it.
   if (!name || !isValidId(name) || hasDiacritics(name)) fail('usage: save.mjs skill <name> --description "Použi, keď ..." --content "..." --origin error|routine (new skill)\n'
-    + '       save.mjs skill <name> --sed \'s/<pattern>/<replacement>/\' | --script <file> | --content "..." --replace (existing skill: keeps its description; --description only to change it, it replaces the old one)');
+    + '       save.mjs skill <name> --origin error|routine|operator --sed \'s/<pattern>/<replacement>/\' | --script <file> | --content "..." --replace (existing skill: keeps its description; --description only to change it, it replaces the old one)');
   const repo = repoTarget(ctx);
   if (repo) return saveRepoSkill(ctx, repo, name);
   if (args.remove) return removeSkill(ctx, name);
@@ -648,7 +681,7 @@ function saveSkill(ctx) {
   const inRepo = ctx.domain && find(ctx.brainDir, name, ctx.domain).find((m) => m.kind === 'skill' && m.repo);
   if (inRepo) fail(`skill ${name} exists in repo ${inRepo.repo} (${inRepo.path}): one skill name per domain, skills-sync deploys both; save it with --repo ${inRepo.repo}`);
   const origin = args.origin || 'error';
-  if (!['error', 'routine'].includes(origin)) fail('origin must be error | routine (P-032)');
+  if (!['error', 'routine', 'operator'].includes(origin)) fail('origin must be error | routine (P-032); operator only for an edit of an existing skill');
   const sed = args.sed === undefined ? null : SEDS.length ? SEDS : [String(args.sed)];
   if (sed !== null && (args.content !== undefined || args.replace)) fail('--sed edits the existing body; do not combine it with --content or --replace');
   // --script alone adds or updates the scripts of an existing skill and keeps its body (report-dffad7fe: an agent
@@ -660,7 +693,9 @@ function saveSkill(ctx) {
     || find(ctx.brainDir, name).map((m) => skills.find((s) => s.path === m.path)).find(Boolean);
   const ops = [];
   let rel;
+  let basis = null;
   if (hit) {
+    basis = editBasis(hit.skillName);
     rel = hit.path;
     const parsed = parseFrontmatter(readText(path.join(ctx.brainDir, rel), ''));
     const data = { ...parsed.data, aliases: [...new Set([...asList(parsed.data.aliases), ...asList(args.aliases)])], updated: today() };
@@ -680,6 +715,7 @@ function saveSkill(ctx) {
     ops.push({ path: rel, content: next });
   } else {
     if (sed !== null) fail(`--sed: skill ${name} does not exist`);
+    if (origin === 'operator') fail('--origin operator is for an edit of an existing skill; a new skill is error | routine (P-032)');
     if (scriptOnly) fail(`--script alone: skill ${name} does not exist; a new skill needs --content`);
     if (!args.description) fail('new skill needs --description "Použi, keď ..." (trigger, P-003)');
     rel = `skills/agentic/${name}/SKILL.md`;
@@ -710,7 +746,7 @@ function saveSkill(ctx) {
   for (const w of found.filter((x) => x.level === 'warn')) out(`skill check warn: ${w.line ? `line ${w.line} ` : ''}${w.message}`);
   if (args['from-procedure']) ops.push(removeNames(ctx.brainDir, 'procedures.log', asList(args['from-procedure'])));
   if (args['from-sequence']) ops.push(removeNames(ctx.brainDir, 'sequences.log', asList(args['from-sequence'])));
-  const res = brainWrite(ctx, { ops, message: `save skill ${name} (${hit ? (sed !== null ? 'edit' : 'refactor') : origin})` });
+  const res = brainWrite(ctx, { ops, message: `save skill ${name} (${hit ? `${sed !== null ? 'edit' : 'refactor'}, ${basis}` : origin})` });
   finish(ctx, res, [rel, ...scripts]);
   const notDeployed = deploySkills(ctx);
   out(hit ? `${sed !== null ? 'edited' : 'refactored'} existing skill ${hit.skillName}` : `new skill ${name} (origin: ${origin})`);
@@ -742,13 +778,15 @@ function saveRepoSkill(ctx, repo, name) {
     return;
   }
   const origin = args.origin || 'error';
-  if (!['error', 'routine'].includes(origin)) fail('origin must be error | routine (P-032)');
+  if (!['error', 'routine', 'operator'].includes(origin)) fail('origin must be error | routine (P-032); operator only for an edit of an existing skill');
   const sed = args.sed === undefined ? null : SEDS.length ? SEDS : [String(args.sed)];
   if (sed !== null && (args.content !== undefined || args.replace)) fail('--sed edits the existing body; do not combine it with --content or --replace');
   const scriptOnly = sed === null && args.content === undefined && !args.replace && asList(args.script).length > 0;
   if (sed === null && args.content === undefined && !scriptOnly) fail('--content required (or --sed s/<pattern>/<replacement>/ to edit an existing skill, or --script alone to add a script to it)');
   let text;
+  let basis = null;
   if (hit) {
+    basis = editBasis(name);
     const parsed = parseFrontmatter(readText(path.resolve(ctx.brainDir, hit.path), ''));
     const data = { ...parsed.data, aliases: [...new Set([...asList(parsed.data.aliases), ...asList(args.aliases)])], updated: today() };
     if (args.description) data.description = args.description;
@@ -757,6 +795,7 @@ function saveRepoSkill(ctx, repo, name) {
     text = serializeFrontmatter(data, body);
   } else {
     if (sed !== null) fail(`--sed: skill ${name} does not exist in repo ${repo}`);
+    if (origin === 'operator') fail('--origin operator is for an edit of an existing skill; a new skill is error | routine (P-032)');
     if (scriptOnly) fail(`--script alone: skill ${name} does not exist in repo ${repo}; a new skill needs --content`);
     if (!args.description) fail('new skill needs --description "Použi, keď ..." (trigger, P-003)');
     text = serializeFrontmatter({ name, description: args.description, origin, aliases: asList(args.aliases), created: today() }, String(args.content));
@@ -780,7 +819,7 @@ function saveRepoSkill(ctx, repo, name) {
   const errors = found2.filter((x) => x.level === 'error');
   if (errors.length) fail(`skill check: ${errors.map((x) => `${x.line ? `line ${x.line} ` : ''}${x.message}`).join('; ')}; nothing saved (workflow:skill-check)`);
   for (const w of found2.filter((x) => x.level === 'warn')) out(`skill check warn: ${w.line ? `line ${w.line} ` : ''}${w.message}`);
-  out(formatRepoWrite(repoWrite(ctx, repo, { ops, message: `save skill ${name} (${hit ? (sed !== null ? 'edit' : 'refactor') : origin})` })));
+  out(formatRepoWrite(repoWrite(ctx, repo, { ops, message: `save skill ${name} (${hit ? `${sed !== null ? 'edit' : 'refactor'}, ${basis}` : origin})` })));
   const notDeployed = deploySkills(ctx);
   out(hit ? `${sed !== null ? 'edited' : 'extended'} skill ${name} of repo ${repo}` : `new skill ${name} of repo ${repo} (origin: ${origin})`);
   out(notDeployed ? `not deployed to this project (${notDeployed}); other sessions of the repo get it at their next start` : `deployed to ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR))}; other sessions of the repo get it at their next start`);

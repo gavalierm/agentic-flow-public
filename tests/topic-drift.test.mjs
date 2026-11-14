@@ -141,3 +141,18 @@ test('drift: belongs_to naming no open topic is ignored', async () => {
     assert.equal(v?.belongs_to, undefined);
   } finally { fx.cleanup(); }
 });
+
+test('drift: a task of the second topic the thread holds is no drift (flow-public#72)', async () => {
+  const fx = started({ fits: false, reason: 'patrí druhej téme', belongs_to: 'beta' });
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'beta', '--subject', 'Beta kolimátory', '--class', 'discussion']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'gamma', '--subject', 'Gamma iné', '--class', 'discussion', '--no-claim']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'zapíš dávku kolimátorov' });
+    const v = await verdictOf(fx);
+    assert.equal(v?.fits, true, 'belongs to a topic the thread also holds');
+    const seen = fs.readFileSync(`${fx.mark}.in`, 'utf8');
+    assert.match(seen, /# Other topics this agent holds \(id: subject\)\n(alpha: Alpha shop|beta: Beta kolimátory)/, 'the judge sees every held topic');
+    assert.match(seen, /# Other open topics \(id: subject\)\ngamma: Gamma iné\n#/, 'held topics are not listed among the others');
+    assert.doesNotMatch(reasonOf(write(fx, 'config.txt')), /does not fit the subject/);
+  } finally { fx.cleanup(); }
+});

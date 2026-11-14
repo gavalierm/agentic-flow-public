@@ -20,7 +20,7 @@ test('save skill usage names the edit forms; --sed with --script without --descr
     r = fx.run('save.mjs', ['skill', 'fix-x', '--description', desc, '--content', 'Krok: sh <skill>/take-over.sh old', '--origin', 'routine', '--script', src]);
     assert.equal(r.status, 0, r.out + r.stderr);
     fs.writeFileSync(src, '#!/bin/sh\necho v2\n');
-    r = fx.run('save.mjs', ['skill', 'fix-x', '--script', src, '--sed', 's/old/new/']);
+    r = fx.run('save.mjs', ['skill', 'fix-x', '--origin', 'routine', '--script', src, '--sed', 's/old/new/']);
     assert.equal(r.status, 0, r.out + r.stderr);
     const parsed = parseFrontmatter(fx.read('skills/agentic/fix-x/SKILL.md'));
     assert.equal(parsed.data.description, desc);

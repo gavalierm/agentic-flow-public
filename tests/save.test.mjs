@@ -82,7 +82,7 @@ test('skill: a description with quotes and backslashes stays the same over repea
     const desc = '"Použi pred testom": cesta C:\\pilot';
     assert.equal(fx.run('save.mjs', ['skill', 'x-pilot', '--description', desc, '--content', 'krok 1\nnie bez kroku 1, lebo pilot', '--origin', 'error']).status, 0);
     for (const n of [2, 3]) {
-      const r = fx.run('save.mjs', ['skill', 'x-pilot', '--sed', `s/krok \\d/krok ${n}/`]);
+      const r = fx.run('save.mjs', ['skill', 'x-pilot', '--origin', 'error', '--sed', `s/krok \\d/krok ${n}/`]);
       assert.equal(r.status, 0, r.out);
     }
     const s = parseFrontmatter(fx.read('skills/agentic/x-pilot/SKILL.md'));
@@ -263,16 +263,16 @@ test('skill --replace: the body is replaced by the refactored whole; without it 
     assert.doesNotMatch(text, /old step|Doplnenie/);
     assert.match(text, /description: Použi, keď opravuješ|description: "Použi, keď opravuješ"/);
     // --sed: in-place edit of the body; description and origin kept; no match changes nothing (Bob 2026-11-02).
-    r = fx.run('save.mjs', ['skill', 'fix-x', '--sed', 's/new (step)/fixed $1\\nsecond/']);
+    r = fx.run('save.mjs', ['skill', 'fix-x', '--origin', 'error', '--sed', 's/new (step)/fixed $1\\nsecond/']);
     assert.equal(r.status, 0, r.out); assert.match(r.stdout, /edited existing skill fix-x/);
     const edited = fx.read('skills/agentic/fix-x/SKILL.md');
     assert.match(edited, /\nfixed step\nsecond\n$/);
     assert.match(edited, /origin: error/); assert.match(edited, /Použi, keď opravuješ/);
-    r = fx.run('save.mjs', ['skill', 'fix-x', '--sed', 's/absent/x/']);
+    r = fx.run('save.mjs', ['skill', 'fix-x', '--origin', 'error', '--sed', 's/absent/x/']);
     assert.equal(r.status, 1); assert.match(r.stderr, /pattern not found/);
     r = fx.run('save.mjs', ['skill', 'fix-x', '--sed', 's|fixed|a\\|b|', '--replace']);
     assert.equal(r.status, 1); assert.match(r.stderr, /do not combine/);
-    assert.equal(fx.run('save.mjs', ['skill', 'fix-x', '--sed', 's|fixed|a\\|b|']).status, 0);
+    assert.equal(fx.run('save.mjs', ['skill', 'fix-x', '--origin', 'error', '--sed', 's|fixed|a\\|b|']).status, 0);
     assert.match(fx.read('skills/agentic/fix-x/SKILL.md'), /\na\|b step\n/);
     r = fx.run('save.mjs', ['skill', 'nope-x', '--sed', 's/a/b/']);
     assert.equal(r.status, 1); assert.match(r.stderr, /does not exist/);

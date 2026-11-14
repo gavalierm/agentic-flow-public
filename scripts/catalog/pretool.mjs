@@ -1,5 +1,5 @@
 // PreToolUse parts of the catalog: deny of a write into a read-only source, and a one-line reminder (once per session,
-// main thread only) before a shell listing or search over a source. The shell parsers of hooks/pre-tool-use.mjs are
+// main thread only) that refuses the first shell listing or search over a source. The shell parsers of hooks/pre-tool-use.mjs are
 // passed in (`h`), so this module needs no import of the hook (no cycle). Nothing here reads the index.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -73,5 +73,5 @@ export function catalogPreTool(input, ctx, cwd, h) {
   const state = h.readThreadState(ctx.brainDir, ctx.thread);
   if (state.catalog_reminded) return null;
   h.writeThreadState(ctx.brainDir, ctx.thread, { ...state, catalog_reminded: true });
-  return { remind: `katalóg: pre dáta v ${src.name} najprv node ${ctx.pluginRoot}/bin/catalog.mjs find <slová> alebo show <cesta>; CSV dotazuj cez catalog.mjs sql, nečítaj ich (P-031)` };
+  return { remind: `katalóg: pre dáta v ${src.name} najprv node ${ctx.pluginRoot}/bin/catalog.mjs find <slová> alebo show <cesta>; CSV dotazuj cez catalog.mjs sql, nečítaj ich (P-031); prvý výpis zdroja v session je preto zamietnutý, keď katalóg nestačí, zopakovaný príkaz prejde` };
 }

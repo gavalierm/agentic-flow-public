@@ -85,8 +85,10 @@ export function catalogBoot(ctx, { source = 'startup', state = null } = {}) {
       }
     }
     const lines = catalogLines(cfg, scan, { pluginRoot: ctx.pluginRoot });
-    // the count of changes of the last scan is not part of the identity: a quiet second boot must stay quiet
-    const stateHash = createHash('sha1').update(lines.join('\n').replace(/, [\d  ]+ zmenených/g, '')).digest('hex').slice(0, 12);
+    // the count of changes of the last scan is not part of the identity: a quiet second boot must stay quiet; the identity
+    // uses the untruncated lines, since the cut moves with that count (a long plugin path cut "nepopísaných" only once)
+    const full = catalogLines({ ...cfg, line_chars: Infinity }, scan, { pluginRoot: ctx.pluginRoot });
+    const stateHash = createHash('sha1').update(full.join('\n').replace(/, [\d  ]+ zmenených/g, '')).digest('hex').slice(0, 12);
     if (source === 'compact' && state?.catalog_boot_hash === stateHash) return { lines: [], stateHash };
     return { lines, stateHash };
   } catch (err) {
