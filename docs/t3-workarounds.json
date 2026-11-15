@@ -33,6 +33,7 @@
       "files": ["scripts/thread-title.mjs", "scripts/topic.mjs"],
       "depends_on": [
         "`t3 thread show --json <thread>` prints {\"thread\":{\"threadId\",\"title\"}}",
+        "`t3 thread show --json <thread>` prints thread.archived (true for an archived thread) and fails naming a missing thread (not found): the limit of automatic topics leaves those holders out (scripts/intake.mjs activeCodeTopics)",
         "`t3 thread start --json` prints the new thread's id"
       ],
       "auto": ["cli-show"],

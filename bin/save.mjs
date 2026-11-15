@@ -12,6 +12,7 @@
 //   save.mjs decision --remove D-XXXX [--repo [<repo>]] [--path <file>] --reason "operator <YYYY-MM-DD>: <why>"   only on an explicit operator order (P-008); --path when two decisions share the ID
 //   save.mjs rule <name> [--repo [<repo>]] --content "..." (--enforced-by <file>[:<symbol>][,...] | --unenforced "<why code cannot check it>") [--title "..."] | --remove --reason "..."
 //   save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local] [--title "..."]
+//   save.mjs exception P-XXX --remove --reason "..." [--layer project|harness|machine|local]   removes its section (one commit; an empty file goes)
 //   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]' ...] (existing skill: --script or --description alone keeps the body; an edit needs --origin error|routine|operator, operator with --reason "operator <date>: ...") [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
 //   save.mjs handover <topic> (--task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>)
 //   save.mjs docs [--message "..."]   persona only: commits the files written directly into docs/ (P-024)
@@ -669,9 +670,11 @@ function applySed(body, expr) {
 
 function saveException(ctx) {
   const [id] = rest;
-  if (!/^P-\d{3}$/.test(id || '')) fail('usage: save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local]');
-  if (!args.wording || !args.reason) fail('exception needs --wording and --reason (P-035)');
-  if ((ctx.policy.immutable_principles || []).includes(id)) fail(`${id} is immutable and cannot be overridden (P-035)`);
+  if (!/^P-\d{3}$/.test(id || '')) fail('usage: save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local] | --remove --reason "..."');
+  if (args.remove) {
+    if (!args.reason || args.reason === true) fail(`--remove needs --reason "<why>": nothing removed (${id})`);
+  } else if (!args.wording || !args.reason) fail('exception needs --wording and --reason (P-035)');
+  if (!args.remove && (ctx.policy.immutable_principles || []).includes(id)) fail(`${id} is immutable and cannot be overridden (P-035)`);
   if (ctx.thread && isWakeTurn(ctx.brainDir, ctx.thread)) fail('exceptions cannot change in a turn started by a message (P-047)');
   const layer = args.layer || 'project';
   const file = layer === 'project' ? dataRel(ctx.brainDir, 'exceptions', 'project.md')
@@ -681,6 +684,7 @@ function saveException(ctx) {
   if (!file) fail('layer must be project | harness | machine | local');
   const current = readText(path.join(ctx.brainDir, file), '');
   const blocks = current.split(/^(?=### )/m).filter((b) => b.trim());
+  if (args.remove) return removeException(ctx, { id, layer, file, blocks });
   const entry = `### ${id}${args.title ? `: ${args.title}` : ''}\nZnenie: ${args.wording}\nDôvod: ${args.reason}\n`;
   const kept = blocks.filter((b) => !new RegExp(`^###\\s+${id}\\b`).test(b));
   const content = [...kept.map((b) => b.trim()), entry.trim()].join('\n\n') + '\n';
@@ -692,6 +696,28 @@ function saveException(ctx) {
   }
   const res = brainWrite(ctx, { ops: [{ path: file, content }], message: `save exception ${id} (${layer})` });
   finish(ctx, res, [file]);
+}
+
+/**
+ * `exception P-XXX --remove --reason "..."`: the section of the exception leaves the file of its layer in one commit
+ * (brainWrite); a file left without content is removed. An exception the layer does not have fails with the layer and
+ * the file, nothing written. The locks of a write hold (a bell turn is refused, P-047).
+ */
+function removeException(ctx, { id, layer, file, blocks }) {
+  const own = (b) => new RegExp(`^###\\s+${id}\\b`).test(b);
+  if (!blocks.some(own)) fail(`exception ${id} is not in layer ${layer} (${file}): nothing removed`);
+  const kept = blocks.filter((b) => !own(b)).map((b) => b.trim()).filter(Boolean);
+  const content = kept.length ? `${kept.join('\n\n')}\n` : null;
+  const reason = String(args.reason).replace(/\s+/g, ' ').trim();
+  if (layer === 'local') {
+    const abs = path.join(ctx.brainDir, file);
+    if (content) fs.writeFileSync(abs, content); else fs.rmSync(abs, { force: true });
+    out(`exception ${id} removed: ${file} ${content ? 'rewritten' : 'removed (empty)'} (local layer, not committed)`);
+    return;
+  }
+  const res = brainWrite(ctx, { ops: [content ? { path: file, content } : { path: file, remove: true }], message: `remove exception ${id} (${layer}): ${reason}` });
+  finish(ctx, res, [file]);
+  out(`exception ${id} removed from layer ${layer}${content ? '' : ` (${file} had no other exception: file removed)`}`);
 }
 
 /**

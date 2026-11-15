@@ -76,8 +76,15 @@ export function repoFiles(root) {
   return out;
 }
 
+// No GitHub access in tests (agentic-flow-public#97): a test whose mail fails made error.mjs report file a real issue
+// with the machine token; a test that needs GitHub stubs it (skill stub-prikaz) and overrides these.
+// No real T3 in tests (flow-1-8-1): `t3 thread show` (thread state, title) goes to a missing program, a state T3 does not
+// give; a test of the state stubs it (skill stub-prikaz) through WORKFLOW_T3_SHOW_COMMAND or policy thread_title.command.
+export const NO_T3 = { WORKFLOW_T3_SHOW_COMMAND: '/nonexistent-machine-dir/t3 thread show --json' };
+export const NO_GITHUB = { WORKFLOW_GITHUB_TOKEN_FILE: '/nonexistent-machine-dir/github_token', WORKFLOW_GH_CLI: '/nonexistent-machine-dir/gh', WORKFLOW_GITHUB_API: 'http://127.0.0.1:9' };
+
 export function cleanEnv(extra = {}) {
-  const env = { ...process.env, WORKFLOW_PLUGIN_ROOT: PLUGIN_ROOT, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', WORKFLOW_TEMP_DIRS: '/nonexistent-temp-dir', WORKFLOW_SERVICES_DIR: '/nonexistent-services-dir', WORKFLOW_RULE_JUDGE: 'off', WORKFLOW_OVERLAP_JUDGE: 'off', WORKFLOW_MACHINE_FILE: '/nonexistent-machine-dir/machine-id', WORKFLOW_PIN_FILE: '/nonexistent-machine-dir/pin.json', WORKFLOW_ROOT_FILE: '/nonexistent-machine-dir/projects-root', WORKFLOW_ISSUE_WATCH_INDEX: '/nonexistent-machine-dir/issue-watch-index.json', WORKFLOW_WAKE_FILE: '/nonexistent-machine-dir/wake.json', WORKFLOW_TIMER_INDEX: '/nonexistent-machine-dir/timer-index.json' };
+  const env = { ...process.env, WORKFLOW_PLUGIN_ROOT: PLUGIN_ROOT, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', WORKFLOW_TEMP_DIRS: '/nonexistent-temp-dir', WORKFLOW_SERVICES_DIR: '/nonexistent-services-dir', WORKFLOW_RULE_JUDGE: 'off', WORKFLOW_OVERLAP_JUDGE: 'off', WORKFLOW_MACHINE_FILE: '/nonexistent-machine-dir/machine-id', WORKFLOW_PIN_FILE: '/nonexistent-machine-dir/pin.json', WORKFLOW_ROOT_FILE: '/nonexistent-machine-dir/projects-root', WORKFLOW_ISSUE_WATCH_INDEX: '/nonexistent-machine-dir/issue-watch-index.json', WORKFLOW_WAKE_FILE: '/nonexistent-machine-dir/wake.json', WORKFLOW_TIMER_INDEX: '/nonexistent-machine-dir/timer-index.json', ...NO_T3, ...NO_GITHUB };
   for (const k of ['CLAUDE_PROJECT_DIR', 'WORKFLOW_PROJECT_DIR', 'WORKFLOW_THREAD_ID', 'T3CODE_THREAD_ID', 'WORKFLOW_AGENT_ID', 'CLAUDE_AGENT_ID', 'CLAUDE_PLUGIN_ROOT']) delete env[k];
   return { ...env, ...extra };
 }

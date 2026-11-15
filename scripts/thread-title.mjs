@@ -8,17 +8,54 @@ import { spawnSync } from 'node:child_process';
 
 export const TITLE_TIMEOUT_MS = 3000;
 
+/**
+ * argv of the T3 command that shows a thread (`t3 thread show --json`, policy `thread_title.command`, the command the mail's
+ * wake adapter runs as its `status_command`); WORKFLOW_T3_SHOW_COMMAND overrides it (tests: a stub, never the real T3).
+ */
+export function t3ShowCommand(policy, env = process.env) {
+  const raw = env.WORKFLOW_T3_SHOW_COMMAND ? env.WORKFLOW_T3_SHOW_COMMAND : policy?.thread_title?.command;
+  return String(raw || '').trim().split(/\s+/).filter(Boolean);
+}
+
+/** `<show command> <thread>`: { ok: true, data } (its JSON) or { ok: false, ran, text } (ran: the command ran and failed). */
+function showThread(policy, thread, { run = spawnSync, env = process.env, timeout = TITLE_TIMEOUT_MS } = {}) {
+  const cmd = t3ShowCommand(policy, env);
+  if (!cmd.length || !thread) return { ok: false, ran: false, text: 'no command' };
+  const r = run(cmd[0], [...cmd.slice(1), String(thread)], { encoding: 'utf8', timeout, env });
+  if (r.error) return { ok: false, ran: false, text: r.error.message };
+  if (r.status !== 0) return { ok: false, ran: true, text: `${r.stderr || ''} ${r.stdout || ''}`.replace(/\s+/g, ' ').trim() };
+  try { return { ok: true, data: JSON.parse(r.stdout) }; } catch { return { ok: false, ran: false, text: 'output is no JSON' }; }
+}
+
 /** Current thread title via the configured command; null when unavailable. */
 export function readThreadTitle(ctx, run = spawnSync) {
-  const cmd = String(ctx.policy?.thread_title?.command || '').trim().split(/\s+/).filter(Boolean);
-  if (!cmd.length || !ctx.thread) return null;
-  const r = run(cmd[0], [...cmd.slice(1), ctx.thread], { encoding: 'utf8', timeout: TITLE_TIMEOUT_MS });
-  if (r.error || r.status !== 0) return null;
-  try {
-    const d = JSON.parse(r.stdout);
-    const t = d?.thread?.title ?? d?.title;
-    return typeof t === 'string' ? t : null;
-  } catch { return null; }
+  if (!ctx.thread) return null;
+  const r = showThread(ctx.policy, ctx.thread, { run });
+  if (!r.ok) return null;
+  const t = r.data?.thread?.title ?? r.data?.title;
+  return typeof t === 'string' ? t : null;
+}
+
+// As the mail's wake module reads a ring that fails for good (agentic-comms PERMANENT_RING_FAILURE).
+const THREAD_GONE = /archived|not found|no longer available|does not exist|no such thread|unknown thread/i;
+
+/**
+ * State of thread `thread` in T3, read as the mail's wake adapter reads it (`thread.archived` of `t3 thread show --json`):
+ * { known, gone, why }. gone = archived, or the command answered that the thread is not there. Unknown (known: false)
+ * when there is no command, T3 does not answer (timeout, no CLI: another harness) or prints no thread: the caller keeps
+ * the safe side.
+ */
+export function t3ThreadState(policy, thread, opts = {}) {
+  const r = showThread(policy, thread, opts);
+  if (r.ok) {
+    const th = r.data?.thread;
+    if (!th || typeof th !== 'object') return { known: false, gone: false, why: 'output without a thread object' };
+    if (th.archived === true) return { known: true, gone: true, why: `thread ${thread} is archived (T3 status)` };
+    return { known: true, gone: false, why: null };
+  }
+  // A shell that has no such program says "command not found": that is no answer of T3 about the thread.
+  if (r.ran && THREAD_GONE.test(r.text) && !/command not found/i.test(r.text)) return { known: true, gone: true, why: r.text.slice(0, 160) };
+  return { known: false, gone: false, why: r.text || null };
 }
 
 /**

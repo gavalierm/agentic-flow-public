@@ -264,24 +264,33 @@ function cmdReceive(ctx) {
 /** Status of a message as the mail names it: `picked`, `done/settled`, ... */
 const statusOf = (m) => `${m.status || '?'}${m.resolution ? `/${m.resolution}` : ''}`;
 
+/** The step for an undelivered message (skill comms, P-047): the sender decides; a message no longer needed needs nothing. */
+const UNDELIVERED_STEP ='undelivered: no thread takes it there (the recipient thread is archived or gone), the mail does not try again; decide: promote it to blocker (a new message naming this id), send it elsewhere, or ask the operator; a message no longer needed needs nothing (P-047)';
+
 /**
  * `message --id <id>`: state of a message from the mail (status, pickup, answer, its next check), without its body. The
  * mail rings the sender at its next check (1e): nothing is armed here, an interim answer is never a reason to resend.
+ * A final message (done/*, discarded, superseded, undelivered) gets no interim answer of the mail (`busy`, `otázka` set
+ * before it became final) and no "the answer is interim" line: they told the opposite of the bell (flow-1-8-1, 2026-11-15:
+ * an undelivered message read "busy …: send nothing again" next to "undelivered: Thread … is archived"). An undelivered
+ * one gets the step of the skill instead.
  */
 function cmdMessage(ctx) {
   const [id, ...more] = ids();
   if (!id || more.length) fail('usage: comms.mjs message --id <id>  (state of one message)');
   const m = must(runClient(ctx, ['message', '--id', id]));
+  const final = FINAL_STATUSES.includes(m.status);
   // A code answer is no answer of the recipient: `busy`, its open running turn holds the message (delivered after it);
-  // `otázka`, it waits for its operator. The message stays in its inbox (P-061, 1a).
+  // `otázka`, it waits for its operator. The message stays in its inbox (P-061, 1a). Only while the message is open.
   const codeSince = `since ${localTime(m.code_answer_at)}`;
   const answer = m.answer_state ? `answer ${m.answer_state} since ${localTime(m.answer_at)}${m.answer_origin && m.answer_origin !== 'reply' ? ` (${m.answer_origin})` : ''}${m.answer_delivered === false ? ` (not delivered: ${m.answer_undelivered_reason || 'no way back'})` : ''}`
-    : m.code_answer === 'busy' ? `busy ${codeSince}: the recipient thread is working, the message is delivered after its turn; send nothing again and do not raise the level (answer set by the mail)`
-      : m.code_answer === 'otázka' ? `otázka ${codeSince}: the recipient thread waits for its operator (answer set by the mail)`
+    : !final && m.code_answer === 'busy' ? `busy ${codeSince}: the recipient thread is working, the message is delivered after its turn; send nothing again and do not raise the level (answer set by the mail)`
+      : !final && m.code_answer === 'otázka' ? `otázka ${codeSince}: the recipient thread waits for its operator (answer set by the mail)`
         : 'no answer';
-  const extra = [m.expired_at && !m.picked_at ? `pickup deadline passed ${localTime(m.expired_at)}` : null, m.undelivered_reason ? `undelivered: ${m.undelivered_reason}` : null, m.cancelled_by ? `cancelled by ${m.cancelled_by}` : null, m.wait_due_at ? `the mail checks again ${localTime(m.wait_due_at)}` : null].filter(Boolean);
+  const extra = [m.expired_at && !m.picked_at ? `pickup deadline passed ${localTime(m.expired_at)}` : null, m.undelivered_reason ? `undelivered: ${m.undelivered_reason}` : null, m.cancelled_by ? `cancelled by ${m.cancelled_by}` : null, !final && m.wait_due_at ? `the mail checks again ${localTime(m.wait_due_at)}` : null].filter(Boolean);
   out(`${m.id} | ${m.level} | to ${m.to} | ${statusOf(m)} | ${m.picked_at ? `picked ${localTime(m.picked_at)}` : 'not picked'} | ${answer}${extra.map((x) => ` | ${x}`).join('')}`);
-  if (m.status === 'waiting' || m.code_answer) out(`the answer is interim: the mail rings you at its next check; do not resend or escalate (P-061)`);
+  if (m.status === 'undelivered') out(UNDELIVERED_STEP);
+  else if (!final && (m.status === 'waiting' || m.code_answer)) out(`the answer is interim: the mail rings you at its next check; do not resend or escalate (P-061)`);
 }
 
 /** The mailbox a message is in, as client options (resolve acts only in it): its thread, a persona main thread or the topic. */

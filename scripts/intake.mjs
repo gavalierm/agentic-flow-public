@@ -9,7 +9,8 @@ import { runClient, commsProjectName, registerTopic, dropNoticesCache, MAIN_TOPI
 import { createTopic, startThreadForTopic, topicExists, ensureCodeCopy, orchestratorAddress, topicClass } from './topic.mjs';
 import { readHolder } from './brain.mjs';
 import { readJson, nowIso, realPathLoose } from './util.mjs';
-import { loadContext, sameMachine, mainCheckout } from './config.mjs';
+import { loadContext, loadPolicy, sameMachine, mainCheckout } from './config.mjs';
+import { t3ThreadState } from './thread-title.mjs';
 import { dataPath, layoutOf } from './layout.mjs';
 import { closedTopicExists, readTopicRecord, listTopicRecords } from './topic-files.mjs';
 import { knownBrains } from './update.mjs';
@@ -63,11 +64,19 @@ export function autoMaxActive(ctx) {
 /**
  * Open topics of class code with a running thread on this machine, from the topics the workflow knows (not from ps): every
  * brain this machine has run a session in (pin record, knownBrains) plus `brains` (the caller's brain and the target's).
- * A running thread is a holder on this machine; a paused topic does not count. Returns [{ id, brain }].
+ * A running thread is a holder on this machine whose thread T3 does not report archived or gone (`threadState`, as the
+ * mail's wake adapter reads it: flow-1-8-1, a topic held by an archived thread kept one of the places for good); a state
+ * T3 does not give (no answer, another harness) counts as running. A paused topic does not count. Returns [{ id, brain }].
  */
-export function activeCodeTopics(brains = [], { env = process.env } = {}) {
+export function activeCodeTopics(brains = [], { env = process.env, policy = null, threadState = null } = {}) {
   const seen = new Set();
   const out = [];
+  const states = new Map();
+  const stateOf = threadState || ((thread) => t3ThreadState(policy || loadPolicy(null), thread, { env }));
+  const gone = (thread) => {
+    if (!states.has(thread)) { let s = null; try { s = stateOf(thread); } catch { /* unknown: counts */ } states.set(thread, !!s?.gone); }
+    return states.get(thread);
+  };
   for (const b of [...brains, ...knownBrains(env)]) {
     if (!b) continue;
     const real = realPathLoose(b);
@@ -75,6 +84,7 @@ export function activeCodeTopics(brains = [], { env = process.env } = {}) {
     seen.add(real);
     for (const { id, topic, holder } of listTopicRecords(real)) {
       if (topic?.class !== 'code' || topic.state === 'paused' || !holder?.thread || !sameMachine(holder.machine, env)) continue;
+      if (gone(String(holder.thread))) continue;
       out.push({ id, brain: real });
     }
   }
@@ -84,7 +94,7 @@ export function activeCodeTopics(brains = [], { env = process.env } = {}) {
 /** The limit is full: { active, limit, topics, reason: 'waiting: <n> active (...)' }; else null. */
 export function autoLimitFull(ctx, brains = []) {
   const limit = autoMaxActive(ctx);
-  const active = activeCodeTopics([ctx.brainDir, ...brains]);
+  const active = activeCodeTopics([ctx.brainDir, ...brains], { policy: ctx.policy });
   if (active.length < limit) return null;
   return { active: active.length, limit, topics: active.map((t) => t.id), reason: `waiting: ${active.length} active (limit ${limit} code topics with a running thread on this machine: ${active.map((t) => t.id).join(', ')})` };
 }
