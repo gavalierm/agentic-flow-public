@@ -6,10 +6,11 @@
 import { readHookInput, emit, isMain, contextOutput } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState, SCRATCH_DIR } from '../scripts/config.mjs';
 import { isInside } from '../scripts/util.mjs';
+import { isSessionWorkPath } from '../scripts/layout.mjs';
 import { withAnswered } from '../scripts/protocol.mjs';
 import { withLift } from '../scripts/bypass.mjs';
 import { bufferAppend, normalizeCommand } from '../scripts/logs.mjs';
-import { mailCount, recordWaitingOperator, discussionOpen, discussionMail } from '../scripts/comms.mjs';
+import { mailCount, recordWaitingOperator } from '../scripts/comms.mjs';
 import { mailboxTopics } from '../scripts/topic.mjs';
 import path from 'node:path';
 import { settleOwn, settleShell, recordScratch, inWorkScratch } from '../scripts/own-files.mjs';
@@ -17,6 +18,7 @@ import { bashTargets, bashEdits } from './pre-tool-use.mjs';
 import { wakerFromTool, recordWaker } from '../scripts/waker.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 import { recordPublish } from '../scripts/artifacts.mjs';
+import { handoffChanges } from '../scripts/handoff.mjs';
 
 export const HOOK_META = { event: 'PostToolUse|PostToolUseFailure', class: 'log+c', limit: '1 line (once per waiting message; once per read step)', principles: ['P-001', 'P-018', 'P-030', 'P-028', 'P-003', 'P-041', 'P-042', 'P-061', 'P-021'] };
 
@@ -60,15 +62,18 @@ export function watchLine(items = [], seen = []) {
   return { line, seen: [...seen, ...fresh.map((it) => it.id)].slice(-200) };
 }
 
-/** Watch for the main thread: throttled, announced once per message, silent on an outage (P-041); in a discussion with the operator only blockers and replies (D-0022). */
+/**
+ * Watch for the main thread: throttled, announced once per message, silent on an outage (P-041). A steer into the running
+ * turn is shown after a tool also in a discussion with the operator (the thread is running and reads it now, P-061); an
+ * assist waits for the end of the discussion (D-0022, not watched anyway). The waiting mail is the inbox of the mail's
+ * `obligations` (P-072).
+ */
 export function watch(ctx, input, now = Date.now()) {
   if (input.agent_id || input.agent_type || !ctx.brainDir || !ctx.thread) return null;
   const state = readThreadState(ctx.brainDir, ctx.thread);
   if (now - (state.watch_at || 0) < WATCH_INTERVAL_MS) return null;
   const upd = updateNotice(state);
-  const counted = mailCount(ctx, mailboxTopics(ctx));
-  // D-0015, D-0022: a discussion with the operator is told only of a blocker; steer and assist wait for its end (not seen).
-  const mail = discussionOpen(state) ? discussionMail(counted) : counted;
+  const mail = mailCount(ctx, mailboxTopics(ctx));
   writeThreadState(ctx.brainDir, ctx.thread, { ...state, ...(upd?.patch || {}), watch_at: now });
   const lines = upd?.line ? [upd.line.replace('changed rules follow in full', 'changed rules come with the next prompt')] : [];
   const res = mail.available ? watchLine(mail.items || [], state.watch_seen || []) : null;
@@ -77,6 +82,22 @@ export function watch(ctx, input, now = Date.now()) {
     lines.push(res.line);
   }
   return lines.length ? lines.join('\n') : null;
+}
+
+/**
+ * agent-alice/D-0082 (point 4): a change in a topic this thread handed off, once per change after a tool (the keys shown are
+ * kept in the thread state, handoff_seen); the prompt hook repeats it until the giver saves its handover.
+ */
+export function handoffWatch(ctx, input) {
+  if (input.agent_id || input.agent_type || !ctx.brainDir || !ctx.thread) return null;
+  const changes = handoffChanges(ctx);
+  if (!changes.length) return null;
+  const state = readThreadState(ctx.brainDir, ctx.thread);
+  const seen = Array.isArray(state.handoff_seen) ? state.handoff_seen : [];
+  const fresh = changes.filter((c) => !seen.includes(c.key));
+  if (!fresh.length) return null;
+  writeThreadState(ctx.brainDir, ctx.thread, { ...state, handoff_seen: [...seen, ...fresh.map((c) => c.key)].slice(-100) });
+  return fresh.map((c) => c.line).join('\n');
 }
 
 /** Characters a tool result adds to the context; an image counts as IMAGE_CHARS, not its base64 data. */
@@ -166,13 +187,16 @@ export function run(input, now = Date.now()) {
   if (!input.agent_id) { try { recordPublish(ctx, input, now); } catch { /* the record never fails the hook */ } }
   settleOwn(ctx, changedFiles(input));
   // report-143e7cdb: what this thread leaves in a scratch/ is its own; another thread's recursive rm of the dir asks (P-018).
-  recordScratch(ctx, changedFiles(input), (abs) => (ctx.projectDir && isInside(path.join(ctx.projectDir, SCRATCH_DIR), abs)) || inWorkScratch(abs));
+  // The work files are in the topic home (a brain in layout 2, D-0056), isSessionWorkPath.
+  recordScratch(ctx, changedFiles(input), (abs) => (ctx.projectDir && isSessionWorkPath(ctx.brainDir, ctx.projectDir, abs)) || inWorkScratch(abs));
   if (input.tool_name === 'Bash' || input.tool_name === 'PowerShell') settleShell(ctx, input.tool_use_id);
   const entry = toEntry(input, ctx.policy);
   if (entry) bufferAppend(ctx.brainDir, input.session_id, entry);
   // P-061: a waker armed by this call (background task or agent, scheduler, mail) lets the turn end waiting.
   if (!input.agent_id && ctx.thread) recordWaker(ctx.brainDir, ctx.thread, wakerFromTool(input, now));
-  const lines = [noTopicLine, readBudget(ctx, input), watch(ctx, input, now)].filter(Boolean);
+  let handoffLine = null;
+  try { handoffLine = handoffWatch(ctx, input); } catch { /* never fails the hook */ }
+  const lines = [noTopicLine, readBudget(ctx, input), watch(ctx, input, now), handoffLine].filter(Boolean);
   return lines.length ? contextOutput('PostToolUse', lines.join('\n')) : {};
 }
 

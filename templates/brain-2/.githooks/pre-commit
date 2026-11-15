@@ -1,0 +1,6 @@
+#!/usr/bin/env node
+// Git hook launcher (P-040). Runs the Node shim next to it; logic lives in the workflow plugin.
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
+const res = spawnSync(process.execPath, [path.join(__dirname, 'pre-commit.mjs'), ...process.argv.slice(2)], { stdio: 'inherit' });
+process.exit(res.status === null ? 1 : res.status);

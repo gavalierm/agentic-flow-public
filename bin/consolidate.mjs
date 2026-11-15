@@ -9,16 +9,20 @@ import { lfBytes } from '../scripts/eol.mjs';
 import { parseArgs, fail, toPosix } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
 import { readMemory, readSkills, projectRecords } from '../scripts/records.mjs';
-import { domainRepos, REPO_HANDOVER } from '../scripts/repo-knowledge.mjs';
-import { untrackedKnowledge } from '../scripts/materialy.mjs';
+import { domainRepos } from '../scripts/repo-knowledge.mjs';
+import { dataPath, dataRel, layoutOf, topicWorkLabel } from '../scripts/layout.mjs';
+import { untrackedKnowledge, topicResultsLabel } from '../scripts/materialy.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
 import { tokens } from '../scripts/keys.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { checkProject } from '../scripts/skill-check.mjs';
+import { readDenials, topDenials, denialsLine } from '../scripts/denials.mjs';
 import { isDecisionLink, linkProblem, linkFix, FORMS, sourceProblem, scratchPaths, SOURCE_FORMS } from '../scripts/links.mjs';
-import { machineStores, sessionStores, machineRecords, storeRecords, sameStore, subjectMatch, subjectNames, recordType, decisionRefs, refProblem, refFiles, displayPath, isTombstone, SUBJECT_TYPES, ID_LINE } from '../scripts/stores.mjs';
+import { machineStores, sessionStores, machineRecords, storeRecords, sameStore, subjectMatch, subjectNames, recordType, decisionRefs, refProblem, removedDecisions, refFiles, displayPath, isTombstone, SUBJECT_TYPES, ID_LINE } from '../scripts/stores.mjs';
 
 const args = parseArgs(process.argv.slice(2));
+/** Days of hook refusals the report counts (P-076). */
+const DENIAL_DAYS = 7;
 const out = (s) => process.stdout.write(s + '\n');
 
 function fingerprint(projectDir, sources) {
@@ -46,10 +50,11 @@ export function repoReport(ctx, brainRecords) {
     if (!mine.length) continue;
     const count = (k) => mine.filter((r) => r.kind === k).length;
     repos.push({ repo: repo.name, memory: count('memory'), decisions: count('decision'), runbooks: count('runbook'), skills: count('skill'), handover: mine.some((r) => r.kind === 'handover') });
-    const ho = path.join(repo.dir, 'agentic', REPO_HANDOVER);
+    const kdir = dataPath(repo.dir, 'projectKnowledge');
+    const ho = dataPath(kdir, 'repoHandover');
     if (fs.existsSync(ho)) {
       const lines = fs.readFileSync(ho, 'utf8').split('\n').length;
-      if (lines > max) limits.push(`${repo.name}/agentic/${REPO_HANDOVER} ${lines} lines > ${max}`);
+      if (lines > max) limits.push(`${repo.name}/${dataRel(repo.dir, 'projectKnowledge', dataRel(kdir, 'repoHandover'))} ${lines} lines > ${max}`);
     }
   }
   const stale = recs.filter((r) => r.origin === 'derived' && r.data.fingerprint && fingerprint(path.join(ctx.domain.root, r.repo), r.data.sources || []) !== r.data.fingerprint).map((r) => r.path);
@@ -64,6 +69,7 @@ export function repoReport(ctx, brainRecords) {
  * a project, service, person or tool record whose key, name or alias another store of the machine has too (both
  * paths); tombstones (a memory or decision body under 300 characters that only says where the record went); decision
  * references that do not resolve: a bare D-NNNN its own store lacks, a <store>/D-NNNN the named store lacks (path:line);
+ * a bare D-NNNN its own store removed on an operator order is history (removed, with the commit), not one of them;
  * IDs two decisions of one store share;
  * relates_to links of memory and decisions that resolve to none of the four forms, each with the save command that
  * drops or replaces it (D-0029; a decision link is in the decision reference list).
@@ -76,6 +82,7 @@ export function identityReport(ctx) {
   const seen = new Set();
   const tombstones = [];
   const refs = [];
+  const history = [];
   const links = [];
   const ids = [];
   const sources = [];
@@ -104,7 +111,12 @@ export function identityReport(ctx) {
     for (const f of refFiles(s)) {
       for (const ref of decisionRefs(fs.readFileSync(f, 'utf8'), { skip: ID_LINE })) {
         const problem = refProblem(stores, s, ref, ctx.brainDir);
-        if (problem) refs.push(`${toPosix(f)}:${ref.line} ${problem}`);
+        if (!problem) continue;
+        // A bare D-NNNN the own store removed on an operator order (save.mjs decision --remove) is history: the
+        // successor's supersedes and body keep it, and another store's D-NNNN of that number is not what it meant.
+        const removedIn = !ref.store && removedDecisions(s).get(ref.id);
+        if (removedIn) history.push(`${toPosix(f)}:${ref.line} ${ref.id} removed in ${removedIn}`);
+        else refs.push(`${toPosix(f)}:${ref.line} ${problem}`);
       }
     }
     for (const r of recs.filter((x) => x.kind === 'memory' || x.kind === 'decision')) {
@@ -122,7 +134,7 @@ export function identityReport(ctx) {
       if (named.length) scratch.push(`${displayPath(r)}: ${named.join(', ')}`);
     }
   }
-  return { duplicates, tombstones, refs: [...new Set(refs)], links, ids, sources, scratch };
+  return { duplicates, tombstones, refs: [...new Set(refs)], removed: [...new Set(history)], links, ids, sources, scratch };
 }
 
 export function report(ctx) {
@@ -147,12 +159,15 @@ export function report(ctx) {
   for (const r of memory) (byOrigin[r.origin] || byOrigin.unknown).push(r.path);
   // P-022: assembled rules (core + project) against the limit, with the project rules the agent may condense.
   const assembled = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code', layers: ctx.layers });
-  const rulesDir = path.join(ctx.brainDir, 'rules');
+  const rulesDir = dataPath(ctx.brainDir, 'rules');
   const projectRules = fs.existsSync(rulesDir) ? fs.readdirSync(rulesDir).filter((f) => f.endsWith('.md') && f !== 'README.md').map((f) => ({ name: f.replace(/\.md$/, ''), chars: fs.readFileSync(path.join(rulesDir, f), 'utf8').length })).sort((a, b) => b.chars - a.chars) : [];
   const rules = { chars: assembled.chars, lines: assembled.lines, over: assembled.overLimit, project: projectRules };
   const health = checkProject(ctx).filter((r) => r.findings.length).map((r) => ({ name: r.name, errors: r.findings.filter((f) => f.level === 'error').length, warns: r.findings.filter((f) => f.level === 'warn').length }));
   const repos = repoReport(ctx, [...memory, ...readSkills(ctx.brainDir)]);
-  return { limits: [...idx.warnings, ...assembled.overLimit, ...repos.limits], counts: idx.counts, stale: [...stale, ...repos.stale], duplicates, mergeable, byOrigin, rules, health, repos, identity: identityReport(ctx), untracked: untrackedReport(ctx) };
+  // P-076 (agent-alice/D-0094): the hook refusals of the last week by kind, a refusal that keeps coming back is a skill or a
+  // rule to fix (the hook is only the safety net).
+  const denials = topDenials(readDenials(ctx.brainDir, { days: DENIAL_DAYS }), { top: 5 });
+  return { limits: [...idx.warnings, ...assembled.overLimit, ...repos.limits], counts: idx.counts, stale: [...stale, ...repos.stale], duplicates, mergeable, byOrigin, rules, health, repos, identity: identityReport(ctx), untracked: untrackedReport(ctx), denials };
 }
 
 /** Untracked docs/ and materialy/ in the project and the domain repos (D-0032 C1): content there is not in git. */
@@ -185,12 +200,18 @@ try {
     out(`tombstones (short body pointing elsewhere: remove it with save.mjs memory <type> <name> --remove --reason "<why>", the record it names holds the subject): ${r.identity.tombstones.length ? r.identity.tombstones.join(', ') : 'none'}`);
     out(`decision IDs used twice in one store (renumber one to the next free ID and fix its references): ${r.identity.ids.length ? r.identity.ids.map((d) => `${d.id} (${d.store}): ${d.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`decision references that do not resolve (a bare D-NNNN is the own store, another store's decision is <store>/D-NNNN): ${r.identity.refs.length ? r.identity.refs.join('; ') : 'none'}`);
+    if (r.identity.removed.length) out(`decision references to decisions the own store removed on an operator order (history, nothing to fix): ${r.identity.removed.join('; ')}`);
     out(`relates_to links that resolve to nothing (${FORMS}; run the command under each, a free word goes into the body): ${r.identity.links.length ? r.identity.links.map((l) => `\n  ${l.path}: ${l.problem}\n    ${l.fix}`).join('') : 'none'}`);
     out(`sources that do not last (${SOURCE_FORMS}; rewrite the record with --sources): ${r.identity.sources.length ? r.identity.sources.join('; ') : 'none'}`);
-    out(`work files named in a body (scratch/ is cleaned: save what matters to materialy/<topic>/ and name that, or drop the path): ${r.identity.scratch.length ? r.identity.scratch.join('; ') : 'none'}`);
+    const L = layoutOf(ctx.projectDir);
+    // D-0056: the work files are in the topic home; data from outside goes to the sources of the project, a result to the work of the topic.
+    const keep = topicResultsLabel(ctx.brainDir, ctx.projectDir, '<topic>');
+    const sources = `${L.materialy}/<topic>/`;
+    out(`work files named in a body (${topicWorkLabel(ctx.brainDir, ctx.projectDir)} is cleaned: save what matters to ${keep === sources ? sources : `${sources} (from outside) or ${keep} (a result of the work)`} and name that, or drop the path):${r.identity.scratch.length ? r.identity.scratch.join('; ') : 'none'}`);
     out(`agentic skills sharing a tool/work token (merge only same tool): ${r.mergeable.length ? r.mergeable.map((m) => `${m.token}: ${m.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`skill health (skill-check.mjs <name> for details, skill workflow:skill-check): ${r.health.length ? r.health.map((h) => `${h.name} ${h.errors}e/${h.warns}w`).join(', ') : 'all ok'}`);
-    out(`untracked docs/ and materialy/ (not in git, lost with the disk: commit them in that repo, keep one version of a document): ${r.untracked.length ? r.untracked.map((u) => `\n  ${u.repo}: ${u.files.slice(0, 5).join(', ')}${u.files.length > 5 ? `, … (+${u.files.length - 5})` : ''}\n    git -C ${u.dir} add docs materialy && git -C ${u.dir} commit -m "docs: track project knowledge"`).join('') : 'none'}`);
+    out(`untracked ${L.docs}/ and ${L.materialy}/ (not in git, lost with the disk: commit them in that repo, keep one version of a document): ${r.untracked.length ? r.untracked.map((u) => `\n  ${u.repo}: ${u.files.slice(0, 5).join(', ')}${u.files.length > 5 ? `, … (+${u.files.length - 5})` : ''}\n    git -C ${u.dir} add ${dataRel(u.dir, 'docs')} ${dataRel(u.dir, 'materialy')} && git -C ${u.dir} commit -m "docs: track project knowledge"`).join('') : 'none'}`);
+    out(`most frequent hook refusals in ${DENIAL_DAYS} d (P-076: a refusal that keeps coming back means the skill or rule that should lead the step does not; fix that skill or rule with save, or report a hook that is too strict to maintainer/workflow-dev; inputs: denials.mjs): ${denialsLine(r.denials)}`);
     out(`operator records (never deleted by the agent, only proposed): ${r.byOrigin.operator.length}`);
     out(`observed records (verify cheaply or delete): ${r.byOrigin.observed.length ? r.byOrigin.observed.join(', ') : 'none'}`);
   }

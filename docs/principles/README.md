@@ -52,8 +52,8 @@ Každý princíp je v samostatnom súbore `P-NNN.md`. Agent číta jeden súbor,
 - [P-038](P-038.md): Identita vlákna (stable thread identity)
 - [P-039](P-039.md): Spoločné dáta ako samostatné súbory, indexy sa generujú (derived indexes)
 - [P-040](P-040.md): Zápis a synchronizácia brain (brain write and sync)
-- [P-041](P-041.md): Pošta ako samostatná služba (comms service)
-- [P-042](P-042.md): Úroveň správy podľa blokovania odosielateľa (message urgency)
+- [P-041](P-041.md): Pošta ako samostatná služba (comms service); stav správy: P-072
+- [P-042](P-042.md): Úroveň správy podľa blokovania odosielateľa (message urgency); stav správy: P-072, súhlas s fixom: P-075
 - [P-043](P-043.md): Budenie ako samostatný modul (wake-up module)
 - [P-044](P-044.md): Doručenie bez kontaminácie kontextu (riadky ID, bez textu)
 - [P-045](P-045.md): Granularita a adresovateľnosť tém (topic granularity)
@@ -78,6 +78,16 @@ Každý princíp je v samostatnom súbore `P-NNN.md`. Agent číta jeden súbor,
 - [P-064](P-064.md): Otázky vlákna témy idú orchestrátorovi (orchestrator questions)
 - [P-065](P-065.md): Spoločný checkout iba zbiera (shared checkout collects only)
 - [P-066](P-066.md): Hlavná verzia je upgrade, nie update (major version is an upgrade)
+- [P-067](P-067.md): Jedno miesto pre každý druh dát (one place for every kind of data)
+- [P-068](P-068.md): Bez pevných ciest pracovných súborov (no fixed work files paths)
+- [P-069](P-069.md): Udržiavaná línia 0.9 pre iné stroje (maintenance line)
+- [P-070](P-070.md): Odovzdanie témy (topic handoff), agent-alice/D-0082, kontrola zastavenia D-0084
+- [P-071](P-071.md): Celá sada testov raz na stav kódu (full suite once per state of the code), agent-alice/D-0083
+- [P-072](P-072.md): Stav správy vedie iba pošta (mail owns message state), agent-alice/D-0087
+- [P-073](P-073.md): Workflow a pošta sa vydávajú spolu (workflow and mail release together), agent-alice/D-0089
+- [P-074](P-074.md): Zmrazenie počas prestavby (freeze during a rebuild), agent-alice/D-0092
+- [P-075](P-075.md): Opravu schvaľuje orchestrátor (the orchestrator approves a fix), agent-alice/D-0093
+- [P-076](P-076.md): Charakter workflow: rýchly, svižný, organizovaný; hooky iba poistka (fast, brisk, organized), agent-alice/D-0094
 
 ## Predvolené hodnoty politiky
 
@@ -93,7 +103,7 @@ Hodnoty určil agent (operátor delegoval rozhodnutie, 2026-10-31). Sú to vých
 | Popis skillu | najviac 300 znakov | P-022 | popis je trigger, nie návod |
 | Štartovací kontext bez zoznamu skillov | najviac 9 500 znakov na výstup hooku, pravidlá v častiach do 9 000 | P-022 | harness z jedného výstupu hooku vloží najviac 10 000 znakov, väčší iba ako náhľad 2 KB |
 | Zoznam skillov (súčet popisov) | najviac 6 000 znakov | P-022 | zhruba 20 skillov |
-| Handover | najviac 15 riadkov | P-011 | už určené v P-011 |
+| Handover | bez limitu riadkov, povinné časti; stručnosť vedie skill `save` | P-011 | limit sa odmietal opakovane (agent-alice/D-0094, P-076) |
 | Signál hooku počas session | najviac 2 riadky | P-023 | už určené v P-023 |
 | Netriviálna zmena: odstránené riadky | viac ako 50 riadkov alebo viac ako polovica súboru | P-018 | zachytí prepis, nezachytí bežnú opravu |
 | Netriviálna zmena: počet súborov | viac ako 5 súborov v jednej operácii | P-018 | hromadná operácia |
@@ -110,5 +120,8 @@ Hodnoty určil agent (operátor delegoval rozhodnutie, 2026-10-31). Sú to vých
 | Notifikácia pri `blocker` | e-mail cez `notify.command`; bez neho iba stránka oznamov | P-046 | určil operátor |
 | Umiestnenie brain | `../<nazov-brain>` relatívne k projektu | P-024 | brain vedľa projektu, bez absolútnych ciest |
 | Kópia kódu témy | `../<project>-topics/<id>/` | P-036 | vždy samostatný klon vedľa projektu, aj v T3 |
+| Súbežné automatické témy (`topics.auto_max_active`) | 3 témy triedy `code` s vláknom na stroji | D-0069 | `report-intake.mjs` a `topic.mjs auto` pri plnom limite nič nezaložia (`waiting: <n> active`, `auto` kód 3), vstup počká na ďalší beh; počíta sa z tém brainov stroja (záznam pinov), nie z procesov |
+| Súbežné celé behy testov | 2 na stroj (`AGENTIC_TEST_SLOTS`) | D-0069 | `npm test` beží cez `scripts/test-slot.mjs` so spoločným priečinkom `~/.local/state/agentic/test-slots` (aj `agentic-comms`); preťaženie 2026-11-15: desať behov naraz na 4 jadrách |
 | Automatické témy kódu (`topics.auto`) | žiadne: téma hlásenia či issue ostáva v projekte bez kópie | D-0035 | brain ich smeruje do projektu repa: `projects` (`{"<priečinok relatívne k brainu>": ["<repo>", …]}`), `default_project` (hlásenie, nezaradené repo), `orchestrator` (téma brainu, ktorej vlákno dostáva otázky a zlyhania) |
+| Zmrazenie (`freeze`) | žiadne | P-074 | `brain.mjs freeze on --until <verzia> --reason "<dôvod>" [--allow <téma>,..] [--repos <repo>,..]` / `off`; predvolené repá `agentic-flow` a `agentic-comms` (aj `-public`); intake hlásení tému nezaloží a hlásiteľovi odpovie odmietnutím, `topic create` kódovej témy v zmrazenom repe mimo povolených odmietne |
 | Spoločné checkouty (`topics.shared_checkouts`) | žiadne navyše: spoločný je hlavný checkout repa s `<doména>/.worktrees/<repo>/` | P-065 | zoznam ciest (relatívne k doméne) pridá repo bez worktree tém |

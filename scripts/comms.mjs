@@ -17,6 +17,8 @@ import { spawnSync } from 'node:child_process';
 import { readJson, PLUGIN_ROOT } from './util.mjs';
 import { machineName, servicesDir } from './config.mjs';
 import { PERSONA_REPO_RE, PERSONA_PREFIX } from './persona-name.mjs';
+import { dataPath, layoutOf } from './layout.mjs';
+import { readTopicRecord, readHolderRecord, listTopicRecords } from './topic-files.mjs';
 
 /**
  * Default client locations relative to the project, first existing wins. Recommended layout (pilot 2026-11-01): mail is
@@ -80,7 +82,7 @@ export function commsSettings(ctx) {
   const client = path.resolve(projectDir, clientRel);
   const configFile = cfg.config
     ? path.resolve(projectDir, cfg.config)
-    : ctx.brainDir ? path.join(ctx.brainDir, 'local', 'comms.json') : null;
+    : ctx.brainDir ? dataPath(ctx.brainDir, 'local', 'comms.json') : null;
   const out = {
     enabled: fs.existsSync(client),
     configured: explicit || raw !== undefined,
@@ -89,8 +91,8 @@ export function commsSettings(ctx) {
     instance: cfg.instance || null,
     configFile: configFile && fs.existsSync(configFile) ? configFile : null,
     project: commsProjectName(ctx),
-    outbox: ctx.brainDir ? path.join(ctx.brainDir, 'local', 'outbox') : null,
-    clientDir: ctx.brainDir ? path.join(ctx.brainDir, 'local', 'comms') : null,
+    outbox: ctx.brainDir ? dataPath(ctx.brainDir, 'local', 'outbox') : null,
+    clientDir: ctx.brainDir ? dataPath(ctx.brainDir, 'local', 'comms') : null,
     waitMs: ctx.policy?.comms?.hook_wait_ms ?? 2000,
   };
   if (!out.enabled) out.reason = explicit ? `comms client not found at ${clientRel}` : 'comms not configured';
@@ -140,26 +142,30 @@ export function workflowVersion() {
   return cachedVersion;
 }
 
-/**
- * Run the comms client once. Returns { ok, code, data, error, unavailable }.
- * Exit codes of the client: 0 ok, 1 rejected/usage, 2 comms unavailable, 3 other instance.
- */
-export function runClient(ctx, args, { timeoutMs, input } = {}) {
-  const s = commsSettings(ctx);
-  if (!s.enabled) return { ok: false, code: null, data: null, error: s.reason, unavailable: false, disabled: true };
+/** Mail model of this workflow (package.json `commsModel`, D-0089): the mail must report the same in `/health`. */
+export const COMMS_MODEL = Number(readJson(path.join(PLUGIN_ROOT, 'package.json'), {})?.commsModel) || null;
+/** The one line of a model mismatch (mail design 4a, P-073): nothing is read, written or queued. */
+export const modelMismatchText = (model) => `comms model ${model ?? '?'} ≠ ${COMMS_MODEL}: update mail and workflow together`;
+/** A successful model check is kept this long in the client dir (one `health` call per minute, not per hook). */
+export const MODEL_CHECK_TTL_MS = 60_000;
+export const MODEL_CHECK_FILE = 'model-check.json';
+const modelChecks = new Map();
+
+function spawnClient(ctx, s, args, { timeoutMs, input, thread } = {}) {
   const wait = timeoutMs ?? s.waitMs;
+  const th = thread === undefined ? ctx.thread : thread;
   const common = ['--timeout', String(wait)];
   if (s.configFile) common.push('--config', s.configFile);
   if (s.instance) common.push('--instance', s.instance);
   if (s.outbox) common.push('--outbox', s.outbox, '--client-dir', s.clientDir);
-  if (ctx.thread) common.push('--thread', ctx.thread);
+  if (th) common.push('--thread', th);
   const res = spawnSync(process.execPath, [s.client, ...args, ...common], {
     cwd: ctx.projectDir,
     encoding: 'utf8',
     input,
     timeout: wait + 1500,
-    // The mail service records the workflow version per persona and machine (`comms clients`); an older client ignores it.
-    env: { ...process.env, COMMS_THREAD_ID: ctx.thread || '', COMMS_WORKFLOW_VERSION: workflowVersion() || '' },
+    // The mail service records the workflow version per persona and machine (`comms clients`).
+    env: { ...process.env, COMMS_THREAD_ID: th || '', COMMS_WORKFLOW_VERSION: workflowVersion() || '' },
   });
   const parse = (t) => { try { return JSON.parse(String(t || '').trim()); } catch { return null; } };
   if (res.error || res.status === null) {
@@ -168,7 +174,97 @@ export function runClient(ctx, args, { timeoutMs, input } = {}) {
   if (res.status === 0) return { ok: true, code: 0, data: parse(res.stdout) ?? {}, error: null, unavailable: false };
   const err = parse(res.stderr);
   const message = err?.error || (res.stderr || res.stdout || '').trim().split('\n')[0] || `comms client exit ${res.status}`;
+  // The client refuses a service of another model itself (exit 3, MODEL_MISMATCH): reported as the model line.
+  if (res.status === 3 && err?.code === 'MODEL_MISMATCH') return { ok: false, code: 3, data: err, error: message, unavailable: false, model: true };
   return { ok: false, code: res.status, data: err, error: res.status === 2 ? 'comms unavailable' : message, unavailable: res.status === 2 };
+}
+
+/**
+ * The mail speaks the model of this workflow (4a, I10): `health` once per process, a match kept MODEL_CHECK_TTL_MS in
+ * the client dir. Returns null when it matches or cannot be told (mail unavailable: the client's outbox rule applies),
+ * else the mismatch `{ model, error }` (a mail without `model` in /health is model `?`).
+ */
+export function modelMismatch(ctx, s = commsSettings(ctx)) {
+  if (!s.enabled) return null;
+  const key = `${s.client}|${s.configFile || ''}|${s.instance || ''}`;
+  if (modelChecks.has(key)) return modelChecks.get(key);
+  const file = s.clientDir ? path.join(s.clientDir, MODEL_CHECK_FILE) : null;
+  const cached = file ? readJson(file, null) : null;
+  if (cached?.key === key && cached.model === COMMS_MODEL && Date.now() - Date.parse(cached.at) < MODEL_CHECK_TTL_MS) {
+    modelChecks.set(key, null);
+    return null;
+  }
+  const r = spawnClient(ctx, s, ['health']);
+  let out = null;
+  if (r.ok && r.data?.model !== COMMS_MODEL) out = { model: r.data?.model ?? null, error: modelMismatchText(r.data?.model) };
+  else if (r.model) out = { model: null, error: r.error };
+  if (r.unavailable) return null;
+  modelChecks.set(key, out);
+  if (!out && file) {
+    try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify({ key, model: COMMS_MODEL, version: r.data?.version ?? null, at: new Date().toISOString() }) + '\n'); } catch { /* checked again next time */ }
+  }
+  return out;
+}
+
+/**
+ * Run the comms client once. Returns { ok, code, data, error, unavailable, model }. A mail of another model (modelMismatch)
+ * runs nothing: `{ ok: false, code: 3, model: true, error: "comms model … ≠ 2: update mail and workflow together" }`.
+ * Exit codes of the client: 0 ok, 1 rejected/usage, 2 comms unavailable, 3 other instance or other model.
+ * `thread`: the thread the call is for (default ctx.thread; null: none, e.g. the view of another topic).
+ */
+export function runClient(ctx, args, { timeoutMs, input, thread } = {}) {
+  const s = commsSettings(ctx);
+  if (!s.enabled) return { ok: false, code: null, data: null, error: s.reason, unavailable: false, disabled: true };
+  const mismatch = modelMismatch(ctx, s);
+  if (mismatch) return { ok: false, code: 3, data: null, error: mismatch.error, unavailable: false, model: true };
+  return spawnClient(ctx, s, args, { timeoutMs, input, thread });
+}
+
+/** Obligations query of held topics (section 2): work topics as `<project>/<topic>`, topic main as the persona mailbox. */
+export function obligationsArgs(ctx, held = []) {
+  const s = commsSettings(ctx);
+  const topics = held.filter((t) => !isMainTopic(t)).map((t) => `${s.project}/${t.id}`);
+  const a = ['obligations'];
+  if (topics.length) a.push('--topics', [...new Set(topics)].join(','));
+  if (held.some(isMainTopic)) a.push('--persona', s.project);
+  return a;
+}
+
+/**
+ * What the thread owes and awaits, from the mail (P-072): `GET /obligations` for the thread and its held topics
+ * (inbox, owed, awaiting, recent after `since`, cursor, topics, server). The client keeps the last answer as the read-only
+ * backup (`offline: true`, `age_s`) and reconciles after an outage (server wins); the workflow keeps no copy.
+ * `topics` (`<project>/<topic>` list) replaces the held topics; `thread: null` asks without a thread (another topic's view).
+ * Returns the runClient result; `none: true` when there is nothing to ask for.
+ */
+export function readObligations(ctx, { held = [], topics = null, since = null, thread } = {}) {
+  const th = thread === undefined ? ctx.thread : thread;
+  const a = topics ? ['obligations', ...(topics.length ? ['--topics', topics.join(',')] : [])] : obligationsArgs(ctx, held);
+  if (!th && a.length === 1) return { ok: false, none: true, error: 'no thread or held topic: not checked' };
+  if (since != null && since !== '') a.push('--since', String(since));
+  return runClient(ctx, a, { thread: th });
+}
+
+/** Age of the backup for the status line: `45 s`, `12 min`, `3 h`. */
+export function ageText(s) {
+  const n = Math.max(0, Number(s) || 0);
+  return n < 60 ? `${n} s` : n < 3600 ? `${Math.round(n / 60)} min` : `${Math.round(n / 3600)} h`;
+}
+
+/** Prefix of the queued line about owed mail (Stop); the prompt hook replaces a queued one with the mail's live `owed`. */
+export const OWED_PREFIX = 'picked mail unanswered';
+export const OWED_LINE = (list, offline = null) => `${OWED_PREFIX}${offline ? ` (offline, ${offline})` : ''}: ${list.map((w) => `${w.id} ${w.level}`).join(', ')}; answer each with comms send --reply-to <id> --state hotovo|otázka|čakám; answered another way (one reply for several, a new message): comms settle --id <id>; no answer needed: comms ack --id <id> (P-042)`;
+/** Owed mail the stop reminds of: picked without an answer (an interim answer is not reminded), from the mail (P-072). */
+export const unansweredOwed = (obligations) => (obligations?.owed || []).filter((w) => w.status === 'picked');
+
+/**
+ * One line of the mail's `recent` rows (section 2: settled or acked without a reply, withdrawn, no answer after 4 checks),
+ * shown once per row: the prompt hook sends the cursor of the rows shown as `since` with its next call.
+ */
+export function recentLine(rows = [], max = 5) {
+  if (!rows.length) return '';
+  const shown = rows.slice(0, max).map((r) => r.line || `${r.kind} ${r.id}`);
+  return `mail: ${shown.join(', ')}${rows.length > max ? ` (+${rows.length - max} more)` : ''} (comms message --id <id> for details)`;
 }
 
 /** Mailbox queries of a thread: each held topic (first one also carries the thread for replies), else the thread alone. */
@@ -203,61 +299,34 @@ export function categoryLabel(item) {
 }
 
 /**
- * Waiting messages (status line P-023 e, prompt hooks). Comms listing items (`count.items`: id, level, reply_to, to_thread,
- * sender, created_at) give the mechanical category of each message; a server without items only gives a total.
- * The client asks the service live (comms 0.3.11+; older clients cache 60 s); after an outage it retries no sooner than
- * 60 s (P-041); `first_report` marks the first failure of a window. Counting never picks a message up (P-042).
- * Returns { count, blockers, steers, items, available, unknown, note, configured }.
+ * Waiting messages (status line P-023 e, prompt hooks), from the inbox of one `obligations` call (section 2: one request
+ * per hook): items `{ id, level, reply_to, reply_state, code_answer, expired_at }` give the mechanical category of each
+ * message; counting never picks a message up (P-042). The whole answer rides along (`obligations`: owed, awaiting,
+ * recent, cursor) for the same hook. During an outage the client's backup is shown with `offline, <age>`; a mail of
+ * another model is `?` with the model line (4a). `since`: the cursor of the recent rows this thread was shown.
+ * Returns { count, blockers, steers, items, available, unknown, offline, note, configured, model, obligations }.
  */
-export function mailCount(ctx, held = []) {
+export function mailCount(ctx, held = [], { since = null } = {}) {
   const s = commsSettings(ctx);
-  const out = { count: 0, blockers: 0, steers: 0, items: [], available: false, unknown: false, note: null, configured: s.enabled };
+  const out = { count: 0, blockers: 0, steers: 0, items: [], available: false, unknown: false, offline: false, note: null, configured: s.enabled, obligations: null };
   if (!s.enabled) {
     if (s.configured && s.clientRel) out.note = s.reason; // explicit client path that does not exist: configuration error
     return out;
   }
-  const queries = mailQueries(ctx, held);
+  const res = readObligations(ctx, { held, since });
   // Nothing to ask for (no thread, no held topic): the mail is not checked, so it is unknown, never `0` as checked.
-  if (!queries.length) { out.unknown = true; out.note = 'no thread or held topic: not checked'; return out; }
-  const ids = new Set();
-  const add = (d) => {
-    if (Array.isArray(d.items)) {
-      for (const it of d.items) {
-        if (ids.has(it.id)) continue;
-        ids.add(it.id);
-        out.items.push(it);
-        out.count += 1;
-        if (it.level === 'blocker') out.blockers += 1;
-        if (it.level === 'steer') out.steers += 1;
-      }
-    } else {
-      out.count += d.total || 0;
-      out.blockers += d.blocker || 0;
-    }
-  };
-  const started = Date.now();
-  let seen = false;
-  for (const q of queries) {
-    if (Date.now() - started > s.waitMs) { out.unknown = true; break; }
-    const res = runClient(ctx, ['count', ...queryArgs(q)]);
-    if (res.ok) {
-      const d = res.data;
-      // comms >= 0.4.6: whether this machine's wake runs (absent when wake never ran here, comms-public#4).
-      if (d.wake && out.wake === undefined) out.wake = d.wake;
-      if (d.unavailable) {
-        if (d.first_report) out.note = 'comms unavailable';
-        if (d.total == null) out.unknown = true; else add(d);
-      } else {
-        seen = true;
-        add(d);
-      }
-    } else {
-      out.unknown = true;
-      out.note = res.error;
-      if (res.disabled) break;
-    }
+  if (res.none || !res.ok) { out.unknown = true; out.note = res.error; out.model = !!res.model; return out; }
+  const d = res.data || {};
+  if (d.offline && !d.cached) { out.unknown = true; out.note = 'comms unavailable'; return out; }
+  out.obligations = d;
+  for (const it of d.inbox?.ids || []) {
+    out.items.push(it);
+    out.count += 1;
+    if (it.level === 'blocker') out.blockers += 1;
+    if (it.level === 'steer') out.steers += 1;
   }
-  out.available = seen;
+  if (d.wake) out.wake = d.wake;
+  if (d.offline) { out.offline = true; out.note = `offline, ${ageText(d.age_s)}`; } else out.available = true;
   return out;
 }
 
@@ -395,13 +464,13 @@ export function recordWaitingOperator(ctx, waiting, openedAt = null) {
 export function registerTopic(ctx, topicId, { holder = undefined, subject, takeover = false, release = false, close = false } = {}) {
   const s = commsSettings(ctx);
   if (!s.enabled) return { ok: false, reason: s.reason, topic: topicId, project: s.project, skipped: true };
-  const topic = subject ? { subject } : (ctx.brainDir ? readJson(path.join(ctx.brainDir, 'topics', topicId, 'topic.json'), null) || readJson(path.join(ctx.brainDir, 'topics', 'archive', topicId, 'topic.json'), {}) : {});
+  const topic = subject ? { subject } : (ctx.brainDir ? readTopicRecord(ctx.brainDir, topicId) || readTopicRecord(ctx.brainDir, topicId, { closed: true }) || {} : {});
   // Topic `main` of a persona is its main thread `@<persona>/main` in the mail service (P-045).
   const main = isMainTopic({ id: topicId, ...topic });
   const args = main
     ? ['register-topic', '--persona', s.project, '--main']
     : ['register-topic', '--project', s.project, '--topic', topicId, '--subject', topic.subject || topicId];
-  const hj = ctx.brainDir ? readJson(path.join(ctx.brainDir, 'topics', topicId, 'holder.json'), {}) || {} : {};
+  const hj = ctx.brainDir ? readHolderRecord(ctx.brainDir, topicId) : {};
   // Holder from holder.json (P-037): a free topic (no thread there) is never registered to the calling thread.
   const h = holder === undefined ? (hj.thread || null) : holder;
   if (close) {
@@ -421,25 +490,27 @@ export function registerTopic(ctx, topicId, { holder = undefined, subject, takeo
 }
 
 /**
- * Archived topics (topics/archive/<id>) not yet closed in the mail service are closed there (once; done ids in
- * local/comms-closed.json). Topics archived before the mail knew `close` kept their holder and took mail nobody read
- * (alice 2026-11-02). Returns the ids closed now; skipped during an outage.
+ * Archived topics (topics/archive/<id>) the mail service still holds open are closed there. Topics archived before the
+ * mail knew `close` kept their holder and took mail nobody read (alice 2026-11-02). Which ones the mail closed already is
+ * the mail's `obligations.topics` (state per topic), not a local list (P-072). Returns the ids closed now; skipped during
+ * an outage (the backup is no ground for a write).
  */
 export function closeArchivedTopics(ctx) {
   const s = commsSettings(ctx);
   if (!s.enabled || !ctx.brainDir) return [];
-  const dir = path.join(ctx.brainDir, 'topics', 'archive');
-  if (!fs.existsSync(dir)) return [];
-  const file = path.join(ctx.brainDir, 'local', 'comms-closed.json');
-  const done = new Set(readJson(file, []) || []);
+  // Layout 1: the folders of topics/archive; layout 2: the topics with state closed (they stay in temy/).
+  const closed = listTopicRecords(ctx.brainDir, { closed: true }).map((t) => t.id).filter((id) => id !== MAIN_TOPIC);
+  if (!closed.length) return [];
+  const res = readObligations(ctx, { topics: closed.map((id) => `${s.project}/${id}`), thread: null });
+  if (!res.ok || res.data?.offline) return [];
+  const open = new Set((res.data.topics || []).filter((t) => t.registered && t.state !== 'closed').map((t) => t.topic));
   const out = [];
-  for (const id of fs.readdirSync(dir)) {
-    if (done.has(id) || !fs.existsSync(path.join(dir, id, 'topic.json'))) continue;
+  for (const id of closed) {
+    if (!open.has(id)) continue;
     const r = registerTopic(ctx, id, { close: true });
-    if (r.ok || /nie je registrovaná|404/.test(String(r.reason || ''))) { done.add(id); out.push(id); }
+    if (r.ok) out.push(id);
     else if (r.unavailable) break;
   }
-  if (out.length) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify([...done].sort(), null, 2) + '\n'); }
   return out;
 }
 

@@ -10,13 +10,24 @@ import { createHash } from 'node:crypto';
 import { lfBytes } from './eol.mjs';
 import { readThreadState, writeThreadState, SCRATCH_DIR } from './config.mjs';
 import { git } from './util.mjs';
+import { dataPath, dataLayoutVersion, layoutFor } from './layout.mjs';
 
 const OWN_LIMIT = 500;
 const PENDING = 'pending';
 
-/** abs lies under `<repo>/scratch/` and the repo ignores scratch/ (the scratch dir itself is not a work file). */
+/**
+ * abs lies under `<repo>/scratch/` and the repo ignores scratch/ (the scratch dir itself is not a work file); in a repo of
+ * data layout 2 under `<repo>/temy/<topic>/tmp/`, which the repo ignores.
+ */
 export function inWorkScratch(abs) {
+  const L2 = layoutFor(2);
   for (let p = path.dirname(path.resolve(abs)); p !== path.dirname(p); p = path.dirname(p)) {
+    if (path.basename(p) === L2.topicTmp && path.basename(path.dirname(path.dirname(p))) === L2.topics) {
+      const repo = path.dirname(path.dirname(path.dirname(p)));
+      if (fs.existsSync(path.join(repo, '.git')) && dataLayoutVersion(repo) === 2) {
+        return git(['check-ignore', '-q', '--', path.relative(repo, p).split(path.sep).join('/') + '/'], { cwd: repo }).ok;
+      }
+    }
     if (path.basename(p) !== SCRATCH_DIR) continue;
     const repo = path.dirname(p);
     if (!fs.existsSync(path.join(repo, '.git'))) continue;
@@ -178,7 +189,7 @@ export function recordScratch(ctx, files, inScratch = inWorkScratch) {
 /** Files at or under target that another thread of this brain recorded as its scratch files and that still exist. */
 export function foreignScratch(ctx, target) {
   if (!ctx.brainDir || !ctx.thread) return [];
-  const dir = path.join(ctx.brainDir, 'local', 'threads');
+  const dir = dataPath(ctx.brainDir, 'local', 'threads');
   let names = [];
   try { names = fs.readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { return []; }
   const abs = path.resolve(target);

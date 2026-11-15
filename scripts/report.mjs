@@ -10,9 +10,11 @@ import { spawnSync } from 'node:child_process';
 import { commsSettings, runClient, parseAddress } from './comms.mjs';
 import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh } from './github.mjs';
 import { PLUGIN_ROOT, toPosix } from './util.mjs';
-import { SCRATCH_DIR, channelOf } from './config.mjs';
+import { channelOf } from './config.mjs';
 import { parseFrontmatter, asList } from './frontmatter.mjs';
 import { recordIssue } from './issue-watch.mjs';
+import { LAYOUT, dataPath } from './layout.mjs';
+import { workDir } from './topic-files.mjs';
 
 // Defaults; `policy.maintainer` ({comms, repo}) of the brain overrides (another maintainer, a fork).
 export const MAINTAINER = { comms: 'maintainer/workflow-dev', repo: 'https://github.com/gavalierm/agentic-flow-public.git' };
@@ -34,11 +36,11 @@ export function repoSlug(url) {
 export function peopleNames(brainDir) {
   if (!brainDir) return [];
   let files = [];
-  try { files = fs.readdirSync(path.join(brainDir, 'memory')).filter((f) => f.endsWith('.md')); } catch { return []; }
+  try { files = fs.readdirSync(dataPath(brainDir, 'memory')).filter((f) => f.endsWith('.md')); } catch { return []; }
   const names = new Set();
   for (const f of files) {
     let data;
-    try { ({ data } = parseFrontmatter(fs.readFileSync(path.join(brainDir, 'memory', f), 'utf8'))); } catch { continue; }
+    try { ({ data } = parseFrontmatter(fs.readFileSync(dataPath(brainDir, 'memory', f), 'utf8'))); } catch { continue; }
     if (!['person', 'operator'].includes(data.type)) continue;
     for (const n of [data.name, ...asList(data.aliases)]) {
       for (const w of String(n || '').split(/[\s,]+/)) if (/^\p{Lu}\p{L}{2,}$/u.test(w)) names.add(w);
@@ -125,7 +127,7 @@ export function reportMeta(ctx = {}, env = process.env, { run = spawnSync, platf
 }
 
 export function reportsFile(ctx) {
-  return path.join(ctx.brainDir || ctx.projectDir, 'local', 'error-reports.json');
+  return dataPath(ctx.brainDir || ctx.projectDir, 'local', 'error-reports.json');
 }
 export function readReports(ctx) {
   try { return JSON.parse(fs.readFileSync(reportsFile(ctx), 'utf8')) || {}; } catch { return {}; }
@@ -140,7 +142,7 @@ function writeReport(ctx, id, rec) {
 // otherwise left the operator another "new topic? / redirect" notice first (agentic-flow-public#20, 12 notices).
 export const UNREACHABLE_DAYS = 7;
 export function unreachableFile(ctx) {
-  return path.join(ctx.brainDir || ctx.projectDir, 'local', 'maintainer-unreachable.json');
+  return dataPath(ctx.brainDir || ctx.projectDir, 'local', 'maintainer-unreachable.json');
 }
 function serverKey(s, addr) {
   return `${s.instance || toPosix(s.configFile || '') || 'default'}|${addr.project}/${addr.topic}`;
@@ -184,11 +186,30 @@ export function mailReport(ctx, text, maintainer = maintainerOf(ctx.policy), { t
   if (!res.ok) return { ok: false, why: `mail ${res.error || 'failed'}` };
   const d = res.data || {};
   // A brain without its mail key queues everything (agentic-flow-public#62: a domain brain attached without project.mjs mail).
-  if (d.queued) return { ok: false, why: `mail unavailable (queued in the outbox)${s.configFile ? '' : '; this brain has no mail key (<brain>/local/comms.json): project.mjs mail <project dir>'}`, id: d.id };
-  if (d.state === 'held' && d.project_known === true && d.id) return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${to.project}/${to.topic}`, pending_topic: true, notice: d.notice_id || null };
-  if (d.state === 'held') rememberUnreachable(ctx, key);
-  if (d.state !== 'pending' || !d.id) return { ok: false, why: `maintainer topic ${maintainer.comms} not on this mail server (message ${d.state || '?'}${d.notice_id ? `, notice ${d.notice_id}` : ''})`, id: d.id, notice: d.state === 'held' ? d.notice_id || null : null };
+  if (d.queued) return { ok: false, why: `mail unavailable (queued in the outbox)${s.configFile ? '' : `; this brain has no mail key (<brain>/${LAYOUT.local}/comms.json): project.mjs mail <project dir>`}`, id: d.id };
+  if (d.status === 'held' && d.project_known === true && d.id) return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${to.project}/${to.topic}`, pending_topic: true, notice: d.notice_id || null };
+  if (d.status === 'held') rememberUnreachable(ctx, key);
+  if (d.status !== 'pending' || !d.id) return { ok: false, why: `maintainer topic ${maintainer.comms} not on this mail server (message ${d.status || '?'}${d.notice_id ? `, notice ${d.notice_id}` : ''})`, id: d.id, notice: d.status === 'held' ? d.notice_id || null : null };
   return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${to.project}/${to.topic}` };
+}
+
+/**
+ * Mail of a report straight to the topic whose thread did the work (`--to`, report-3fdc7bf3: a report about a data
+ * migration went to a new report topic and an issue while its thread was reachable by mail). Delivered = accepted pending
+ * in a registered topic; anything else (no such topic here, held, queued) is not delivered and the report goes on to the
+ * maintainer. A held copy leaves a notice the caller withdraws.
+ */
+export function mailTopicReport(ctx, text, to) {
+  const s = commsSettings(ctx);
+  if (!s.enabled) return { ok: false, why: `mail not configured (${s.reason || 'off'})` };
+  const addr = parseAddress(to, s.project);
+  if (!addr || addr.persona) return { ok: false, why: `bad topic address ${to} (use [<project>/]<topic>)` };
+  const res = runClient(ctx, ['send', '--text', '-', '--level', 'assist', '--project', addr.project, '--topic', addr.topic], { input: text });
+  if (!res.ok) return { ok: false, why: `mail to ${to} ${res.error || 'failed'}` };
+  const d = res.data || {};
+  if (d.queued) return { ok: false, why: `mail to ${to} unavailable (queued in the outbox)`, queued: d.id || null };
+  if (d.status !== 'pending' || !d.id) return { ok: false, why: `topic ${addr.project}/${addr.topic} not reachable by mail (message ${d.status || '?'})`, notice: d.status === 'held' ? d.notice_id || null : null };
+  return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${addr.project}/${addr.topic}` };
 }
 
 const issueNumber = (url) => Number((/\/issues\/(\d+)/.exec(url) || [])[1]) || null;
@@ -218,24 +239,77 @@ export async function issueReport(ctx, title, body, maintainer = maintainerOf(ct
 }
 
 function draft(ctx, title, body, why) {
-  const file = path.join(ctx.projectDir, SCRATCH_DIR, `error-report-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
+  const file = path.join(workDir(ctx), `error-report-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `# ${title}\n\n${body}\n\nnot reported: ${why.join('; ')}\n`);
   return file;
 }
 
 /**
- * One report: mail, else issue, else draft. Returns the line for the agent; `reported` only after delivery or a created
- * issue. `fromId`: a mailed report that got no reply or bounced (no-reply / undelivered bell) goes on as an issue.
+ * A mailed report nobody picked up, on a server with the maintainer project (D-0067): sent again as blocker to the
+ * maintainer topic (policy maintainer comms, the orchestrator) with a supersede key per report, so a later resend replaces
+ * an unpicked one. Never an issue. Null when the maintainer topic is not on this server (a report sent with --to to a
+ * local topic of an instance whose maintainer is elsewhere): the caller goes on to the issue, as before D-0067.
  */
-export async function report(ctx, { text, title, fromId } = {}, env = process.env) {
+function resendReport(ctx, fromId, rec, m) {
+  const s = commsSettings(ctx);
+  const addr = m.comms ? parseAddress(m.comms, s.project) : null;
+  if (!addr || addr.persona) return { reported: true, line: `error report ${fromId} -> ${rec.to} not picked up; no maintainer topic to send it again (policy maintainer comms ${m.comms ?? 'none'}); it stays in mail, no issue for a local maintainer (D-0067) (P-003)` };
+  const sk = serverKey(s, addr);
+  const seen = readUnreachable(ctx)[sk];
+  if (seen && Date.now() - Date.parse(seen) < UNREACHABLE_DAYS * 86400000) return null;
+  const key = `error-report:${String(rec.to).split('/').pop()}`;
+  const body = `title: ${rec.title}\n\nhlásenie ${fromId} do ${rec.to} nikto neprevzal; posielam ho znova\n\n${rec.text}`;
+  const res = runClient(ctx, ['send', '--text', '-', '--level', 'blocker', '--project', addr.project, '--topic', addr.topic, '--supersede-key', key], { input: body });
+  const d = res.data || {};
+  if (res.ok && d.status === 'held' && d.project_known !== true) {
+    // Held without project_known: the maintainer project is not on this server. Withdraw the copy (no "new topic?"
+    // notice for the operator) and remember it, like mailReport.
+    rememberUnreachable(ctx, sk);
+    if (d.notice_id) runClient(ctx, ['decide', '--notice', d.notice_id, '--decision', 'discard']);
+    return null;
+  }
+  if (!res.ok || !d.id) return { reported: false, line: `error report ${fromId} not picked up and not sent again (${res.error || 'no message id'}); no issue for a local maintainer (D-0067): run error.mjs report --from ${fromId} again later (P-003)` };
+  const to = `${addr.project}/${addr.topic}`;
+  writeReport(ctx, fromId, { resent: d.id });
+  writeReport(ctx, d.id, { text: rec.text, title: rec.title, at: new Date().toISOString(), to, resent_of: fromId });
+  return { reported: true, line: `reported: mail ${fromId} not picked up; sent again as blocker ${d.id} -> ${to}${d.queued ? ' (queued in the outbox)' : ''}, key ${key} replaces an unpicked copy; a local report stays in mail, no issue (D-0067) (P-003)` };
+}
+
+/**
+ * One report: mail, else issue, else draft. Returns the line for the agent; `reported` only after delivery or a created
+ * issue. `fromId`: a mailed report that got no reply or bounced (no-reply / undelivered bell); its mail was accepted
+ * here, so the maintainer is local: sent again as blocker (resendReport), never an issue (D-0067).
+ */
+export async function report(ctx, { text, title, fromId, to } = {}, env = process.env) {
   const m = maintainerOf(ctx.policy);
   const why = [];
   let held = null;
+  let direct = null;
+  if (!fromId && to) {
+    // The thread that did the work hears it first; the maintainer and an issue only when it is not reachable.
+    const t = scrub(String(title || ''), ctx, env).trim();
+    const body = scrub(`${String(text || '').trimEnd()}\n\n${reportMeta(ctx, env)}`, ctx, env);
+    direct = mailTopicReport(ctx, `title: ${t}\n\n${body}`, to);
+    if (direct.ok) {
+      writeReport(ctx, direct.id, { text: body, title: t, at: new Date().toISOString(), to: direct.to });
+      return { reported: true, line: `reported: mail ${direct.id} -> ${direct.to} (the thread that did the work; no issue); without pickup by ${direct.expires_at || 'the deadline'} the bell says no reply / undelivered: then error.mjs report --from ${direct.id} (P-003)` };
+    }
+    why.push(direct.why);
+    if (direct.notice) runClient(ctx, ['decide', '--notice', direct.notice, '--decision', 'discard']);
+  }
   if (fromId) {
     const rec = readReports(ctx)[fromId];
     if (!rec) return { reported: false, line: `no error report ${fromId} recorded on this machine; send it again: error.mjs report --text "..."` };
     if (rec.issue) return { reported: true, line: `error report ${fromId} already reported: ${rec.issue}` };
+    // A recorded report was accepted by this mail server: with the maintainer project on it, a local report never
+    // becomes a public issue (D-0067; threads here made issues while the maintainer's intake was paused). It stays in mail;
+    // resendReport gives null only when the maintainer topic is not here (a --to report of a remote instance).
+    if (rec.resent_of) return { reported: true, line: `error report ${rec.resent_of} was already sent again as blocker ${fromId} -> ${rec.to}; it stays in mail, no issue for a local maintainer (D-0067); nothing more to do (P-003)` };
+    if (rec.to) {
+      const again = resendReport(ctx, fromId, rec, m);
+      if (again) return again;
+    }
     text = rec.text; title = rec.title;
     why.push(`mail ${fromId} not picked up by the maintainer`);
   } else {
@@ -247,8 +321,9 @@ export async function report(ctx, { text, title, fromId } = {}, env = process.en
     if (mail.ok) {
       writeReport(ctx, mail.id, { text, title, at: new Date().toISOString(), to: mail.to, ...(mail.pending_topic ? { pending_topic: true } : {}) });
       // Held for a topic the maintainer's intake creates (3b.2 point 4): the copy stays held, the expiry rings no reply.
-      if (mail.pending_topic) return { reported: true, line: `reported: mail ${mail.id} -> ${mail.to} (téma sa zakladá; bez prevzatia do ${mail.expires_at || 'lehoty'} zvonček povie no reply, potom error.mjs report --from ${mail.id}) (P-003)` };
-      return { reported: true, line: `reported: mail ${mail.id} -> ${mail.to}; without pickup by ${mail.expires_at || 'the deadline'} the bell says no reply / undelivered: then error.mjs report --from ${mail.id} (P-003)` };
+      const pre = direct ? `${direct.why}; ` : '';
+      if (mail.pending_topic) return { reported: true, line: `${pre}reported: mail ${mail.id} -> ${mail.to} (téma sa zakladá; bez prevzatia do ${mail.expires_at || 'lehoty'} zvonček povie no reply, potom error.mjs report --from ${mail.id}) (P-003)` };
+      return { reported: true, line: `${pre}reported: mail ${mail.id} -> ${mail.to}; without pickup by ${mail.expires_at || 'the deadline'} the bell says no reply / undelivered: then error.mjs report --from ${mail.id} (P-003)` };
     }
     why.push(mail.why);
     held = mail.notice || null;

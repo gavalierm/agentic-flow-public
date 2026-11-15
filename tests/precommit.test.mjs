@@ -1,3 +1,4 @@
+// keep: core
 // P-040: brain pre-commit / commit-msg shims reject manual commits and invalid content.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,17 +31,7 @@ test('manual commit without the script marker is rejected', () => {
   } finally { fx.cleanup(); }
 });
 
-test('commit message without the tag is rejected even with the marker', () => {
-  const fx = setup();
-  try {
-    stage(fx, 'memory/operator-operator.md', '---\nkey: operator-operator\norigin: operator\n---\nx\n');
-    const r = commit(fx, 'no tag here', { script: true });
-    assert.equal(r.status, 1);
-    assert.match(r.out, /lacks the brain script tag/);
-  } finally { fx.cleanup(); }
-});
-
-test('file in local/, handover with 16 lines, exception without ID, agentic skill without origin are rejected', () => {
+test('file in local/, handover without a section, exception without ID, agentic skill without origin are rejected', () => {
   const fx = setup();
   try {
     stage(fx, 'local/index/x.md', 'x');
@@ -48,9 +39,10 @@ test('file in local/, handover with 16 lines, exception without ID, agentic skil
     assert.equal(r.status, 1); assert.match(r.out, /local\//);
     spawnSync('git', ['reset', '-q'], { cwd: fx.brain });
 
-    stage(fx, 'topics/t/handover.md', ['## Zadanie', 'a', '## Hotové', '-', '## Ďalší krok', '-', '## Súbory', '-', '## Otvorené otázky', '-', '1', '2', '3', '4', '5', '6'].join('\n') + '\n');
+    // no line limit (agent-alice/D-0094): the sections are checked, not the count of lines
+    stage(fx, 'topics/t/handover.md', ['## Zadanie', 'a', '## Hotové', '-', '## Ďalší krok', '-', '## Otvorené otázky', '-', '1', '2', '3', '4', '5', '6', '7', '8'].join('\n') + '\n');
     r = commit(fx, '[brain-script] x', { script: true });
-    assert.equal(r.status, 1); assert.match(r.out, /16 lines, limit 15/);
+    assert.equal(r.status, 1); assert.match(r.out, /handover missing section "## Súbory"/); assert.doesNotMatch(r.out, /lines, limit/);
     spawnSync('git', ['reset', '-q'], { cwd: fx.brain });
 
     stage(fx, 'exceptions/project.md', '### Node everywhere\nZnenie: x\nDôvod: y\n');

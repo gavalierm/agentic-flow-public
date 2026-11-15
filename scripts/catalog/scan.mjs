@@ -11,10 +11,11 @@ import { paths, readIndex, writeIndex, readJsonSafe, writeAtomic, writeManifest,
 import { SCHEMA_VERSION } from './schema.mjs';
 import { detectTools } from './tools.mjs';
 import { isInside } from '../util.mjs';
+import { LAYOUT, dataRel } from '../layout.mjs';
 
-const LOCAL_IGNORE_LINES = new Set(['local', 'local/', '/local', '/local/', 'local/*', '/local/*', 'local/catalog', 'local/catalog/', '/local/catalog', '/local/catalog/']);
+const LOCAL_IGNORE_LINES = new Set([LAYOUT.local, LAYOUT.catalog].flatMap((d) => [d, `${d}/`, `/${d}`, `/${d}/`, ...(d === LAYOUT.local ? [`${d}/*`, `/${d}/*`] : [])]));
 
-/** Adds `local/catalog/` to the repo .gitignore when nothing ignores it yet. Returns true when it changed the file. */
+/** Adds the catalog folder (local/catalog/) to the repo .gitignore when nothing ignores it yet. Returns true when it changed the file. */
 export function ensureGitignore(repo) {
   try {
     if (!fs.statSync(path.join(repo, '.git'), { throwIfNoEntry: false })) return false;
@@ -22,7 +23,7 @@ export function ensureGitignore(repo) {
     const cur = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
     if (cur.split(/\r?\n/).some((l) => LOCAL_IGNORE_LINES.has(l.trim()))) return false;
     const sep = cur === '' || cur.endsWith('\n') ? '' : '\n';
-    fs.writeFileSync(file, `${cur}${sep}# katalóg dát (derivát, súkromné, pregenerovateľný)\nlocal/catalog/\n`);
+    fs.writeFileSync(file, `${cur}${sep}# katalóg dát (derivát, súkromné, pregenerovateľný)\n${dataRel(repo, 'catalog')}/\n`);
     return true;
   } catch {
     return false;

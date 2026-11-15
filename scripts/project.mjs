@@ -9,39 +9,30 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PLUGIN_ROOT, git, gitRemote, exists, readJson, toPosix } from './util.mjs';
-import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDirName, checkDomainName, DOMAIN_MARKER, machineRoot } from './config.mjs';
+import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDirName, checkDomainName, DOMAIN_MARKER, machineRoot, classifyNames } from './config.mjs';
+import { LAYOUT, dataPath, layoutFor } from './layout.mjs';
 // The projects root saved for this machine lives in config.mjs: the write hook reads it without this module's GitHub code.
 export { ROOT_FILE, rootFile, machineRoot, setMachineRoot } from './config.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
 import { brainSync } from './brain.mjs';
 import { ensureLineEndings, EOL_RULE } from './eol.mjs';
+import { redactUrl } from './secrets.mjs';
 import { servicesClient } from './comms.mjs';
 import { gh, ghOwner, ghOwnedRepos, ghOwnerRepos, ghRootNames, grantAgentAccess, checkOwner, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_AGENT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
 
 export const DEFAULT_ROOT = path.join(os.homedir(), 'agentic');
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
-// Brain layout of the workflow template (P-024).
-const BRAIN_MARKS = ['topics', 'logs', 'exceptions'];
-// Files of older agent setups: rules and memory kept outside the workflow brain format.
-const LEGACY_MARKS = ['RULES.md', 'CLAUDE.md', 'AGENTS.md', 'errors', 'artifacts', 'agentic-brain'];
 
 export function checkName(name) {
   if (!NAME_RE.test(String(name || ''))) throw new Error(`project name must be lowercase letters, digits and dashes (3-50 chars), got "${name}"`);
   return name;
 }
 
-/** Kind of a repository from the names in its root: workflow-project, workflow-brain, legacy, code, empty. */
-export function classifyNames(names) {
-  const set = new Set(names);
-  if (!names.length) return 'empty';
-  if (set.has(WORKFLOW_CONFIG)) return 'workflow-project';
-  if (set.has('.githooks') && BRAIN_MARKS.every((m) => set.has(m))) return 'workflow-brain';
-  if (LEGACY_MARKS.some((m) => set.has(m))) return 'legacy';
-  return 'code';
-}
+// Kind of a repository from the names in its root (brain detection): one implementation in config.mjs.
+export { classifyNames, BRAIN_MARKS, LEGACY_MARKS } from './config.mjs';
 
 function localNames(dir) {
-  try { return fs.readdirSync(dir).filter((n) => n !== '.git' && n !== 'local'); } catch { return []; }
+  try { return fs.readdirSync(dir).filter((n) => n !== '.git' && n !== LAYOUT.local); } catch { return []; }
 }
 
 function subdirs(dir) {
@@ -89,7 +80,7 @@ export function probeLocal(root, stem) {
   return names.map((name) => {
     const dir = path.join(root, name);
     const repo = exists(path.join(dir, '.git'));
-    const remote = repo ? git(['remote', 'get-url', 'origin'], { cwd: dir }).stdout || null : null;
+    const remote = repo ? redactUrl(git(['remote', 'get-url', 'origin'], { cwd: dir }).stdout) || null : null;
     const kind = classifyNames(localNames(dir));
     const brain = kind === 'workflow-project' ? readJson(path.join(dir, WORKFLOW_CONFIG), {})?.brain ?? null : null;
     return { name, dir, root, repo, remote, kind, brain };
@@ -251,11 +242,11 @@ function cloneInto(remote, dir, label) {
   if (exists(dir)) {
     // The configured address and the rewritten one: either names the repository.
     const urls = [git(['config', '--get', 'remote.origin.url'], { cwd: dir }).stdout, git(['remote', 'get-url', 'origin'], { cwd: dir }).stdout];
-    if (!urls.some((u) => u && remoteKey(u) === remoteKey(remote))) throw new Error(`${dir} exists and is not a clone of ${remote} (origin ${urls[1] || urls[0] || 'none'}); nothing is overwritten (P-018)`);
+    if (!urls.some((u) => u && remoteKey(u) === remoteKey(remote))) throw new Error(`${dir} exists and is not a clone of ${redactUrl(remote)} (origin ${redactUrl(urls[1] || urls[0]) || 'none'}); nothing is overwritten (P-018)`);
     return `${label}: already cloned`;
   }
   const r = gitRemote(['clone', '--quiet', remote, dir], { cwd: path.dirname(dir) });
-  if (!r.ok) throw new Error(`clone of ${remote} failed: ${r.stderr.split('\n')[0]}`);
+  if (!r.ok) throw new Error(`clone of ${redactUrl(remote)} failed: ${redactUrl(r.stderr.split('\n')[0])}`);
   return `${label}: cloned`;
 }
 
@@ -436,6 +427,13 @@ export async function create({ name, repo = null, purpose, domain = null, root =
   return { owner, projectDir, brainDir, lines };
 }
 
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// First folder of a path in the brain layout (inventoryGroup).
+// Both layouts (D-0048): layout 1 rules/, decisions/, ...; layout 2 .brain/rules/, vystupy/rozhodnutia/, ..., work files temy/<id>/tmp/.
+const L2 = layoutFor(2);
+const UNDER = Object.fromEntries(['rules', 'decisions', 'skills', 'memory'].map((n) => [n, new RegExp(`^(?:${esc(LAYOUT[n])}|${esc(L2[n])})/`)]));
+UNDER.scratch = new RegExp(`^(?:${esc(LAYOUT.scratch)}|${esc(L2.topics)}/[^/]+/${esc(L2.topicTmp)})/`);
+
 // Absolute paths in text (older setups pointed at /opt, /root or other homes).
 const ABS_PATH = /(?<![\w.:/-])(\/(?:opt|root|home|srv|var|etc|usr)\/[\w.@-]+(?:\/[\w.@-]+)*)/g;
 
@@ -443,12 +441,12 @@ const ABS_PATH = /(?<![\w.:/-])(\/(?:opt|root|home|srv|var|etc|usr)\/[\w.@-]+(?:
 export function inventoryGroup(rel) {
   const base = path.posix.basename(rel);
   if (/^(\.githooks|\.git|\.claude)\//.test(rel) || ['.gitignore', '.gitattributes', '.gitkeep', '.assetsignore'].includes(base)) return 'infra';
-  if (/^(RULES|CLAUDE|AGENTS)\.md$/i.test(base) || /^rules\//.test(rel)) return 'rules';
-  if (/^decisions\//.test(rel)) return 'decisions';
-  if (/^skills\//.test(rel)) return 'skills';
+  if (/^(RULES|CLAUDE|AGENTS)\.md$/i.test(base) || UNDER.rules.test(rel)) return 'rules';
+  if (UNDER.decisions.test(rel)) return 'decisions';
+  if (UNDER.skills.test(rel)) return 'skills';
   if (/^errors\//.test(rel)) return 'errors';
-  if (/^memory\//.test(rel) && /\.(md|txt)$/.test(base)) return 'memory';
-  if (/^scratch\//.test(rel)) return 'scratch';
+  if (UNDER.memory.test(rel) && /\.(md|txt)$/.test(base)) return 'memory';
+  if (UNDER.scratch.test(rel)) return 'scratch';
   return 'data';
 }
 
@@ -490,11 +488,11 @@ export function formatInventory(inv) {
  * printed; a brain that has the config keeps it.
  */
 export function issueMailKey({ projectDir, brainDir, sessionBrain, client = servicesClient(), run = spawnSync }) {
-  const target = path.join(brainDir, 'local', 'comms.json');
-  if (exists(target)) return 'mail: config exists (<brain>/local/comms.json)';
+  const target = dataPath(brainDir, 'local', 'comms.json');
+  if (exists(target)) return `mail: config exists (<brain>/${LAYOUT.local}/comms.json)`;
   const sender = path.basename(projectDir);
   const how = `issue a key with node ${toPosix(client)} key add --instance <instance> --sender ${sender} and write {instance, key, instance_id} to ${toPosix(target)} (mode 600)`;
-  const src = sessionBrain ? readJson(path.join(sessionBrain, 'local', 'comms.json'), null) : null;
+  const src = sessionBrain ? readJson(dataPath(sessionBrain, 'local', 'comms.json'), null) : null;
   if (!src?.instance || !src?.instance_id) return `mail: NOT set up (this session has no mail config with instance and instance_id): ${how}`;
   if (!exists(client)) return `mail: NOT set up (mail client ${toPosix(client)} not found): ${how}`;
   const json = (text) => { try { return JSON.parse(String(text || '')); } catch { return null; } };

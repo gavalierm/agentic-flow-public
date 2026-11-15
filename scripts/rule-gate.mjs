@@ -36,11 +36,17 @@ export function onlyCondenses(text, oldText) {
 /**
  * Workflow principles and project rules: [{ id, source, text }]. With layers (D-0025) the rules of every layer
  * (rules.mjs ruleLayers): the domain brain, the project brain, the repo; a repo rule has the id `<repo>/<name>`.
+ * `exceptions` (assembleRules().exceptions, [{ id, layer, wording }]): a principle the project has an exception to is
+ * judged in the wording of the exception (source `exception`), as the session reads it (agent-alice/D-0094).
  */
-export function ruleCorpus({ brainDir = null, coreDir = path.join(PLUGIN_ROOT, 'rules'), skip = null, layers = null } = {}) {
+export function ruleCorpus({ brainDir = null, coreDir = path.join(PLUGIN_ROOT, 'rules'), skip = null, layers = null, exceptions = [] } = {}) {
   const corpus = [];
+  const excepted = new Map((exceptions || []).filter((e) => e?.id).map((e) => [e.id, e]));
   for (const file of listFiles(coreDir, (f) => f.endsWith('.md') && path.basename(f) !== 'README.md', { recursive: false })) {
-    for (const b of splitBlocks(readText(file, '')).blocks) corpus.push({ id: b.id, source: 'workflow', text: b.text });
+    for (const b of splitBlocks(readText(file, '')).blocks) {
+      const e = b.id && excepted.get(b.id);
+      corpus.push(e ? { id: b.id, source: 'exception', text: `### ${b.id} (výnimka projektu: ${e.layer})\n${e.wording}\n` } : { id: b.id, source: 'workflow', text: b.text });
+    }
   }
   for (const layer of ruleLayers(brainDir, layers)) {
     for (const file of listFiles(layer.dir, (f) => f.endsWith('.md') && path.basename(f) !== 'README.md', { recursive: false })) {
@@ -95,6 +101,7 @@ function judgePrompt(rule, corpus) {
     'conflicts: existing rules the proposed rule contradicts (one allows what the other forbids, or they order different behaviour in the same situation).',
     'code_instead: if a hook or script could enforce the behaviour by itself (block the action, do the step automatically) so the agent needs no rule text, say how in one sentence; else empty.',
     'Empty arrays when there is nothing; do not invent overlaps for merely shared words.',
+    'A principle marked (exception) is given in the wording of the project exception, which replaces the principle in this project: what the exception allows is no conflict.',
     '',
     '# Existing rules',
     ...corpus.map((r) => `## id: ${r.id} (${r.source})\n${r.text.trim()}`),

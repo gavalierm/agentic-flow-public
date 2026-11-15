@@ -15,9 +15,16 @@ import { writeOverview } from '../scripts/catalog/overview.mjs';
 import { readManifest, readJsonSafe, paths, readIndex } from '../scripts/catalog/index.mjs';
 import { hasTool, detectTools } from '../scripts/catalog/tools.mjs';
 import { kindSummary } from '../scripts/catalog/hooks.mjs';
+import { LAYOUT, dataPath, dataRel } from '../scripts/layout.mjs';
+import { workDir } from '../scripts/topic-files.mjs';
+import { toPosix } from '../scripts/util.mjs';
+
+// The session (thread, brain) of this run: work files of the catalog go to the work folder of its topic (layout 2).
+let sessionCtx = null;
+const workOf = (cfg) => workDir({ ...(sessionCtx || {}), projectDir: cfg.repo });
 
 const USAGE = 'usage: catalog.mjs scan [--full] | profile [--path p] | find <slová> [--kind k] [--source n] [--all] | show <cesta> | sql <cesta> "<SELECT ...>" | overview | status';
-const DISABLED = 'katalóg je vypnutý: repo nemá zdroj. Pridaj do <repo>/local/workflow.json {"catalog":{"sources":{"data":{"path":"/cesta/k/dátam","mode":"ro"}}}}';
+const DISABLED = `katalóg je vypnutý: repo nemá zdroj. Pridaj do <repo>/${LAYOUT.local}/workflow.json {"catalog":{"sources":{"data":{"path":"/cesta/k/dátam","mode":"ro"}}}}`;
 
 const args = parseArgs(process.argv.slice(2));
 // Switches without a value: parseArgs gives them the next word, so `find --all csv` lost its search words (pilot 2026-11-08).
@@ -46,7 +53,7 @@ function cmdScan(cfg) {
     out(`${s.name}: ${s.total} súborov (${kindSummary(s.kinds)}); nové ${s.new}, zmenené ${s.changed}, presunuté ${s.moved}, zmazané ${s.removed}; bez hashu ${s.hash_pending}; ${state}`);
   }
   for (const e of res.errors) out(`chyba ${e.source}: ${e.message}`);
-  if (res.gitignore_added) out('.gitignore: doplnené local/catalog/');
+  if (res.gitignore_added) out(`.gitignore: doplnené ${dataRel(cfg.repo, 'catalog')}/`);
   try { writeOverview(cfg); } catch (err) { out(`prehľad sa nezapísal: ${err.message}`); }
   if (res.errors.length) process.exitCode = 1;
 }
@@ -68,7 +75,7 @@ function cmdFind(cfg) {
   if (!res.total) return out(`katalóg: bez zhody pre "${q}"`);
   if (all && res.total > cfg.find.max_lines) {
     // an unlimited list goes to a file, not into the context
-    const dir = path.join(cfg.repo, 'scratch');
+    const dir = workOf(cfg);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `catalog-find-${Date.now()}.txt`);
     fs.writeFileSync(file, res.matches.map(formatMatch).join('\n') + '\n');
@@ -106,7 +113,7 @@ function cmdSql(cfg) {
     process.exitCode = 2;
     return;
   }
-  if (p.encoding && !/^utf-?8/i.test(p.encoding)) fail(`duckdb číta iba utf-8 (súbor je ${p.encoding}); najprv iconv -f ${p.encoding} -t utf-8 do ${cfg.repo}/scratch/`);
+  if (p.encoding && !/^utf-?8/i.test(p.encoding)) fail(`duckdb číta iba utf-8 (súbor je ${p.encoding}); najprv iconv -f ${p.encoding} -t utf-8 do ${toPosix(workOf(cfg))}/`);
   const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
   // t is created first, then external access (other files, http) is switched off for the user's query; it cannot be switched back on
   const sql = `CREATE TABLE t AS SELECT * FROM read_csv_auto(${q(abs)}, delim=${q(delim)}, header=${header ? 'true' : 'false'}); SET enable_external_access=false; ${query}`;
@@ -152,6 +159,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const cmd = args._[0];
     if (!COMMANDS[cmd]) fail(USAGE);
     const ctx = loadContext({ project: args.project, requireBrain: false });
+    sessionCtx = ctx;
     const cfg = catalogConfig(ctx.projectDir);
     if (!cfg.enabled) fail(DISABLED);
     fs.mkdirSync(cfg.dir, { recursive: true });

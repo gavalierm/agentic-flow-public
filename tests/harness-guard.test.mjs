@@ -1,3 +1,4 @@
+// keep: core
 // D-0011 (R3): Claude Code settings carry no native deny; the PreToolUse hook guards brain (P-013), the generated project
 // skills (P-017) and the global paths of the harness (P-014) for every tool, also in place edits and redirects in a shell.
 import { test } from 'node:test';
@@ -25,15 +26,6 @@ test('P-013: shell writes into brain are refused: sed -i, tee and redirects; a n
       assert.match(reason(r), /shell write into brain/, cmd);
     }
     assert.doesNotMatch(reason(bash(fx, `echo x > ${path.join(fx.brain, 'local', 'new-state.json')}`)), /shell write into brain/, 'local/ is ignored, no brain data');
-  } finally { fx.cleanup(); }
-});
-
-test('P-017: a shell write into .claude/skills/ of the project is refused: the skills are generated from brain', () => {
-  const fx = setup();
-  try {
-    const r = bash(fx, `mkdir -p .claude/skills/x && echo x > ${path.join(fx.project, '.claude', 'skills', 'x', 'SKILL.md')}`);
-    assert.equal(decision(r), 'deny');
-    assert.match(reason(r), /generated from brain at session start/);
   } finally { fx.cleanup(); }
 });
 

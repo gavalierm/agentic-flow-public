@@ -8,6 +8,17 @@ import { findAll, findWordsAll, findBodyAll, findRelatesToAll, findSimilarAll, f
 import { recordAuthors } from '../scripts/authors.mjs';
 import { catalogConfig } from '../scripts/catalog/config.mjs';
 import { findCatalog, formatCatalogBlock } from '../scripts/catalog/find.mjs';
+import { listTopicRecords } from '../scripts/topic-files.mjs';
+import path from 'node:path';
+import { toPosix } from '../scripts/util.mjs';
+
+/** Topics of the session brain with the id `q`, open or closed (a closed one also in the hidden archive, D-0060). */
+function topicMatches(brainDir, q) {
+  if (!brainDir || !q) return [];
+  return [...listTopicRecords(brainDir), ...listTopicRecords(brainDir, { closed: true })]
+    .filter((t) => t.id === q)
+    .map((t) => `${toPosix(path.relative(brainDir, t.dir))}/: topic ${t.id} (${t.topic.state || 'open'}${t.hidden ? ', hidden archive' : ''})`);
+}
 
 const args = parseArgs(process.argv.slice(2));
 try {
@@ -15,6 +26,7 @@ try {
   let matches;
   let label;
   let catalog = null; // data catalog block (only for a text query and a repo with a source)
+  let topics = []; // topic folders of that id (text query, not in --json)
   if (args['relates-to']) {
     matches = findRelatesToAll(ctx, args['relates-to']);
     label = `relates-to ${args['relates-to']}`;
@@ -26,6 +38,7 @@ try {
     if (!q) fail('usage: find.mjs <query> | --relates-to <path> | --similar <key>');
     matches = findAll(ctx, q);
     label = q;
+    try { topics = topicMatches(ctx.brainDir, q.trim()); } catch { topics = []; }
     if (!matches.length) {
       matches = findWordsAll(ctx, q);
       if (matches.length && !args.json) process.stdout.write(`no exact match: ${q}; word matches:\n`);
@@ -45,7 +58,8 @@ try {
     // without a catalog the output is the same array as before; with one, a catalog key joins it
     process.stdout.write(JSON.stringify(catalog ? { matches, catalog: catalog.res.matches } : matches) + '\n');
   } else {
-    process.stdout.write((matches.length ? formatMatches(matches) : `no match: ${label}`) + '\n');
+    if (matches.length || !topics.length) process.stdout.write((matches.length ? formatMatches(matches) : `no match: ${label}`) + '\n');
+    if (topics.length) process.stdout.write(topics.join('\n') + '\n');
     if (catalog && catalog.res.total) process.stdout.write(formatCatalogBlock(catalog.res, catalog.cfg) + '\n');
   }
 } catch (err) {

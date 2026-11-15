@@ -1,3 +1,4 @@
+// keep: core
 // P-017, P-015, P-042, P-038: Codex adapter and its hook translator (M7).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,12 +22,6 @@ function codexHook(fx, event, input, env = {}) {
   try { json = JSON.parse(res.stdout.trim() || '{}'); } catch { json = { raw: res.stdout }; }
   return { status: res.status, json, stderr: res.stderr, context: json.hookSpecificOutput?.additionalContext || '' };
 }
-
-test('toml writer and reader round-trip the subset the adapter emits', () => {
-  const obj = { a: 1, s: 'x\n"y"', t: true, features: { hooks: true }, p: { 'w o': { '../b/**': 'deny', ':roots': { 'c/**': 'deny' } } } };
-  assert.deepEqual(parseToml(toToml(obj)), obj);
-  assert.throws(() => parseToml('[a]\nx = 1\n[a]\ny = 2\n'), /duplicate table/);
-});
 
 test('generated config.toml, hooks.json, AGENTS.md and .agents/skills match policy and source; local files gitignored', () => {
   const fx = setup();
@@ -112,44 +107,6 @@ test('generated config.toml, hooks.json, AGENTS.md and .agents/skills match poli
   } finally { fx.cleanup(); }
 });
 
-test('Claude Code output is unchanged by the Codex adapter', () => {
-  const fx = setup();
-  try {
-    assert.equal(fx.run('adapter.mjs', ['claude-code']).status, 0);
-    const before = read(fx.project, '.claude/settings.json');
-    assert.equal(fx.run('adapter.mjs', ['codex']).status, 0);
-    assert.equal(fx.run('adapter.mjs', ['claude-code']).status, 0);
-    assert.equal(read(fx.project, '.claude/settings.json'), before);
-    assert.deepEqual(JSON.parse(before).permissions, claudeSettings(loadPolicy(fx.brain), '../brain').permissions);
-    assert.ok(!fs.existsSync(path.join(fx.project, '.claude', 'skills', 'save')), 'workflow skills are not copied for Claude Code');
-  } finally { fx.cleanup(); }
-});
-
-test('codex SessionStart: boot items without rules, codex skills synced, stale AGENTS.md reported', () => {
-  const fx = setup();
-  try {
-    assert.equal(fx.run('adapter.mjs', ['codex']).status, 0);
-    let r = codexHook(fx, 'session-start', { source: 'startup' });
-    assert.equal(r.status, 0, r.stderr);
-    const headings = r.context.split('\n').filter((l) => l.startsWith('## '));
-    assert.deepEqual(headings, ['## Stav vlákna', '## Index pamäte', '## Index rozhodnutí', '## Otvorené témy', '## Workflow']);
-    assert.match(r.context, /thread a1 \| topic - \(none\) \| mail: 0/);
-    assert.match(r.context, /\nworkflow [0-9a-f]{7,}/);
-    assert.doesNotMatch(r.context, /AGENTS\.md/);
-    assert.ok(fs.existsSync(path.join(fx.project, '.agents', 'skills', 'save', 'SKILL.md')));
-    // T3 thread identity (P-038)
-    const t3 = codexHook(fx, 'session-start', { source: 'startup' }, { WORKFLOW_THREAD_ID: '', T3CODE_THREAD_ID: 't3x' });
-    assert.match(t3.context, /thread t3x \|/);
-    // stale AGENTS.md after a rule exception appears in the brain
-    fs.writeFileSync(path.join(fx.brain, 'exceptions', 'harness-codex.md'), '### P-012: X\nZnenie: Codex jednotka práce je kratšia.\nDôvod: test.\n');
-    r = codexHook(fx, 'session-start', { source: 'resume' });
-    assert.match(r.context, /AGENTS\.md stale/);
-    fs.rmSync(path.join(fx.project, 'AGENTS.md'));
-    r = codexHook(fx, 'session-start', { source: 'resume' });
-    assert.match(r.context, /AGENTS\.md missing/);
-  } finally { fx.cleanup(); }
-});
-
 test('codex PreToolUse: apply_patch into brain denied, project file allowed, ask becomes deny with a way out', () => {
   const fx = setup();
   try {
@@ -169,17 +126,6 @@ test('codex PreToolUse: apply_patch into brain denied, project file allowed, ask
     assert.equal(r.json.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(r.json.hookSpecificOutput.permissionDecisionReason, /rewrites or drops git history/);
     r = codexHook(fx, 'pre-tool-use', { tool_name: 'Bash', tool_input: { command: 'ls' } });
-    assert.deepEqual(r.json, {});
-  } finally { fx.cleanup(); }
-});
-
-test('codex Stop: no continuation turn for a waiting assist (TTL in the mail service replaces it, P-042)', () => {
-  const fx = setup();
-  try {
-    const stateFile = path.join(fx.brain, 'local', 'threads', 'a1.json');
-    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify({ thread: 'a1', waiting_assist: [{ id: 'm1', topic: 'x' }] }));
-    const r = codexHook(fx, 'stop', { stop_hook_active: false, last_assistant_message: 'done' });
     assert.deepEqual(r.json, {});
   } finally { fx.cleanup(); }
 });

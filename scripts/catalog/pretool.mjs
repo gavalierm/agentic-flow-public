@@ -4,15 +4,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { catalogConfig, sourceOf } from './config.mjs';
+import { dataLayoutVersion, dataRel, workLabel, topicHome, separateProject } from '../layout.mjs';
 
 const READERS = new Set(['ls', 'find', 'grep', 'egrep', 'fgrep', 'rg', 'cat']);
 const SPLIT = /\s*(?:&&|\|\||;|\n|\|)\s*/;
 
 /** Deny reason when a target lies in a `ro` source, else null. */
-export function readOnlySourceDeny(cfg, absPaths) {
+export function readOnlySourceDeny(cfg, absPaths, projectDir = null, brainDir = null) {
+  // Where results and work files go, by the layout of the topic home (D-0048, D-0056: a brain in layout 2 holds the work
+  // of a topic, else the project repo); without a project the logical names.
+  let where = 'výsledky patria do práce témy a medzivýsledky do pracovných súborov (cesty v štarte, blok „Tvar dát tohto repa“)';
+  try {
+    if (projectDir) {
+      const home = topicHome(brainDir, projectDir);
+      const repo = separateProject(brainDir, projectDir) && path.resolve(home) === path.resolve(brainDir) ? 'brainu' : 'repa projektu';
+      where = `výsledky patria do ${dataLayoutVersion(home) === 1 ? dataRel(home, 'materialy') : dataRel(home, 'topics')}/<téma>/ a medzivýsledky do ${workLabel(home)} ${repo}`;
+    }
+  } catch { /* unknown layout: the logical names */ }
   for (const p of absPaths) {
     const s = sourceOf(cfg, p);
-    if (s && s.mode === 'ro') return `zápis do zdroja dát ${s.name} (iba čítanie): výsledky patria do materialy/<téma>/ a medzivýsledky do scratch/ repa projektu; zdroj klienta sa nemení; zdroj ${s.path} zapína catalog.sources.${s.name} v ${s.from}: ak je to priečinok práce témy, nie dáta klienta, oznám operátorovi zdroj a ten súbor`;
+    if (s && s.mode === 'ro') return `zápis do zdroja dát ${s.name} (iba čítanie): ${where}; zdroj klienta sa nemení; zdroj ${s.path} zapína catalog.sources.${s.name} v ${s.from}: ak je to priečinok práce témy, nie dáta klienta, oznám operátorovi zdroj a ten súbor`;
   }
   return null;
 }
@@ -58,13 +69,13 @@ export function catalogPreTool(input, ctx, cwd, h) {
   if (FILE[tool]) {
     const t = toolInput[FILE[tool]];
     if (typeof t !== 'string' || !t) return null;
-    const deny = readOnlySourceDeny(cfg, [path.resolve(cwd, t)]);
+    const deny = readOnlySourceDeny(cfg, [path.resolve(cwd, t)], ctx.projectDir, ctx.brainDir);
     return deny ? { deny } : null;
   }
   if (tool !== 'Bash' && tool !== 'PowerShell') return null;
   if (!input.cwd) return null; // a relative path without a known cwd is unclear: do nothing
   const cmd = String(toolInput.command || '');
-  const deny = readOnlySourceDeny(cfg, shellWriteTargets(cmd, cwd, h));
+  const deny = readOnlySourceDeny(cfg, shellWriteTargets(cmd, cwd, h), ctx.projectDir, ctx.brainDir);
   if (deny) return { deny };
   if (!cfg.reminder || input.agent_id || input.agent_type || !ctx.brainDir || !ctx.thread) return null;
   if (/catalog\.mjs/.test(cmd)) return null;

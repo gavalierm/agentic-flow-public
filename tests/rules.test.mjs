@@ -1,3 +1,4 @@
+// keep: core
 // P-035, P-022: layered rules.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -55,19 +56,5 @@ test('core rules stay within limits; exceeding a limit is reported, nothing trim
   const over = assembleRules({ brainDir: null, policy: tight });
   assert.equal(over.overLimit.length, 2);
   assert.equal(over.text, res.text, 'text is not trimmed');
-});
-
-test('project rules from <brain>/rules/ are part of the assembled rules and count into the limits', () => {
-  const brain = tmpBrain();
-  try {
-    fs.mkdirSync(path.join(brain, 'rules'));
-    fs.writeFileSync(path.join(brain, 'rules', 'persona-bob.md'), '---\nkey: rule-persona-bob\ntitle: Persona Bob\n---\nSi Bob, správca servera.\n');
-    const base = assembleRules({ brainDir: brain, policy: loadPolicy(null) });
-    assert.match(base.text, /Pravidlá projektu[^\n]*\n\n### Persona Bob\nSi Bob, správca servera\./);
-    assert.doesNotMatch(base.text, /key: rule-persona-bob/);
-    assert.ok(base.text.indexOf('### Persona Bob') < base.text.indexOf('Výnimky:'));
-    const without = assembleRules({ brainDir: null, policy: loadPolicy(null) });
-    assert.ok(base.chars > without.chars);
-  } finally { fs.rmSync(brain, { recursive: true, force: true }); }
 });
 

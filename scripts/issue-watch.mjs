@@ -10,6 +10,7 @@ import { runClient, commsProjectName, isMainTopic } from './comms.mjs';
 import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh, readToken } from './github.mjs';
 import { heldTopics } from './topic.mjs';
 import { readJson, nowIso, toPosix } from './util.mjs';
+import { LAYOUT, dataPath } from './layout.mjs';
 
 export const ISSUES_FILE = 'reported-issues.json';
 export const WATCH_LOG = 'issue-watch.log';
@@ -17,7 +18,7 @@ export const JOB_NAME = 'issue-watch';
 
 /** Records live in the brain's local/ (thread ids and check state are no repo content), next to error-reports.json. */
 export function issuesFile(base) {
-  return path.join(base, 'local', ISSUES_FILE);
+  return dataPath(base, 'local', ISSUES_FILE);
 }
 export function baseOf(ctx) {
   return ctx.brainDir || ctx.projectDir;
@@ -100,8 +101,8 @@ export function undeliveredIssues(base) {
 
 function log(base, line) {
   try {
-    fs.mkdirSync(path.join(base, 'local'), { recursive: true });
-    fs.appendFileSync(path.join(base, 'local', WATCH_LOG), `${nowIso()} ${line}\n`);
+    fs.mkdirSync(dataPath(base, 'local'), { recursive: true });
+    fs.appendFileSync(dataPath(base, 'local', WATCH_LOG), `${nowIso()} ${line}\n`);
   } catch { /* the log only explains */ }
 }
 
@@ -132,8 +133,8 @@ export function ringText(rec, { comments = [], state = null }) {
 function sendOutcome(res) {
   if (res.unavailable || (res.ok && res.data?.queued)) return 'queued';
   if (!res.ok) return res.data?.status === 410 ? 'closed' : 'error';
-  if (res.data?.state === 'held') return 'held';
-  return res.data?.state === 'pending' || res.data?.state === 'delivered' ? 'rung' : 'error';
+  if (res.data?.status === 'held') return 'held';
+  return res.data?.status === 'pending' ? 'rung' : 'error';
 }
 
 /**
@@ -337,7 +338,7 @@ function findRecord(ctx, url) {
   const base = baseOf(ctx);
   const all = readIssues(base);
   const hit = Object.entries(all).find(([key, r]) => r?.url === url || key === url);
-  if (!hit) throw new Error(`no record of issue ${url} on this machine (local/${ISSUES_FILE}); error.mjs confirm|reopen answers issues error.mjs report created here`);
+  if (!hit) throw new Error(`no record of issue ${url} on this machine (${LAYOUT.local}/${ISSUES_FILE}); error.mjs confirm|reopen answers issues error.mjs report created here`);
   return { base, key: hit[0], rec: hit[1] };
 }
 

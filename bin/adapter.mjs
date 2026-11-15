@@ -6,13 +6,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PLUGIN_ROOT, readJson, writeJson, shortSha, parseArgs, fail } from '../scripts/util.mjs';
-import { loadContext, enabledPluginsFor, channelOf, WORKFLOW_CONFIG, resolveTargetProject, ensureWorkflowConfig, brainExists, expandBrainPath, PERSONA_BRAIN, SCRATCH_DIR, NO_BRAIN_NOTE, projectPolicy, resolveDomain } from '../scripts/config.mjs';
+import { loadContext, enabledPluginsFor, channelOf, WORKFLOW_CONFIG, resolveTargetProject, ensureWorkflowConfig, brainExists, expandBrainPath, PERSONA_BRAIN, NO_BRAIN_NOTE, projectPolicy, resolveDomain } from '../scripts/config.mjs';
 import { policyIgnoredLine } from '../scripts/policy-layers.mjs';
 import { commitPersonaFiles } from '../scripts/persona.mjs';
-import { syncBrainSkills, ensureGitignore } from '../scripts/skills-sync.mjs';
+import { syncBrainSkills, ensureGitignore, crontabSkillNotes } from '../scripts/skills-sync.mjs';
 import { adapterSkillSources } from '../scripts/repo-knowledge.mjs';
 import { generateCodex } from '../adapters/codex/generate.mjs';
-import { ensureIssueWatchJob } from '../scripts/wake-job.mjs';
+import { ensureIssueWatchJob, ensureTimerCheckJob } from '../scripts/wake-job.mjs';
+import { dataPath, dataRel, workIgnoreLine } from '../scripts/layout.mjs';
+import { workDir } from '../scripts/topic-files.mjs';
+import { threadId } from '../scripts/config.mjs';
 
 export const MANAGED_KEYS = ['enabledPlugins', 'autoMemoryEnabled', 'autoCompactWindow', 'permissions'];
 
@@ -74,6 +77,10 @@ export function generateClaudeCode({ projectDir, brainRel: brainRelArg = null, c
   const merged = { ...existing };
   for (const k of MANAGED_KEYS) delete merged[k];
   const settings = { ...generated, ...merged, enabledPlugins: { ...(existing.enabledPlugins || {}), ...generated.enabledPlugins } };
+  // The operator's own allow rules (a narrow exception for one tool, flow-public#96) survive regeneration; the workflow
+  // manages only `ask`. The agent never writes them: consent in a dialog does not become a rule (P-054).
+  const allow = Array.isArray(existing.permissions?.allow) ? existing.permissions.allow.filter((r) => typeof r === 'string') : [];
+  if (allow.length) settings.permissions = { ...generated.permissions, allow };
   const env = subagentEnv(policy, existing.env);
   if (Object.keys(env).length) settings.env = env; else delete settings.env;
   // Keep a stable key order: managed keys first.
@@ -83,15 +90,19 @@ export function generateClaudeCode({ projectDir, brainRel: brainRelArg = null, c
   writeJson(settingsFile, ordered);
   written.push('.claude/settings.json');
 
-  fs.mkdirSync(path.join(projectDir, 'local'), { recursive: true });
-  fs.mkdirSync(path.join(projectDir, SCRATCH_DIR), { recursive: true });
-  if (ensureGitignore(projectDir, ['.claude/skills/', 'local/', `${SCRATCH_DIR}/`])) written.push('.gitignore');
+  fs.mkdirSync(dataPath(projectDir, 'local'), { recursive: true });
+  // Work files (P-052): layout 1 scratch/, layout 2 temy/<topic>/tmp/ of the held topic (main without one), both ignored.
+  fs.mkdirSync(workDir({ projectDir, brainDir: hasBrain ? brainDir : null, thread: threadId() }), { recursive: true });
+  if (ensureGitignore(projectDir, ['.claude/skills/', `${dataRel(projectDir, 'local')}/`, workIgnoreLine(projectDir)])) written.push('.gitignore');
   if (hasBrain && brainInfo.persona) notes.push(commitPersonaFiles({ brainDir, policy, files: [WORKFLOW_CONFIG, '.claude/settings.json', '.gitignore'] }));
 
   if (hasBrain) {
     // Repo skills (<repo>/agentic/skills) too: without them every deploy removed them until the next start or save (mojprojekt-web 2026-11-09).
     const sync = syncBrainSkills({ projectDir, brainDir, repoSources: adapterSkillSources(projectDir, brainDir), domainBrainDir: composed.layers.projectBrain ? composed.layers.domainBrain : null });
     notes.push(`brain skills copied to .claude/skills/: ${sync.copied.length ? sync.copied.join(', ') : 'none'}`);
+    // Deploy references outside skills (D-0065): crontab lines with the old unprefixed skill path; warned, never changed.
+    notes.push(...crontabSkillNotes(projectDir, sync).map((w) => `warning: ${w}`));
+    notes.push(...sync.warnings.map((w) => `warning: ${w}`));
   } else if (!brainInfo) {
     notes.push(NO_BRAIN_NOTE.replace('<harness>', 'claude-code'));
   } else {
@@ -123,6 +134,8 @@ if (process.argv[1]?.endsWith('adapter.mjs')) {
       process.stdout.write(`generated in ${projectDir}:\n${res.written.map((w) => `- ${w}`).join('\n')}\n${res.notes.map((n) => `note: ${n}`).join('\n')}\n`);
       // The reporter's issue check (D-0024): job issue-watch in this machine's wake.json; one job for all projects.
       try { process.stdout.write(`note: ${ensureIssueWatchJob(loadContext({ project: projectDir, requireBrain: false })).line}\n`); } catch (err) { process.stdout.write(`note: wake job issue-watch not written (${err.message})\n`); }
+      // Conditional thread timers checked before their ring (P-061): job timer-check.
+      try { process.stdout.write(`note: ${ensureTimerCheckJob(loadContext({ project: projectDir, requireBrain: false })).line}\n`); } catch (err) { process.stdout.write(`note: wake job timer-check not written (${err.message})\n`); }
       process.stdout.write(res.brainRel === '.' ? 'restart the session so the plugin loads\n' : `commit .claude/settings.json${res.brainRel ? ' and .workflow.json' : ''}; restart the session so the plugin loads\n`);
     } else if (harness === 'codex') {
       const projectDir = resolveTargetProject(args.project);

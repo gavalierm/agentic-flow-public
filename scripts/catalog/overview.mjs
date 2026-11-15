@@ -2,6 +2,7 @@
 // human/by-folder.md (folder tree with counts). Local only, regenerated on demand, never edited by hand.
 import path from 'node:path';
 import { paths, readIndex, writeAtomic } from './index.mjs';
+import { dataRel } from '../layout.mjs';
 
 const MB = 1024 * 1024;
 const fmtSize = (n) => (n >= 1024 * MB ? `${(n / (1024 * MB)).toFixed(1)} GB` : n >= MB ? `${(n / MB).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} kB`);
@@ -94,7 +95,7 @@ function folderSection(source, rows) {
 export function writeOverview(cfg, { now = Date.now() } = {}) {
   const human = paths(cfg.dir, '_').human;
   const stamp = new Date(now).toISOString().slice(0, 16).replace('T', ' ');
-  const head = (title) => `# ${title}\n\nVygenerované ${stamp} z \`local/catalog/index\`; súbor je odvodený, neupravuj ho ručne. Zostáva na tomto stroji.\n\n`;
+  const head = (title) => `# ${title}\n\nVygenerované ${stamp} z \`${dataRel(cfg.repo, 'catalog', 'index')}\`; súbor je odvodený, neupravuj ho ručne. Zostáva na tomto stroji.\n\n`;
   const bySource = cfg.sources.map((s) => ({ s, rows: readIndex(cfg.dir, s.name) }));
   const index = path.join(human, 'INDEX.md');
   const folders = path.join(human, 'by-folder.md');

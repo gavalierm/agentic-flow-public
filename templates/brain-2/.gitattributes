@@ -1,0 +1,2 @@
+* text=auto eol=lf
+.brain/logs/*.log merge=union

@@ -12,6 +12,8 @@ import { brainWrite } from '../scripts/brain.mjs';
 import { nowIso } from '../scripts/util.mjs';
 import { heldTopics } from '../scripts/topic.mjs';
 import { RESULTS_FILE, workerTaskLine, resultEntry } from '../scripts/materialy.mjs';
+import { dataRel } from '../scripts/layout.mjs';
+import { hasTriage, CONCLUSIONS_DIR, conclusionName, conclusionText } from '../scripts/triage.mjs';
 
 export const HOOK_META = { event: 'SubagentStop', class: 'block', limit: '1 reason', principles: ['P-028'] };
 
@@ -89,13 +91,14 @@ export function recordWorkerFailures(input, ctx, now = nowIso()) {
   const failures = failuresText(input.last_assistant_message);
   if (!failures || !ctx.brainDir) return null;
   const line = failureLine(input, failures, now);
-  brainWrite(ctx, { ops: [appendOp('failures.log', [line])], internal: true, message: 'worker failures' });
+  brainWrite(ctx, { ops: [appendOp('failures.log', [line], { brainDir: ctx.brainDir })], internal: true, message: 'worker failures' });
   return line;
 }
 
 /**
  * An accepted worker result goes to <brain>/topics/<held topic>/results.md (D-0032): it lived only in the conversation and
  * was lost with it. It is archived with the topic (done --topic) and never indexed. No held topic: nothing is written.
+ * Layout 2: temy/<held topic>/zavery/<time>-<agent>.md, one file per result (D-0044).
  */
 export function recordWorkerResult(input, ctx, now = nowIso()) {
   if (!/(^|:)worker$/.test(String(input.agent_type || ''))) return null;
@@ -106,7 +109,17 @@ export function recordWorkerResult(input, ctx, now = nowIso()) {
   const file = agentTranscriptPath(input);
   const task = file ? workerTaskLine(file) : '';
   const agent = String(input.agent_id || input.agent_type || 'worker').replace(/\s+/g, '-');
-  const rel = `topics/${topic}/${RESULTS_FILE}`;
+  if (hasTriage(ctx.brainDir)) {
+    // Layout 2 (D-0044): one file per conclusion in temy/<topic>/zavery/, a file of the topic like any other (triage at
+    // done --topic), not an entry appended to results.md.
+    const dir = dataRel(ctx.brainDir, 'topics', topic, CONCLUSIONS_DIR);
+    let name = conclusionName(now, agent);
+    for (let n = 2; fs.existsSync(path.join(ctx.brainDir, ...dir.split('/'), name)); n++) name = conclusionName(now, `${agent}-${n}`);
+    const file = `${dir}/${name}`;
+    brainWrite(ctx, { ops: [{ path: file, content: conclusionText({ task, agent, result }) }], internal: true, message: `worker conclusion: ${topic}` });
+    return file;
+  }
+  const rel = dataRel(ctx.brainDir, 'topics', topic, RESULTS_FILE);
   brainWrite(ctx, { ops: [{ path: rel, append: resultEntry({ at: now, agent, task, result }) }], internal: true, message: `worker result: ${topic}` });
   return rel;
 }

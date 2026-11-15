@@ -2,6 +2,7 @@
 // (1 per source, at most `catalog_boot_lines`, each at most `catalog_line_chars`). An error never fails the boot.
 import { createHash } from 'node:crypto';
 import { catalogConfig } from './config.mjs';
+import { dataLayoutVersion } from '../layout.mjs';
 import { readManifest, readJsonSafe, paths } from './index.mjs';
 import { scanAll } from './scan.mjs';
 import { profileAll } from './profiles.mjs';
@@ -36,6 +37,8 @@ export function catalogLines(cfg, scan = null, { pluginRoot = '<plugin>' } = {})
   const lines = [];
   for (const source of cfg.sources) {
     if (lines.length >= maxLines) break;
+    // Layout 2: the start shows the summary of INDEX.md in place of the line of zdroje/ (session-start, data-index.mjs).
+    if (source.from === 'materialy' && dataLayoutVersion(cfg.repo) === 2) continue;
     const m = manifest.sources?.[source.name];
     const at = m?.scanned_at ? m.scanned_at.slice(0, 10) : 'neznámy dátum';
     const result = scan?.sources?.find((s) => s.name === source.name);

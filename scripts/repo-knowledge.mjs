@@ -3,16 +3,73 @@
 // save (P-013), committed into the repo, never into the brain.
 import fs from 'node:fs';
 import path from 'node:path';
-import { git, gitRetry, readJson, toPosix, isInside } from './util.mjs';
+import { git, gitRetry, readJson, toPosix, isInside, listFiles } from './util.mjs';
 import { BRAIN_COMMIT_TAG, DOMAIN_MARKER, WORKTREES_DIR, WORKFLOW_CONFIG, brainScriptEnv, mainCheckout, resolveDomain, threadId } from './config.mjs';
 import { withBrainLock, readHolder } from './brain.mjs';
 import { checkBrainFile } from './brain-checks.mjs';
+import { LAYOUT, dataPath, dataRel, dataLayoutVersion, layoutFor } from './layout.mjs';
+import { readTopicRecord } from './topic-files.mjs';
+import { INDEX_FILE, refreshIndex, refreshDeployIgnores, formatDeployIgnores } from './data-index.mjs';
 
-/** Project knowledge folder in a repo (v3, D-0002): travels with the repo, never deployed. */
-export const PROJECT_KNOWLEDGE = 'agentic';
-/** Subfolders of `<repo>/agentic/` and the record kind each holds. */
-export const KNOWLEDGE_KINDS = { memory: 'memory', decisions: 'decision', runbooks: 'runbook', skills: 'skill', rules: 'rule' };
-export const REPO_HANDOVER = 'HANDOVER.md';
+/** Project knowledge folder in a repo (v3, D-0002): travels with the repo, never deployed. Layout 1; layout 2 is the repo root. */
+export const PROJECT_KNOWLEDGE = LAYOUT.projectKnowledge;
+const KIND_NAMES = { memory: 'memory', decisions: 'decision', runbooks: 'runbook', skills: 'skill', rules: 'rule' };
+/** Folders of a knowledge root in layout `version` (relative to it) and the record kind each holds (memoized). */
+const KINDS = new Map();
+export function knowledgeKindsFor(version = 1) {
+  if (!KINDS.has(version)) {
+    const L = layoutFor(version);
+    KINDS.set(version, Object.freeze(Object.fromEntries(Object.entries(KIND_NAMES).map(([n, kind]) => [L[n], kind]))));
+  }
+  return KINDS.get(version);
+}
+/** Subfolders of `<repo>/agentic/` and the record kind each holds (layout 1; knowledgeKinds(dir) per version). */
+export const KNOWLEDGE_KINDS = knowledgeKindsFor(1);
+export const REPO_HANDOVER = LAYOUT.repoHandover;
+/** Kinds and handover of the knowledge root `dir` (`<repo>/agentic` in layout 1, the repo itself in layout 2). */
+export const knowledgeKinds = (dir) => knowledgeKindsFor(dataLayoutVersion(dir));
+export const repoHandoverRel = (dir) => dataRel(dir, 'repoHandover');
+export const knowledgeLabel = (dir) => dataRel(dir, 'projectKnowledge') || '.';
+
+/** Kind of a path relative to a knowledge root (longest folder first), 'handover', or null. */
+export function knowledgeKindOf(version, rel) {
+  const r = String(rel).split('\\').join('/');
+  if (r === layoutFor(version).repoHandover) return 'handover';
+  const kinds = knowledgeKindsFor(version);
+  const sub = Object.keys(kinds).sort((a, b) => b.length - a.length).find((k) => r.startsWith(`${k}/`));
+  return sub ? { sub, kind: kinds[sub] } : null;
+}
+
+/**
+ * Markdown files of a knowledge root: [{ file, rel, kind }]. Layout 1: every .md under `<repo>/agentic/` (kind by its
+ * folder, else 'project'); layout 2: only the knowledge folders and the handover (the root is the repo with its code).
+ */
+export function knowledgeFiles(dir) {
+  const v = dataLayoutVersion(dir);
+  const md = (d) => listFiles(d, (x) => x.endsWith('.md'));
+  const files = v === 1 ? md(dir) : [...Object.keys(knowledgeKindsFor(v)).flatMap((sub) => md(path.join(dir, ...sub.split('/')))), dataPath(dir, 'repoHandover')].filter((f) => fs.existsSync(f));
+  return files.map((file) => {
+    const rel = path.relative(dir, file).split(path.sep).join('/');
+    const k = knowledgeKindOf(v, rel);
+    return { file, rel, kind: k === 'handover' ? 'handover' : k ? k.kind : 'project' };
+  });
+}
+
+/**
+ * The path is knowledge written only by save (P-013): layout 1 anything under `<repo>/agentic/`; layout 2 the workflow
+ * data of the repo (.brain/), its decisions and of a topic its record and handover (the rest is code and work files).
+ */
+export function knowledgeProtected(dir, abs) {
+  if (!isInside(dir, abs)) return false;
+  const v = dataLayoutVersion(dir);
+  if (v === 1) return true;
+  const L = layoutFor(v);
+  const rel = path.relative(dir, abs).split(path.sep).join('/');
+  const under = (p) => rel === p || rel.startsWith(`${p}/`);
+  if (under(L.policy.split('/')[0]) || under(L.decisions)) return true;
+  const parts = rel.split('/');
+  return parts.length === 3 && parts[0] === L.topics && [L.topicFile, L.handover].includes(parts[2]);
+}
 
 const hasChildDomain = (dir) => {
   try { return fs.readdirSync(dir, { withFileTypes: true }).some((e) => e.isDirectory() && fs.existsSync(path.join(dir, e.name, DOMAIN_MARKER))); } catch { return false; }
@@ -29,7 +86,7 @@ export function domainRepos(domain, brainDir = null) {
     if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
     const dir = path.join(domain.root, entry.name);
     if (brainDir && path.resolve(dir) === path.resolve(brainDir)) continue;
-    if (!fs.existsSync(path.join(dir, '.git')) && !fs.existsSync(path.join(dir, PROJECT_KNOWLEDGE))) continue;
+    if (!fs.existsSync(path.join(dir, '.git')) && !fs.existsSync(dataPath(dir, 'projectKnowledge'))) continue;
     if (hasChildDomain(dir)) continue;
     out.push({ name: entry.name, dir });
   }
@@ -49,7 +106,7 @@ export function repoWorktrees(domain, repo) {
 
 /** Knowledge folders of a repo: its main checkout first, then every topic worktree (topic: null for the main one). */
 export function knowledgeDirs(domain, repo) {
-  return [{ topic: null, dir: path.join(domain.root, repo, PROJECT_KNOWLEDGE) }, ...repoWorktrees(domain, repo).map((w) => ({ topic: w.topic, dir: path.join(w.dir, PROJECT_KNOWLEDGE) }))];
+  return [{ topic: null, dir: dataPath(path.join(domain.root, repo), 'projectKnowledge') }, ...repoWorktrees(domain, repo).map((w) => ({ topic: w.topic, dir: dataPath(w.dir, 'projectKnowledge') }))];
 }
 
 /**
@@ -67,10 +124,10 @@ export function sessionKnowledgeSources(ctx) {
     out.push({ repo, topic, dir });
   };
   const own = sessionRepo(ctx);
-  if (own) add(own, null, path.join(ctx.projectDir, PROJECT_KNOWLEDGE));
+  if (own) add(own, null, dataPath(ctx.projectDir, 'projectKnowledge'));
   for (const r of domainRepos(ctx.domain, ctx.brainDir)) {
     const w = heldRepoTopic(ctx, r.name);
-    if (w) add(r.name, w.topic, path.join(w.dir, PROJECT_KNOWLEDGE));
+    if (w) add(r.name, w.topic, dataPath(w.dir, 'projectKnowledge'));
   }
   return out;
 }
@@ -86,7 +143,7 @@ export function skillSources(ctx) {
   if (!ctx?.domain || sessionRepo(ctx)) return out;
   const seen = new Set(out.map((s) => s.repo));
   for (const r of domainRepos(ctx.domain, ctx.brainDir)) {
-    if (!seen.has(r.name)) out.push({ repo: r.name, topic: null, dir: path.join(r.dir, PROJECT_KNOWLEDGE) });
+    if (!seen.has(r.name)) out.push({ repo: r.name, topic: null, dir: dataPath(r.dir, 'projectKnowledge') });
   }
   return out;
 }
@@ -142,14 +199,15 @@ export function historyDecisionMax(cwd, dir) {
  * keeps its number), plus one (`<repo>/D-0001`).
  */
 export function nextRepoDecisionId(domain, repo) {
-  let max = historyDecisionMax(path.join(domain.root, repo), `${PROJECT_KNOWLEDGE}/decisions`);
+  const repoDir = path.join(domain.root, repo);
+  let max = historyDecisionMax(repoDir, dataRel(repoDir, 'projectKnowledge', dataRel(dataPath(repoDir, 'projectKnowledge'), 'decisions')));
   for (const { dir } of knowledgeDirs(domain, repo)) {
     let files = [];
-    try { files = fs.readdirSync(path.join(dir, 'decisions')); } catch { continue; }
+    try { files = fs.readdirSync(dataPath(dir, 'decisions')); } catch { continue; }
     for (const f of files) {
       const m = /^d-(\d+)/i.exec(f);
       if (m) max = Math.max(max, Number(m[1]));
-      const text = f.endsWith('.md') ? fs.readFileSync(path.join(dir, 'decisions', f), 'utf8') : '';
+      const text = f.endsWith('.md') ? fs.readFileSync(dataPath(dir, 'decisions', f), 'utf8') : '';
       const id = /^id:\s*D-(\d+)\s*$/m.exec(text);
       if (id) max = Math.max(max, Number(id[1]));
     }
@@ -172,7 +230,7 @@ export function knowledgeBranch(repoDir) {
 export function heldRepoTopic(ctx, repo) {
   if (!ctx.thread || !ctx.domain) return null;
   for (const w of repoWorktrees(ctx.domain, repo)) {
-    const topic = readJson(path.join(ctx.brainDir, 'topics', w.topic, 'topic.json'), null);
+    const topic = readTopicRecord(ctx.brainDir, w.topic);
     if (topic?.kind !== 'code') continue;
     if (readHolder(ctx.brainDir, w.topic)?.thread === ctx.thread) return w;
   }
@@ -191,22 +249,26 @@ function worktreeOf(repoDir, branch) {
 }
 
 /** Format checks of a knowledge file, the same as brain records (P-049, P-031, P-009, P-032), without the holder check. */
-export function checkKnowledgeFile(rel, content, policy) {
+export function checkKnowledgeFile(rel, content, policy, version = 1) {
   const errors = [];
   const r = toPosix(rel);
-  if (r.split('/').includes('..') || path.isAbsolute(r)) return [`${r}: path must be relative inside ${PROJECT_KNOWLEDGE}/`];
-  if (r === REPO_HANDOVER) {
+  const L = layoutFor(version);
+  const home = L.projectKnowledge ? `${L.projectKnowledge}/` : 'the repo';
+  if (r.split('/').includes('..') || path.isAbsolute(r)) return [`${r}: path must be relative inside ${home}`];
+  if (r === L.repoHandover) {
     if (content !== null && !String(content).trim()) errors.push(`${r}: empty handover`);
     const limit = policy?.limits?.repo_handover_lines ?? 150;
     const n = String(content ?? '').replace(/\n+$/, '').split('\n').length;
     if (content !== null && n > limit) errors.push(`${r}: ${n} lines, limit ${limit}; the repo handover keeps the current state, not history (P-011)`);
     return errors;
   }
-  const sub = r.split('/')[0];
-  if (!KNOWLEDGE_KINDS[sub]) return [`${r}: ${PROJECT_KNOWLEDGE}/ holds ${REPO_HANDOVER}, ${Object.keys(KNOWLEDGE_KINDS).join('/, ')}/ (D-0002)`];
+  const kinds = knowledgeKindsFor(version);
+  const k = knowledgeKindOf(version, r);
+  if (!k || k === 'handover') return [`${r}: ${home} holds ${L.repoHandover}, ${Object.keys(kinds).join('/, ')}/ (D-0002)`];
+  const sub = k.sub;
   // Skills of a repo are agentic only (operator skills stay in brain): checked as skills/agentic/<name>/SKILL.md.
-  const asBrain = sub === 'skills' ? r.replace(/^skills\//, 'skills/agentic/') : r;
-  return errors.concat(checkBrainFile(asBrain, content, { policy }).map((e) => e.replace(asBrain, r)));
+  const asBrain = sub === L.skills && r.length > sub.length ?[L.skills, 'agentic', r.slice(sub.length + 1)].join('/') : r;
+  return errors.concat(checkBrainFile(asBrain, content, { policy, version }).map((e) => e.replace(asBrain, r)));
 }
 
 /**
@@ -231,7 +293,8 @@ export function repoWrite(ctx, repoName, { ops: given, message, rewrite = null }
   const repo = repoByName(ctx.domain, repoName, ctx.brainDir);
   if (repoPublic(repo.dir)) throw new Error(`${repo.name} is public on GitHub ("visibility": "public" in ${repo.name}/${WORKFLOW_CONFIG}): its knowledge would be pushed publicly; save it into brain without --repo (a project-${repo.name} record needs no --brain), secrets into local/`);
   if (!message || !String(message).trim()) throw new Error('commit message required');
-  const errors = ops.flatMap((op) => checkKnowledgeFile(op.path, op.remove ? null : op.content, ctx.policy));
+  const version = dataLayoutVersion(repo.dir);
+  const errors = ops.flatMap((op) => checkKnowledgeFile(op.path, op.remove ? null : op.content, ctx.policy, version));
   if (errors.length) throw new Error(errors.join('\n'));
   return withBrainLock(repo.dir, () => {
     const topic = heldRepoTopic(ctx, repo.name);
@@ -251,17 +314,17 @@ export function repoWrite(ctx, repoName, { ops: given, message, rewrite = null }
         dir = temp;
       }
     }
-    let rels = ops.map((op) => `${PROJECT_KNOWLEDGE}/${toPosix(op.path)}`);
+    let rels = ops.map((op) => dataRel(dir, 'projectKnowledge', toPosix(op.path)));
     try {
       if (rewrite) {
-        const extra = rewrite(path.join(dir, PROJECT_KNOWLEDGE)).filter((op) => !ops.some((o) => toPosix(o.path) === toPosix(op.path)));
-        const bad = extra.flatMap((op) => checkKnowledgeFile(op.path, op.content, ctx.policy));
+        const extra = rewrite(dataPath(dir, 'projectKnowledge')).filter((op) => !ops.some((o) => toPosix(o.path) === toPosix(op.path)));
+        const bad = extra.flatMap((op) => checkKnowledgeFile(op.path, op.content, ctx.policy, version));
         if (bad.length) throw new Error(bad.join('\n'));
         ops = [...ops, ...extra];
-        rels = ops.map((op) => `${PROJECT_KNOWLEDGE}/${toPosix(op.path)}`);
+        rels = ops.map((op) => dataRel(dir, 'projectKnowledge', toPosix(op.path)));
       }
       const dirty = git(['status', '--porcelain', '--', ...rels], { cwd: dir });
-      if (dirty.ok && dirty.stdout.trim()) throw new Error(`${repo.name} (${branch}): uncommitted changes in ${dirty.stdout.trim().split('\n').map((l) => l.slice(3)).join(', ')}; only save writes ${PROJECT_KNOWLEDGE}/, settle them first (commit or restore)`);
+      if (dirty.ok && dirty.stdout.trim()) throw new Error(`${repo.name} (${branch}): uncommitted changes in ${dirty.stdout.trim().split('\n').map((l) => l.slice(3)).join(', ')}; only save writes ${knowledgeLabel(dir)}/, settle them first (commit or restore)`);
       for (const [i, op] of ops.entries()) {
         const file = path.join(dir, rels[i]);
         if (op.remove) fs.rmSync(file, { recursive: true, force: true });
@@ -270,8 +333,14 @@ export function repoWrite(ctx, repoName, { ops: given, message, rewrite = null }
       const env = brainScriptEnv();
       const add = gitRetry(['add', '-A', '--', ...rels], { cwd: dir, env });
       if (!add.ok) throw new Error(`git add failed: ${add.stderr.split('\n')[0]}`);
+      // Layout 2: INDEX.md of the staged files goes into the same commit.
+      if (refreshIndex(dir, env)) rels.push(INDEX_FILE);
+      // Deploy ignore files (.assetsignore ...) get the internal folders and INDEX.md in the same commit.
+      const deployIgnores = refreshDeployIgnores(dir, env);
+      const ignoreFiles = deployIgnores.map((x) => x.file);
+      rels.push(...ignoreFiles);
       const staged = git(['diff', '--cached', '--quiet', '--', ...rels], { cwd: dir });
-      const result = { committed: false, sha: null, repo: repo.name, branch, topic: topic?.topic || null, paths: rels.map((r) => `${repo.name}/${r}`) };
+      const result = { committed: false, sha: null, repo: repo.name, branch, topic: topic?.topic || null, paths: rels.filter((r) => r !== INDEX_FILE && !ignoreFiles.includes(r)).map((r) => `${repo.name}/${r}`), deployIgnores };
       if (staged.ok) return result;
       const commit = gitRetry(['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} ${message}`, '--', ...rels], { cwd: dir, env });
       if (!commit.ok) {
@@ -296,14 +365,15 @@ export function repoWrite(ctx, repoName, { ops: given, message, rewrite = null }
 
 export function formatRepoWrite(res) {
   const where = res.topic ? `topic ${res.topic} worktree, ${res.branch}: reaches the repo through done --topic` : `${res.branch}, not pushed`;
-  return `${res.committed ? 'written' : 'unchanged'}: ${res.paths.join(', ')}${res.sha ? ` (${res.repo} ${res.sha})` : ''} [${where}]`;
+  const ignores = formatDeployIgnores(res.deployIgnores);
+  return `${res.committed ? 'written' : 'unchanged'}: ${res.paths.join(', ')}${res.sha ? ` (${res.repo} ${res.sha})` : ''} [${where}]${ignores ? `\n${ignores}` : ''}`;
 }
 
 /** Absolute knowledge folder a path lies in (`<repo>/agentic/` of the domain or of a topic worktree), or null. */
 export function knowledgeDirOf(domain, brainDir, abs) {
   if (!domain?.root || !isInside(domain.root, abs)) return null;
   for (const r of domainRepos(domain, brainDir)) {
-    for (const k of knowledgeDirs(domain, r.name)) if (isInside(k.dir, abs)) return { repo: r.name, topic: k.topic, dir: k.dir };
+    for (const k of knowledgeDirs(domain, r.name)) if (knowledgeProtected(k.dir, abs)) return { repo: r.name, topic: k.topic, dir: k.dir };
   }
   return null;
 }

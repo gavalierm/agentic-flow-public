@@ -1,4 +1,5 @@
-// Materials of a topic in the project repo: `materialy/<téma>/` (git). The only code here is what is simple to enforce:
+// Sources of a topic in the project repo (`materialy/<téma>/` or `zdroje/<téma>/`, git) and the results of its work in the
+// topic home (topicHome: a brain in layout 2 temy/<téma>/, D-0056). The only code here is what is simple to enforce:
 // the size limit (a file over materialy_max_mb never goes to git, only a record of it) and the check of that limit.
 // Everything else (what is saved, where, shared materials) is the rule P-062 and the skill `materialy`.
 import crypto from 'node:crypto';
@@ -6,8 +7,12 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isInside, localTime } from './util.mjs';
+import { LAYOUT, dataPath, dataRel, dataLayoutVersion, layoutFor, workDirFor, workLabel, topicHome, topicWorkLabel, separateProject } from './layout.mjs';
 
-export const MATERIALY_DIR = 'materialy';
+// Layout 1; a message names the folder of the repository it is about (materialyDir(root)).
+export const MATERIALY_DIR = LAYOUT.materialy;
+/** Materials folder of a repository by its layout: materialy (1), zdroje (2). */
+export const materialyDir = (root) => dataRel(root, 'materialy');
 export const DEFAULT_MAX_MB = 50;
 const MB = 1024 * 1024;
 const TOPIC_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -16,11 +21,12 @@ export const maxBytes = (policy) => (Number.isFinite(policy?.limits?.materialy_m
 export const validTopic = (t) => typeof t === 'string' && TOPIC_RE.test(t) && t !== '.' && t !== '..';
 
 /** Deny reason for a Write of `bytes` into materialy/ of the project over the limit, else null. */
-export function bigWriteDeny(projectDir, policy, absTarget, bytes) {
-  if (!projectDir || !absTarget || !isInside(path.join(projectDir, MATERIALY_DIR), absTarget)) return null;
+export function bigWriteDeny(projectDir, policy, absTarget, bytes, brainDir = null) {
+  if (!projectDir || !absTarget || !isInside(dataPath(projectDir, 'materialy'), absTarget)) return null;
   const max = maxBytes(policy);
   if (bytes <= max) return null;
-  return `súbor ${(bytes / MB).toFixed(0)} MB je nad limitom ${max / MB} MB pre materialy/ (nejde do gitu): nechaj ho tam, odkiaľ prišiel, stiahnutý v scratch/, a v materialy/ nechaj iba záznam: node <plugin>/bin/materialy.mjs record <súbor> --from <odkiaľ>`;
+  const mat = materialyDir(projectDir);
+  return `súbor ${(bytes / MB).toFixed(0)} MB je nad limitom ${max / MB} MB pre ${mat}/ (nejde do gitu): nechaj ho tam, odkiaľ prišiel, stiahnutý v ${topicWorkLabel(brainDir, projectDir)}, a v ${mat}/ nechaj iba záznam: node <plugin>/bin/materialy.mjs record <súbor> --from <odkiaľ>`;
 }
 
 function sha256(file) {
@@ -37,12 +43,12 @@ function sha256(file) {
  * Record of a big file: materialy/<topic>/<name>.zaznam.json with from, date, size, sha256 and where the file lies.
  * The file itself is not touched or copied. Returns { file, record }.
  */
-export function recordBigFile(projectDir, topic, file, { from, now = new Date() } = {}) {
+export function recordBigFile(projectDir, topic, file, { from, now = new Date(), brainDir = null } = {}) {
   if (!validTopic(topic)) throw new Error(`neplatná téma: ${topic}`);
   const abs = path.resolve(file);
   const st = fs.statSync(abs);
   if (!st.isFile()) throw new Error(`nie je súbor: ${file}`);
-  if (isInside(path.join(projectDir, MATERIALY_DIR), abs)) throw new Error('súbor je už v materialy/: presuň ho mimo (stiahnutý do scratch/) a zaznamenaj až potom');
+  if (isInside(dataPath(projectDir, 'materialy'), abs)) throw new Error(`súbor je už v ${materialyDir(projectDir)}/: presuň ho mimo (stiahnutý do ${topicWorkLabel(brainDir, projectDir, topic)}) a zaznamenaj až potom`);
   const name = path.basename(abs);
   const record = {
     name,
@@ -52,15 +58,125 @@ export function recordBigFile(projectDir, topic, file, { from, now = new Date() 
     sha256: sha256(abs),
     stored_at: path.relative(projectDir, abs).startsWith('..') ? abs : path.relative(projectDir, abs).split(path.sep).join('/'),
   };
-  const out = path.join(projectDir, MATERIALY_DIR, topic, `${name}.zaznam.json`);
+  const out = dataPath(projectDir, 'materialy', topic, `${name}.zaznam.json`);
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, JSON.stringify(record, null, 2) + '\n');
   return { file: out, record };
 }
 
+/**
+ * Write op of a source added through the workflow (materialy.mjs add): a file outside the sources is copied to
+ * <sources>/<topic>/<name>, a file already inside the sources stays where it is. Over the size limit it belongs to
+ * `record` (outside git). Returns { rel (posix, relative to the repo), content (Buffer), date }.
+ */
+export function sourceAddOp(projectDir, topic, file, { name = null, policy = {}, now = new Date() } = {}) {
+  if (!validTopic(topic)) throw new Error(`neplatná téma: ${topic}`);
+  const abs = path.resolve(file);
+  let st;
+  try { st = fs.statSync(abs); } catch { throw new Error(`súbor neexistuje: ${file}`); }
+  if (!st.isFile()) throw new Error(`nie je súbor: ${file}`);
+  const max = maxBytes(policy);
+  if (st.size > max) throw new Error(`súbor ${(st.size / MB).toFixed(0)} MB je nad limitom ${max / MB} MB (nejde do gitu): zaznamenaj ho cez materialy.mjs record <súbor> --from <odkiaľ>`);
+  const root = dataPath(projectDir, 'materialy');
+  const inSources = isInside(root, abs);
+  if (name !== null && !validSubpath(name)) throw new Error(`neplatné meno: ${name} (meno alebo podcesta a/b bez .. a lomky na začiatku)`);
+  const target = inSources ? abs : path.join(root, topic, ...(name || path.basename(abs)).split('/'));
+  if (!inSources && fs.existsSync(target)) throw new Error(`${path.relative(projectDir, target).split(path.sep).join('/')} už existuje: zdroj sa nemení, zvoľ iné meno (--as <meno>)`);
+  return { rel: path.relative(projectDir, target).split(path.sep).join('/'), content: fs.readFileSync(abs), date: now.toISOString().slice(0, 10) };
+}
+
+/** A name or a subpath (a/b/c) of a source: no empty part, no `.` or `..`, no backslash, not absolute. */
+const validSubpath = (name) => typeof name === 'string' && !!name && !name.includes('\\') && name.split('/').every((p) => p && p !== '.' && p !== '..');
+
+/**
+ * Name of a path part by the rule of names (P-049: english lowercase, no diacritics, no spaces): diacritics removed,
+ * lowercase, every run of spaces and characters other than a-z 0-9 . _ - becomes one `-`.
+ */
+export function normalizeName(part) {
+  const s = part.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return s || 'subor';
+}
+
+/**
+ * Write ops of a folder added as sources (materialy.mjs add <folder>): every file under it to
+ * <sources>/<topic>/<name>/<path> (name: --as, may be a subpath, else the normalized folder name), each path part
+ * normalized by the rule of names; the mapping lists the files whose path changed. Refused as a whole (nothing written)
+ * for a nested repository, a symlink, a file over the limit, a target that exists or two files on one target.
+ * Returns { ops: [{ rel, content }], mapping: [[from, to]], date }.
+ */
+export function sourceAddDirOps(projectDir, topic, dir, { name = null, policy = {}, now = new Date() } = {}) {
+  if (!validTopic(topic)) throw new Error(`neplatná téma: ${topic}`);
+  const abs = path.resolve(dir);
+  const root = dataPath(projectDir, 'materialy');
+  if (isInside(root, abs)) throw new Error(`${dir} je už v zdrojoch: priečinok zo zdrojov sa nepridáva znova`);
+  if (name !== null && !validSubpath(name)) throw new Error(`neplatné meno: ${name} (meno alebo podcesta a/b bez .. a lomky na začiatku)`);
+  const max = maxBytes(policy);
+  const base = name ? name.split('/') : [normalizeName(path.basename(abs))];
+  const files = [];
+  const problems = [];
+  const walk = (d, rel) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isSymbolicLink()) problems.push(`${r}: symbolický odkaz`);
+      else if (e.isDirectory()) { if (e.name === '.git') problems.push(`${r}: vnorené repo gitu`); else walk(path.join(d, e.name), r); }
+      else if (e.isFile()) files.push(r);
+    }
+  };
+  walk(abs, '');
+  if (!files.length) throw new Error(`${dir}: priečinok bez súborov`);
+  const ops = [];
+  const mapping = [];
+  const seen = new Map();
+  for (const r of files) {
+    const st = fs.statSync(path.join(abs, r));
+    if (st.size > max) { problems.push(`${r}: ${(st.size / MB).toFixed(0)} MB nad limitom ${max / MB} MB (materialy.mjs record)`); continue; }
+    const parts = r.split('/').map(normalizeName);
+    const target = path.join(root, topic, ...base, ...parts);
+    const rel = path.relative(projectDir, target).split(path.sep).join('/');
+    if (seen.has(rel)) { problems.push(`${r} a ${seen.get(rel)}: rovnaké meno ${rel}`); continue; }
+    seen.set(rel, r);
+    if (fs.existsSync(target)) { problems.push(`${rel} už existuje`); continue; }
+    if (parts.join('/') !== r) mapping.push([r, parts.join('/')]);
+    ops.push({ rel, content: fs.readFileSync(path.join(abs, r)) });
+  }
+  if (problems.length) throw new Error(`priečinok ${dir} sa nepridal (nič sa nezapísalo):\n  ${problems.join('\n  ')}`);
+  return { ops, mapping, date: now.toISOString().slice(0, 10) };
+}
+
+/**
+ * Write op of a result of a topic's work (materialy.mjs add --result, D-0056): into the work of the topic in its topic home
+ * `home` (topicHome): layout 2 temy/<topic>/<name>, layout 1 materialy/<topic>/<name> (results lie with the sources there).
+ * The topic record, the handover and tmp/ are not a name of a result; an existing file is overwritten only with `replace`
+ * (a new version of the same result, the old one stays in git history), never in layout 1, where results lie with sources.
+ * Returns { rel (posix, relative to `home`), content (Buffer) }.
+ */
+export function resultAddOp(home, topic, file, { name = null, policy = {}, replace = false } = {}) {
+  if (dataLayoutVersion(home) === 1) {
+    if (replace) throw new Error('--replace: iba v tvare dát 2 (v tvare 1 ležia výsledky pri zdrojoch, tie sa nemenia); zvoľ iné meno (--as <meno>)');
+    return sourceAddOp(home, topic, file, { name, policy });
+  }
+  if (!validTopic(topic)) throw new Error(`neplatná téma: ${topic}`);
+  const abs = path.resolve(file);
+  let st;
+  try { st = fs.statSync(abs); } catch { throw new Error(`súbor neexistuje: ${file}`); }
+  if (!st.isFile()) throw new Error(`nie je súbor: ${file}`);
+  const max = maxBytes(policy);
+  if (st.size > max) throw new Error(`súbor ${(st.size / MB).toFixed(0)} MB je nad limitom ${max / MB} MB (nejde do gitu): nechaj ho v pracovných súboroch témy`);
+  if (name !== null && (!name || name.includes('/') || name.includes('\\') || name === '.' || name === '..')) throw new Error(`neplatné meno: ${name}`);
+  const L = layoutFor(dataLayoutVersion(home));
+  const base = name || path.basename(abs);
+  if ([L.topicFile, L.handover, L.topicTmp].includes(base)) throw new Error(`${base}: meno patrí workflow témy, zvoľ iné (--as <meno>)`);
+  const target = dataPath(home, 'topics', topic, base);
+  if (fs.existsSync(target)) {
+    if (!replace) throw new Error(`${dataRel(home, 'topics', topic, base)} už existuje: novú verziu toho istého výsledku zapíš s --replace (stará ostane v histórii gitu), iný výsledok pod iným menom (--as <meno>)`);
+    if (!fs.statSync(target).isFile()) throw new Error(`${dataRel(home, 'topics', topic, base)} nie je súbor: --replace prepíše iba súbor výsledku`);
+  }
+  return { rel: dataRel(home, 'topics', topic, base), content: fs.readFileSync(abs) };
+}
+
 /** Files in materialy/ over the limit: [{ path (relative to the project), size }]. Symlinks and .git are skipped. */
 export function oversized(projectDir, policy) {
-  const root = path.join(projectDir, MATERIALY_DIR);
+  const root = dataPath(projectDir, 'materialy');
   const max = maxBytes(policy);
   const found = [];
   const walk = (dir) => {
@@ -81,11 +197,12 @@ export function oversized(projectDir, policy) {
 const SCRATCH_SKIP = new Set(['.git', 'node_modules', '.cache', '__pycache__']);
 
 /**
- * Files in <project>/scratch/ changed since `sinceMs`: { count, files } (newest first, relative to the project). A
- * directory with its own .git (a clone) is skipped, its work lives in that repo. The walk stops after `budget` entries.
- * scratch/ is not in git (P-052): inputs and results left there were lost (operator 2026-11-08); done reminds of them.
+ * Files in the work files of a topic changed since `sinceMs`: { count, files } (newest first, relative to `projectDir`,
+ * the repository that holds them: the topic home, topicHome). A directory with its own .git (a clone) is skipped, its work
+ * lives in that repo. The walk stops after `budget` entries. Work files are not in git (P-052): inputs and results left
+ * there were lost (operator 2026-11-08); done reminds of them.
  */
-export function scratchSince(projectDir, sinceMs, { budget = 5000 } = {}) {
+export function scratchSince(projectDir, sinceMs, { budget = 5000, topic = null } = {}) {
   const found = [];
   let seen = 0;
   const walk = (dir) => {
@@ -102,23 +219,45 @@ export function scratchSince(projectDir, sinceMs, { budget = 5000 } = {}) {
       }
     }
   };
-  const root = path.join(projectDir, 'scratch');
+  // Layout 2: the work files of the topic (temy/<topic>/tmp, outside git).
+  const root = workDirFor(projectDir, topic);
   walk(root);
   found.sort((a, b) => b.m - a.m);
   return { count: found.length, files: found.map((f) => f.path) };
 }
 
-/** One reminder line for done, or null: files changed in scratch/ since the topic was taken or last closed (P-062). */
-export function scratchReminder(projectDir, sinceMs, topic) {
+/**
+ * Where the results of a topic's work go (D-0056), as a message names it: the topic home in layout 1 `materialy/<topic>/`
+ * (with the sources), in layout 2 `temy/<topic>/` of the topic home (`brain temy/<topic>/` for a brain beside the project).
+ */
+export function topicResultsLabel(brainDir, projectDir, topic = null) {
+  const home = topicHome(brainDir, projectDir);
+  const t = topic || '<téma>';
+  if (!home || dataLayoutVersion(home) === 1) return `${materialyDir(home || projectDir)}/${t}/`;
+  const inBrain = separateProject(brainDir, projectDir) && path.resolve(home) === path.resolve(brainDir);
+  return `${inBrain ? 'brain ' : ''}${dataRel(home, 'topics', t)}/`;
+}
+
+/**
+ * One reminder line for done, or null: work files of the topic changed since the topic was taken or last closed (P-062).
+ * The work files are in the topic home (topicHome(brainDir, projectDir)): a brain in layout 2 holds them in temy/<topic>/tmp.
+ */
+export function scratchReminder(projectDir, sinceMs, topic, brainDir = null) {
   if (!projectDir || !Number.isFinite(sinceMs)) return null;
-  const { count, files } = scratchSince(projectDir, sinceMs);
+  const home = topicHome(brainDir, projectDir);
+  const { count, files } = scratchSince(home, sinceMs, { topic });
   if (!count) return null;
   const shown = files.slice(0, 5).join(', ') + (count > 5 ? `, … (+${count - 5})` : '');
-  return `scratch: ${count} file(s) changed since ${localTime(sinceMs)} are only in scratch/ (not in git): ${shown}. Inputs from outside and results of work move now to materialy/${topic || '<téma>'}/ (skill workflow:materialy), procedures to a skill; intermediate results stay (P-062, P-052)`;
+  const sources = `${materialyDir(projectDir)}/${topic || '<téma>'}/`;
+  const results = topicResultsLabel(brainDir, projectDir, topic);
+  const move = results === sources
+    ? `Inputs from outside and results of work move now to ${sources} (skill workflow:materialy)`
+    : `Inputs from outside move now to ${sources}${separateProject(brainDir, projectDir) ? ' of the project repo' : ''} (materialy.mjs add), results of work to ${results} (materialy.mjs add --result; skill workflow:materialy)`;
+  return `scratch: ${count} file(s) changed since ${localTime(sinceMs)} are only in ${topicWorkLabel(brainDir, projectDir, topic)} (not in git): ${shown}. ${move}, procedures to a skill; intermediate results stay (P-062, P-052)`;
 }
 
 // D-0032 (knowledge point 4): a worker result lived only in the conversation; the hook keeps it with the topic.
-export const RESULTS_FILE = 'results.md';
+export const RESULTS_FILE = LAYOUT.results;
 
 /** The first line of the worker task: the first non-empty, non-heading line of the first user message of its transcript. */
 export function workerTaskLine(file) {
@@ -144,15 +283,31 @@ export function resultEntry({ at, agent, task, result }) {
   return `\n## ${at} ${agent}${task ? ` – ${task.replace(/\s+/g, ' ')}` : ''}\n\n${String(result || '').trim()}\n`;
 }
 
-const SCRATCH_REF = /(?:^|[\s`'"(])((?:\/[^\s`'")]+\/)?scratch\/[^\s`'"),;]+)/g;
+const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Work file paths in a text, by layout (memoized): layout 1 `scratch/...`, layout 2 `temy/<topic>/tmp/...`.
+const SCRATCH_REFS = new Map();
+function scratchRef(version) {
+  if (!SCRATCH_REFS.has(version)) {
+    const L = layoutFor(version);
+    const dir = version === 1 ? esc(L.scratch) : `${esc(L.topics)}\\/[^/\\s\`'")]+\\/${esc(L.topicTmp)}`;
+    SCRATCH_REFS.set(version, new RegExp(`(?:^|[\\s\`'"(])((?:\\/[^\\s\`'")]+\\/)?${dir}\\/[^\\s\`'"),;]+)`, 'g'));
+  }
+  return SCRATCH_REFS.get(version);
+}
 
-/** scratch/ paths cited in a results.md text that still exist under the project (only there, not in git): relative paths. */
+/**
+ * Work file paths cited in a results.md text that still exist under `projectDir` (only there, not in git): relative paths.
+ * `projectDir` is the repository of the work files, the topic home (topicHome): a brain in layout 2 beside the project.
+ */
 export function citedScratch(projectDir, text) {
   const seen = new Set();
-  for (const m of String(text || '').matchAll(SCRATCH_REF)) {
+  const v = dataLayoutVersion(projectDir);
+  for (const m of String(text || '').matchAll(scratchRef(v))) {
     let p = m[1].replace(/[.:]+$/, '');
-    if (path.isAbsolute(p)) { if (!isInside(path.join(projectDir, 'scratch'), p)) continue; p = path.relative(projectDir, p); }
-    if (!p.startsWith('scratch/') || p === 'scratch/') continue;
+    const inWork = (abs) => (v === 1 ? isInside(dataPath(projectDir, 'scratch'), abs) : isInside(dataPath(projectDir, 'topics'), abs) && path.relative(dataPath(projectDir, 'topics'), abs).split(path.sep)[1] === layoutFor(v).topicTmp);
+    if (path.isAbsolute(p)) { if (!inWork(p)) continue; p = path.relative(projectDir, p); }
+    const under = v === 1 ? dataRel(projectDir, 'scratch', '') : `${dataRel(projectDir, 'topics')}/`;
+    if (!p.startsWith(under) || p === under || !inWork(path.join(projectDir, p))) continue;
     if (fs.existsSync(path.join(projectDir, p))) seen.add(p.split(path.sep).join('/'));
   }
   return [...seen];
@@ -160,7 +315,7 @@ export function citedScratch(projectDir, text) {
 
 /** Untracked files under docs/ and materialy/ of a git repo (content not in git): relative paths, [] when clean or no git. */
 export function untrackedKnowledge(dir) {
-  const r = spawnSync('git', ['status', '--porcelain', '--untracked-files=all', '--', 'docs', 'materialy'], { cwd: dir, encoding: 'utf8' });
+  const r = spawnSync('git', ['status', '--porcelain', '--untracked-files=all', '--', dataRel(dir, 'docs'), dataRel(dir, 'materialy')], { cwd: dir, encoding: 'utf8' });
   if (r.status !== 0) return [];
   return r.stdout.split('\n').filter((l) => l.startsWith('?? ')).map((l) => l.slice(3).replace(/^"|"$/g, ''));
 }

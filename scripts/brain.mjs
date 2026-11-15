@@ -4,6 +4,9 @@ import path from 'node:path';
 import { git, gitRetry, gitRemote, remoteDiagnosis, readJson, toPosix, PLUGIN_ROOT } from './util.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv, inSubagent, machineName, sameMachine } from './config.mjs';
 import { checkBrainFile } from './brain-checks.mjs';
+import { dataRel, dataLayoutVersion, layoutFor } from './layout.mjs';
+import { readHolderRecord, mergeTopicOps, splitTema } from './topic-files.mjs';
+import { INDEX_FILE, hasDataIndex, refreshIndex, commitIndexAfterMerge, indexWriteError, refreshDeployIgnores, formatDeployIgnores } from './data-index.mjs';
 
 /**
  * Serializes brain mutations of all processes on this machine that share one brain clone (several threads of one
@@ -51,8 +54,37 @@ export function withBrainLock(brainDir, fn) {
   }
 }
 
-/** Files that may change on both sides without being a disagreement (P-037, P-030). */
-export const SYNC_EXCEPTIONS = [/^topics\/[^/]+\/holder\.json$/, /^logs\/[^/]+\.log$/, /^logs\/[^/]+\/[^/]+\.log$/];
+/** Regex source of a literal path part (the map in layout.mjs), for the brain path patterns below. */
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/**
+ * Brain path patterns of one layout version (memoized). Layout 1: holder.json beside topic.json; layout 2: one .tema.json
+ * is the topic file and carries the holder, so there is no separate holder file pattern (holderFile null).
+ */
+const PATTERNS = new Map();
+export function patternsFor(version = 1) {
+  if (PATTERNS.has(version)) return PATTERNS.get(version);
+  const L = layoutFor(version);
+  const topics = esc(L.topics);
+  const logs = esc(L.logs);
+  const holderFile = L.holderFile === L.topicFile ? null : new RegExp(`^${topics}/([^/]+)/${esc(L.holderFile)}$`);
+  const p = {
+    oneFile: !holderFile,
+    topics: L.topics,
+    archive: L.topicArchive,
+    topicPath: new RegExp(`^${topics}/([^/]+)/(.+)$`),
+    holderFile,
+    handoverFile: new RegExp(`^${topics}/([^/]+)/${esc(L.handover)}$`),
+    topicFile: new RegExp(`^${topics}/([^/]+)/${esc(L.topicFile)}$`),
+    // Files that may change on both sides without being a disagreement (P-037, P-030).
+    syncExceptions: [holderFile, new RegExp(`^${logs}/[^/]+\\.log$`), new RegExp(`^${logs}/[^/]+/[^/]+\\.log$`)].filter(Boolean),
+  };
+  PATTERNS.set(version, p);
+  return p;
+}
+const patternsOf = (brainDir) => patternsFor(dataLayoutVersion(brainDir));
+
+/** Files that may change on both sides without being a disagreement (P-037, P-030), layout 1; patternsFor(v) per version. */
+export const SYNC_EXCEPTIONS = patternsFor(1).syncExceptions;
 
 export function currentBranch(brainDir) {
   const res = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: brainDir });
@@ -84,13 +116,9 @@ export function unpushedCount(brainDir) {
   return res.ok ? Number(res.stdout) : 0;
 }
 
-function isException(file) {
-  return SYNC_EXCEPTIONS.some((re) => re.test(file));
+function isException(file, P) {
+  return P.syncExceptions.some((re) => re.test(file));
 }
-
-const HOLDER_FILE = /^topics\/([^/]+)\/holder\.json$/;
-const HANDOVER_FILE = /^topics\/([^/]+)\/handover\.md$/;
-const TOPIC_FILE = /^topics\/([^/]+)\/topic\.json$/;
 
 /**
  * topic.json changed on two machines (state, updated, paused_until): field by field against the common base, the side
@@ -130,24 +158,37 @@ function resolveConflict(brainDir, file, how) {
     return git(['add', '--', file], { cwd: brainDir }).ok;
   };
   let m;
+  const P = patternsOf(brainDir);
   if (how === 'remote' || how === 'local') {
     return take(how === 'remote' ? 2 : 3) ? `${file}: ${how === 'remote' ? "origin's" : "this machine's"} version kept (brain.mjs resolve)` : null;
   }
-  if ((m = HOLDER_FILE.exec(file))) {
+  const holderNote = (id, local, remote) => `topic ${id}: holder changed on origin, origin's holder kept: ${holderLabel(remote)}${local.thread && local.thread !== remote.thread ? ` (this machine had ${holderLabel(local)})` : ''} (P-037)`;
+  if (P.holderFile && (m = P.holderFile.exec(file))) {
     const local = parseJson(stage(3).stdout);
     const remote = parseJson(stage(2).stdout);
     if (!take(2)) return null;
-    return `topic ${m[1]}: holder changed on origin, origin's holder kept: ${holderLabel(remote)}${local.thread && local.thread !== remote.thread ? ` (this machine had ${holderLabel(local)})` : ''} (P-037)`;
+    return holderNote(m[1], local, remote);
   }
-  if ((m = TOPIC_FILE.exec(file))) {
+  if ((m = P.topicFile.exec(file))) {
     const [base, remote, local] = [1, 2, 3].map((n) => stage(n));
     if (!remote.ok || !local.ok) return null;
-    const { merged, clash } = mergeTopicJson(parseJson(base.stdout), parseJson(remote.stdout), parseJson(local.stdout));
-    fs.writeFileSync(path.join(brainDir, file), JSON.stringify(merged, null, 2) + '\n');
+    // Layout 2: .tema.json carries the holder; the topic fields merge as topic.json, the holder is origin's (a claim pushed
+    // first stands) and a new holder is reported as for holder.json.
+    const [b, r, l] = [base, remote, local].map((s) => (P.oneFile ? splitTema(parseJson(s.stdout)) : { topic: parseJson(s.stdout), holder: null }));
+    const { merged, clash } = mergeTopicJson(b.topic, r.topic, l.topic);
+    fs.writeFileSync(path.join(brainDir, file), JSON.stringify(P.oneFile ? { ...merged, holder: r.holder } : merged, null, 2) + '\n');
     if (!git(['add', '--', file], { cwd: brainDir }).ok) return null;
-    return clash.length ? `topic ${m[1]}: topic.json changed on two machines; merged, origin's value kept for ${clash.join(', ')} (P-040)` : '';
+    const notes = [];
+    if (clash.length) notes.push(`topic ${m[1]}: ${path.posix.basename(file)} changed on two machines; merged, origin's value kept for ${clash.join(', ')} (P-040)`);
+    if (P.oneFile && JSON.stringify(r.holder) !== JSON.stringify(l.holder) && JSON.stringify(r.holder) !== JSON.stringify(b.holder)) notes.push(holderNote(m[1], l.holder, r.holder));
+    return notes.join('\n');
   }
-  if ((m = HANDOVER_FILE.exec(file))) {
+  // Layout 2: INDEX.md is not merged by lines; it is written again from the files of the commit (resolved before it).
+  if (file === INDEX_FILE && hasDataIndex(brainDir)) {
+    refreshIndex(brainDir, brainScriptEnv());
+    return '';
+  }
+  if ((m = P.handoverFile.exec(file))) {
     const remote = stage(2).stdout;
     const local = stage(3).stdout;
     const merged = `${remote.trimEnd()}\n\n<!-- handover conflict: origin's version above, this machine's version (${machineName()}) below; the holder merges them into one handover (P-026) -->\n\n${local.trimEnd()}\n`;
@@ -191,7 +232,8 @@ function brainSyncUnlocked(brainDir, { attempts = 3, resolutions = {} } = {}) {
         const remoteChanged = git(['diff', '--name-only', base, remoteHead], { cwd: brainDir }).stdout.split('\n').filter(Boolean);
         // The same change made on two machines (e.g. one template migration) is no disagreement; a handover and a file
         // with a chosen side are settled in the rebase.
-        const settled = (f) => isException(f) || HANDOVER_FILE.test(f) || TOPIC_FILE.test(f) || resolutions[f];
+        const P = patternsOf(brainDir);
+        const settled = (f) => isException(f, P) || P.handoverFile.test(f) || P.topicFile.test(f) || resolutions[f] || (f === INDEX_FILE && hasDataIndex(brainDir));
         const both = localChanged.filter((f) => remoteChanged.includes(f) && !settled(f) && !git(['diff', '--quiet', 'HEAD', remoteHead, '--', f], { cwd: brainDir }).ok);
         if (both.length) {
           result.conflict = both;
@@ -208,7 +250,9 @@ function brainSyncUnlocked(brainDir, { attempts = 3, resolutions = {} } = {}) {
         const env = { ...brainScriptEnv(), GIT_EDITOR: 'true' };
         let rebase = gitRetry(['rebase', '--quiet', `origin/${branch}`], { cwd: brainDir, env });
         for (let step = 0; !rebase.ok && step < 100; step++) {
-          const unmerged = git(['diff', '--name-only', '--diff-filter=U'], { cwd: brainDir }).stdout.split('\n').filter(Boolean);
+          // INDEX.md last: it is generated from the other files of the commit once they are resolved.
+          const unmerged = git(['diff', '--name-only', '--diff-filter=U'], { cwd: brainDir }).stdout.split('\n').filter(Boolean)
+            .sort((a, b) => (a === INDEX_FILE) - (b === INDEX_FILE));
           const notes = unmerged.map((f) => resolveConflict(brainDir, f, resolutions[f]));
           if (!unmerged.length || notes.some((n) => n === null)) {
             git(['rebase', '--abort'], { cwd: brainDir });
@@ -232,6 +276,9 @@ function brainSyncUnlocked(brainDir, { attempts = 3, resolutions = {} } = {}) {
           result.unpushed = unpushedCount(brainDir);
           return result;
         }
+        // A rebase that merged INDEX.md by lines without a conflict: written again from the merged files.
+        try { commitIndexAfterMerge(brainDir, { env, message: `${BRAIN_COMMIT_TAG} regenerate ${INDEX_FILE} after sync` }); }
+        catch (err) { result.notices.push(`${INDEX_FILE} not regenerated after the sync: ${err.message}`); }
       }
     }
     if (unpushedCount(brainDir) === 0 && remoteRef.ok) {
@@ -315,20 +362,22 @@ function firstLine(s) {
 }
 
 export function readHolder(brainDir, topicId) {
-  return readJson(path.join(brainDir, 'topics', topicId, 'holder.json'), {}) || {};
+  return readHolderRecord(brainDir, topicId);
 }
 
-export function topicOfPath(rel) {
-  const m = /^topics\/([^/]+)\/(.+)$/.exec(rel);
-  if (!m || m[1] === 'archive') return null;
+/** Topic a brain-relative path lies in (topics/<id>/...; not the archive of layout 1), by the layout of brainDir. */
+export function topicOfPath(rel, brainDir = null) {
+  const P = patternsOf(brainDir);
+  const m = P.topicPath.exec(rel);
+  if (!m || (P.archive && `${P.topics}/${m[1]}` === P.archive)) return null;
   return m[1];
 }
 
 /** Holder check for writes into topics/<id>/ (P-037, P-040 item 5). */
 export function checkHolder(brainDir, rel, thread) {
-  const topic = topicOfPath(rel);
+  const topic = topicOfPath(rel, brainDir);
   if (!topic) return null;
-  if (!thread) return `write into topics/${topic}/ requires a stable thread id (P-038)`;
+  if (!thread) return `write into ${dataRel(brainDir, 'topics', topic)}/ requires a stable thread id (P-038)`;
   const holder = readHolder(brainDir, topic);
   if (!holder.thread) return `topic ${topic} has no holder; claim it first (P-037)`;
   if (holder.thread !== thread) return `topic ${topic} held by thread ${holder.thread}; this thread (${thread}) is not the holder (P-037)`;
@@ -343,7 +392,7 @@ export function isHolderOf(holder, thread) {
 
 /** Holder decisions need the latest remote state (P-037): fetch first, then read holder.json. */
 export function syncAndCheckHolder(brainDir, rel, thread) {
-  if (topicOfPath(rel) && hasRemote(brainDir)) brainSync(brainDir);
+  if (topicOfPath(rel, brainDir) && hasRemote(brainDir)) brainSync(brainDir);
   return checkHolder(brainDir, rel, thread);
 }
 
@@ -398,19 +447,23 @@ function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, 
   const errors = [];
   const touched = [];
   const rels = ops.flatMap((op) => (op.from ? [op.from, op.to] : [op.path])).map((t) => toPosix(t).replace(/^\.\//, ''));
-  if (!internal && !presynced && rels.some((r) => topicOfPath(r)) && hasRemote(brainDir)) brainSync(brainDir);
+  if (!internal && !presynced && rels.some((r) => topicOfPath(r, brainDir)) && hasRemote(brainDir)) brainSync(brainDir);
+  // Layout 2: a topic op and a holder op of one .tema.json become one write, merged with the file as it is now (after the sync).
+  ops = mergeTopicOps(brainDir, ops);
   for (const op of ops) {
     const targets = op.from ? [op.from, op.to] : [op.path];
     for (const t of targets) {
       const rel = toPosix(t).replace(/^\.\//, '');
       if (rel.split('/').includes('..') || path.isAbsolute(rel)) errors.push(`${rel}: path must be relative inside brain`);
+      const indexError = indexWriteError(brainDir, rel);
+      if (indexError) errors.push(indexError);
       if (!internal) {
         const holderError = checkHolder(brainDir, rel, thread);
         if (holderError) errors.push(holderError);
       }
       // Removing or moving away a file that breaks the path rules (an older setup) fixes it; check only what stays.
       const leaving = op.remove || op.from === t;
-      errors.push(...checkBrainFile(rel, leaving ? null : op.content ?? op.append ?? null, { policy }).filter((e) => !leaving || !e.includes('(P-049)')));
+      errors.push(...checkBrainFile(rel, leaving ? null : op.content ?? op.append ?? null, { policy, version: dataLayoutVersion(brainDir) }).filter((e) => !leaving || !e.includes('(P-049)')));
     }
   }
   if (errors.length) throw new Error(errors.join('\n'));
@@ -447,8 +500,17 @@ function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, 
     restore();
     throw new Error(`git add failed: ${firstLine(add.stderr)}`);
   }
+  // Layout 2: INDEX.md of the staged files goes into the same commit.
+  // Deploy ignore files of the repository (.assetsignore ...) get the internal folders and INDEX.md in the same commit.
+  let deployIgnores = [];
+  try {
+    if (refreshIndex(brainDir, env)) touched.push(INDEX_FILE);
+    deployIgnores = refreshDeployIgnores(brainDir, env);
+    touched.push(...deployIgnores.map((x) => x.file));
+  } catch (err) { restore(); throw err; }
   const staged = git(['diff', '--cached', '--quiet'], { cwd: brainDir });
-  const result = { committed: false, sha: null, sync: null, unpushed: unpushedCount(brainDir), warnings: [] };
+  const result = { committed: false, sha: null, sync: null, unpushed: unpushedCount(brainDir), warnings: [], deployIgnores };
+  if (deployIgnores.length) result.warnings.push(formatDeployIgnores(deployIgnores));
   if (!staged.ok) {
     const commit = gitRetry(['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} ${message}`], { cwd: brainDir, env });
     if (!commit.ok) {

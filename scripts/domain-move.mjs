@@ -14,10 +14,13 @@ import { spawnSync } from 'node:child_process';
 import { PLUGIN_ROOT, toPosix, isInside } from './util.mjs';
 import { DOMAIN_MARKER, WORKFLOW_CONFIG, machineRoot } from './config.mjs';
 import { claudeConfigFile } from './t3-setup.mjs';
+import { LAYOUT, dataPath, layoutFor } from './layout.mjs';
 
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.worktrees', 'scratch', 'local']);
-// Logs, decisions and reports record what happened at the old path; they stay as written.
-const KEEP_AS_WRITTEN = [':!logs', ':!decisions', ':!docs/ai-news/reports'];
+// Layout 2 (D-0048): the workflow data (.brain) and the topics with their work files (temy) hold no project either.
+const L2 = layoutFor(2);
+const SKIP_DIRS = new Set(['.git', 'node_modules', '.worktrees', LAYOUT.scratch, LAYOUT.local, L2.policy.split('/')[0], L2.topics]);
+// Logs, decisions and reports record what happened at the old path; they stay as written (the brain in either layout).
+const KEEP_AS_WRITTEN = [':!logs', ':!decisions', ':!docs/ai-news/reports', `:!${L2.logs}`, `:!${L2.decisions}`];
 
 /** The folder name Claude Code keeps the history of a project in (~/.claude/projects/<name>). */
 export const historyName = (dir) => path.resolve(dir).replace(/[^A-Za-z0-9]/g, '-');
@@ -98,7 +101,7 @@ function rewriteBrain(project, brain, src, dest, home, env) {
 /** Entries of domain.allow_outside that name the old root or the old domain: the operator decides about them. */
 function oldAllowOutside(brain, src, home) {
   let policy = {};
-  try { policy = JSON.parse(fs.readFileSync(path.join(brain, 'policy.json'), 'utf8')); } catch { return []; }
+  try { policy = JSON.parse(fs.readFileSync(dataPath(brain, 'policy'), 'utf8')); } catch { return []; }
   const list = Array.isArray(policy?.domain?.allow_outside) ? policy.domain.allow_outside : [];
   const abs = (p) => path.resolve(String(p).replace(/^~(?=$|[\\/])/, home));
   return list.filter((p) => typeof p === 'string' && p !== 'sudo' && isInside(abs(p), src));

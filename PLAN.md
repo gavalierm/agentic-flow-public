@@ -44,7 +44,7 @@ Poradie je zvolené tak, aby pilot mohol začať čo najskôr: po M0 sa dá over
 ### M1: Brain (zápis, témy, držiteľ, indexy, vyhľadávanie)
 
 - `bin/brain.mjs write <path> --message` : zápis + commit so značkou `[brain-script]` + push, zámok klonu `.git/workflow-write.lock` (serializuje zápisy vlákien na jednom stroji), kontrola nesúhlasu pred zlúčením (výnimky `holder.json`, `logs/*.log`), odmietnutie v subagentovi (detekcia cez vstup hooku/premennú prostredia subagenta), kontrola držiteľa pri zápise do `topics/<id>/`.
-- `templates/brain/` kompletná vrátane `.githooks/pre-commit.mjs`: tenký shim podľa P-040, ktorý zavolá `<plugin>/bin/brain-precommit.mjs` (cesta z `os.homedir()` + `.claude/skills/workflow`). Kontrolná logika žije iba vo workflow: commit bez značky, súbor v `local/`, kľúč s diakritikou, skill v `agentic/` bez `origin`, handover nad 15 riadkov alebo bez povinných častí, výnimka bez ID alebo dôvodu.
+- `templates/brain/` kompletná vrátane `.githooks/pre-commit.mjs`: tenký shim podľa P-040, ktorý zavolá `<plugin>/bin/brain-precommit.mjs` (cesta z `os.homedir()` + `.claude/skills/workflow`). Kontrolná logika žije iba vo workflow: commit bez značky, súbor v `local/`, kľúč s diakritikou, skill v `agentic/` bez `origin`, handover bez povinných častí (limit riadkov zrušený, agent-alice/D-0094), výnimka bez ID alebo dôvodu.
 - `bin/brain-init.mjs <path>`: šablóna → nové repo, `core.hooksPath=.githooks`, `local/` v brain aj projekte, `.gitattributes`.
 - `bin/index.mjs`: indexy pamäte, rozhodnutí, tém, skillov do `<brain>/local/index/`; kontrola limitov 50/50/10.
 - `bin/find.mjs <query>` a `--relates-to <path>`: kľúče, aliasy, normalizované názvy; iba cesta a jeden riadok.
@@ -96,20 +96,9 @@ Poradie je zvolené tak, aby pilot mohol začať čo najskôr: po M0 sa dá over
 - `bin/adapter.mjs codex`: `.codex/config.toml`, `AGENTS.md`, `.codex/hooks.json`, `.agents/skills/` (lokálne, `.gitignore`); mapovanie udalostí; ďalší ťah „pending assist: N“ namiesto Stop blokovania; `compact_prompt`, `model_auto_compact_token_limit`.
 - Hotové, keď: smoke test body Codex (časť e) sú zaznamenané; ak Codex niektorý mechanizmus nepodporuje, adaptér ho vynechá a platí textové pravidlo. **Stav: implementované (agent, 2026-11-01)** bez Codexu na stroji; `npm test` 65 testov; čo je overené z dokumentácie a čo ostáva na prvý beh, je v „Rozhodnutia pri implementácii (M7)“; smoke test body 4, 6, 7 overí pilot.
 
-## (c) Testy (`node:test`) podľa míľnikov
+## (c) Testy (`node:test`)
 
-Všetky testy sú v Node, bez závislostí, bežia nad dočasnými git repami vytvorenými v teste (`fs.mkdtemp`). Spúšťanie: `npm test` v repe.
-
-| Míľnik | Testy |
-|---|---|
-| M0 | `tests/lint.test.mjs`: zakázané vzory (P-004: absolútne cesty `/home/`, `/Users/`, `C:\`, mená osôb zo zoznamu, názvy inštancií), prípony (P-034), diakritika v názvoch (P-049), manifest (P-048), príkazy hookov začínajú `node` |
-| M1 | `brain.test.mjs`: commit má značku, push retry, nesúhlas odmietnutý, `logs/*.log` zlúčené, zápis cudzím vláknom do témy odmietnutý, odmietnutie v subagentovi; `precommit.test.mjs`: commit bez značky, súbor v `local/`, handover 16 riadkov, výnimka bez ID; `topic.test.mjs`: súbeh zabratia dvoma klonmi (druhý prehrá podľa obsahu `holder.json`), `--force` iba s pokynom, zabratie bez ID odmietnuté; `index.test.mjs`: limity 50/50/10, index negenerovaný do sledovanej časti; `find.test.mjs`: kľúč, alias, podobný kľúč zamietnutý, `--relates-to` |
-| M2 | `rules.test.mjs`: poradie vrstiev, výnimka zo zakázaného princípu odmietnutá, výpis uplatnených výnimiek, limity; `session-start.test.mjs`: položky hooku (1, 3–7) v poradí, nič navyše, limit 15 000 znakov neprekročený a neorezaný, zdroj `compact` pridá handover, oznam pri chýbajúcom brain, skilly brain skopírované do `.claude/skills/` a priečinok v `.gitignore`; `prompt.test.mjs`: stavový riadok presne 1 riadok, šablóna budenia nastaví príznak `wake`; `adapter-claude.test.mjs`: generovaný `settings.json` zhodný s politikou, `autoMemoryEnabled: false`, žiadny nepôsobiaci kľúč (`permissions.defaultMode`), žiadne symlinky, zhoda mien skillov je chyba; `hooks-json.test.mjs`: každý hook má triedu a limit |
-| M3 | `save.test.mjs`: formát záznamu, `origin`, prepis existujúceho subjektu, odmietnutie druhého záznamu subjektu, kľúč s diakritikou odmietnutý; `done.test.mjs`: `procedures.log`/`derivations.log` zápis a vyčistenie, handover → „voľná“, `--topic` zlúči a archivuje; `logs.test.mjs`: normalizácia sekvencií, vynechanie čítacích príkazov, signál pri 3. výskyte, rotácia 30/7 dní; `subagent-stop.test.mjs`: chýbajúce „Failures“ blokuje |
-| M4 | v `agentic-comms`: `server.test.mjs` (izolácia inštancií, `instance_id`, odosielateľ z kľúča, správa bez `level` odmietnutá, neregistrovaná téma → oznam), `client.test.mjs` (socketPath, timeout 2 s, outbox a dodatočné odoslanie, spustenie na požiadanie), `notices.test.mjs` (`decide` bez modelu, HTML stránka obsahuje oznamy) |
-| M5 | `triage.test.mjs`: definícia agenta má iba `comms receive`; výstup bez textu správy; `prompt-mail.test.mjs`: pokyn na triáž iba pri `n > 0`, cache počtu s TTL 60 s, po výpadku žiadny pokus pred 60 s; `comms-skill.test.mjs`: `reply`/`steer` ihneď, `info` čaká; `wake-flag.test.mjs`: citlivý skript v ťahu `wake` odmietne |
-| M6 | v `agentic-comms`: `wake.test.mjs`: limit 6/h, stop pri opakovaní, pevná šablóna, adaptér `t3` volaný s ID držiteľa, pošta doručí aj bez `wake` |
-| M7 | `adapter-codex.test.mjs`: generovaný TOML/`AGENTS.md`/`hooks.json` zhodný s politikou, lokálne súbory v `.gitignore` |
+Testy sú v Node, bez závislostí, nad dočasnými git repami (`fs.mkdtemp`); spúšťa ich `npm test`. V sade sú iba kritické testy (jadro, `// keep: core`) a testy opráv s TTL (`// ttl: YYYY-MM-DD`); čo patrí do jadra, ako sa píše test a ako sa rotuje, je v `tests/README.md` (D-0061, D-0062). Testy pošty sú v repe `agentic-comms`.
 
 ## (d) Plán nasadenia pilotu
 
@@ -276,3 +265,13 @@ Agent, 2026-11-01. Codex na stroji nie je nainštalovaný; formáty overené v o
 ## Rozhodnutia k medzerám z plánovania
 
 Medzery a rozpory zistené pri plánovaní (triáž a pošta subagenta, zapnutie na úrovni sedenia, kópia kódu v T3, zápis logov, skilly brain v projekte, spúšťanie triáže, e-mail notifikácia, pre-commit brain, kontrola poradia štartu, deny vzor na brain, cache stavového riadku) rozhodol operátor 2026-11-01. Rozhodnutia sú zapísané normatívne priamo v princípoch P-014, P-015, P-017, P-021, P-024, P-025, P-030, P-032, P-036, P-040, P-041, P-044, P-046, P-048 a v predvolených hodnotách politiky v `docs/principles/`. Tento plán ich preberá v M1 až M5.
+
+## Mechanika dát: tvar dát 2 (D-0048)
+
+Workflow pozná dva tvary dát repa (brain aj repo projektu), vybrané kľúčom `data_layout` v politike repa (`scripts/layout.mjs`); bez kľúča verzia 1. Cieľ verzie 2: každý druh dát má jedno miesto (P-067), viditeľné sú iba `zdroje/`, `temy/`, `vystupy/` a `INDEX.md`, ostatné v `.brain/`.
+
+- **Mapa ciest:** `LAYOUTS[1]` a `LAYOUTS[2]`; moduly berú cesty cez `dataPath`/`dataRel`/`workDirFor`, nie literálom. Štart session vypíše blok „Tvar dát tohto repa“ s cestami logických miest (zdroje, práca témy, pracovné súbory, výstupy, fakt o subjekte, INDEX.md) pre verziu projektu a brainu; pravidlá a skilly menujú iba logické miesta. Hlášky hookov a skriptov skladajú cesty z mapy repa.
+- **Téma vo verzii 2:** `temy/<téma>/` s `.tema.json` (téma a držiteľ), `handover.md` a súbormi práce; pracovné súbory v `temy/<téma>/tmp/` (mimo gitu); uzavretá téma ostáva na mieste.
+- **INDEX.md:** generuje ho každý zápis workflow (`scripts/data-index.mjs`), zoradený, rovnaký na každom stroji; zdroj ide do repa `materialy.mjs add <súbor> --description "..."` (popis, pôvod a dátum v `.brain/sources.json`, INDEX.md v tom istom commite), nie gitom ručne.
+- **Správanie:** zápis podľa otázok A (je to vedomosť: fakt → pamäť agenta, rozhodnutie a dokument → výstupy, postup → skill) a B (voľba mimo pravomoci → operátor); „ulož toto“ bez cieľa sa najprv spýta; do `done` sa v téme nič nemaže ani netriedi; triáž súborov témy pri `done --topic` iba pri téme zadanej operátorom; `tmp/` sa pri `done --topic` zmaže; záver pracovníka je samostatný súbor v téme (skilly `workflow:save`, `workflow:done`, `workflow:delegate`).
+- **Prechod:** počas prechodu workflow číta aj zapisuje oba tvary (agenti bežia na rôznych verziách). Repo presunie `bin/migrate.mjs` (náhľad, potom presun `git mv` a nastavenie verzie); poradie presunu dát a triáž s operátorom sú vo fáze 4 plánu D-0048. Vyjde vo verziách 1.x (D-0050).

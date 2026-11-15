@@ -10,7 +10,6 @@
     "skill_description_chars": 300,
     "boot_context_chars": 9500,
     "skills_list_chars": 6000,
-    "handover_lines": 15,
     "repo_handover_lines": 150,
     "hook_signal_lines": 2,
     "worker_result_chars": 3000,
@@ -57,9 +56,15 @@
       "read",
       "test",
       "[",
-      "[["
+      "[[",
+      "sleep",
+      "date",
+      "pgrep",
+      "find",
+      "timeout",
+      "true"
     ],
-    "sequence_min_length": 2,
+    "sequence_min_length": 3,
     "sequence_max_length": 5,
     "subcommand_programs": [
       "git",
@@ -88,12 +93,18 @@
     "interval_s": 900,
     "keep_days": 3
   },
+  "timer": {
+    "check_interval_s": 60,
+    "topic_stall_h": 2
+  },
   "topics": {
     "default_holder_mode": "operator",
     "thread_start_command": "t3 thread start --json",
     "brain_path_default": "../<brain-name>",
     "code_copy_path": "../<project>-topics/<id>/",
     "stale_machine_hours": 12,
+    "auto_max_active": 3,
+    "stall_check_minutes": 5,
     "shared_checkouts": [],
     "classes": {
       "web": { "kind": "code", "thread": { "provider": "claudeAgent", "model": "claude-sonnet-5-5", "effort": "medium" }, "subagent_model": "sonnet" },
@@ -145,6 +156,14 @@
       "bin/done.mjs",
       "bin/brain-init.mjs",
       "bin/project.mjs"
+    ],
+    "worker_full_test_commands": [
+      "^(?:npm|pnpm|yarn)\\s+(?:run\\s+)?test(?:\\s|$)",
+      "^node(?:\\s+--\\S+)*\\s+--test(?:\\s+--\\S+)*\\s*$",
+      "^npx\\s+vitest(?:\\s+run)?(?:\\s+-\\S+)*\\s*$",
+      "^npx\\s+jest(?:\\s+-\\S+)*\\s*$",
+      "^(?:python3?\\s+-m\\s+)?pytest(?:\\s+-\\S+)*\\s*$",
+      "^go\\s+test(?:\\s+\\S+)*\\s+\\./\\.\\.\\.(?:\\s|$)"
     ],
     "subagent_stop_exempt_agent_types": [
       "Explore",
@@ -230,6 +249,7 @@
     "wake_template": "you have mail in topic",
     "no_reply_template": "no reply",
     "undelivered_template": "undelivered",
+    "recipient_closed_template": "recipient closed",
     "keepalive_template": "turn interrupted, continue from handover",
     "continue_template": "turn ended with a next step, continue from handover",
     "nudge_prompts": ["up", "?", "check", "ckeck"],

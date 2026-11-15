@@ -5,9 +5,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DOMAIN_MARKER, WORKFLOW_CONFIG, LOCAL_CONFIG, PERSONA_BRAIN, brainExists } from './config.mjs';
-import { listFiles, readJson, realPathLoose, toPosix } from './util.mjs';
-import { PROJECT_KNOWLEDGE, REPO_HANDOVER, domainRepos, knowledgeDirs } from './repo-knowledge.mjs';
+import { DOMAIN_MARKER, WORKFLOW_CONFIG, LOCAL_CONFIG, PERSONA_BRAIN, BRAIN_COMMIT_TAG, brainExists } from './config.mjs';
+import { git, listFiles, readJson, realPathLoose, toPosix } from './util.mjs';
+import { domainRepos, knowledgeDirs } from './repo-knowledge.mjs';
+import { dataPath, layoutOf } from './layout.mjs';
+import { listTopicRecords } from './topic-files.mjs';
 import { readMemory, readDecisions, readRules, readSkills, repoRecords } from './records.mjs';
 
 /** Memory types that name one subject across the machine: a second record of it in another store is refused. */
@@ -59,7 +61,7 @@ function domainStores(root, domainBrain) {
   for (const r of domainRepos({ root }, null)) {
     if (brains.some((b) => same(b.dir, r.dir))) continue;
     if (!knowledgeDirs({ root }, r.name).some((k) => fs.existsSync(k.dir))) continue;
-    out.push({ name: r.name, kind: 'repo', dir: r.dir, knowledge: path.join(r.dir, PROJECT_KNOWLEDGE), domainRoot: root, repo: r.name, project: domainProject });
+    out.push({ name: r.name, kind: 'repo', dir: r.dir, knowledge: dataPath(r.dir, 'projectKnowledge'), domainRoot: root, repo: r.name, project: domainProject });
   }
   return out;
 }
@@ -123,7 +125,7 @@ export function targetStore(ctx, repo = null) {
   const stores = machineStores(ctx);
   if (!repo) return stores.find((s) => s.session);
   const dir = path.join(ctx.domain.root, repo);
-  return stores.find((s) => s.kind === 'repo' && same(s.dir, dir)) || { name: repo, kind: 'repo', dir, knowledge: path.join(dir, PROJECT_KNOWLEDGE), domainRoot: ctx.domain.root, repo, sessionDomain: true };
+  return stores.find((s) => s.kind === 'repo' && same(s.dir, dir)) || { name: repo, kind: 'repo', dir, knowledge: dataPath(dir, 'projectKnowledge'), domainRoot: ctx.domain.root, repo, sessionDomain: true };
 }
 
 export const sameStore = (a, b) => !!a && !!b && same(a.dir, b.dir);
@@ -133,20 +135,46 @@ export function decisionIds(store, base = store.dir) {
   return new Set(storeRecords(store, base).filter((r) => r.kind === 'decision').map((r) => String(r.id || r.key).toUpperCase()));
 }
 
+// The commit save.mjs decision --remove writes, in a brain and in a repo: "[brain-script] remove decision D-NNNN: <reason>".
+const REMOVED_RE = new RegExp(`^(\\S+) ${BRAIN_COMMIT_TAG.replace(/[[\]]/g, '\\$&')} remove decision (D-\\d{4}):`);
+const removedCache = new Map();
+
+/**
+ * Decisions removed from a store on an operator order (P-008), read from the git history of the store: Map ID -> short
+ * commit of the newest removal. A bare reference to one is history, not a broken reference (removed-decision-refs).
+ */
+export function removedDecisions(store) {
+  const dir = path.resolve(store.dir);
+  if (removedCache.has(dir)) return removedCache.get(dir);
+  const out = new Map();
+  const r = git(['log', '--all', '--format=%h %s', '--fixed-strings', `--grep=${BRAIN_COMMIT_TAG} remove decision `], { cwd: dir });
+  if (r.ok) for (const line of r.stdout.split('\n')) {
+    const m = line.match(REMOVED_RE);
+    if (m && !out.has(m[2])) out.set(m[2], m[1]);
+  }
+  removedCache.set(dir, out);
+  return out;
+}
+
 /**
  * Files whose text may reference decisions: memory, decisions, rules and the handovers (a brain's topic handovers, a
  * repo's HANDOVER.md). knowledge: the folder to read (a repo's checkout the write lands in), default the store's own.
  */
 export function refFiles(store, knowledge = store.knowledge) {
-  const md = (sub) => listFiles(path.join(knowledge, sub), (f) => f.endsWith('.md'));
+  const md = (sub) => listFiles(dataPath(knowledge, sub), (f) => f.endsWith('.md'));
   const files = [...md('memory'), ...md('decisions'), ...md('rules')];
   if (store.kind === 'repo') {
-    const ho = path.join(knowledge, REPO_HANDOVER);
+    const ho = dataPath(knowledge, 'repoHandover');
     if (fs.existsSync(ho)) files.push(ho);
   } else {
-    for (const t of subdirs(path.join(knowledge, 'topics'))) {
-      if (path.basename(t) === 'archive') continue;
-      const ho = path.join(t, 'handover.md');
+    const L = layoutOf(knowledge);
+    const handover = L.handover;
+    // Layout 1: every folder of topics/ but the archive; layout 2: the open topics (a closed one stays in temy/).
+    const dirs = L.topicArchive ? subdirs(dataPath(knowledge, 'topics')) : listTopicRecords(knowledge).map((t) => t.dir);
+    const archive = L.topicArchive ? dataPath(knowledge, 'topicArchive') : null;
+    for (const t of dirs) {
+      if (archive && path.resolve(t) === path.resolve(archive)) continue;
+      const ho = path.join(t, handover);
       if (fs.existsSync(ho)) files.push(ho);
     }
   }

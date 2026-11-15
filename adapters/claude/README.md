@@ -2,7 +2,7 @@
 
 Adaptér pre Claude Code (P-017). `node <plugin>/bin/adapter.mjs claude-code` v koreni projektu vygeneruje:
 
-- `<project>/.claude/settings.json`: `enabledPlugins` (`workflow@skills-dir`), `permissions` (deny/ask z politiky; deny vzor na brain mimo koreňa projektu je doplnková ochrana, hlavná je pre-commit brain, P-015/P-040), `autoMemoryEnabled: false`, `autoCompactWindow`,
+- `<project>/.claude/settings.json`: `enabledPlugins` (`workflow@skills-dir`), `permissions` (ask z politiky, vlastné `allow` operátora ponechá, flow-public#96; deny vzor na brain mimo koreňa projektu je doplnková ochrana, hlavná je pre-commit brain, P-015/P-040), `autoMemoryEnabled: false`, `autoCompactWindow`,
 - `<project>/.workflow.json` (ak chýba) s relatívnou cestou k brain,
 - záznam `.claude/skills/` v `.gitignore` projektu.
 

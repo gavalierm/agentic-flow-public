@@ -18,6 +18,8 @@ import { recordAuthors, foreignRecords } from '../scripts/authors.mjs';
 import { closedTargetsNote } from './pre-tool-use.mjs';
 import { mcpEnvNote } from '../scripts/mcp-env.mjs';
 import { artifactsNote } from '../scripts/artifacts.mjs';
+import { dataRel } from '../scripts/layout.mjs';
+import { indexBootLine } from '../scripts/data-index.mjs';
 
 export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '9500 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038', 'P-050'] };
 
@@ -37,11 +39,11 @@ export function run(input) {
   // Record authors after the pull (scripts/authors.mjs): the boot marks records of other operators, the rules hook gets the
   // foreign project rules through the stamp, so the start costs one git log for both.
   const authors = ctx.brainDir ? recordAuthors(ctx.brainDir) : null;
-  stampBootPull(ctx.brainDir, input.session_id, Date.now(), { foreign_rules: foreignRecords(authors, 'rules/') });
+  stampBootPull(ctx.brainDir, input.session_id, Date.now(), { foreign_rules: foreignRecords(authors, dataRel(ctx.brainDir, 'rules', '')) });
   const notes = [brainPullNote(pull), pinWorkflow(ctx), projectLineEndings(ctx), t3Session(ctx, input), projectMcpEnv(ctx)].filter(Boolean);
   // Catalog of project data: scan within its budget before the boot text; it never fails the boot and does nothing without a source.
   const catalog = catalogBoot(ctx, { source: input.source || 'startup', state: ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : null });
-  const boot = buildBootContext(ctx, { source: input.source || 'startup', rulesHook: true, t3Note: notes.length ? notes.join('\n') : null, catalogLines: catalog.lines, authors });
+  const boot = buildBootContext(ctx, { source: input.source || 'startup', rulesHook: true, t3Note: notes.length ? notes.join('\n') : null, catalogLines: [...catalog.lines, ...indexLines(ctx)], authors });
   // P-021: the revision this session loaded; the prompt and tool hooks announce a later update once. P-001: a new or
   // compacted context starts with an empty read budget (post-tool-use readNudge).
   if (ctx.brainDir && ctx.thread) {
@@ -63,6 +65,22 @@ export function run(input) {
 export function projectLineEndings(ctx) {
   if (!ctx.projectDir || (ctx.brainDir && path.resolve(ctx.brainDir) === path.resolve(ctx.projectDir))) return null;
   try { return ensureLineEndings(ctx.projectDir); } catch (err) { return `${path.basename(ctx.projectDir)}: line endings not normalized (${err.message})`; }
+}
+
+/**
+ * Layout 2: a summary of INDEX.md of the project repo and of the brain (when it is another repo), in place of the catalog
+ * line of materialy (D-0048 phase 2b). Layout 1: none. Never fails the boot.
+ */
+export function indexLines(ctx) {
+  const roots = [...new Set([ctx.projectDir, ctx.brainDir].filter(Boolean).map((d) => path.resolve(d)))];
+  const lines = [];
+  for (const root of roots) {
+    try {
+      const line = indexBootLine(root, roots.length > 1 ? (root === path.resolve(ctx.brainDir || '') ? 'brain' : path.basename(root)) : null);
+      if (line) lines.push(line);
+    } catch { /* the boot goes on without it */ }
+  }
+  return lines;
 }
 
 /** `.mcp.json` servers whose `${VAR}` stays literal (scripts/mcp-env.mjs, report-ef63d010); never fails the boot. */

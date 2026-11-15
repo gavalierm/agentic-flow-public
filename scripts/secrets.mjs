@@ -21,3 +21,14 @@ export function findSecret(text) {
   for (const m of s.matchAll(ASSIGN_RE)) if (!PLACEHOLDER_RE.test(m[2])) return `${m[1].toLowerCase()} value`;
   return null;
 }
+
+/**
+ * Text with the credentials of every remote address replaced by ***: user:password@ of any scheme and user@ of http(s)
+ * (a token is often the user alone), so https://x-access-token:<token>@host/o/r prints as https://***@host/o/r. Every
+ * printed remote address goes through it (origin of a nested clone, git errors). An address without credentials, ssh://git@host
+ * and git@host:o/r stay unchanged.
+ */
+export function redactUrl(text) {
+  return String(text ?? '').replace(/\b([a-z][a-z0-9+.-]*):\/\/([^\s/@'"]+)@/gi, (all, scheme, user) =>
+    (user.includes(':') || /^https?$/i.test(scheme) ? `${scheme}://***@` : all));
+}

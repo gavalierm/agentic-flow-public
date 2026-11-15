@@ -4,9 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { PLUGIN_ROOT, readJson, writeJson, gitToplevel, git, isInside, realPathLoose, toPosix } from './util.mjs';
 import { tightenPolicy } from './policy-layers.mjs';
+import { LAYOUT, dataPath, dataRel, dataLayoutVersion, layoutFor, isWorkPath, topicWorkLabel } from './layout.mjs';
 
 export const WORKFLOW_CONFIG = '.workflow.json';
-export const LOCAL_CONFIG = path.join('local', 'workflow.json');
+// Operator's local config of a repository: the local folder has the same path in layout 1 and 2.
+export const LOCAL_CONFIG = path.join(LAYOUT.local, 'workflow.json');
 export const PLUGIN_NAME = 'workflow';
 export const PLUGIN_KEY = 'workflow@skills-dir';
 // P-048 channels: stable = clone in ~/.claude/skills/workflow (skills-dir plugin, pinned release tag);
@@ -24,10 +26,29 @@ export function channelOf(settings) {
 }
 // P-024: a persona is a project whose repository is its brain (`"brain": "."`).
 export const PERSONA_BRAIN = '.';
-// Template entries of a brain; in a persona they are protected like `<brain>/**` (P-013, P-024).
-export const BRAIN_ENTRIES = ['memory/**', 'decisions/**', 'rules/**', 'skills/**', 'topics/**', 'exceptions/**', 'logs/**', 'policy.json', '.githooks/**', '.gitattributes', '.gitignore', '.workflow.json', 'README.md'];
-// P-052: work files of the agent; P-018: operator's local files. Writable in a persona.
-export const SCRATCH_DIR = 'scratch';
+const REPO_FILES = ['.githooks/**', '.gitattributes', '.gitignore', '.workflow.json', 'README.md'];
+/**
+ * Template entries of a brain in layout `version`; in a persona they are protected like `<brain>/**` (P-013, P-024).
+ * Layout 2 protects the workflow data (.brain/, decisions) and of a topic only its record and handover: the other files of
+ * temy/<id>/ are the topic's work files, which the agent writes itself.
+ */
+export function brainEntriesFor(version = 1) {
+  const L = layoutFor(version);
+  if (version === 1) return [...['memory', 'decisions', 'rules', 'skills', 'topics', 'exceptions', 'logs'].map((n) => `${L[n]}/**`), L.policy, ...REPO_FILES];
+  const data = L.policy.split('/')[0];
+  return [`${data}/**`, `${L.decisions}/**`, `${L.topics}/*/${L.topicFile}`, `${L.topics}/*/${L.handover}`, ...REPO_FILES];
+}
+/** Template entries of the brain at root, by its layout. */
+export const brainEntries = (root) => brainEntriesFor(dataLayoutVersion(root));
+// Layout 1 (the tests of today import it); code reads brainEntries(root).
+export const BRAIN_ENTRIES = brainEntriesFor(1);
+// P-052: work files of the agent; P-018: operator's local files. Writable in a persona. Layout 1; workDirFor(root) per version.
+export const SCRATCH_DIR = LAYOUT.scratch;
+/**
+ * Work files of a session as a message names them: `scratch` (layout 1), `temy/<topic>/tmp` (layout 2), in the topic home
+ * (D-0056: `brain temy/<topic>/tmp` when a brain in layout 2 beside the project holds them).
+ */
+export const scratchDir = (root, topic = null, brainDir = null) => topicWorkLabel(brainDir, root, topic).replace(/\/$/, '');
 
 // The folder of this machine's projects (domains) as the operator chose it (carol 2026-11-09: the operator keeps domains in
 // another folder, the persona was created in ~/agentic and its move was refused by P-052; the choice was stored nowhere).
@@ -54,9 +75,11 @@ export function setMachineRoot(dir, env = process.env) {
 }
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
 // Brain layout of the workflow template (P-024).
-const BRAIN_MARKS = ['topics', 'logs', 'exceptions'];
+export const BRAIN_MARKS = [LAYOUT.topics, LAYOUT.logs, LAYOUT.exceptions];
+// Layout 2: the data folder (.brain) and the topics (temy) in the root, beside .githooks.
+const BRAIN_MARKS_2 = [layoutFor(2).policy.split('/')[0], layoutFor(2).topics];
 // Files of older agent setups: rules and memory kept outside the workflow brain format.
-const LEGACY_MARKS = ['RULES.md', 'CLAUDE.md', 'AGENTS.md', 'errors', 'artifacts', 'agentic-brain'];
+export const LEGACY_MARKS = ['RULES.md', 'CLAUDE.md', 'AGENTS.md', 'errors', 'artifacts', 'agentic-brain'];
 
 export function checkName(name) {
   if (!NAME_RE.test(String(name || ''))) throw new Error(`project name must be lowercase letters, digits and dashes (3-50 chars), got "${name}"`);
@@ -68,13 +91,13 @@ export function classifyNames(names) {
   const set = new Set(names);
   if (!names.length) return 'empty';
   if (set.has(WORKFLOW_CONFIG)) return 'workflow-project';
-  if (set.has('.githooks') && BRAIN_MARKS.every((m) => set.has(m))) return 'workflow-brain';
+  if (set.has('.githooks') && (BRAIN_MARKS.every((m) => set.has(m)) || BRAIN_MARKS_2.every((m) => set.has(m)))) return 'workflow-brain';
   if (LEGACY_MARKS.some((m) => set.has(m))) return 'legacy';
   return 'code';
 }
 
 function localNames(dir) {
-  try { return fs.readdirSync(dir).filter((n) => n !== '.git' && n !== 'local'); } catch { return []; }
+  try { return fs.readdirSync(dir).filter((n) => n !== '.git' && n !== LAYOUT.local); } catch { return []; }
 }
 
 function subdirs(dir) {
@@ -100,11 +123,20 @@ export function sessionRoot(projectDir, brainDir) {
   return nested ? path.dirname(parent) : parent;
 }
 // docs/: lasting documents of a persona (research, reports); written directly, committed by save.mjs docs (alice 2026-11-03).
-export const PERSONA_DOCS = 'docs';
+export const PERSONA_DOCS = LAYOUT.docs;
 // materialy/: what came from outside and the results of a topic (skill materialy), committed by save.mjs docs like docs/
-// (D-0011: 2 refusals on 11-11, the result stayed outside git). A literal here: materialy.mjs imports this module.
-export const PERSONA_MATERIALS = 'materialy';
-export const PERSONA_WRITABLE = [SCRATCH_DIR, 'local', PERSONA_DOCS, PERSONA_MATERIALS];
+// (D-0011: 2 refusals on 11-11, the result stayed outside git).
+export const PERSONA_MATERIALS = LAYOUT.materialy;
+export const PERSONA_WRITABLE = [SCRATCH_DIR, LAYOUT.local, PERSONA_DOCS, PERSONA_MATERIALS];
+/**
+ * Folders a persona agent writes directly, relative to its repository, by layout: layout 1 scratch/, local/, docs/,
+ * materialy/; layout 2 local/, vystupy/dokumenty/, zdroje/ and the work files of the topics (isWorkPath).
+ */
+export function personaWritableDirs(root) {
+  const v = dataLayoutVersion(root);
+  if (v === 1) return [...PERSONA_WRITABLE];
+  return ['local', 'docs', 'materialy'].map((n) => dataRel(root, n));
+}
 
 /** Main checkout of the repository containing dir (never a worktree), P-024 persona. */
 export function mainCheckout(dir) {
@@ -114,21 +146,42 @@ export function mainCheckout(dir) {
   return path.basename(common) === '.git' ? path.dirname(common) : path.resolve(dir);
 }
 
-/** Brain deny patterns for harness settings: `<brain>/x` -> `<brainRel>/x`; in a persona the template entries (P-024). */
-export function expandBrainPath(p, brainRel) {
+/**
+ * Brain deny patterns for harness settings: `<brain>/x` -> `<brainRel>/x`; in a persona the template entries (P-024).
+ * A brain in layout 2 (`version`): `<brain>/**` is its protected entries (brainEntriesFor), not the whole brain, so the
+ * agent still writes the work files of its topics there.
+ */
+export function expandBrainPath(p, brainRel, version = 1) {
   if (!p.startsWith('<brain>')) return [p];
   if (!brainRel) return [];
-  if (brainRel === PERSONA_BRAIN) return p === '<brain>/**' ? [...BRAIN_ENTRIES] : [p.slice('<brain>/'.length)];
+  const entries = brainEntriesFor(version);
+  if (brainRel === PERSONA_BRAIN) return p === '<brain>/**' ? [...entries] : [p.slice('<brain>/'.length)];
+  if (version !== 1 && p === '<brain>/**') return entries.map((e) => `${brainRel}/${e}`);
   return [`${brainRel}${p.slice('<brain>'.length)}`];
 }
 
-/** True when abs lies in a directory a persona agent may write directly (scratch/, local/). */
+/** True when abs lies in a directory a persona agent may write directly (scratch/, local/; layout 2 also topic work files). */
 export function personaWritable(ctx, abs) {
-  return !!ctx.brainInfo?.persona && PERSONA_WRITABLE.some((d) => isInside(path.join(ctx.projectDir, d), abs));
+  if (!ctx.brainInfo?.persona) return false;
+  return personaWritableDirs(ctx.projectDir).some((d) => isInside(path.join(ctx.projectDir, ...d.split('/')), abs)) || (dataLayoutVersion(ctx.projectDir) !== 1 && isWorkPath(ctx.projectDir, abs));
+}
+
+/**
+ * The agent may write abs in its brain directly (P-013): a persona's writable folders; in a brain of layout 2 also the
+ * work files of its topics (temy/<id>/ but .tema.json and handover.md) and vystupy/dokumenty/. Everything else in the
+ * brain goes through save, topic or done.
+ */
+export function brainWritable(ctx, abs) {
+  if (personaWritable(ctx, abs)) return true;
+  const b = ctx.brainDir;
+  if (!b || dataLayoutVersion(b) === 1) return false;
+  return isWorkPath(b, abs) || isInside(dataPath(b, 'docs'), abs);
 }
 
 export const BRAIN_COMMIT_TAG = '[brain-script]';
 export const BRAIN_SCRIPT_ENV = 'WORKFLOW_BRAIN_SCRIPT';
+/** Mark of the commit of a data layout move (migrate.mjs, D-0048): the brain pre-commit skips content checks of files it only moves. */
+export const MIGRATE_MOVE_ENV = 'WORKFLOW_MIGRATE_MOVE';
 /** Env for git in brain: script tag plus the root of the running plugin, so the brain hooks check with the same version (stable or dev). */
 export function brainScriptEnv() {
   return { [BRAIN_SCRIPT_ENV]: '1', WORKFLOW_PLUGIN_ROOT: PLUGIN_ROOT };
@@ -231,22 +284,22 @@ export function readWorkflowConfig(projectDir) {
 }
 
 export function brainExists(brainDir) {
-  return !!brainDir && fs.existsSync(path.join(brainDir, 'topics')) && fs.existsSync(path.join(brainDir, '.git'));
+  return !!brainDir && fs.existsSync(dataPath(brainDir, 'topics')) && fs.existsSync(path.join(brainDir, '.git'));
 }
 
 /** Policy of one brain: the plugin policy with `<brain>/policy.json` merged over it (brain-level commands, the domain brain). */
 export function loadPolicy(brainDir) {
   const base = readJson(path.join(PLUGIN_ROOT, 'policy', 'policy.json'));
   if (brainDir) {
-    const extra = readJson(path.join(brainDir, 'policy.json'), {});
+    const extra = readJson(dataPath(brainDir, 'policy'), {});
     return deepMerge(base, extra);
   }
   return base;
 }
 
 const samePath = (a, b) => !!a && !!b && realPathLoose(a) === realPathLoose(b);
-// Literal: repo-knowledge.mjs (PROJECT_KNOWLEDGE) imports this module.
-const REPO_KNOWLEDGE_DIR = 'agentic';
+// Knowledge folder of a project repo (<repo>/agentic/); repo-knowledge.mjs exports the same value as PROJECT_KNOWLEDGE.
+export const REPO_KNOWLEDGE_DIR = LAYOUT.projectKnowledge;
 
 /**
  * Layers of a project's policy, rules and skills (D-0016, D-0025). In a domain whose brain exists: the domain brain, the
@@ -261,7 +314,7 @@ export function policyLayers({ projectDir, brainDir = null, domain = null }) {
   if (projectDir) {
     const main = mainCheckout(projectDir);
     if (!samePath(main, domain.brain) && !samePath(main, brainDir) && samePath(path.dirname(main), domain.root)) {
-      repo = { name: path.basename(main), dir: path.resolve(projectDir), knowledge: path.join(path.resolve(projectDir), REPO_KNOWLEDGE_DIR) };
+      repo = { name: path.basename(main), dir: path.resolve(projectDir), knowledge: dataPath(path.resolve(projectDir), 'projectKnowledge') };
     }
   }
   return { inDomain: true, domainBrain: domain.brain, projectBrain, repo };
@@ -277,8 +330,8 @@ export function projectPolicy({ projectDir, brainDir = null, domain = null, laye
   let policy = loadPolicy(layers.domainBrain);
   const ignored = [];
   const files = [];
-  if (layers.projectBrain) files.push({ file: path.join(layers.projectBrain, 'policy.json'), source: `${path.basename(layers.projectBrain)}/policy.json` });
-  if (layers.repo) files.push({ file: path.join(layers.repo.knowledge, 'policy.json'), source: `${layers.repo.name}/${REPO_KNOWLEDGE_DIR}/policy.json` });
+  if (layers.projectBrain) files.push({ file: dataPath(layers.projectBrain, 'policy'), source: `${path.basename(layers.projectBrain)}/${dataRel(layers.projectBrain, 'policy')}` });
+  if (layers.repo) files.push({ file: dataPath(layers.repo.knowledge, 'policy'), source: [layers.repo.name, path.relative(path.dirname(layers.repo.dir), layers.repo.knowledge) === layers.repo.name ? null : path.basename(layers.repo.knowledge), dataRel(layers.repo.knowledge, 'policy')].filter(Boolean).join('/') });
   for (const { file, source } of files) {
     if (!fs.existsSync(file)) continue;
     const layer = readJson(file, null);
@@ -342,13 +395,13 @@ const threadFileName = (id) => encodeURIComponent(String(id)).replace(/\*/g, '%2
 
 /** Thread state file in <brain>/local/threads/<encoded id>.json (P-047 turn source, pending signals). */
 export function threadStateFile(brainDir, id) {
-  return path.join(brainDir, 'local', 'threads', `${threadFileName(id)}.json`);
+  return dataPath(brainDir, 'local', 'threads', `${threadFileName(id)}.json`);
 }
 
 // State written before v0.9.15 under the raw id (Linux, macOS); read once, the next write moves it to the encoded name.
 function legacyThreadState(brainDir, id) {
   if (threadFileName(id) === String(id)) return null;
-  try { return readJson(path.join(brainDir, 'local', 'threads', `${id}.json`), null); } catch { return null; }
+  try { return readJson(dataPath(brainDir, 'local', 'threads', `${id}.json`), null); } catch { return null; }
 }
 
 export function readThreadState(brainDir, id) {
@@ -466,7 +519,7 @@ function domainAbove(projectDir, home) {
     if (fs.existsSync(file)) {
       const cfg = readJson(file, {}) || {};
       const brain = typeof cfg.brain === 'string' && !path.isAbsolute(cfg.brain) ? path.resolve(p, cfg.brain) : null;
-      const policy = brain ? readJson(path.join(brain, 'policy.json'), {}) || {} : {};
+      const policy = brain ? readJson(dataPath(brain, 'policy'), {}) || {} : {};
       const allow = allowOutside(policy, home);
       return { root: p, marker: file, brain, allowOutside: allow.paths, sudo: allow.sudo };
     }

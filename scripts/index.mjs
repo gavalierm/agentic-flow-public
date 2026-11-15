@@ -3,6 +3,7 @@ import path from 'node:path';
 import { writeText, localTime } from './util.mjs';
 import { readMemory, readDecisions, readRules, readSkills, readTopics } from './records.mjs';
 import { foreignAuthor, byTag, isOperatorMemory } from './authors.mjs';
+import { dataPath } from './layout.mjs';
 
 export function topicLine(t) {
   const holder = t.holder?.thread || '-';
@@ -57,7 +58,7 @@ export function buildIndexes(brainDir, policy) {
   if (skillsChars > (limits.skills_list_chars ?? 6000)) warnings.push(`brain skills list ${skillsChars} chars > ${limits.skills_list_chars} (run consolidate, P-003)`);
   const files = {};
   for (const [name, content] of Object.entries(text)) {
-    const file = path.join(brainDir, 'local', 'index', `${name}.md`);
+    const file = dataPath(brainDir, 'local', 'index', `${name}.md`);
     writeText(file, content);
     files[name] = file;
   }

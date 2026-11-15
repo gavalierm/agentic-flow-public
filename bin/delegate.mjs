@@ -22,7 +22,10 @@ import { loadContext, inSubagent } from '../scripts/config.mjs';
 import { heldTopics, hasCodeCopy, isDiscussionTopic, implementationClass, ensureCodeCopy, recordImplementation, implementMarker, IMPLEMENT_CLASSES, IMPLEMENT_HELP } from '../scripts/topic.mjs';
 import { isMainTopic } from '../scripts/comms.mjs';
 import { readSkills } from '../scripts/records.mjs';
+import { personaSkillPrefix, prefixSkillText } from '../scripts/skills-sync.mjs';
 import { tokens } from '../scripts/keys.mjs';
+import { dataPath } from '../scripts/layout.mjs';
+import { workDir } from '../scripts/topic-files.mjs';
 const toPosixPath = (p) => String(p).replace(/\\/g, '/');
 
 export const STRONG_MATCHES = 2;
@@ -204,6 +207,7 @@ if (process.argv[1]?.endsWith('delegate.mjs')) try {
       parts.push('## Implementácia (D-0020)', impl.marker,
         `- Meň iba súbory v kópii kódu ${copy} (vetva ${impl.branch}); mimo nej nezapisuj nič okrem pracovných súborov.`,
         '- Necommituj, nepushuj, nezlučuj (merge, rebase) ani netaguj: hook to v kópii odmietne; commit, zlúčenie a vydanie robí vlákno témy po kontrole (D-0020).',
+        '- Spúšťaj iba testy, ktorých sa zmena týka (`node --test <súbor>`, `pytest <súbor>`), nie celú sadu: hook ju odmietne a vlákno témy ju spustí raz pred zlúčením (P-071).',
         '- Nezapisuj do brain (P-013, P-025).',
         '- Vráť súhrn zmien (súbor a jedna veta ku každému) a spustené testy s výsledkom (počty prešlo/zlyhalo).', '');
     }
@@ -212,10 +216,13 @@ if (process.argv[1]?.endsWith('delegate.mjs')) try {
       parts.push('## Nástroje agenta', `- Typ ${args.agent}: ${agentDef.tools ? agentDef.tools.join(', ') : 'všetky nástroje'}${agentDef.disallowed.length ? ` (bez ${agentDef.disallowed.join(', ')})` : ''}.`,
         w.length ? `- Zápis súborov: ${w.join(', ')}.` : '- Súbory zapisovať nevie: dáta vráť vo výsledku, uloží ich rodič.', '');
     }
-    parts.push('## Pravidlá výsledku', `- Vráť záver so zdrojmi, najviac ${limit} znakov; nie surový obsah.`, '- Nezapisuj do brain, nedrž tému, nekomunikuj s operátorom; výsledok vráť rodičovi (P-025).', '- Kód meň iba v kópii témy, ak ju zadanie uvádza.', '- Zdroj, ktorý zlyhá (403, timeout, blokovanie), nie je koniec úlohy: skús ho raz inou cestou, ktorú zadanie nezakazuje (iná adresa zdroja, `curl -sL` cez Bash), potom ho uveď vo Failures a pokračuj ďalšími zdrojmi. Prehliadač, ktorý sa nespustil a nahradil ho curl, patrí do Failures aj s vrátenou stránkou: curl nespúšťa JavaScript, obsah načítaný skriptom (tabuľky, EAN) v ňom chýba.', `- Pracovné súbory (pokusy, klon, medzivýsledky) iba do ${toPosixPath(path.join(ctx.projectDir, 'scratch'))}/, nikdy /tmp ani ~ (P-052).`, '- Výsledok MUSÍ končiť časťou "Failures: čo zlyhalo a čo nakoniec fungovalo" (alebo "Failures: none").', '');
+    parts.push('## Pravidlá výsledku', `- Vráť záver so zdrojmi, najviac ${limit} znakov; nie surový obsah.`, '- Nezapisuj do brain, nedrž tému, nekomunikuj s operátorom; výsledok vráť rodičovi (P-025).', '- Kód meň iba v kópii témy, ak ju zadanie uvádza.', '- Zdroj, ktorý zlyhá (403, timeout, blokovanie), nie je koniec úlohy: skús ho raz inou cestou, ktorú zadanie nezakazuje (iná adresa zdroja, `curl -sL` cez Bash), potom ho uveď vo Failures a pokračuj ďalšími zdrojmi. Prehliadač, ktorý sa nespustil a nahradil ho curl, patrí do Failures aj s vrátenou stránkou: curl nespúšťa JavaScript, obsah načítaný skriptom (tabuľky, EAN) v ňom chýba.', `- Pracovné súbory (pokusy, klon, medzivýsledky) iba do ${toPosixPath(workDir(ctx))}/, nikdy /tmp ani ~ (P-052).`, '- Výsledok MUSÍ končiť časťou "Failures: čo zlyhalo a čo nakoniec fungovalo" (alebo "Failures: none").', '');
     if (bundled.length) {
       parts.push('## Pribalené skilly');
-      for (const { skill, body } of bundled) parts.push(`### ${skill.skillName} (${skill.path})`, body, '');
+      // D-0065: in a persona the deployed copies are <persona>-<name>; the bundled text calls their scripts the same way.
+      const prefix = personaSkillPrefix(ctx.projectDir);
+      const names = readSkills(ctx.brainDir).map((s) => s.skillName);
+      for (const { skill, body } of bundled) parts.push(`### ${skill.skillName} (${skill.path})`, prefixSkillText(body, { projectDir: ctx.projectDir, prefix, names }), '');
     } else {
       parts.push('## Pribalené skilly', '(žiadny skill brain nezodpovedá zadaniu)', '');
     }

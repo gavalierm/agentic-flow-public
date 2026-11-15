@@ -7,6 +7,9 @@
 //                                            upgrade, P-066; one install per machine: --all pins every brain it knows)
 //   brain.mjs maintainer [--comms <project>/<topic>|none] [--repo <github url>|none]   where error reports go (policy maintainer)
 //   brain.mjs resolve <file> --keep local|remote   settle a disagreement on one file (this machine's version or origin's)
+//   brain.mjs freeze [on --until <version> --reason "<why>" [--allow <topic>,..] [--repos <repo>,..] | off | allow <topic>,..]
+//                                            freeze of the workflow and the mail during a rebuild (policy freeze, P-074,
+//                                            agent-alice/D-0092): no topic from reports, no new code topic outside the allowed
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, readStdin, fail } from '../scripts/util.mjs';
@@ -14,6 +17,8 @@ import { loadContext, loadPolicy, foreignProjectCwd, isWakeTurn } from '../scrip
 import { maintainerOf, repoSlug } from '../scripts/report.mjs';
 import { pinValue, knownBrains } from '../scripts/update.mjs';
 import { brainWrite, brainSync, unpushedCount, formatWriteResult, conflictText } from '../scripts/brain.mjs';
+import { dataPath, dataRel } from '../scripts/layout.mjs';
+import { freezeOf, freezeLine } from '../scripts/freeze.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const [cmd, target] = args._;
@@ -37,7 +42,7 @@ try {
     process.stdout.write(formatWriteResult(res, [target]) + '\n');
   } else if (cmd === 'sync' || cmd === 'resolve') {
     // Sides chosen for several files are kept until the sync goes through (one resolve per file, any order).
-    const store = path.join(ctx.brainDir, 'local', 'resolutions.json');
+    const store = dataPath(ctx.brainDir, 'local', 'resolutions.json');
     let resolutions = {};
     if (cmd === 'resolve') {
       if (!target || !['local', 'remote'].includes(args.keep)) fail('usage: brain.mjs resolve <file> --keep local|remote');
@@ -63,16 +68,17 @@ try {
     if (!brains.length) fail('brain unavailable');
     let failed = 0;
     for (const brainDir of brains) {
-      const file = path.join(brainDir, 'policy.json');
+      const file = dataPath(brainDir, 'policy');
+      const rel = dataRel(brainDir, 'policy');
       let policy = {};
       try { if (fs.existsSync(file)) policy = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; }
-      catch (err) { failed++; process.stdout.write(`${brainDir}: policy.json is not valid JSON (${err.message}); fix it first\n`); continue; }
+      catch (err) { failed++; process.stdout.write(`${brainDir}: ${rel} is not valid JSON (${err.message}); fix it first\n`); continue; }
       try {
         const res = brainWrite({ brainDir, thread: ctx.thread, policy: loadPolicy(brainDir) }, {
-          ops: [{ path: 'policy.json', content: `${JSON.stringify({ ...policy, workflow_version: want }, null, 2)}\n` }],
+          ops: [{ path: rel, content: `${JSON.stringify({ ...policy, workflow_version: want }, null, 2)}\n` }],
           message: `pin workflow ${want}`,
         });
-        process.stdout.write(`${brainDir}: ${formatWriteResult(res, ['policy.json'])}\n`);
+        process.stdout.write(`${brainDir}: ${formatWriteResult(res, [rel])}\n`);
       } catch (err) { failed++; process.stdout.write(`${brainDir}: ${err.message}\n`); }
     }
     process.stdout.write(`workflow_version ${want}: the install switches at the next session start (or /clear)${args.all ? '' : '; other brains on this machine: brain.mjs pin --all'}\n`);
@@ -80,10 +86,11 @@ try {
   } else if (cmd === 'maintainer') {
     // flow-public#21: policy.maintainer (where error.mjs report goes) had no writer; a hand edit of policy.json is refused
     // (P-013, P-040). `none` turns a channel off (comms none: reports go straight to an issue).
-    const file = path.join(ctx.brainDir || '', 'policy.json');
+    const file = dataPath(ctx.brainDir || '', 'policy');
+    const rel = dataRel(ctx.brainDir || '', 'policy');
     if (!ctx.brainDir) fail('brain unavailable');
     let policy = {};
-    try { if (fs.existsSync(file)) policy = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (err) { fail(`policy.json is not valid JSON (${err.message}); fix it first`); }
+    try { if (fs.existsSync(file)) policy = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (err) { fail(`${rel} is not valid JSON (${err.message}); fix it first`); }
     const show = (m) => `maintainer comms ${m.comms ?? 'none'}; repo ${m.repo ?? 'none'}`;
     if (args.comms === undefined && args.repo === undefined) { process.stdout.write(`${show(maintainerOf(policy))}\n`); process.exit(0); }
     if (ctx.thread && isWakeTurn(ctx.brainDir, ctx.thread)) fail('the maintainer setting cannot change in a turn started by a message (P-047)');
@@ -98,14 +105,52 @@ try {
       else next[key] = v;
     }
     const res = brainWrite({ brainDir: ctx.brainDir, thread: ctx.thread, policy: loadPolicy(ctx.brainDir) }, {
-      ops: [{ path: 'policy.json', content: `${JSON.stringify({ ...policy, maintainer: next }, null, 2)}\n` }],
+      ops: [{ path: rel, content: `${JSON.stringify({ ...policy, maintainer: next }, null, 2)}\n` }],
       message: `maintainer: ${show(maintainerOf({ maintainer: next }))}`,
     });
-    process.stdout.write(`${formatWriteResult(res, ['policy.json'])}\n${show(maintainerOf({ maintainer: next }))}\n`);
+    process.stdout.write(`${formatWriteResult(res, [rel])}\n${show(maintainerOf({ maintainer: next }))}\n`);
+  } else if (cmd === 'freeze') {
+    // P-074 (agent-alice/D-0092): one command turns the freeze on or off; the policy key is what the code reads.
+    if (!ctx.brainDir) fail('brain unavailable');
+    const file = dataPath(ctx.brainDir, 'policy');
+    const rel = dataRel(ctx.brainDir, 'policy');
+    let policy = {};
+    try { if (fs.existsSync(file)) policy = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (err) { fail(`${rel} is not valid JSON (${err.message}); fix it first`); }
+    const now = freezeOf(policy);
+    if (!target || target === 'status') { process.stdout.write(`${freezeLine(now)}\n`); process.exit(0); }
+    if (ctx.thread && isWakeTurn(ctx.brainDir, ctx.thread)) fail('the freeze cannot change in a turn started by a message (P-047)');
+    const items = (v) => (typeof v === 'string' ? v.split(',').map((x) => x.trim()).filter(Boolean) : []);
+    let next;
+    if (target === 'off') {
+      if (!now) { process.stdout.write('freeze: already off\n'); process.exit(0); }
+      next = { ...policy };
+      delete next.freeze;
+    } else if (target === 'on') {
+      const until = typeof args.until === 'string' && args.until.trim() ? args.until.trim() : now?.until;
+      const reason = typeof args.reason === 'string' && args.reason.trim() ? args.reason.trim() : now?.reason;
+      if (!until || !reason) fail('usage: brain.mjs freeze on --until <version that ends it> --reason "<why>" [--allow <topic>,..] [--repos <repo>,..]');
+      const repos = args.repos !== undefined ? items(args.repos) : (policy.freeze?.repos || null);
+      const allow = [...new Set([...(now?.allow || []), ...items(args.allow)])];
+      next = { ...policy, freeze: { reason, until, allow, ...(repos && repos.length ? { repos } : {}), since: now?.since || new Date().toISOString(), ...(ctx.thread ? { by: ctx.thread } : {}) } };
+    } else if (target === 'allow') {
+      if (!now) fail('freeze is off: nothing to allow (brain.mjs freeze on --until <version> --reason "<why>")');
+      const add = items(args._[2] || args.topic);
+      if (!add.length) fail('usage: brain.mjs freeze allow <topic>[,<topic>]');
+      next = { ...policy, freeze: { ...policy.freeze, allow: [...new Set([...now.allow, ...add])] } };
+    } else {
+      fail('usage: brain.mjs freeze [status | on --until <version> --reason "<why>" [--allow <topic>,..] [--repos <repo>,..] | off | allow <topic>,..]');
+    }
+    const after = freezeOf(next);
+    const res = brainWrite({ brainDir: ctx.brainDir, thread: ctx.thread, policy: loadPolicy(ctx.brainDir) }, {
+      ops: [{ path: rel, content: `${JSON.stringify(next, null, 2)}\n` }],
+      message: after ? `freeze on until ${after.until} (allowed: ${after.allow.join(', ') || 'none'})` : 'freeze off',
+    });
+    process.stdout.write(`${formatWriteResult(res, [rel])}\n${freezeLine(after)}\n`);
   } else if (cmd === 'status') {
-    process.stdout.write(`brain ${ctx.brainDir}\nunpushed: ${unpushedCount(ctx.brainDir)}\n`);
+    const frozen = freezeOf(ctx.policy);
+    process.stdout.write(`brain ${ctx.brainDir}\nunpushed: ${unpushedCount(ctx.brainDir)}\n${frozen ? `${freezeLine(frozen)}\n` : ''}`);
   } else {
-    fail('usage: brain.mjs write|remove|sync|resolve|pin|maintainer|status');
+    fail('usage: brain.mjs write|remove|sync|resolve|pin|maintainer|freeze|status');
   }
 } catch (err) {
   fail(err.message);

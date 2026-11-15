@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Stop: closes the turn record for keepalive (P-043, with the turn's opened_at); one brain write per turn for buffered logs
 // (P-030); signals are queued for the next prompt (P-023 c), each skill proposal once per thread. A missing reply is found by the message TTL in the mail service (P-042, P-046), not here.
-// Picked assist (P-042, 2026-11-02): an assist message this thread picked up (`comms receive`) and has given no reply state
-// (`send --reply-to --state`) is one queued line at the stop, not a block: the answer is due, the turn may still end.
-// One answered `otázka` or `čakám` is not reminded: its sender knows the state, the final `hotovo` follows.
+// Picked mail (P-042, P-072): what the thread owes is the mail's `owed` (one `obligations` call): a message picked up in its
+// mailboxes without an answer (`picked`) is one queued line at the stop, not a block: the answer is due, the turn may still
+// end. One answered `otázka` or `čakám` (`waiting`) is not reminded: its sender knows the state, the final `hotovo` follows.
+// Mail this thread sent that the mail still waits on (`awaiting` with `wait_due_at`) is its waker: the mail rings it (1e).
 // Reply protocol (P-061, operator 2026-11-08, form D-0040): the final reply declares its state on the last line, `**Stav:** hotovo|otázka|čakám`;
 // the hook reads only that line and checks it against facts, in every turn (bell turns too), never the wording of the reply:
 // no state, a step written as prose ("Ostáva: …", operator 2026-11-09), items under **Otázky na operátora:** / **Úlohy pre operátora:** with a state other than
@@ -22,12 +23,12 @@ import { pendingT3Line } from '../scripts/wizard.mjs';
 import { logDecision } from '../scripts/denials.mjs';
 import { flushBuffer, proposalKey } from '../scripts/logs.mjs';
 import { unpushedCount, brainSync, oldestUnpushedAgeMs } from '../scripts/brain.mjs';
-import { recordTurn, isMainTopic } from '../scripts/comms.mjs';
+import { recordTurn, isMainTopic, readObligations, ageText, OWED_PREFIX, OWED_LINE, unansweredOwed } from '../scripts/comms.mjs';
 import { heldTopics, threadOrchestrator, ORCHESTRATOR_QUESTION_REASON, endedProgrammaticThread, PROGRAMMATIC_END_REASON } from '../scripts/topic.mjs';
 import { parseReply, repeatsAnswered, REPEATED_QUESTION_REASON, HANDOVER_LINE, HANDOVER_NONE_LINE, PROTOCOL_EXAMPLE, handoverMatches } from '../scripts/protocol.mjs';
 export { REPEATED_QUESTION_REASON };
 import { TOPIC_QUESTION } from '../scripts/boot.mjs';
-import { waitOnlyStep, validWaker, activeTimer, setTimer, clearTimer, threadTimers, timersPatch, sameTimer, finishedTasks, withoutFinished, AUTO_TIMER_MS, AUTO_TIMER_MAX_MS, OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS, IDLE_RING_MS } from '../scripts/waker.mjs';
+import { waitOnlyStep, validWaker, awaitingWaker, activeTimer, setTimer, clearTimer, threadTimers, timersPatch, sameTimer, finishedTasks, withoutFinished, resumeAtFor, AUTO_TIMER_MS, AUTO_TIMER_MAX_MS, OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS, IDLE_RING_MS } from '../scripts/waker.mjs';
 import { transcriptTail } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to next prompt); 1 block reason', principles: ['P-003', 'P-026', 'P-030', 'P-040', 'P-042', 'P-043', 'P-061'] };
@@ -37,6 +38,9 @@ export const AUTO_TIMER_THEN = 'the last turn ended waiting without a timer: con
 // "Stav: čakám" without a waker is blocked once (pilot nudge-why 2026-11-14: the thread reported waiting with nothing armed);
 // ending so anyway gets the code timer carrying what the turn waits for, the thread is never left idle.
 export const NO_WAKER_REASON = (what) => `the reply declares "**Stav:** čakám (${String(what || '').replace(/\s+/g, ' ').trim().slice(0, 120)})" but no waker is armed: arm one for that event (<plugin>/bin/timer.mjs --in <min>m --then "<step>" [--until "<check>" --deadline <2h> | --topic <id>], mail with a deadline, run_in_background, schedule_task), or do the work now and end with the true state (P-061)`;
+// A topic thread with an orchestrator waiting with no timer and no awaited reply: a waiting-only handover step got only the
+// idle ring in hours, so the topic stood and the orchestrator waited for a close that could not come (2026-11-15).
+export const ORCHESTRATOR_WAIT_REASON = (o, what) => `the reply declares "**Stav:** čakám (${String(what || '').replace(/\s+/g, ' ').trim().slice(0, 120)})" in the thread of topic ${o.of}, which the orchestrator ${o.to} waits for, but no timer is armed and no reply is awaited: this thread must not wait for anything that does not come by itself. Arm a timer (<plugin>/bin/timer.mjs --in <min>m --then "<step>" [--until "<check>" --deadline <2h> | --topic <id>]) or send the orchestrator the question or the exact state (comms send --to ${o.to} --level blocker|assist, with your recommendation), or do the work now (P-061, P-064)`;
 export const WAIT_TIMER_THEN = (what) => `the last turn ended "**Stav:** čakám (${String(what).replace(/\s+/g, ' ').trim().slice(0, 120)})" without a waker: check it now; if it came, continue the work; if not, end with your **Handover:** section and the same state, the timer comes back later (P-061)`;
 
 // T3 shows the operator only the last message of a turn and folds the earlier ones under "Worked for …": a note written
@@ -116,9 +120,13 @@ export function mistakeClaim(text) {
 // hypothetical one, and a wrong block cost a whole extra turn (operator 2026-11-08, hooks review).
 export const MISTAKE_REASON = (sentence) => `mistake named in the last reply: "${sentence.slice(0, 120)}"; if it was one, handle it with skill workflow:error (fix, clean up, save a skill or rule, report it) and say what you saved (P-003)`;
 
-export const PICKED_ASSIST_LINE = (list) => `picked assist unanswered: ${list.map((w) => w.id).join(', ')}; answer each with comms send --reply-to <id> --state hotovo|otázka|čakám; answered another way (one reply for several, a new message): comms settle --id <id> (P-042)`;
-/** Picked assist without a reply state: the only ones the stop reminds of. */
-export const unansweredPicked = (state) => (Array.isArray(state?.picked_assist) ? state.picked_assist : []).filter((w) => !w.state);
+// flow-public#85: a reply wrote a <task-notification> block (completed, exit 0) for a job still running and went on as if it
+// had ended. Only the harness writes that block, so the reply that carries one is refused; a mention inside a code fence or
+// in running text (not at the start of a line) is no notification.
+export const fakeNotification = (text) => /^[ \t>]*<task-notification\b[^>]*>/im.test(String(text || '').replace(/```[\s\S]*?```/g, ' '));
+export const FAKE_NOTIFICATION_REASON = 'the reply contains a <task-notification> block: only the harness writes it, the end of a background job is never predicted in the reply. Remove the block and anything built on it; wait for the real notification (t3_background_wait with the task id, or end the turn with "**Stav:** čakám (na <job>)") and continue only after it (P-020, P-019)';
+
+export { OWED_PREFIX, OWED_LINE, unansweredOwed };
 
 export function run(input) {
   const ctx = loadContext({ requireBrain: false });
@@ -128,6 +136,9 @@ export function run(input) {
   let work = null;
   let idleWait = null;
   let closeTurn = () => {};
+  // The mail's view of this thread (P-072), read once below: `owed` for the reminder, `awaiting` as the mail's waker (1e).
+  let mail = null;
+  let mailWaker = null;
   // P-061: the declared state. A question to the operator makes the handover step the operator's move, not a continuation;
   // only a timer (resume_at) rings the thread (bob 2026-11-03: rung 76 s after a question, before the operator could read it).
   const reply = parseReply(input.last_assistant_message);
@@ -161,9 +172,9 @@ export function run(input) {
       // at 11:51, with the next new timer).
       const timer = threadTimers(st)[0] || null;
       if (!timer && snooze) return close({ next: `pause of topic ${snooze.id} ended: run topic.mjs resume ${snooze.id}, then continue from handover`, resumeAt: snooze.paused_until });
-      // An armed waker (schedule, background task, mail) rings the thread itself: no continue bell on top of it
-      // (2026-11-03: rung 2 min after arming the check for 06:00, only to say there is nothing to do).
-      const armed = !timer && validWaker(st);
+      // An armed waker (schedule, background task, the mail's wait for an answer) rings the thread itself: no continue bell
+      // on top of it (2026-11-03: rung 2 min after arming the check for 06:00, only to say there is nothing to do).
+      const armed = !timer && (validWaker(st) || mailWaker);
       if (!timer && idleWait && !armed) {
         const key = `${work.id}\n${work.next}`;
         const n = st.idle_ring?.key === key && st.turn_source !== 'operator' ? Number(st.idle_ring.n || 0) : 0;
@@ -171,7 +182,7 @@ export function run(input) {
         const due = IDLE_RING_MS[n];
         return close({ next: due ? work.next : null, resumeAt: due ? new Date(Date.now() + due).toISOString() : null });
       }
-      close({ next: timer?.then || (toOperator || armed ? null : work?.next) || null, resumeAt: timer?.at || null });
+      close({ next: timer?.then || (toOperator || armed ? null : work?.next) || null, resumeAt: timer ? resumeAtFor(timer) : null });
     };
   }
   // The turn is closed only when the stop really ends it: a blocked stop keeps the agent working, so the record stays open
@@ -200,9 +211,13 @@ export function run(input) {
   }
   if (ctx.thread) {
     const state = readThreadState(ctx.brainDir, ctx.thread);
-    const picked = unansweredPicked(state);
+    // One obligations call (section 2); an outage gives the client's backup (offline), another model nothing (4a).
+    const res = readObligations(ctx, { held });
+    mail = res.ok && !(res.data?.offline && !res.data?.cached) ? res.data : null;
+    mailWaker = awaitingWaker(mail);
+    const picked = unansweredOwed(mail);
     // Once per queued line: a stop that finds the same reminder still waiting does not queue it again.
-    if (picked.length && !(state.pending_signals || []).some((sig) => sig.startsWith('picked assist unanswered'))) signals.push(PICKED_ASSIST_LINE(picked));
+    if (picked.length && !(state.pending_signals || []).some((sig) => sig.startsWith(OWED_PREFIX))) signals.push(OWED_LINE(picked, mail.offline ? ageText(mail.age_s) : null));
     // P-030: each proposal (sequence -> skill) once per thread, not at every Stop that sees the count again.
     const proposed = Array.isArray(state.proposed) ? state.proposed : [];
     const added = [];
@@ -234,9 +249,11 @@ export function run(input) {
     const live = (recorded.wakers || []).some((w) => w.tasks?.length) ? withoutFinished(recorded.wakers, finishedTasks(transcriptTail(input.transcript_path))) : recorded.wakers;
     if (live !== recorded.wakers && live.length !== recorded.wakers.length) writeThreadState(ctx.brainDir, ctx.thread, { ...recorded, wakers: live });
     const before = readThreadState(ctx.brainDir, ctx.thread);
-    const spent = !!before.timer && before.turn_source === 'operator' && !(before.turn_started_at && before.timer.set_at >= before.turn_started_at) && (before.timer.auto || reply.state !== 'čakám');
+    // A stall check (D-0084) watches a handed-off topic, not a step of this turn: an operator prompt never spends it.
+    const spent = !!before.timer && !before.timer.stall && before.turn_source === 'operator' && !(before.turn_started_at && before.timer.set_at >= before.turn_started_at) && (before.timer.auto || reply.state !== 'čakám');
     // Only that timer (the earliest) is spent; later ones of the thread stay (2026-11-13).
-    const waker = validWaker(spent ? { ...before, ...timersPatch(threadTimers(before).filter((t) => !sameTimer(t, before.timer))) } : before);
+    // The mail's wait for an answer to mail this thread sent rings it too (1e): a waker of code, not of this thread's state.
+    const waker = validWaker(spent ? { ...before, ...timersPatch(threadTimers(before).filter((t) => !sameTimer(t, before.timer))) } : before) || mailWaker;
     const paused = held.some((t) => t.state === 'paused') && !work;
     // A dialog asked in this turn (PreToolUse keeps the time) that failed or was declined leaves the text question as fallback; one
     // the operator answered does not (flow-public#35 pilot: a consent answered, the next consent asked in text ended the turn).
@@ -256,6 +273,7 @@ export function run(input) {
     let ended = null;
     // A harness that sends no reply text (field missing) cannot be checked; an empty reply is no state.
     if (typeof msg !== 'string') violation = null;
+    else if (fakeNotification(msg)) violation = FAKE_NOTIFICATION_REASON;
     // D-0043: a thread code started for a topic that done --topic closed ends settled: no question, no wait without a waker.
     else if ((ended = endedProgrammaticThread(ctx.brainDir, ctx.thread)) && (reply.state === 'otázka' || reply.questions?.length || reply.operator?.length || noTopicBlock || NEXT_TOPIC_QUESTION.test(msg) || (!!turnState.dialog_at && (!turnState.turn_started_at || turnState.dialog_at >= turnState.turn_started_at)) || (reply.state === 'čakám' && (!reply.waitFor || !waker)))) violation = PROGRAMMATIC_END_REASON(ended);
     else if (noTopicBlock && held.length) violation = STALE_STATUS_REASON(ctx.projectName, held[0].id);
@@ -273,6 +291,8 @@ export function run(input) {
     else if (reply.state === 'otázka' && !reply.question) violation = NO_QUESTION_REASON;
     else if (repeated) violation = repeated;
     else if (reply.state === 'čakám' && !reply.waitFor) violation = NO_WAIT_TARGET_REASON;
+    // A thread of a topic with an orchestrator: the idle ring (hours) is no waker for it, someone waits for its result.
+    else if (reply.state === 'čakám' && !waker && !paused && (orchestrator = threadOrchestrator(ctx.brainDir, ctx.thread))) violation = ORCHESTRATOR_WAIT_REASON(orchestrator, reply.waitFor);
     // The idle ring of a step that only waits is a waker armed by code (closeTurn, operator 2026-11-03).
     else if (reply.state === 'čakám' && !waker && !paused && !idleWait) violation = NO_WAKER_REASON(reply.waitFor);
     else if (reply.state === 'hotovo' && work && !idleWait && !waker) violation = NEXT_STEP_REASON(work.id, work.next);

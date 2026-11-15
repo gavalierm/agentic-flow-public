@@ -1,13 +1,14 @@
 {
   "name": "agentic-flow",
-  "version": "0.9.99",
+  "version": "1.8.0",
   "private": true,
+  "commsModel": 2,
   "type": "module",
   "description": "Agentic workflow plugin for Claude Code (plugin name: workflow). No runtime dependencies.",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test \"tests/**/*.test.mjs\""
+    "test": "node tests/ttl.mjs check && node tests/ttl.mjs run"
   }
 }

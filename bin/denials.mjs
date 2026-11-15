@@ -4,7 +4,7 @@
 // that should have passed is a false positive of that check: fix the check (skill fix), not the agent.
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { readDenials, summarize, denialsFile } from '../scripts/denials.mjs';
+import { readDenials, summarize, denialsFile, topDenials, denialsLine } from '../scripts/denials.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 try {
@@ -13,9 +13,12 @@ try {
   if (!Number.isFinite(days) || days <= 0) fail('usage: denials.mjs [--days <n>] [--json]');
   const entries = readDenials(ctx.brainDir, { days });
   const groups = summarize(entries);
-  if (args.json) process.stdout.write(JSON.stringify({ file: denialsFile(ctx.brainDir), days, total: entries.length, groups }, null, 2) + '\n');
+  const kinds = topDenials(entries, { top: 10 });
+  if (args.json) process.stdout.write(JSON.stringify({ file: denialsFile(ctx.brainDir), days, total: entries.length, groups, kinds }, null, 2) + '\n');
   else {
     process.stdout.write(`denials: ${entries.length} in ${days} d (${denialsFile(ctx.brainDir)})\n`);
+    // P-076: the most frequent kinds first, each a skill or rule to fix (or a hook to loosen).
+    process.stdout.write(`kinds: ${denialsLine(kinds)}\n`);
     for (const g of groups) {
       process.stdout.write(`${String(g.n).padStart(4)}  ${g.key}\n`);
       for (const l of g.last) process.stdout.write(`        ${String(l || '').slice(0, 140)}\n`);

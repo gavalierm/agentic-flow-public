@@ -4,9 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { git } from './util.mjs';
 import { servicesDir } from './config.mjs';
+import { redactUrl } from './secrets.mjs';
 
 function must(r, what) {
-  if (r.status !== 0) throw new Error(`${what}: ${r.stderr || r.stdout}`);
+  if (r.status !== 0) throw new Error(`${what}: ${redactUrl(r.stderr || r.stdout)}`);
   return r.stdout;
 }
 

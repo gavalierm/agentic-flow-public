@@ -1,30 +1,48 @@
 #!/usr/bin/env node
-// Mail for the main agent and read-only subagents (P-041, P-042, P-044, P-047). Thin wrapper over the comms client
-// of agentic-comms with the project's configuration (scripts/comms.mjs); the message body is printed as data.
+// Mail for the main agent and read-only subagents (P-041, P-042, P-044, P-047, P-072). Thin wrapper over the comms client
+// of agentic-comms (mail model 2) with the project's configuration (scripts/comms.mjs); the message body is printed as data.
+// The state of a message (pending, picked, waiting, done, ...) is the mail's alone (P-072): this command keeps no list of
+// picked messages, no reply wait and no timer bound to a message; what the thread owes and awaits is `obligations`.
 // Levels (2026-11-02): blocker | steer | assist; `info` is removed. The TTL is the pickup deadline (`receive`), not the answer.
-//   comms.mjs status                                    configuration, service health
-//   comms.mjs count [--topic <id>]                      waiting messages (cached 60 s)
+//   comms.mjs status                                    configuration, service (version, model), what the thread owes and awaits
+//   comms.mjs count [--topic <id>]                      waiting messages
 //   comms.mjs list [--topic <id>]                       waiting messages without text: id, level, sender, created (no pickup)
-//   comms.mjs receive [--id <id>[,<id>]] [--topic <id>]  full messages; this is the pickup (picked_at); --id reads only those
-//   comms.mjs ack --id <id>[,<id>]                      message stops waiting
-//   comms.mjs message --id <id>                         state of a message you sent, without its body: pickup, answer state
-//   comms.mjs settle --id <id>[,<id>]                   picked assist answered another way (no reply --reply-to)
-//   comms.mjs send --level blocker|steer|assist (--to [<project>/]<topic> | --to @<persona>/main) (--text "..." | --file <path>) [--ttl 5m|30m] [--from <held topic>] [--cancels <id>] [--key <key>]
-//   comms.mjs send --reply-to <id> --state hotovo|otázka|čakám [--wait-for "<what>"] [--text ...]
-//                                                       reply with its state (P-061): one final `hotovo` per message, a reply is never answered
-//                                                       by a reply; --cancels <id> on a new message withdraws your own final reply <id>
+//   comms.mjs receive [--id <id>[,<id>]] [--topic <id>]  full messages; reading the body is the pickup (picked; a reply or a steer is
+//                                                       done by it); --id reads only those, also again after the pickup
+//   comms.mjs message --id <id>                         state of a message: status, pickup, answer, the mail's next check
+//   comms.mjs settle --id <id>[,<id>]                   a message of your mailbox answered another way: done without a reply (settled)
+//   comms.mjs ack --id <id>[,<id>]                      a picked message that needs no answer: done (acked); not after an interim answer
+//   comms.mjs withdraw --id <id>                        take back a message you sent that has no final answer (done, withdrawn)
+//   comms.mjs send --level blocker|steer|assist (--to [<project>/]<topic> | --to @<persona>/main) (--text "..." | --file <path>) [--ttl 5m|30m] [--from <held topic>] [--key <key>]
+//   comms.mjs send --level assist|steer --to [<project>/]<topic> --handoff "<scope>" [--not "<out of scope>"] [--distinct ".."] --text ".."
+//                                                       hands work to the topic: a handoff record in the held topic, the scope
+//                                                       checked for an overlap with other open topics (agent-alice/D-0082)
+//   comms.mjs send --reply-to <id> --state hotovo|otázka|čakám [--wait-for "<what>"] [--cancels <id of your final reply>] [--text ...]
+//                                                       the answer with its state (P-061), one operation of the mail (resolve): one final
+//                                                       `hotovo` per message, a reply is never answered; --cancels replaces your final reply
+//   comms.mjs send --reply-to <id> --state hotovo --fix yes|no [--text "<why>"]
+//                                                       the orchestrator's answer to a fix question of a topic from a report or
+//                                                       an issue (P-075): records it for that topic and replies "áno, relevantné"
+//                                                       or "nie, pracuje sa na novej verzii" in one step
 //   comms.mjs notices [--all] | decide --notice <id> --decision <id> [--target <project>/<topic>]
 //   comms.mjs register [<topic>]                        idempotent registration of held topics in the mail service
 import fs from 'node:fs';
+import path from 'node:path';
 import { parseArgs, fail, nowIso, readStdin, localTime } from '../scripts/util.mjs';
-import { loadContext, inSubagent, readThreadState, writeThreadState } from '../scripts/config.mjs';
-import { commsSettings, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, categoryLabel, LEVELS, dropNoticesCache } from '../scripts/comms.mjs';
-import { readTopic, mailboxTopics, heldTopics, heldBy, topicMailProject } from '../scripts/topic.mjs';
+import { loadContext, inSubagent, readThreadState, writeThreadState, mainCheckout, resolveDomain } from '../scripts/config.mjs';
+import { commsSettings, commsProjectName, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, categoryLabel, LEVELS, dropNoticesCache, readObligations, ageText } from '../scripts/comms.mjs';
+import { readTopic, readTopicRecord, mailboxTopics, heldTopics, heldBy, topicMailProject, listTopics } from '../scripts/topic.mjs';
 import { readHolder, isHolderOf } from '../scripts/brain.mjs';
-import { setTimer, clearTimer, threadTimers, validWaker, withoutMailWaker, TIMER_CMD, REPLY_WINDOW_MS, REPLY_STATE_TIMER_MS } from '../scripts/waker.mjs';
+import { threadTimers, timerTopic, validWaker, TIMER_CMD } from '../scripts/waker.mjs';
 import { STATES } from '../scripts/protocol.mjs';
+import { LAYOUT } from '../scripts/layout.mjs';
+import { giverTopic, newRecord, writeHandoff, checkOverlap } from '../scripts/handoff.mjs';
+import { openTopicExists } from '../scripts/topic-files.mjs';
+import { grantFix, FIX_ANSWERS } from '../scripts/fix-gate.mjs';
 
 const FINAL_STATE = STATES[0];
+/** Final statuses of a message in the mail (model 2, 1a): a 409 with one of them means it is already settled. */
+const FINAL_STATUSES = ['done', 'discarded', 'superseded', 'undelivered'];
 /** State of a reply; one sent without a state (a client from before reply states) is final. */
 const replyStateOf = (m) => (STATES.includes(m.reply_state) ? m.reply_state : FINAL_STATE);
 
@@ -35,6 +53,58 @@ const ids = () => [].concat(args.id === undefined ? [] : args.id).flatMap((v) =>
 
 function guardMain(action) {
   if (inSubagent()) fail(`comms ${action} refused in subagent: only the main agent communicates; subagents only read (P-025)`);
+}
+
+/**
+ * Mail project of the brain's own project, where a topic without a recorded project lives (D-0035): a persona brain is its
+ * own project (`alice`, also for a thread of its topic in another project); another brain keeps the session's project.
+ */
+function brainHomeProject(brainDir, sessionProject) {
+  try {
+    const home = loadContext({ project: mainCheckout(brainDir), requireBrain: false });
+    if (home.persona && home.brainDir && path.resolve(home.brainDir) === path.resolve(mainCheckout(brainDir))) return commsProjectName(home);
+  } catch { /* not a project of its own */ }
+  return sessionProject;
+}
+
+/**
+ * Open work topics of this brain with the id of `addr` registered in a project other than `addr.project` (a topic without
+ * a recorded project is in the brain's own project, D-0035), as mail addresses `<project>/<topic>`. Both directions of a
+ * wrong project (`alice/<topic of agentic-flow>`, `agentic-flow/<topic of alice>`) use this one check. Only for an address
+ * in a project of this persona (its own project, the session's or one its topics name): a topic of another persona's
+ * project with the same id is not ours to judge.
+ */
+function topicElsewhere(brainDir, addr, sessionProject) {
+  const home = brainHomeProject(brainDir, sessionProject);
+  const topics = listTopics(brainDir).filter((t) => !isMainTopic(t));
+  const mailProject = (t) => (typeof t.project === 'string' && t.project ? t.project : home);
+  if (!new Set([home, sessionProject, ...topics.map(mailProject)]).has(addr.project)) return [];
+  if (topics.some((t) => t.id === addr.topic && mailProject(t) === addr.project)) return [];
+  return [...new Set(topics.filter((t) => t.id === addr.topic).map(mailProject))].map((project) => `${project}/${addr.topic}`);
+}
+
+/**
+ * The address names the brain repo of another domain (`<domain brain>/<topic>`) and that brain records the topic under its
+ * mail project (topic create, report-3c65fd98): the mail address `<project>/<topic>`, else null. Only a recorded project
+ * decides; the domains are the siblings of this project's domain.
+ */
+function topicInOtherBrain(ctx, addr) {
+  if (!addr?.project || !addr.topic || /[\\/]/.test(addr.project) || addr.project.startsWith('.')) return null;
+  let domain = null;
+  try { domain = resolveDomain(mainCheckout(ctx.projectDir), undefined, { field: false }); } catch { return null; }
+  if (!domain?.root) return null;
+  const root = path.dirname(domain.root);
+  let entries = [];
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return null; }
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name.startsWith('.')) continue;
+    const dir = path.join(root, e.name, addr.project);
+    if (!fs.existsSync(dir) || (ctx.brainDir && path.resolve(dir) === path.resolve(ctx.brainDir))) continue;
+    let t = null;
+    try { t = readTopicRecord(dir, addr.topic); } catch { t = null; }
+    if (t && typeof t.project === 'string' && t.project && t.project !== addr.project) return `${t.project}/${addr.topic}`;
+  }
+  return null;
 }
 
 /** Topic record with its kind (topic main reads `@<persona>/main`); a topic without a record keeps only its id. */
@@ -52,20 +122,29 @@ function queries(ctx) {
   return mailQueries(ctx, mailboxTopics(ctx));
 }
 
+/** The client's answer, else exit: 2 mail unavailable, 3 mail of another model (4a: nothing read or written), 1 refused. */
 function must(res) {
   if (res.ok) return res.data;
-  fail(res.error || 'comms failed', res.unavailable ? 2 : 1);
+  fail(res.error || 'comms failed', res.unavailable ? 2 : res.model ? 3 : 1);
 }
 
-/** Pickup: `receive` returns the bodies and the service records picked_at (P-042). `--id` limits it to the named ids. */
+/**
+ * Pickup: `receive` returns the bodies and the mail moves each to `picked` (a reply or a steer to `done`, P-042). `--id`
+ * reads the named messages one by one in any status (the mail gives the body again to its mailbox and its sender: a lost
+ * answer or another thread of the topic, P-072), in the first held mailbox that has it.
+ */
 function fetchMessages(ctx, wanted = []) {
   const seen = new Set();
   const messages = [];
-  for (const q of queries(ctx)) {
-    const a = ['receive', ...queryArgs(q)];
-    if (wanted.length) a.push('--id', wanted.join(','));
-    const data = must(runClient(ctx, a));
-    for (const m of data.messages || []) if (!seen.has(m.id)) { seen.add(m.id); messages.push(m); }
+  const add = (data) => { for (const m of data.messages || []) if (!seen.has(m.id)) { seen.add(m.id); messages.push(m); } };
+  const qs = queries(ctx);
+  if (!wanted.length) for (const q of qs) add(must(runClient(ctx, ['receive', ...queryArgs(q)])));
+  for (const id of wanted) {
+    for (const q of qs) {
+      const res = runClient(ctx, ['receive', ...queryArgs(q), '--id', id]);
+      if (res.ok) { add(res.data); break; }
+      if (res.unavailable || res.model || res.disabled) must(res);
+    }
   }
   messages.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
   return messages;
@@ -85,103 +164,75 @@ function listItems(ctx) {
 function header(m) {
   const from = `${m.sender || '?'}${m.from_project && m.from_topic ? ` (${m.from_project}/${m.from_topic})` : ''}${m.thread_id ? ` thread ${m.thread_id}` : ''}`;
   const to = m.to_thread ? `to thread ${m.to_thread}` : `to ${m.project}/${m.topic}`;
-  return `${m.id} | ${m.level}${m.level_raised_from ? ` (raised from ${m.level_raised_from})` : ''} | from ${from} | ${to}${m.reply_to ? ` | reply_to ${m.reply_to} | state ${replyStateOf(m)}${m.wait_for ? ` (na ${m.wait_for})` : ''}` : ''}${m.cancels ? ` | cancels ${m.cancels}` : ''} | ${m.created_at}`;
+  const status = m.status && m.status !== 'picked' ? ` | ${m.status}${m.resolution ? `/${m.resolution}` : ''}` : '';
+  return `${m.id} | ${m.level}${m.level_raised_from ? ` (raised from ${m.level_raised_from})` : ''} | from ${from} | ${to}${m.reply_to ? ` | reply_to ${m.reply_to} | state ${replyStateOf(m)}${m.wait_for ? ` (na ${m.wait_for})` : ''}` : ''}${m.cancels ? ` | cancels ${m.cancels}` : ''}${status} | ${m.created_at}`;
 }
 
 /**
- * Sender timer after an interim answer (`otázka`, `čakám`) to message `id`: it replaces the reply-window timer of that
- * message and doubles with every check that finds the same state, up to the maximum of the state (P-061). The step only
- * checks the state: an interim answer is never a reason to resend or escalate. Other timers of the thread stay (setTimer).
+ * What a turn keeps of the mail it received (3b: state of the turn, not of the message): the topics and threads the mail
+ * came from (`received_from`, `topic_mail`) and the replies with their sender (`mail_replies`, D-0058). What the thread
+ * owes for a picked message is the mail's `owed` (P-072).
  */
-function armStateTimer(ctx, id, replyState, waitFor = null) {
-  const [base, max] = REPLY_STATE_TIMER_MS[replyState];
-  const now = Date.now();
-  const state = readThreadState(ctx.brainDir, ctx.thread);
-  const prev = state.reply_wait?.[id];
-  const n = prev && prev.state === replyState ? prev.n : 0;
-  const delayMs = Math.min(base * 2 ** n, max);
-  const why = replyState === 'otázka' ? 'its operator decides' : `the recipient waits${waitFor ? ` for ${waitFor}` : ''}`;
-  const timer = setTimer(ctx.brainDir, ctx.thread, { delayMs, then: `check the state of ${id}: comms message --id ${id} (reply ${replyState}: ${why}); do not resend or escalate it`, forId: id }, now);
-  const after = readThreadState(ctx.brainDir, ctx.thread);
-  writeThreadState(ctx.brainDir, ctx.thread, { ...after, reply_wait: { ...(after.reply_wait || {}), [id]: { state: replyState, n: n + 1 } } });
-  return timer;
-}
-
-/** The exchange about `id` is closed (final reply): its timer, its doubling record and its mail waker are spent. */
-function closeReplyWait(ctx, id) {
-  const state = readThreadState(ctx.brainDir, ctx.thread);
-  clearTimer(ctx.brainDir, ctx.thread, (t) => t.for === id);
-  const after = readThreadState(ctx.brainDir, ctx.thread);
-  const { [id]: gone, ...rest } = after.reply_wait || {};
-  const wakers = withoutMailWaker(after.wakers, id);
-  if (gone || wakers.length !== (after.wakers || []).length) writeThreadState(ctx.brainDir, ctx.thread, { ...after, reply_wait: rest, wakers });
-}
-
-/**
- * Assist messages picked up here wait for an answer from this thread: `picked_assist` (P-042). A final reply
- * (`send --reply-to --state hotovo`) settles its original, an interim one marks it; the Stop hook reminds of the rest.
- */
-function notePicked(ctx, messages) {
+function noteReceived(ctx, messages) {
   if (!ctx.brainDir || !ctx.thread || inSubagent()) return;
-  // P-061: the final reply the thread timer waited for came: the timer is spent. An interim one (`otázka`, `čakám`)
-  // re-arms it for a check of the state (once per state; the doubling belongs to `message --id`).
-  for (const m of messages.filter((x) => x.reply_to)) {
-    const replyState = replyStateOf(m);
-    if (replyState === FINAL_STATE) closeReplyWait(ctx, m.reply_to);
-    else if (readThreadState(ctx.brainDir, ctx.thread).reply_wait?.[m.reply_to]?.state !== replyState) armStateTimer(ctx, m.reply_to, replyState, m.wait_for);
-  }
-  // Only mail with a reply path waits for an answer: a server event without a sender thread or source topic cannot be
-  // answered (`send --reply-to` is refused), so it stayed "unanswered" forever (Bob 2026-11-03: 9 server events).
-  const answerable = messages.filter((m) => !m.reply_to && (m.thread_id || (m.from_project && m.from_topic)));
-  // The reply gate after a turn that ended `otázka` needs the pick time of every answerable message, a blocker too, not only
-  // of an assist: a blocker a bell brought after that turn was refused hotovo (pilot of v0.9.73, 2026-11-12). Last 50 kept.
-  if (answerable.length) {
+  // P-061: mail from a topic is its result for a topic timer (timer.mjs --topic): the prompt hook drops that timer without a
+  // ring once the topic is closed (topicResultCame, 2026-11-14). Last 50 topics kept.
+  // Mail without a source topic in its header (sent without --from, 2026-11-14: "from alice thread <id>") counts for the
+  // topic of a topic timer whose thread sent it: the holder of the open topic, or the thread that closed it.
+  const timerTopics = [...new Set(threadTimers(readThreadState(ctx.brainDir, ctx.thread)).map(timerTopic).filter(Boolean))];
+  const senderTopics = (thread) => timerTopics.filter((id) => readHolder(ctx.brainDir, id)?.thread === thread
+    || readTopicRecord(ctx.brainDir, id, { closed: true })?.closed_by === thread);
+  const topicsOf = (m) => (m.from_topic ? [m.from_topic] : m.thread_id ? senderTopics(m.thread_id) : []);
+  // agent-alice/D-0082 point 5: mail received here from a topic or its holder lets this thread ask the operator about that
+  // topic in the same turn (the holder sent its question here, P-064); the dialog hook compares `at` with the turn start.
+  const sources = messages.filter((m) => m.from_topic || m.thread_id).map((m) => ({ id: m.id, from_topic: m.from_topic || null, thread_id: m.thread_id || null, at: nowIso() }));
+  if (sources.length) {
     const st = readThreadState(ctx.brainDir, ctx.thread);
-    const pickedAt = { ...(st.picked_at || {}) };
-    for (const m of answerable) pickedAt[m.id] ??= nowIso();
-    writeThreadState(ctx.brainDir, ctx.thread, { ...st, picked_at: Object.fromEntries(Object.entries(pickedAt).slice(-50)) });
+    writeThreadState(ctx.brainDir, ctx.thread, { ...st, received_from: [...(Array.isArray(st.received_from) ? st.received_from : []), ...sources].slice(-50) });
+  }  const fromTopic = messages.flatMap(topicsOf);
+  if (fromTopic.length) {
+    const st = readThreadState(ctx.brainDir, ctx.thread);
+    const got = { ...(st.topic_mail || {}) };
+    for (const t of fromTopic) { delete got[t]; got[t] = nowIso(); }
+    writeThreadState(ctx.brainDir, ctx.thread, { ...st, topic_mail: Object.fromEntries(Object.entries(got).slice(-50)) });
   }
-  const add = answerable.filter((m) => m.level === 'assist').map((m) => ({ id: m.id, from: m.sender || '?', topic: m.topic || null, at: nowIso() }));
-  if (!add.length) return;
-  const state = readThreadState(ctx.brainDir, ctx.thread);
-  const have = new Set((state.picked_assist || []).map((w) => w.id));
-  const next = [...(state.picked_assist || []), ...add.filter((w) => !have.has(w.id))];
-  writeThreadState(ctx.brainDir, ctx.thread, { ...state, picked_assist: next });
+  // D-0058: a reply received here keeps who sent it, so done --topic --triage --confirmed-by <id> checks that the
+  // confirmation is the orchestrator's answer to a request of this topic (messageState carries no sender). Last 50 kept.
+  const replies = messages.filter((x) => x.reply_to);
+  if (replies.length) {
+    const st = readThreadState(ctx.brainDir, ctx.thread);
+    const got = { ...(st.mail_replies || {}) };
+    for (const m of replies) got[m.id] = { reply_to: m.reply_to, reply_state: replyStateOf(m), sender: m.sender || null, from_project: m.from_project || null, from_topic: m.from_topic || null, thread_id: m.thread_id || null, topic: m.topic || null, at: nowIso() };
+    writeThreadState(ctx.brainDir, ctx.thread, { ...st, mail_replies: Object.fromEntries(Object.entries(got).slice(-50)) });
+  }
 }
 
-function settlePicked(ctx, replyTo) {
-  if (!ctx.brainDir || !ctx.thread || !replyTo) return;
-  const state = readThreadState(ctx.brainDir, ctx.thread);
-  const before = Array.isArray(state.picked_assist) ? state.picked_assist : [];
-  const after = before.filter((w) => w.id !== replyTo);
-  if (after.length !== before.length) writeThreadState(ctx.brainDir, ctx.thread, { ...state, picked_assist: after });
-}
-
-/** An interim reply (`otázka`, `čakám`) keeps the picked assist, marked with its state: the final `hotovo` is still due. */
-function markPicked(ctx, replyTo, replyState, waitFor) {
-  if (!ctx.brainDir || !ctx.thread || !replyTo) return;
-  const state = readThreadState(ctx.brainDir, ctx.thread);
-  const list = Array.isArray(state.picked_assist) ? state.picked_assist : [];
-  if (!list.some((w) => w.id === replyTo)) return;
-  const mark = ({ wait_for: old, ...w }) => ({ ...w, state: replyState, state_at: nowIso(), ...(waitFor ? { wait_for: waitFor } : {}) });
-  writeThreadState(ctx.brainDir, ctx.thread, { ...state, picked_assist: list.map((w) => (w.id === replyTo ? mark(w) : w)) });
-}
+/** Sender of an owed or awaited item: its source topic, else its key. */
+const fromOf = (w) => (w.from_project && w.from_topic ? `${w.from_project}/${w.from_topic}` : w.sender || '?');
 
 function cmdStatus(ctx) {
   const s = commsSettings(ctx);
   out(`comms: ${s.enabled ? 'enabled' : `off (${s.reason})`}`);
-  out(`client: ${s.clientRel}${s.instance ? ` | instance ${s.instance}` : ''}${s.configFile ? ' | config <brain>/local/comms.json' : ' | config: none (key missing?)'} | project ${s.project}`);
+  out(`client: ${s.clientRel}${s.instance ? ` | instance ${s.instance}` : ''}${s.configFile ? ` | config <brain>/${LAYOUT.local}/comms.json` : ' | config: none (key missing?)'} | project ${s.project}`);
   if (!s.enabled) return;
   const h = runClient(ctx, ['health']);
-  out(h.ok ? `service: ok (instance_id ${h.data.instance_id})` : `service: ${h.error}`);
+  out(h.ok ? `service: ok (instance_id ${h.data.instance_id}, version ${h.data.version || '?'}, model ${h.data.model ?? '?'})` : `service: ${h.error}`);
   const hd = mailboxTopics(ctx);
   out(`mailbox: ${hd.length ? hd.map((t) => `${s.project}/${t.id}`).join(', ') : '(no held topic)'}${ctx.thread ? ` + replies to thread ${ctx.thread}` : ''}`);
-  const state = ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : {};
-  const picked = state.picked_assist || [];
-  const unanswered = picked.filter((w) => !w.state);
-  const interim = picked.filter((w) => w.state);
-  if (unanswered.length) out(`picked assist, unanswered: ${unanswered.map((w) => `${w.id} from ${w.from}`).join(', ')}`);
-  if (interim.length) out(`picked assist, final reply due: ${interim.map((w) => `${w.id} from ${w.from} (${w.state}${w.wait_for ? ` na ${w.wait_for}` : ''})`).join(', ')}`);
+  if (h.model) return;
+  // What the thread owes and awaits is the mail's (P-072); during an outage the client's last answer, marked offline.
+  const res = readObligations(ctx, { held: hd });
+  if (!res.ok) { if (!res.none) out(`obligations: ${res.error}`); return; }
+  const d = res.data || {};
+  if (d.offline && !d.cached) return out('obligations: comms unavailable, no earlier answer to show');
+  const off = d.offline ? ` (offline, ${ageText(d.age_s)})` : '';
+  const owed = d.owed || [];
+  const picked = owed.filter((w) => w.status === 'picked');
+  const waiting = owed.filter((w) => w.status === 'waiting');
+  if (picked.length) out(`owed, picked without an answer${off}: ${picked.map((w) => `${w.id} ${w.level} from ${fromOf(w)}`).join(', ')}`);
+  if (waiting.length) out(`owed, final reply due${off}: ${waiting.map((w) => `${w.id} ${w.level} from ${fromOf(w)} (${w.answer_state})`).join(', ')}`);
+  for (const a of d.awaiting || []) out(`awaiting${off}: ${a.id} ${a.level} -> ${a.to} | ${a.status}${a.answer_state ? ` | answer ${a.answer_state}` : a.code_answer ? ` | ${a.code_answer} (set by the mail)` : ''}${a.wait_due_at ? ` | next check ${localTime(a.wait_due_at)}` : ''}`);
+  if (!picked.length && !waiting.length && !(d.awaiting || []).length) out(`obligations${off}: nothing owed, nothing awaited`);
 }
 
 function cmdCount(ctx) {
@@ -199,8 +250,8 @@ function cmdList(ctx) {
 function cmdReceive(ctx) {
   const wanted = ids();
   const messages = fetchMessages(ctx, wanted);
-  if (wanted.length && !messages.length) fail('no waiting message with that id (already acked, or not in your mailbox): read the body before ack');
-  notePicked(ctx, messages);
+  if (wanted.length && !messages.length) fail('no message with that id in your mailbox (nor sent by you): check the id with comms list');
+  noteReceived(ctx, messages);
   if (!messages.length) return out('no waiting messages');
   for (const m of messages) {
     out(header(m));
@@ -210,57 +261,103 @@ function cmdReceive(ctx) {
   }
 }
 
+/** Status of a message as the mail names it: `picked`, `done/settled`, ... */
+const statusOf = (m) => `${m.status || '?'}${m.resolution ? `/${m.resolution}` : ''}`;
+
 /**
- * `message --id <id>`: state of a sent message without its body (pickup, answer state). The check of an unchanged interim
- * answer re-arms the sender timer with a doubled delay; a final answer closes the wait.
+ * `message --id <id>`: state of a message from the mail (status, pickup, answer, its next check), without its body. The
+ * mail rings the sender at its next check (1e): nothing is armed here, an interim answer is never a reason to resend.
  */
 function cmdMessage(ctx) {
   const [id, ...more] = ids();
-  if (!id || more.length) fail('usage: comms.mjs message --id <id>  (state of one message you sent)');
+  if (!id || more.length) fail('usage: comms.mjs message --id <id>  (state of one message)');
   const m = must(runClient(ctx, ['message', '--id', id]));
-  const answer = m.answer_state ? `answer ${m.answer_state} since ${localTime(m.answer_at)}` : 'no answer';
-  out(`${m.id} | ${m.level} | to ${m.to} | ${m.picked_at ? `picked ${localTime(m.picked_at)}` : 'not picked'} | ${answer}${m.outcome ? ` | ${m.outcome}` : ''}${m.cancelled_by ? ` | cancelled by ${m.cancelled_by}` : ''}`);
-  if (!ctx.brainDir || !ctx.thread || inSubagent()) return;
-  if (m.answer_state === FINAL_STATE) return closeReplyWait(ctx, id);
-  if (!REPLY_STATE_TIMER_MS[m.answer_state]) return;
-  const t = armStateTimer(ctx, id, m.answer_state);
-  out(`timer set: ${localTime(t.at)} for the next check of ${id}; the answer is interim, do not resend or escalate (P-061)`);
+  // A code answer is no answer of the recipient: `busy`, its open running turn holds the message (delivered after it);
+  // `otázka`, it waits for its operator. The message stays in its inbox (P-061, 1a).
+  const codeSince = `since ${localTime(m.code_answer_at)}`;
+  const answer = m.answer_state ? `answer ${m.answer_state} since ${localTime(m.answer_at)}${m.answer_origin && m.answer_origin !== 'reply' ? ` (${m.answer_origin})` : ''}${m.answer_delivered === false ? ` (not delivered: ${m.answer_undelivered_reason || 'no way back'})` : ''}`
+    : m.code_answer === 'busy' ? `busy ${codeSince}: the recipient thread is working, the message is delivered after its turn; send nothing again and do not raise the level (answer set by the mail)`
+      : m.code_answer === 'otázka' ? `otázka ${codeSince}: the recipient thread waits for its operator (answer set by the mail)`
+        : 'no answer';
+  const extra = [m.expired_at && !m.picked_at ? `pickup deadline passed ${localTime(m.expired_at)}` : null, m.undelivered_reason ? `undelivered: ${m.undelivered_reason}` : null, m.cancelled_by ? `cancelled by ${m.cancelled_by}` : null, m.wait_due_at ? `the mail checks again ${localTime(m.wait_due_at)}` : null].filter(Boolean);
+  out(`${m.id} | ${m.level} | to ${m.to} | ${statusOf(m)} | ${m.picked_at ? `picked ${localTime(m.picked_at)}` : 'not picked'} | ${answer}${extra.map((x) => ` | ${x}`).join('')}`);
+  if (m.status === 'waiting' || m.code_answer) out(`the answer is interim: the mail rings you at its next check; do not resend or escalate (P-061)`);
 }
 
-/** `settle --id <id>`: a picked assist answered another way (one reply for several messages, a new message naming it). */
-function cmdSettle(ctx) {
-  const list = ids();
-  if (!list.length) fail('usage: comms.mjs settle --id <id>[,<id>]  (picked assist answered another way, P-042)');
-  const state = ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : {};
-  const known = new Set((state.picked_assist || []).map((w) => w.id));
-  for (const id of list) settlePicked(ctx, id);
-  out(`settled: ${list.filter((id) => known.has(id)).join(', ') || 'none'}${list.some((id) => !known.has(id)) ? `; not picked here: ${list.filter((id) => !known.has(id)).join(', ')}` : ''}`);
-}
-
-function cmdAck(ctx) {
-  guardMain('ack');
-  const list = ids();
-  if (!list.length) fail('usage: comms.mjs ack --id <id>[,<id>]');
-  const data = must(runClient(ctx, ['ack', ...list.flatMap((i) => ['--id', i])]));
-  out(`acked: ${(data.acked || []).join(', ') || 'none'}`);
+/** The mailbox a message is in, as client options (resolve acts only in it): its thread, a persona main thread or the topic. */
+function mailboxArgs(m) {
+  if (!m || m.to_thread) return [];
+  if (/^@/.test(m.project || '') && m.topic === 'main') return ['--persona', m.project.slice(1)];
+  return m.project && m.topic ? ['--project', m.project, '--topic', m.topic] : [];
 }
 
 /**
- * Sender topic: `--from <held topic>`, for a reply the topic the original was addressed to, else the first held topic
- * (work topics before main). A thread holding several topics signed mail with the alphabetically first one
- * (alice 2026-11-03: carol-v2 instead of workflow-dev).
+ * Mailbox of message `id` from the mail (`message --id`): { args, msg }. During an outage the first held mailbox, so the
+ * client queues the operation (P-041); another model exits (4a). An unknown id leaves the mailbox to the mail's answer.
  */
-function fromTopic(ctx, replyTo) {
+function mailboxFor(ctx, id) {
+  const m = runClient(ctx, ['message', '--id', id]);
+  if (m.ok) return { args: mailboxArgs(m.data), msg: m.data };
+  if (m.model || m.disabled) must(m);
+  const q = m.unavailable ? queries(ctx)[0] : null;
+  return { args: q ? queryArgs(q) : [], msg: null };
+}
+
+/** One line per resolve result of settle / ack: done, already final (409), queued, or refused. Returns { line, ok }. */
+function resolvedLine(id, res) {
+  if (res.ok && res.data?.queued) return { ok: true, line: `${id} (queued in <brain>/local/outbox: comms unavailable)` };
+  if (res.ok) return { ok: true, line: `${id} (${statusOf(res.data)})` };
+  const st = res.data?.details || {};
+  if (res.data?.status === 409 && FINAL_STATUSES.includes(st.status)) return { ok: true, line: `${id} (already ${statusOf(st)})` };
+  if (res.data?.status === 409 && st.status === 'waiting') return { ok: false, line: `${id} (an interim answer ${st.answer_state || ''} is open: its final answer is due, send --reply-to ${id} --state hotovo)` };
+  if (res.data?.status === 409 && st.status === 'pending') return { ok: false, line: `${id} (not picked: read it first with comms receive --id ${id})` };
+  return { ok: false, line: `${id} (${res.error})` };
+}
+
+/** settle and ack: one resolve per message in its mailbox (P-072); the mail decides, nothing is kept here. */
+function resolveEach(ctx, op) {
+  guardMain(op);
+  const list = ids();
+  if (!list.length) fail(op === 'settle' ? 'usage: comms.mjs settle --id <id>[,<id>]  (answered another way: done without a reply, P-042)' : 'usage: comms.mjs ack --id <id>[,<id>]  (a picked message that needs no answer)');
+  const done = [];
+  const refused = [];
+  for (const id of list) {
+    const mb = mailboxFor(ctx, id);
+    // Already final in the mail (a read reply or steer is done by its pickup): nothing to do, said as the mail has it.
+    if (FINAL_STATUSES.includes(mb.msg?.status)) { done.push(`${id} (already ${statusOf(mb.msg)})`); continue; }
+    if (mb.msg?.reply_to) { refused.push(`${id} (a reply: reading it is its pickup and settles it, comms receive --id ${id})`); continue; }
+    const r = resolvedLine(id, runClient(ctx, [op, '--id', id, ...mb.args]));
+    (r.ok ? done : refused).push(r.line);
+  }
+  out(`${op === 'settle' ? 'settled' : 'acked'}: ${done.join(', ') || 'none'}${refused.length ? `; not ${op === 'settle' ? 'settled' : 'acked'}: ${refused.join(', ')}` : ''}`);
+  if (refused.length) process.exitCode = 1;
+}
+
+const cmdSettle = (ctx) => resolveEach(ctx, 'settle');
+const cmdAck = (ctx) => resolveEach(ctx, 'ack');
+
+/** `withdraw --id <id>`: the sender takes back its message without a final answer (done, withdrawn); the recipient owes nothing. */
+function cmdWithdraw(ctx) {
+  guardMain('withdraw');
+  const [id, ...more] = ids();
+  if (!id || more.length) fail('usage: comms.mjs withdraw --id <id>  (one message you sent)');
+  const res = runClient(ctx, ['withdraw', '--id', id]);
+  if (!res.ok && res.data?.status === 409 && res.data?.details?.status) return out(`${id}: already ${statusOf(res.data.details)}`);
+  const d = must(res);
+  out(d.queued ? `withdraw of ${id} queued in <brain>/local/outbox (comms unavailable)` : `withdrawn ${id} (${statusOf(d)})`);
+}
+
+/**
+ * Sender topic of a new message: `--from <held topic>`, else the first held topic (work topics before main). A thread
+ * holding several topics signed mail with the alphabetically first one (alice 2026-11-03: carol-v2 instead of workflow-dev).
+ */
+function fromTopic(ctx) {
   const hd = mailboxTopics(ctx);
   const held = (id) => id && hd.some((t) => t.id === id);
   if (args.from !== undefined && args.from !== true) {
     const id = String(args.from);
     if (!held(id)) fail(`--from ${id}: this thread does not hold that topic; held: ${hd.map((t) => t.id).join(', ') || 'none'}`);
     return id;
-  }
-  if (replyTo && ctx.brainDir && ctx.thread) {
-    const orig = (readThreadState(ctx.brainDir, ctx.thread).picked_assist || []).find((w) => w.id === replyTo);
-    if (held(orig?.topic)) return orig.topic;
   }
   return hd[0]?.id || null;
 }
@@ -272,7 +369,7 @@ function fromNote(ctx, from) {
 }
 
 /** Options `send` reads; an unknown one was dropped silently and the error named only the next missing option (report-66bf5f76). */
-const SEND_OPTIONS = ['level', 'to', 'topic', 'text', 'file', 'reply-to', 'state', 'wait-for', 'cancels', 'key', 'ttl', 'from', 'project'];
+const SEND_OPTIONS = ['level', 'to', 'topic', 'text', 'file', 'reply-to', 'state', 'wait-for', 'cancels', 'key', 'ttl', 'from', 'project', 'handoff', 'not', 'distinct', 'fix'];
 const SEND_SUGGEST = { body: 'text', message: 'text', category: 'level', kind: 'level', priority: 'level', reply: 'reply-to', 'reply_to': 'reply-to' };
 
 function cmdSend(ctx) {
@@ -287,11 +384,18 @@ function cmdSend(ctx) {
   const cancels = args.cancels === true || args.cancels === undefined ? null : String(args.cancels);
   // --key: a repeated message with the same key replaces the sender's unpicked one (audit 2.4: a cron sent one blocker every 15 min).
   const key = args.key === true || args.key === undefined || !String(args.key).trim() ? null : String(args.key).trim();
+  // P-075: --fix yes|no is the orchestrator's final answer to a fix question; its text is the answer itself.
+  const fix = args.fix === undefined ? null : String(args.fix);
+  if (fix !== null) {
+    if (!replyTo) fail('--fix answers a fix question: send --reply-to <id of the question> --state hotovo --fix yes|no (P-075); nothing sent');
+    if (!Object.hasOwn(FIX_ANSWERS, fix)) fail(`--fix ${fix}: yes (${FIX_ANSWERS.yes}) or no (${FIX_ANSWERS.no}); nothing sent`);
+    if (replyState !== FINAL_STATE) fail(`--fix is the final answer: --state ${FINAL_STATE}; nothing sent`);
+  }
   if (replyTo) {
     if (!STATES.includes(replyState)) fail(`--state is required with --reply-to: ${STATES.join('|')} (hotovo: the final answer, facts only, one per message; otázka: the decision is your operator's, the sender waits; čakám: you wait for an event, name it with --wait-for; P-061)`);
     if (replyState === 'čakám' && !waitFor) fail('--state čakám needs --wait-for "<what>": the event you wait for (worker, build, other mail); being busy is not a state, the pickup already shows it (P-061)');
     if (replyState !== 'čakám' && waitFor) fail('--wait-for belongs to --state čakám only');
-    if (cancels) fail('--cancels belongs to a new message (--level, --to), not to a reply');
+    if (cancels && replyState !== FINAL_STATE) fail('--cancels replaces your final reply: --state hotovo with the new --text (one final answer per message, P-061)');
     if (key) fail('--key belongs to a new message (--level, --to), not to a reply');
     // P-061 (fáza 2): `hotovo` is true only when the operator spoke after the question. The previous turn of this thread ended
     // `Stav: otázka` and this turn was not started by the operator (mail bell, keepalive, timer): the true state is `otázka`.
@@ -301,35 +405,66 @@ function cmdSend(ctx) {
       // started (pilot 2026-11-11): a dialog of this turn counts as the operator's answer.
       const answeredHere = !!st.dialog_at && !!st.turn_started_at && st.dialog_at >= st.turn_started_at;
       // Only mail picked before the turn that ended `otázka` can be its question: a message a bell brought afterwards is
-      // answered on its own (2026-11-12: hotovo on an unrelated message was refused).
-      const pickedAt = (st.picked_assist || []).find((w) => w.id === replyTo)?.at || st.picked_at?.[replyTo];
+      // answered on its own (2026-11-12: hotovo on an unrelated message was refused). The pickup time is the mail's (P-072).
+      const pickedAt = replyBox(ctx, replyTo).msg?.picked_at || null;
       const pickedLater = !!pickedAt && !!st.last_end_at && pickedAt > st.last_end_at;
       if (st.last_end_state === 'otázka' && st.turn_source !== 'operator' && !answeredHere && !pickedLater) fail(`--state hotovo refused: the previous turn of this thread ended "**Stav:** otázka" and this turn was not started by the operator (turn source ${st.turn_source || 'unknown'}), so the question is still open; the true state is otázka: send --state otázka with your recommendation (the sender waits for your operator), hotovo only after the operator answered (P-061)`);
     }
     if (replyState === 'čakám' && ctx.brainDir && ctx.thread && !validWaker(readThreadState(ctx.brainDir, ctx.thread))) fail(`--state čakám without a waker in this thread: arm a timer first (${TIMER_CMD} set --in <30m|2h> --then "<step>") or start the background work, else nothing brings the final reply (P-061)`);
   } else if (replyState || waitFor) {
     fail('--state and --wait-for belong to a reply (--reply-to <id>)');
+  } else if (cancels) {
+    fail('--cancels replaces your final reply and belongs to it: send --reply-to <id of the original> --state hotovo --cancels <id of your final reply> --text "..." (P-061); nothing sent');
   }
+  // agent-alice/D-0082: --handoff gives work to a topic (assist or steer, never a reply or a blocker); --not and --distinct only with it.
+  const handoff = args.handoff === undefined ? null : typeof args.handoff === 'string' && args.handoff.trim() ? args.handoff.trim() : fail('--handoff needs the scope: --handoff "<what the topic does>" (agent-alice/D-0082); nothing sent');
+  const handoffNot = typeof args.not === 'string' && args.not.trim() ? args.not.trim() : null;
+  if (!handoff && (args.not !== undefined || args.distinct !== undefined)) fail('--not and --distinct belong to --handoff "<scope>" (agent-alice/D-0082); nothing sent');
+  if (handoff && replyTo) fail('--handoff belongs to a new message (--level assist|steer, --to <topic>), not to a reply; nothing sent');
+  if (handoff && !['assist', 'steer'].includes(level)) fail(`--handoff needs --level assist or steer (the work goes to the topic's holder; a blocker asks for an answer, not for work), not ${level || 'none'}; nothing sent (agent-alice/D-0082)`);
   // Level is required, except for a reply: the service keeps the original's level (P-042). `info` is removed (2026-11-02).
   if (!replyTo && !LEVELS.includes(level)) fail(`${level === 'info' ? 'level info is removed, every message asks for action; use' : '--level is required:'} ${LEVELS.join('|')} (blocker: you need the answer soon; steer: the holder adjusts the work on the topic now; assist: the answer is needed, no rush; no level stops the work, P-042, P-061)`);
   let text = args.text === true ? undefined : args.text;
   if (args.file) text = fs.readFileSync(String(args.file), 'utf8');
-  if (text === '-' || (text === undefined && !process.stdin.isTTY)) text = readStdin();
+  if (text === '-' || (text === undefined && !process.stdin.isTTY && fix === null)) text = readStdin();
+  if (fix !== null) text = `${FIX_ANSWERS[fix]}${text && String(text).trim() ? `: ${String(text).trim()}` : ''}`;
   if (!text || !String(text).trim()) fail('message text required: --text "..." or --file <path> or stdin');
   const s = commsSettings(ctx);
+  if (replyTo) {
+    if (args.to || args.topic) fail('--reply-to and --to exclude each other: a reply goes to the sender of the original message; for another recipient send --to without --reply-to and name the id in the text');
+    if (fix !== null) recordFix(ctx, replyTo, fix);
+    return sendReply(ctx, { replyTo, replyState, waitFor, cancels, text: String(text) });
+  }
   const clientArgs = ['send', '--text', '-'];
   if (level) clientArgs.push('--level', level);
   let destination;
-  if (replyTo) {
-    if (args.to || args.topic) fail('--reply-to and --to exclude each other: a reply goes to the sender of the original message; for another recipient send --to without --reply-to and name the id in the text');
-    clientArgs.push('--reply-to', replyTo, '--state', replyState);
-    if (waitFor) clientArgs.push('--wait-for', waitFor);
-    destination = `reply to ${replyTo}`;
-  } else {
+  let handoffPlan = null;
+  {
     const addr = parseAddress(args.to || args.topic, s.project);
     // D-0035: a bare topic of this brain created for another project (--project) lives there in the mail service.
     if (addr?.topic && !String(args.to || args.topic).includes('/') && ctx.brainDir) addr.project = topicMailProject(ctx.brainDir, addr.topic, ctx.thread) || addr.project;
     if (!addr) fail('usage: comms.mjs send --level <level> --to [<project>/]<topic> | @<persona>/main --text "..."  |  --reply-to <id>');
+    // The topic of this persona lives in another of its projects: the sender's address error is not an unregistered topic
+    // for the operator to decide (P-045, P-046); name the right address and send nothing (2026-11-14: alice/data-migrate
+    // was held while the topic ran as agentic-flow/data-migrate, and agentic-flow/workflow-dev while it ran as maintainer/workflow-dev).
+    if (addr.topic && ctx.brainDir) {
+      const elsewhere = topicElsewhere(ctx.brainDir, addr, s.project);
+      if (elsewhere.length === 1) fail(`topic ${addr.topic} is ${elsewhere[0]}: send to ${elsewhere[0]}; nothing sent`);
+      if (elsewhere.length > 1) fail(`topic ${addr.topic} is ${elsewhere.join(', ')}: send to one of ${elsewhere.join(', ')}; nothing sent`);
+      const other = elsewhere.length ? null : topicInOtherBrain(ctx, addr);
+      if (other) fail(`topic ${addr.topic} is ${other} (${addr.project} is the brain repo, not its mail project): send to ${other}; nothing sent`);
+    }
+    if (handoff) {
+      if (addr.persona) fail('--handoff goes to a topic ([<project>/]<topic>), not to a persona main thread: the topic is what the work is recorded against; nothing sent (agent-alice/D-0082)');
+      const giver = giverTopic(ctx.brainDir, ctx.thread);
+      if (!giver) fail('--handoff: this thread holds no topic to record the handoff in; claim or create your topic first (agent-alice/D-0082); nothing sent');
+      const here = openTopicExists(ctx.brainDir, addr.topic);
+      const target = here ? readTopic(ctx.brainDir, addr.topic) : null;
+      const overlap = checkOverlap(ctx, { scope: handoff, not: handoffNot, repo: target?.repo || null, project: target?.project || null, exclude: [addr.topic, giver], distinct: typeof args.distinct === 'string' ? args.distinct : null, what: 'nothing sent' });
+      if (overlap.refusal) fail(overlap.refusal);
+      for (const l of overlap.lines) out(l);
+      handoffPlan = { giver, record: newRecord(ctx.brainDir, { to: addr.topic, project: here || addr.project === s.project ? null : addr.project, scope: handoff, not: handoffNot, via: 'comms', ...(here ? {} : { snapshot: null }) }) };
+    }
     if (addr.persona) {
       clientArgs.push('--persona', addr.persona);
       destination = `@${addr.persona}/main`;
@@ -345,51 +480,77 @@ function cmdSend(ctx) {
   }
   // TTL is the pickup deadline (service defaults and maxima: blocker 5m, steer 5m, assist 30m; a shorter --ttl only).
   if (args.ttl !== undefined && args.ttl !== true) clientArgs.push('--ttl', String(args.ttl));
-  if (cancels) clientArgs.push('--cancels', cancels);
   if (key) clientArgs.push('--supersede-key', key);
-  const from = fromTopic(ctx, replyTo);
+  const from = fromTopic(ctx);
   if (from) clientArgs.push('--from-project', s.project, '--from-topic', from);
-  const res = runClient(ctx, clientArgs, { input: String(text) });
-  // The sender closed its topic: nobody can read a reply, so the picked assist is settled here; otherwise the Stop hook
-  // reminds of it in every turn (alice 2026-11-02, a report from a closed bob topic). A still needed answer is new mail.
-  if (!res.ok && replyTo && /nemá vlákno ani zdrojovú tému/i.test(res.error || '')) {
-    settlePicked(ctx, replyTo);
-    fail(`${res.error}\nassist ${replyTo} settled: it has no reply path (no sender thread or topic); nothing waits for an answer`);
+  const data = must(runClient(ctx, clientArgs, { input: String(text) }));
+  // Point 1: the record goes into the giver's topic once the message is sent or queued (code writes it, not the agent).
+  if (handoffPlan) {
+    try { writeHandoff(ctx, handoffPlan.giver, handoffPlan.record); out(`handoff: recorded in topic ${handoffPlan.giver} (its handover shows the live state in "## Odovzdané")`); } catch (err) { out(`warning: handoff not recorded (${err.message})`); }
   }
-  if (!res.ok && replyTo && (res.data?.status === 410 || res.data?.details?.closed_at !== undefined || /uzavret/i.test(res.error || ''))) {
-    settlePicked(ctx, replyTo);
-    fail(`${res.error}\nassist ${replyTo} settled: the sender's topic is closed, a reply has no reader; if the sender still needs the answer, send new mail with the id in the text (comms send --level assist --to @<persona>/main)`);
-  }
-  // The message already has its final reply (sent here or by another thread): nothing is due from this thread.
-  if (!res.ok && replyTo && res.data?.status === 409) {
-    settlePicked(ctx, replyTo);
-    fail(`${res.error}\nassist ${replyTo} settled: one final reply per message; a change of it is a new message with --level, --to and --cancels <id of the final reply>`);
-  }
-  const data = must(res);
   if (data.queued) {
     out(`comms unavailable: message queued in <brain>/local/outbox and sent with the next successful call (${destination})`);
   } else {
     const sentLevel = data.level || level;
-    out(`sent ${data.id} (${sentLevel}${data.level_raised_from ? `, raised from ${data.level_raised_from}: a reply is as urgent as the message it answers` : ''}) -> ${destination}${replyTo ? ` | state ${replyState}` : ''}${cancels ? ` | cancels ${cancels}` : ''}${fromNote(ctx, from)}${data.state === 'held' ? `; topic not registered: held, operator notice ${data.notice_id} (new topic? / redirect, P-045)` : ''}`);
+    out(`sent ${data.id} (${sentLevel}) -> ${destination}${fromNote(ctx, from)}${data.status === 'held' ? `; topic not registered: held, operator notice ${data.notice_id} (new topic? / redirect, P-045)` : ''}`);
   }
   // The server takes the message but nobody can pick it up now (persona without a main thread): say so at sending, not
   // 30 min later from the no-reply bell (5 of 5 such messages expired unread, audit M5 2026-11-11).
   if (data.warning) out(`warning: ${data.warning}; nobody picks it up now: send it where someone works, or tell the operator`);
-  if (replyTo && replyState === FINAL_STATE) settlePicked(ctx, replyTo);
-  else if (replyTo) {
-    markPicked(ctx, replyTo, replyState, waitFor);
-    out(`reply ${replyState}: the exchange stays open; send --reply-to ${replyTo} --state hotovo when it is closed (P-061)`);
-  }
   const finalLevel = data.level || level;
-  if (finalLevel === 'assist' && !replyTo && data.expires_at) out(`assist sent: continue other work; the reply wakes you; without pickup by ${localTime(data.expires_at)} the expiry wakes you (P-042)`);
-  // P-061: a picked message may stay unanswered; the thread timer rings the sender after the reply window anyway. It is
-  // added next to the other timers of the thread, never in place of one (2026-11-13: it replaced a timer.mjs step unseen).
-  if (REPLY_WINDOW_MS[finalLevel] && !replyTo && data.id && !data.queued && !data.warning && ctx.brainDir && ctx.thread && !inSubagent()) {
-    const t = setTimer(ctx.brainDir, ctx.thread, { delayMs: REPLY_WINDOW_MS[finalLevel], then: `check the reply to ${data.id} (${finalLevel} to ${destination}); without one continue on your own decision or send the question elsewhere`, forId: data.id });
-    const others = threadTimers(readThreadState(ctx.brainDir, ctx.thread)).length - 1;
-    out(`timer set: ${localTime(t.at)} in case ${data.id} gets no reply (P-061)${others ? `; ${others} other timer(s) of this thread stay (timer.mjs show)` : ''}`);
+  // P-061, 1e: the wait for the answer is the mail's (wait_due_at): it rings this thread at its check, also when the message
+  // stays picked without an answer; no timer of this thread is bound to the message (P-072).
+  const check = data.wait_due_at && !data.warning ? `; without an answer the mail rings you at ${localTime(data.wait_due_at)}` : '';
+  if (finalLevel === 'assist' && data.id && !data.queued) out(`assist sent: continue other work; the reply wakes you${check} (P-042)`);
+  if (finalLevel === 'blocker') out(`blocker sent: continue with work that does not need the answer (or your recommended assumption, say it); the reply wakes you${check}; a message never stops the work (P-061)`);
+}
+
+/**
+ * P-075: the orchestrator's answer to the fix question `replyTo` is recorded for the asking topic (the question's source
+ * topic in this brain), so the hook of that topic lets its writes pass after yes. Not the orchestrator, or a topic without a
+ * fix gate: refused, nothing sent. A topic of another brain gets the answer as text only.
+ */
+function recordFix(ctx, replyTo, fix) {
+  const asking = replyBox(ctx, replyTo).msg?.from_topic || null;
+  if (!asking || !ctx.brainDir || !readTopic(ctx.brainDir, asking)) {
+    out(`fix answer ${fix}: ${asking ? `topic ${asking} is not a topic of this brain` : `message ${replyTo} names no source topic`}, so only the text goes (its hook records nothing)`);
+    return;
   }
-  if (finalLevel === 'blocker' && !replyTo) out('blocker sent: continue with work that does not need the answer (or your recommended assumption, say it); the reply or the timer wakes you; a message never stops the work (P-061)');
+  try {
+    const c = grantFix(ctx, asking, fix);
+    out(`fix of topic ${asking}: ${FIX_ANSWERS[fix]} (consent ${c.id})`);
+  } catch (err) { fail(`${err.message}; nothing sent`); }
+}
+
+/** Mailbox and record of the original of a reply, read once per command (replyBox). */
+const replyBoxes = new Map();
+function replyBox(ctx, id) {
+  if (!replyBoxes.has(id)) replyBoxes.set(id, mailboxFor(ctx, id));
+  return replyBoxes.get(id);
+}
+
+/**
+ * The answer to message `replyTo` (P-061): one `resolve` of the mail in the original's mailbox, which delivers the reply
+ * and settles the original in one step (no separate ack, P-072). `hotovo` is the one final answer (another one 409),
+ * `otázka`/`čakám` interim; `cancels` replaces this thread's final reply with a new one. A sender whose topic is closed
+ * or who has no way back gets nothing, the original is answered all the same (`answer_delivered: false`, I9).
+ */
+function sendReply(ctx, { replyTo, replyState, waitFor, cancels, text }) {
+  const a = ['resolve', '--id', replyTo, '--state', replyState, '--text', '-', ...replyBox(ctx, replyTo).args];
+  if (waitFor) a.push('--wait-for', waitFor);
+  if (cancels) a.push('--cancels', cancels);
+  const res = runClient(ctx, a, { input: text });
+  if (!res.ok && res.data?.status === 409) {
+    const st = res.data.details || {};
+    // An interim answer follows the pickup (1b: picked/waiting → waiting); a final one may come before it.
+    if (st.status === 'pending') fail(`${res.error}\n${replyTo} is not picked yet: read it first (comms receive --id ${replyTo}), an interim answer follows the pickup; a final answer (--state hotovo) may come without it`);
+    fail(`${res.error}\n${replyTo} is ${statusOf(st)}${st.answer_id ? ` (final reply ${st.answer_id})` : ''}: one final answer per message; a correction of your final reply is send --reply-to ${replyTo} --state hotovo --cancels <id of your final reply> --text "..."`);
+  }
+  const d = must(res);
+  if (d.queued) return out(`comms unavailable: the answer to ${replyTo} is queued in <brain>/local/outbox and sent with the next successful call | state ${replyState}`);
+  out(`replied ${d.answer_id || '-'} -> reply to ${replyTo} | state ${replyState}${cancels ? ` | cancels ${cancels}` : ''} | ${statusOf(d)}`);
+  if (d.answer_delivered === false) out(`the answer was not delivered (${d.reason === 'sender-closed' ? "the sender's topic is closed" : 'the sender has no way back'}): ${replyTo} is answered all the same; if the sender still needs it, send new mail with the id in the text (comms send --level assist --to @<persona>/main)`);
+  if (replyState !== FINAL_STATE) out(`reply ${replyState}: the exchange stays open; send --reply-to ${replyTo} --state hotovo when it is closed (P-061)`);
 }
 
 function cmdNotices(ctx) {
@@ -426,8 +587,8 @@ function cmdRegister(ctx) {
 
 try {
   const ctx = loadContext({ project: args.project, requireBrain: cmd !== 'status' });
-  const handlers = { status: cmdStatus, count: cmdCount, list: cmdList, receive: cmdReceive, message: cmdMessage, ack: cmdAck, settle: cmdSettle, send: cmdSend, notices: cmdNotices, decide: cmdDecide, register: cmdRegister };
-  if (!handlers[cmd]) fail('usage: comms.mjs status|count|list|receive|message|ack|settle|send|notices|decide|register');
+  const handlers = { status: cmdStatus, count: cmdCount, list: cmdList, receive: cmdReceive, message: cmdMessage, ack: cmdAck, settle: cmdSettle, withdraw: cmdWithdraw, send: cmdSend, notices: cmdNotices, decide: cmdDecide, register: cmdRegister };
+  if (!handlers[cmd]) fail('usage: comms.mjs status|count|list|receive|message|ack|settle|withdraw|send|notices|decide|register');
   if (cmd !== 'status' && !commsSettings(ctx).enabled) fail(`comms off: ${commsSettings(ctx).reason}; see README "Pošta" to enable it`, 2);
   handlers[cmd](ctx);
 } catch (err) {

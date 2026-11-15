@@ -28,7 +28,7 @@ const clip = (s, n = 100) => { const t = String(s ?? '').replace(/\s+/g, ' ').tr
 
 /** Parse a session transcript (JSONL): tool calls with the time of their result, operator prompts, the last entry time. */
 export function readTranscript(file) {
-  const out = { calls: [], prompts: [], lastAt: null, text: '', file };
+  const out = { calls: [], prompts: [], blocked: [], lastAt: null, text: '', file };
   if (!file) return null;
   let text;
   try {
@@ -49,6 +49,13 @@ export function readTranscript(file) {
     if (o.isSidechain) continue;
     const ts = typeof o.timestamp === 'string' ? o.timestamp : null;
     if (ts && (o.type === 'user' || o.type === 'assistant') && (!out.lastAt || ts > out.lastAt)) out.lastAt = ts;
+    // A prompt the prompt hook blocked (T3: "UserPromptSubmit operation blocked by hook", then "Your next message starts a
+    // fresh session"): the operator saw an error and woke the thread into a new session (maintainer/workflow-dev 2026-11-14).
+    if (o.type === 'system' && typeof o.content === 'string' && /operation blocked by hook/i.test(o.content)) {
+      const prompt = /Original prompt: ([^\n]*)/.exec(o.content)?.[1] || null;
+      const reason = o.promptSubmitEnding?.ending?.reason || o.content.split('\n').slice(1).find((l) => l.trim()) || '';
+      out.blocked.push({ at: ts, prompt, reason });
+    }
     const content = o.message && typeof o.message === 'object' ? o.message.content : null;
     if (o.type === 'user' && typeof content === 'string') out.prompts.push({ at: ts, text: content });
     if (!Array.isArray(content)) continue;
@@ -91,7 +98,7 @@ const stampOf = (line) => /\[wake (\d{4}-\d{2}-\d{2}T[\d:.]+Z)\]/.exec(line)?.[1
  * state (thread state), turn (the mail's turn record), wakeState (wake-state.json), wakeLog (text), transcript
  * (readTranscript), mail (mailCount result or null), nudges (policy prompt.nudge_prompts), now (ms), since (ms).
  */
-export function diagnose({ thread, state = {}, turn = null, wakeState = null, wakeLog = '', transcript = null, mail = null, nudges = ['up', '?', 'check', 'ckeck'], now = Date.now(), since = now - 12 * 3600_000, topics = [] }) {
+export function diagnose({ thread, state = {}, turn = null, wakeState = null, wakeLog = '', transcript = null, prevTranscript = null, mail = null, nudges = ['up', '?', 'check', 'ckeck'], now = Date.now(), since = now - 12 * 3600_000, topics = [] }) {
   const facts = [];
   const causes = [];
   const t = (v) => localTime(v);
@@ -148,6 +155,12 @@ export function diagnose({ thread, state = {}, turn = null, wakeState = null, wa
     else if (!nudge && idle >= WAIT_GAP_MS) facts.push(`transcript: last entry ${t(transcript.lastAt)} (${dur(idle)} ago)`);
   } else facts.push('transcript: not found (pass --transcript <file>)');
 
+  // 2b. A prompt the hook blocked, in this session or the thread's previous one (a blocked prompt ends the session in T3).
+  const blocked = [...(prevTranscript?.blocked || []), ...(transcript?.blocked || [])].filter((b) => b.at && Date.parse(b.at) >= since && Date.parse(b.at) <= wokeAt);
+  for (const b of blocked.slice(-3)) facts.push(`transcript${prevTranscript?.blocked?.includes(b) ? ' (previous session)' : ''}: prompt "${clip(b.prompt || '?', 80)}" blocked by the prompt hook ${t(b.at)}: ${clip(b.reason, 160)}`);
+  const lastBlocked = blocked[blocked.length - 1];
+  if (lastBlocked) causes.push({ kind: 'blocked-prompt', workflow: true, text: `the prompt hook blocked the bell "${clip(lastBlocked.prompt || '?', 80)}" at ${t(lastBlocked.at)} (${clip(lastBlocked.reason, 120)}); T3 showed it as an error and the next message started a fresh session` });
+
   // 3. Timers: due and not rung (the prompt hook spends a timer it rings).
   const log = wakeLines(wakeLog, thread, topics);
   const timers = threadTimers(state).filter((x) => !x.set_at || Date.parse(x.set_at) <= now);
@@ -178,13 +191,15 @@ export function diagnose({ thread, state = {}, turn = null, wakeState = null, wa
 
   // 5. Mail: waiting (not picked up) and held back by a discussion with the operator.
   if (mail && !mail.unknown && mail.configured !== false) {
-    const late = (mail.items || []).filter((m) => m.created_at && now - Date.parse(m.created_at) >= MAIL_LATE_MS);
-    facts.push(`mail: ${mail.count || 0} waiting${late.length ? `, ${late.length} not picked up for over ${MAIL_LATE_MS / 60_000} min (${late.slice(0, 5).map((m) => `${m.id} ${m.level || ''}`.trim()).join(', ')})` : ''}`);
-    if (late.length) causes.push({ kind: 'mail-not-picked', workflow: false, text: `${late.length} message(s) waited unpicked since ${t(late.map((m) => m.created_at).sort()[0])}` });
+    // Past its pickup deadline: `expired_at` (no reply) or a code answer (busy, otázka) of the mail (inbox items, P-072).
+    const late = (mail.items || []).filter((m) => m.expired_at || m.code_answer || (m.created_at && now - Date.parse(m.created_at) >= MAIL_LATE_MS));
+    facts.push(`mail: ${mail.count || 0} waiting${mail.offline ? ` (${mail.note})` : ''}${late.length ? `, ${late.length} past the pickup deadline (${late.slice(0, 5).map((m) => `${m.id} ${m.level || ''}${m.code_answer ? ` ${m.code_answer}` : ''}`.trim()).join(', ')})` : ''}`);
+    if (late.length) causes.push({ kind: 'mail-not-picked', workflow: false, text: `${late.length} message(s) waited unpicked past the pickup deadline${late.some((m) => m.expired_at) ? ` (since ${t(late.map((m) => m.expired_at).filter(Boolean).sort()[0])})` : ''}` });
   } else facts.push(`mail: not checked${mail?.note ? ` (${mail.note})` : ''}`);
   const held = Object.values(wakeState?.held || {}).filter((h) => h && h.holder === thread);
   if (held.length) facts.push(`mail held by the wake module (discussion with the operator, no bell): ${held.slice(0, 5).map((h) => `${h.message_id} ${h.level || ''} to ${h.project || '?'}/${h.topic || '?'} since ${t(h.held_at || h.created_at)}`).join('; ')}`);
-  const unanswered = (state.picked_assist || []).filter((w) => !w.state);
+  // What the thread owes is the mail's (`owed`, P-072): picked without an answer.
+  const unanswered = (mail?.obligations?.owed || []).filter((w) => w.status === 'picked');
   if (unanswered.length) facts.push(`picked mail without an answer: ${unanswered.map((w) => w.id).join(', ')}`);
 
   // 6. Background work still counted as running.
@@ -197,13 +212,13 @@ export function diagnose({ thread, state = {}, turn = null, wakeState = null, wa
   return { facts, causes };
 }
 
-export function format({ thread, facts, causes }) {
+export function format({ thread, facts, causes, fixSkill = 'fix' }) {
   const wf = causes.some((c) => c.workflow);
   return [
     `nudge-why ${thread}`,
     ...facts.map((f) => `- ${f}`),
     ...causes.map((c) => `cause: ${c.kind}${c.workflow ? ' (workflow error)' : ''}: ${c.text}`),
-    wf ? 'verdict: workflow error: fix it (skill fix) or queue the fix and report it (workflow:error); then mail and the next step of the handover'
+    wf ? `verdict: workflow error: fix it (skill ${fixSkill}) or queue the fix and report it (workflow:error); then mail and the next step of the handover`
       : 'verdict: no workflow error in the records: name the cause, then mail and the next step of the handover',
   ].join('\n');
 }

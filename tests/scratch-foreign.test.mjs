@@ -1,3 +1,4 @@
+// keep: core
 // report-143e7cdb: one topic removed its scratch/ work dir with rm -rf while another topic had put its drafts into the
 // same dir; scratch/ files are disposable only for the thread that wrote them (P-018).
 import { test } from 'node:test';

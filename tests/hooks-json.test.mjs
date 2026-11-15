@@ -1,3 +1,4 @@
+// keep: core
 // P-023: every registered hook declares its output class and limit (HOOK_META) and exists.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

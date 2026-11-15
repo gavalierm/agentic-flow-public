@@ -12,16 +12,21 @@
 //                                                                       the same state, audit 2026-11-11)
 //   timer.mjs --in 10m --topic <id> --then "<step>"                      waiting for another topic: the check is topic.mjs closed
 //                                                                       <id> (deadline 24h unless --deadline); over 30m without a
-//                                                                       condition needs --blind (a step bound to the clock itself)
+//                                                                       condition needs --blind (a step bound to the clock itself);
+//                                                                       a backup: it drops itself without a ring when the topic
+//                                                                       is closed and this thread took its mail since (comms
+//                                                                       receive); a new one for the same topic replaces it
 //   timer.mjs show                                                      every timer of this thread, earliest first, numbered
-//   timer.mjs clear [<n>]                                                remove timer n of show (the awaited event came); without n
-//                                                                       all of them, each removed step is printed
+//   timer.mjs cancel <n>|--topic <id>|--all                              cancel timer n of show, the timers of a topic, or all of
+//                                                                       this thread; each cancelled step is printed (2026-11-14:
+//                                                                       backup timers of closed topics piled up and rang empty)
+//   timer.mjs clear [<n>]                                                the same as cancel <n> | --all (without n)
 import path from 'node:path';
 import { parseArgs, fail, PLUGIN_ROOT, localTime } from '../scripts/util.mjs';
 import { readTopic } from '../scripts/topic.mjs';
 import { loadContext, readThreadState } from '../scripts/config.mjs';
 import { commsSettings } from '../scripts/comms.mjs';
-import { parseDelay, setTimer, clearTimer, threadTimers, TIMER_MIN_MS, TIMER_MAX_MS, UNTIL_TIMEOUT_MS } from '../scripts/waker.mjs';
+import { parseDelay, setTimer, clearTimer, threadTimers, sameTimer, timerTopic, registerTimerThread, TIMER_MIN_MS, TIMER_MAX_MS, UNTIL_TIMEOUT_MS } from '../scripts/waker.mjs';
 import { run as guard } from '../hooks/pre-tool-use.mjs';
 
 /** Longer than this without a condition is a blind wait (report-32db110e): --topic, --until, mail, or --blind. */
@@ -29,7 +34,7 @@ const BLIND_MAX_MS = 30 * 60_000;
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._[0] || (args.in !== undefined ? 'set' : 'show');
 const out = (s) => process.stdout.write(`${s}\n`);
-const line = (t) => `timer: ${localTime(t.at)}; then: ${t.then}${t.until ? `; until: ${t.until} (deadline ${localTime(t.deadline)})` : ''}${t.for ? ` (reply window of ${t.for})` : ''}${t.auto ? ' (armed by the Stop hook)' : ''}`;
+const line = (t) => `timer: ${localTime(t.at)}; then: ${t.then}${t.until ? `; until: ${t.until} (${t.stall ? `stall check of topic ${t.stall} while it is open, D-0084` : `deadline ${localTime(t.deadline)}`})` : ''}${t.for ? ` (reply window of ${t.for})` : ''}${t.auto ? ' (armed by the Stop hook)' : ''}`;
 const str = (v) => (v === true || v === undefined ? '' : String(v).trim());
 try {
   const ctx = loadContext({ project: args.project });
@@ -57,11 +62,15 @@ try {
       if (g?.permissionDecision === 'deny' || g?.permissionDecision === 'ask') fail(`--until refused (the check runs unattended as a Bash call of this thread): ${g.permissionDecisionReason || g.permissionDecision}`);
       deadline = new Date(Date.now() + Math.min(dl, TIMER_MAX_MS)).toISOString();
     }
-    const t = setTimer(ctx.brainDir, ctx.thread, { delayMs: ms, then, until: until || null, deadline });
+    const before = topic ? threadTimers(readThreadState(ctx.brainDir, ctx.thread)).filter((x) => timerTopic(x) === topic).length : 0;
+    const t = setTimer(ctx.brainDir, ctx.thread, { delayMs: ms, then, until: until || null, deadline, topic: topic || null });
+    // The wake job timer-check runs the condition before the ring (no prompt to the thread while it does not hold).
+    if (until) registerTimerThread(ctx);
     const clamped = ms < TIMER_MIN_MS || ms > TIMER_MAX_MS ? ` (clamped to ${TIMER_MIN_MS / 60_000}m..${TIMER_MAX_MS / 3600_000}h)` : '';
     const check = until ? `; code runs the check (exit 0 = met, at most ${UNTIL_TIMEOUT_MS / 1000} s) at each time without a turn and rings the step when it holds or at ${localTime(deadline)}` : '';
+    const own = topic ? `; it cancels itself without a ring once topic ${topic} is closed and its result came to this thread by mail (comms receive), it rings only when the result did not come${before ? `; it replaces the earlier timer of topic ${topic}` : ''}` : '';
     const others = threadTimers(readThreadState(ctx.brainDir, ctx.thread)).filter((x) => x !== t && !(x.at === t.at && x.set_at === t.set_at)).length;
-    out(`timer set: ${localTime(t.at)}${clamped}; then: ${t.then}${check}${others ? `; ${others} other timer(s) of this thread stay (timer.mjs show)` : ''}. The wake module rings this thread then; end the turn with your **Handover:** section (a numbered line "1. <topic> → <next step>") and "**Stav:** čakám (na <what>)" (P-061)`);
+    out(`timer set: ${localTime(t.at)}${clamped}; then: ${t.then}${check}${own}${others ? `; ${others} other timer(s) of this thread stay (timer.mjs show, timer.mjs cancel <n>)` : ''}. The wake module rings this thread then; end the turn with your **Handover:** section (a numbered line "1. <topic> → <next step>") and "**Stav:** čakám (na <what>)" (P-061)`);
   } else if (cmd === 'show') {
     const all = threadTimers(readThreadState(ctx.brainDir, ctx.thread));
     out(all.length ? all.map((t, i) => `${i + 1}. ${line(t)}`).join('\n') : 'no timer');
@@ -71,8 +80,17 @@ try {
     if (n !== null && !(Number.isInteger(n) && n >= 1 && n <= all.length)) fail(`timer.mjs clear [<n>]: n is the number of a timer in timer.mjs show (1..${all.length})`);
     const gone = clearTimer(ctx.brainDir, ctx.thread, n === null ? () => true : (t) => t === all[n - 1] || (t.at === all[n - 1].at && t.set_at === all[n - 1].set_at && t.then === all[n - 1].then));
     out(gone.length ? gone.map((t) => `timer cleared: ${line(t)}`).join('\n') : 'no timer');
+  } else if (cmd === 'cancel') {
+    const all = threadTimers(readThreadState(ctx.brainDir, ctx.thread));
+    const topic = str(args.topic);
+    const n = args._[1] === undefined ? null : Number(args._[1]);
+    if ([n !== null, !!topic, !!args.all].filter(Boolean).length !== 1) fail('usage: timer.mjs cancel <n> | --topic <id> | --all  (n is the number in timer.mjs show)');
+    if (n !== null && !(Number.isInteger(n) && n >= 1 && n <= all.length)) fail(`timer.mjs cancel <n>: n is the number of a timer in timer.mjs show (1..${all.length})`);
+    const which = n !== null ? (t) => sameTimer(t, all[n - 1]) : topic ? (t) => timerTopic(t) === topic : () => true;
+    const gone = clearTimer(ctx.brainDir, ctx.thread, which);
+    out(gone.length ? gone.map((t) => `timer cancelled: ${line(t)}`).join('\n') : `no timer${topic ? ` of topic ${topic}` : ''} in this thread (timer.mjs show)`);
   } else {
-    fail('usage: timer.mjs --in <30m|2h> --then "<step>" [--until "<check>" --deadline <2h> | --topic <id>] [--blind] | show | clear');
+    fail('usage: timer.mjs --in <30m|2h> --then "<step>" [--until "<check>" --deadline <2h> | --topic <id>] [--blind] | show | cancel <n>|--topic <id>|--all | clear');
   }
 } catch (err) {
   fail(err.message);

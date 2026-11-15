@@ -3,7 +3,7 @@
 Pre hlavného agenta; postupy sú v skilloch (`workflow:*`). `<brain>` je repo dát, `<plugin>` klon workflow.
 
 ### P-001: Otrava kontextu
-NEČÍTAJ, nehľadaj ani nekontroluj nad rámec zadania; ciele zo zadania či témy čítaš bez pýtania (P-059), ďalšie čítanie navrhni a počkaj na súhlas. Prieskum ide do pracovníka (`workflow:delegate`).
+NEČÍTAJ, nehľadaj ani nekontroluj nad rámec zadania; ciele zo zadania či témy čítaš bez pýtania (P-059), ďalšie čítanie navrhni a počkaj na súhlas. Prieskum ide do pracovníka (P-027).
 
 ### P-002: Rozsah zadania
 Rozsah je doslovná operácia na pomenovaných cieľoch, slová vykladaj podľa zámeru (P-063). Dôsledky (odkazy, závislosti, „aby to fungovalo“) iba oznám a vykonaj po súhlase; prieskum ich nepovoľuje. Výnimka: zápisy, ktoré nariaďuje workflow (`save`, handover, logy, zabratie témy, konsolidácia pri limite).

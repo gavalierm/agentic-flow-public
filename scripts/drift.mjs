@@ -9,6 +9,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readJson, writeJson } from './util.mjs';
+import { dataPath } from './layout.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
 const JOB_ENV = 'WORKFLOW_DRIFT_JOB';
@@ -21,7 +22,7 @@ const SCHEMA = {
 
 export function driftFile(brainDir, thread) {
   const name = encodeURIComponent(String(thread)).replace(/\*/g, '%2A');
-  return path.join(brainDir, 'local', 'drift', `${name}.json`);
+  return dataPath(brainDir, 'local', 'drift', `${name}.json`);
 }
 
 /** Verdict of the judge for the turn that started at `startedAt`, or null. */
@@ -36,12 +37,30 @@ export function ownWords(prompt) {
   return String(prompt || '').replace(/<pasted_content\b[^>]*>[\s\S]*?<\/pasted_content[^>]*>/gi, ' ').replace(/\s+/g, ' ').trim();
 }
 
-export function driftPrompt({ subject, state, next, handover, task, held = [], others = [] }) {
+/**
+ * Judge input for the topics a thread holds (`heldWork`, first = the judged topic) among the open `topics`
+ * (flow-public#87): the topic's own task goes with its subject, and the topic of the orchestrator that assigned the topic
+ * is not offered as "belongs to": its subject covers the work it handed to this topic.
+ */
+export function driftJob(heldWork, topics) {
+  const [topic, ...rest] = heldWork;
+  const heldIds = new Set(heldWork.map((t) => t.id));
+  const assigner = topic.orchestrator?.topic || null;
+  return {
+    topic: topic.id, subject: topic.subject, topicTask: topic.task || null, state: topic.state, next: topic.next, handover: topic.handover,
+    held: rest.map((t) => ({ id: t.id, subject: t.subject })),
+    others: (topics || []).filter((t) => t && t.subject && !heldIds.has(t.id) && t.id !== assigner).map((t) => ({ id: t.id, subject: t.subject })),
+  };
+}
+
+export function driftPrompt({ subject, topicTask = null, state, next, handover, task, held = [], others = [] }) {
   const list = (others || []).filter((t) => t && t.id && t.subject).slice(0, 40);
   const also = (held || []).filter((t) => t && t.id && t.subject).slice(0, 20);
+  const assigned = topicTask && String(topicTask).trim();
   return [
     'You check whether a new task from an operator belongs to the topic an agent is working on. Answer only with the JSON object {"fits": boolean, "reason": string, "belongs_to": string}.',
     'fits=true when the task continues, corrects, answers or extends the topic (also a short reply, a follow-up, a change request to the same thing, housekeeping of the same work).',
+    assigned ? 'fits=true also when the task is the topic task or a part of it (listed under "Topic task"), even if another open topic has a related subject.' : '',
     'fits=false only when the task is clearly a different subject that should get its own topic (another product, domain or project, an unrelated job). When in doubt, fits=true.',
     also.length ? 'The agent also holds the topics listed under "Other topics this agent holds": fits=true when the task belongs to any of them (then belongs_to is the id of that topic).' : '',
     list.length ? 'fits=false also when the task (a new skill, tool or job, even a related one) is the subject of one of the other open topics listed below rather than of this topic: then belongs_to is the id of that topic. Related work is not part of this topic when another open topic has it as its subject.' : '',
@@ -49,6 +68,7 @@ export function driftPrompt({ subject, state, next, handover, task, held = [], o
     'reason: one short sentence in the language of the task, naming what the task is about.',
     '',
     `# Topic subject\n${subject}`,
+    assigned ? `# Topic task (the work assigned to the topic)\n${assigned.slice(0, 3000)}` : '',
     `# Topic state\n${state || '-'}`,
     next ? `# Next step of the topic\n${next}` : '',
     handover ? `# Handover of the topic\n${String(handover).slice(0, 2000)}` : '',

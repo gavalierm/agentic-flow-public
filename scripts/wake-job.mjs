@@ -54,7 +54,7 @@ export function jobScript(command) {
  * another plugin clone of this machine installed it; left as it is, interval too), 'update' (its script is gone).
  */
 function jobPlan(jobs, job) {
-  const i = jobs.findIndex((j) => j && j.name === JOB_NAME);
+  const i = jobs.findIndex((j) => j && j.name === job.name);
   if (i === -1) return { i, what: 'add' };
   const cur = jobs[i];
   if (cur.command === job.command && cur.interval_ms === job.interval_ms) return { i, what: 'same' };
@@ -85,30 +85,44 @@ export function issueWatchCommand(pluginRoot = PLUGIN_ROOT) {
  * `wake.jobs`. Returns { changed, line }; line says what happened, also "wake not installed" (nothing written).
  */
 export function ensureIssueWatchJob(ctx, { env = process.env, pluginRoot = PLUGIN_ROOT, platform = process.platform } = {}) {
+  const intervalS = Number(ctx.policy?.issue_watch?.interval_s) || DEFAULT_INTERVAL_S;
+  return ensureJob(ctx, { name: JOB_NAME, command: issueWatchCommand(pluginRoot), interval_ms: intervalS * 1000 }, { env, platform });
+}
+
+/** Job `timer-check` (bin/timer-check.mjs): conditional thread timers checked before their ring, every policy
+ * timer.check_interval_s (default 60 s, below the lead of the check: scripts/waker.mjs TIMER_CHECK_LEAD_MS). */
+export const TIMER_CHECK_JOB = 'timer-check';
+export function ensureTimerCheckJob(ctx, { env = process.env, pluginRoot = PLUGIN_ROOT, platform = process.platform } = {}) {
+  const intervalS = Number(ctx.policy?.timer?.check_interval_s) || 60;
+  const command = `"${toPosix(process.execPath)}" "${toPosix(path.join(pluginRoot, 'bin', 'timer-check.mjs'))}"`;
+  return ensureJob(ctx, { name: TIMER_CHECK_JOB, command, interval_ms: intervalS * 1000 }, { env, platform });
+}
+
+/** Merge `job` into the wake configuration of this machine (see ensureIssueWatchJob). */
+export function ensureJob(ctx, job, { env = process.env, platform = process.platform } = {}) {
   const { file, instance, configFile, config } = wakeFile(ctx, env);
   const home = toPosix(env.HOME || os.homedir());
   const shown = toPosix(file).replace(home, '~');
-  const intervalS = Number(ctx.policy?.issue_watch?.interval_s) || DEFAULT_INTERVAL_S;
-  const job = { name: JOB_NAME, command: issueWatchCommand(pluginRoot), interval_ms: intervalS * 1000 };
+  const intervalS = Math.round(job.interval_ms / 1000);
   if (configFile) {
     // The wake of this mail config reads the jobs from this file; it is the operator's (key, url): never written here.
     const cfgShown = toPosix(configFile).replace(home, '~');
     const p = jobPlan(Array.isArray(config?.wake?.jobs) ? config.wake.jobs : [], job);
-    if (p.what === 'same') return { changed: false, line: `wake job ${JOB_NAME}: already in ${cfgShown} (wake.jobs)` };
-    if (p.what === 'kept') return { changed: false, line: `wake job ${JOB_NAME}: kept in ${cfgShown} (wake.jobs; its script ${toPosix(p.script).replace(home, '~')} exists)` };
-    return { changed: false, line: `wake job ${JOB_NAME}: the mail config is the file ${cfgShown} (a wake started with --config reads its "wake": {"jobs": [...]}, not wake.json): nothing written; ${p.what === 'add' ? 'add' : 'replace the job of that name with'} this job in that list and restart wake: ${JSON.stringify(job)}` };
+    if (p.what === 'same') return { changed: false, line: `wake job ${job.name}: already in ${cfgShown} (wake.jobs)` };
+    if (p.what === 'kept') return { changed: false, line: `wake job ${job.name}: kept in ${cfgShown} (wake.jobs; its script ${toPosix(p.script).replace(home, '~')} exists)` };
+    return { changed: false, line: `wake job ${job.name}: the mail config is the file ${cfgShown} (a wake started with --config reads its "wake": {"jobs": [...]}, not wake.json): nothing written; ${p.what === 'add' ? 'add' : 'replace the job of that name with'} this job in that list and restart wake: ${JSON.stringify(job)}` };
   }
-  if (!wakeInstalled(file, instance, env, platform)) return { changed: false, line: `wake job ${JOB_NAME}: wake not installed on this machine (${shown} missing), nothing written; after comms wake install run this again` };
+  if (!wakeInstalled(file, instance, env, platform)) return { changed: false, line: `wake job ${job.name}: wake not installed on this machine (${shown} missing), nothing written; after comms wake install run this again` };
   let data = {};
   if (fs.existsSync(file)) {
     data = readJson(file, null);
-    if (!data || typeof data !== 'object' || Array.isArray(data)) return { changed: false, line: `wake job ${JOB_NAME}: ${shown} is not a JSON object, left as it is; fix it and run this again` };
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return { changed: false, line: `wake job ${job.name}: ${shown} is not a JSON object, left as it is; fix it and run this again` };
   }
   const jobs = Array.isArray(data.jobs) ? data.jobs : [];
   const { i, what, script, cur } = jobPlan(jobs, job);
-  if (what === 'same') return { changed: false, line: `wake job ${JOB_NAME}: already in ${shown}` };
+  if (what === 'same') return { changed: false, line: `wake job ${job.name}: already in ${shown}` };
   // Another plugin clone of this machine (stable, a dev clone) put its job there: one job checks all projects, so it stays.
-  if (what === 'kept') return { changed: false, line: `wake job ${JOB_NAME}: kept in ${shown} (its script ${toPosix(script).replace(home, '~')} exists; every ${Math.round(Number(cur.interval_ms) / 1000) || '?'} s)` };
+  if (what === 'kept') return { changed: false, line: `wake job ${job.name}: kept in ${shown} (its script ${toPosix(script).replace(home, '~')} exists; every ${Math.round(Number(cur.interval_ms) / 1000) || '?'} s)` };
   const next = { ...data, jobs: i === -1 ? [...jobs, job] : jobs.map((j, k) => (k === i ? { ...j, ...job } : j)) };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
@@ -118,5 +132,5 @@ export function ensureIssueWatchJob(ctx, { env = process.env, pluginRoot = PLUGI
   fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode });
   fs.chmodSync(tmp, mode);
   fs.renameSync(tmp, file);
-  return { changed: true, line: `wake job ${JOB_NAME}: ${i === -1 ? 'added to' : 'updated in'} ${shown} (every ${intervalS} s; wake restarts on the change)` };
+  return { changed: true, line: `wake job ${job.name}: ${i === -1 ? 'added to' : 'updated in'} ${shown} (every ${intervalS} s; wake restarts on the change)` };
 }

@@ -5,12 +5,14 @@
 //   error.mjs resolve <id> [<id> ...]   -> remove the listed failures (stable id from list, not the number) after the lesson was saved
 //   error.mjs restore <brain commit>    -> bring back the failure(s) a wrong resolve commit dropped
 //   error.mjs report --title "..." --text "..."   -> report to the maintainer: mail, else public issue, else draft (P-003)
-//   error.mjs report --from <message id>          -> a mailed report without pickup (no reply / undelivered) as an issue
+//   error.mjs report --to <[project/]topic> --title "..." --text "..." -> to the thread that did the work; maintainer only if unreachable
+//   error.mjs report --from <message id>         -> a mailed report without pickup (no reply / undelivered): again as blocker to the maintainer topic, never an issue (D-0067)
 //   error.mjs confirm <issue url> --text "..."    -> the fix works in the reported scenario: comment, the watch ends (3c)
 //   error.mjs reopen <issue url> --text "..."     -> the fix does not work: reopen with the evidence, the watch goes on
 //   error.mjs watch [--force]                     -> check the watched issues now; prints the rings without a mail address
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
+import { deployedSkillName } from '../scripts/skills-sync.mjs';
 import { listFailures, formatFailures, resolveFailuresOp, restoreFailuresOp } from '../scripts/logs.mjs';
 import { find, formatMatches } from '../scripts/find.mjs';
 import { readSkills } from '../scripts/records.mjs';
@@ -43,7 +45,7 @@ try {
     out(hits.length ? `existing skill(s) for "${arg}" (merge the lesson into the whole skill with --replace, do not create a new one):\n${formatMatches(hits)}` : `none: create a new skill with save skill <name> --origin error --description "Použi, keď ..."`);
     // The maintainer's own thread does not mail itself: it fixes the error in workflow-dev directly (error skill, step 5).
     const maintainer = ctx.brainDir && ctx.thread && heldTopics(ctx.brainDir, ctx.thread).some((t) => t.id === 'workflow-dev');
-    out(maintainer ? 'this thread holds workflow-dev: do not mail the report to yourself; fix the error here (skill fix) (P-003)' : REPORT_LINE);
+    out(maintainer ? `this thread holds workflow-dev: do not mail the report to yourself; fix the error here (skill ${deployedSkillName(ctx.projectDir, 'fix')}) (P-003)` : REPORT_LINE);
   } else if (cmd === 'resolve') {
     const r = resolveFailuresOp(ctx.brainDir, args._.slice(1));
     brainWrite(ctx, { internal: true, ops: [r.op], message: `error: failure ${r.ids.join(' ')} processed` });
@@ -53,13 +55,15 @@ try {
     brainWrite(ctx, { internal: true, ops: [r.op], message: `error: failure restored from ${arg}` });
     for (const l of r.lines) out(`restored: ${l}`);
   } else if (cmd === 'report') {
-    const maintainer = ctx.brainDir && ctx.thread && heldTopics(ctx.brainDir, ctx.thread).some((t) => t.id === 'workflow-dev');
-    if (maintainer) fail('this thread holds workflow-dev: do not report to yourself; fix the error here (skill fix) (P-003)');
+    const to = args.to && args.to !== true ? String(args.to) : null;
+    // A report to the thread that did the work (--to) is no report to the maintainer itself: workflow-dev may send it.
+    const maintainer = !to && ctx.brainDir && ctx.thread && heldTopics(ctx.brainDir, ctx.thread).some((t) => t.id === 'workflow-dev');
+    if (maintainer) fail(`this thread holds workflow-dev: do not report to yourself; fix the error here (skill ${deployedSkillName(ctx.projectDir, 'fix')}) (P-003)`);
     const fromId = args.from && args.from !== true ? String(args.from) : null;
     const text = args.text && args.text !== true ? String(args.text) : null;
-    if (!fromId && !text) fail('usage: error.mjs report --title "<short>" --text "chyba: ...; príčina: ...; uložené: ..." | --from <message id>');
+    if (!fromId && !text) fail('usage: error.mjs report [--to <[project/]topic>] --title "<short>" --text "chyba: ...; príčina: ...; uložené: ..." | --from <message id>');
     const title = args.title && args.title !== true ? String(args.title) : (text || '').split(/[;\n]/)[0].slice(0, 80);
-    const r = await report(ctx, { text, title, fromId });
+    const r = await report(ctx, { text, title, fromId, to });
     out(r.line);
   } else if (cmd === 'confirm' || cmd === 'reopen') {
     const text = args.text && args.text !== true ? String(args.text) : null;
@@ -79,7 +83,7 @@ try {
       updateIssue(base, u.key, { undelivered: null });
     }
   } else {
-    fail('usage: error.mjs list | check <tool> | resolve <id> [<id> ...] | restore <brain commit> | report --title ... --text ... | report --from <id> | confirm|reopen <issue url> --text ... | watch [--force]');
+    fail('usage: error.mjs list | check <tool> | resolve <id> [<id> ...] | restore <brain commit> | report [--to <topic>] --title ... --text ... | report --from <id> | confirm|reopen <issue url> --text ... | watch [--force]');
   }
 } catch (err) {
   fail(err.message);

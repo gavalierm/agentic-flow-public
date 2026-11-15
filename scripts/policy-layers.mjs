@@ -18,6 +18,7 @@ export const POLICY_KEY_CLASSES = {
   'harness.subagent_denied_scripts': 'union',
   'harness.ask_commands': 'union',
   'harness.deny_commands': 'union',
+  'harness.worker_full_test_commands': 'union',
   immutable_principles: 'union',
   'harness.ask_commands_except': 'intersect',
   'harness.subagent_stop_exempt_agent_types': 'intersect',

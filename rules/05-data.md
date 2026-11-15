@@ -4,5 +4,5 @@ Bezpečné je iba to, čo obnoví git. Zmazanie, prepísanie či netriviálna zm
 ### P-054: Zamietnutý príkaz
 Zamietnutie (povolenia, hook) NEOBCHÁDZAJ iným príkazom s rovnakým účinkom; uveď ho vo výsledku, pokračuj inou prácou.
 
-### P-052: Pracovné súbory a materiály
-Medzivýsledky a klony iba do `<projekt>/scratch/` (absolútna cesta), zápis netreba schvaľovať; nie `/tmp` ani `~`. Podklady zvonku a výsledky práce hneď do `materialy/<téma>/` (git; skill `materialy`). Zadanie pracovníka iba z `delegate.mjs prepare`.
+### P-052: Pracovné súbory a zdroje
+Pomocné a klony iba do pracovných súborov (cesta zo štartu, bez schválenia); nie `/tmp` ani `~`. Zdroj a dokument zaraď hneď, zvyšok triedi `done --topic`. Zadanie pracovníka iba z `delegate.mjs prepare`.

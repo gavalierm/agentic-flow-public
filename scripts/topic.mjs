@@ -2,26 +2,42 @@
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { git, readJson, nowIso, relPosix, toPosix } from './util.mjs';
-import { isWakeTurn, machineName, sameMachine, inSubagent, inHarness, readThreadState, writeThreadState, mainCheckout, WORKTREES_DIR } from './config.mjs';
+import { git, readJson, nowIso, relPosix, toPosix, realPathLoose } from './util.mjs';
+import { isWakeTurn, machineName, sameMachine, inSubagent, inHarness, readThreadState, writeThreadState, mainCheckout, WORKTREES_DIR, loadContext, readWorkflowConfig, PERSONA_BRAIN } from './config.mjs';
+import { domainRepos } from './repo-knowledge.mjs';
+import { bellContinuation } from './waker.mjs';
 import { brainWrite, brainSync, readHolder, currentBranch, withBrainLock, isHolderOf } from './brain.mjs';
-import { freeHandover, renderHandover, checkHandover } from './brain-checks.mjs';
+import { freeHandover, renderHandover, checkHandover, HANDOVER_FREE_TEXT } from './brain-checks.mjs';
 import { pendingBuffers, flushBuffer } from './logs.mjs';
 import { readTopics } from './records.mjs';
 import { isValidId } from './keys.mjs';
+import { dataPath, dataRel, layoutOf, topicWorkDir, dataLayoutVersion } from './layout.mjs';
+import { ASSIGNED_OPERATOR, ASSIGNED_TECHNICAL } from './triage.mjs';
+import { topicOp, holderOp, openTopicExists, closedTopicExists, closedTopicDir, readTopicRecord, holderFromText, workDir, workTopic } from './topic-files.mjs';
 import { registerTopic, mailCount, mailLines, isMainTopic, MAIN_TOPIC, runClient, commsConfigured, commsProjectName } from './comms.mjs';
+import { giverTopic, newRecord, readHandoffs, handoffsOp, writeHandoff, armStallCheck, checkOverlap, topicScopeText } from './handoff.mjs';
+import { freezeRefusal } from './freeze.mjs';
 
 export function topicDir(brainDir, id) {
-  return path.join(brainDir, 'topics', id);
+  return dataPath(brainDir, 'topics', id);
 }
 
+/** Brain-relative path (posix) of a topic folder, or of a file in it by its logical name (topicFile, holderFile, handover). */
+export function topicRel(brainDir, id, name) {
+  return name ? dataRel(brainDir, 'topics', id, layoutOf(brainDir)[name]) : dataRel(brainDir, 'topics', id);
+}
+
+/** An open topic of this id exists (a closed one: closedTopicExists; layout 2 keeps it in place with state closed). */
 export function topicExists(brainDir, id) {
-  return fs.existsSync(path.join(topicDir(brainDir, id), 'topic.json'));
+  return openTopicExists(brainDir, id);
 }
 
+/** The record of an open topic without its holder, or null (closed or missing). */
 export function readTopic(brainDir, id) {
-  return readJson(path.join(topicDir(brainDir, id), 'topic.json'), null);
+  return readTopicRecord(brainDir, id);
 }
+
+export { topicOp, holderOp, closedTopicExists, closedTopicDir, readTopicRecord, workDir, workTopic };
 
 /** The topic was created by this thread (its own test or mistake to clean up, P-018). */
 export function ownTopic(ctx, id) {
@@ -157,7 +173,7 @@ export function grantConsent(ctx, id, { tool, target, reason = null, origin = ct
   if (o.thread !== ctx.thread && !holds) throw new Error(`only the orchestrator of topic ${id} (topic ${o.to}, thread ${o.thread}) grants its steps (P-064)`);
   const consent = { id: `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, tool: String(tool).trim(), target: t, by: ctx.thread, at: nowIso(), ...(reason ? { reason: String(reason).trim() } : {}) };
   const list = [...readConsents(ctx.brainDir, id), consent].slice(-50);
-  const res = brainWrite(ctx, { internal: true, ops: [{ path: `topics/${id}/consents.json`, content: JSON.stringify(list, null, 2) + '\n' }], message: `topic consent ${id}: ${consent.tool} (by ${ctx.thread})` });
+  const res = brainWrite(ctx, { internal: true, ops: [{ path: dataRel(ctx.brainDir, 'topics', id, 'consents.json'), content: JSON.stringify(list, null, 2) + '\n' }], message: `topic consent ${id}: ${consent.tool} (by ${ctx.thread})` });
   return { consent, write: res };
 }
 
@@ -178,11 +194,15 @@ export function codeCopyPath(ctx, id) {
 
 // codeStart: the action starts a new thread that holds the topic. Code without a thread id (cron, e.g. issues/watch.sh of a
 // persona, D-0019) may do that: it holds nothing and no message started it. An agent session still needs its id (P-038).
+// allowWake: the action may run in a turn started by a message. P-047 locks takeover, closing, rules and dangerous
+// operations; a new topic or a thread for a free topic is none of them (agent-alice/D-0066).
 function guardThread(ctx, action, { allowWake = false, codeStart = false } = {}) {
   if (inSubagent()) throw new Error(`topic ${action} refused in subagent (P-025)`);
   if (!ctx.thread && codeStart && !inHarness()) return;
   if (!ctx.thread) throw new Error(`topic ${action} needs a stable thread id: start the harness via thread.mjs or in T3 (WORKFLOW_THREAD_ID / T3CODE_THREAD_ID, P-038)`);
-  if (!allowWake && isWakeTurn(ctx.brainDir, ctx.thread)) throw new Error(`topic ${action} refused: this turn was started by a message, not by the operator (P-047)`);
+  if (!allowWake && isWakeTurn(ctx.brainDir, ctx.thread)) {
+    throw new Error(`topic ${action} refused: this turn was started by a message, not by the operator (P-047)${bellContinuation(ctx.brainDir, ctx.thread)}`);
+  }
 }
 
 function idleHours(since) {
@@ -201,7 +221,7 @@ const staleHours = (ctx) => ctx.policy?.topics?.stale_machine_hours ?? 12;
 export function staleOnOtherMachine(ctx, id, holder) {
   if (!holder?.thread || !holder.machine || sameMachine(holder.machine)) return null;
   const claimed = Date.parse(holder.since || '') || 0;
-  const commit = Number(git(['log', '-1', '--format=%ct', '--', `topics/${id}`], { cwd: ctx.brainDir }).stdout || 0) * 1000;
+  const commit = Number(git(['log', '-1', '--format=%ct', '--', topicRel(ctx.brainDir, id)], { cwd: ctx.brainDir }).stdout || 0) * 1000;
   const last = Math.max(claimed, commit);
   if (!last) return null;
   const idle = Math.floor((Date.now() - last) / 36e5);
@@ -233,25 +253,26 @@ function handoffTopicUnlocked(ctx, id, { handover = null, leaveOutbox = false } 
     const r = flushBuffer(ctx, session);
     if (r.written) steps.push(`logs of session ${session} flushed`);
   }
-  const outbox = path.join(ctx.brainDir, 'local', 'outbox');
-  const waiting = () => { try { return fs.readdirSync(outbox).filter((f) => !f.startsWith('.')).length; } catch { return 0; } };
-  if (waiting() && commsConfigured(ctx)) runClient(ctx, ['count']);
+  const outbox = dataPath(ctx.brainDir, 'local', 'outbox');
+  // Queued items are the .json files of the outbox (the client moves refused ones to rejected/); `flush` sends them in order.
+  const waiting = () => { try { return fs.readdirSync(outbox).filter((f) => f.endsWith('.json') && !f.startsWith('.')).length; } catch { return 0; } };
+  if (waiting() && commsConfigured(ctx)) runClient(ctx, ['flush']);
   const left = waiting();
   if (left && !leaveOutbox) return { ok: false, reason: `${left} message(s) in this machine's mail outbox could not be sent (mail unavailable): hand off when mail is up, or with --leave-outbox they are sent from this machine later` };
   if (left) steps.push(`${left} message(s) left in this machine's outbox`);
   const ops = [];
   if (handover) {
     const content = renderHandover(handover);
-    const errors = checkHandover(content, ctx.policy.limits.handover_lines);
+    const errors = checkHandover(content);
     if (errors.length) throw new Error(errors.join('\n'));
-    ops.push({ path: `topics/${id}/handover.md`, content });
+    ops.push({ path: topicRel(ctx.brainDir, id, 'handover'), content });
   } else {
     let current = '';
-    try { current = fs.readFileSync(path.join(topicDir(ctx.brainDir, id), 'handover.md'), 'utf8'); } catch { /* none */ }
+    try { current = fs.readFileSync(path.join(topicDir(ctx.brainDir, id), layoutOf(ctx.brainDir).handover), 'utf8'); } catch { /* none */ }
     if (!current.trim() || current.trim() === freeHandover().trim()) throw new Error(`topic ${id} has no handover: give --task, --done and --next, the other machine continues from it (P-026)`);
   }
   const record = { handoff_from: { thread: ctx.thread, machine: machineName(), at: nowIso() } };
-  ops.push({ path: `topics/${id}/holder.json`, content: JSON.stringify(record, null, 2) + '\n' });
+  ops.push(holderOp(ctx.brainDir, id, record));
   const res = brainWrite(ctx, { internal: true, ops, message: `topic handoff ${id} by ${ctx.thread} from ${machineName()}` });
   const comms = registerTopic(ctx, id, { holder: null, release: true });
   const sync = res.sync || {};
@@ -306,7 +327,7 @@ export function resolveClass(ctx, cls, kind = null) {
   return c;
 }
 
-function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedKind = null, mode, claim = true, copy = true, forThread = null, newThread = false, task = null, explicitProject = false, origin = ctx, orchestrator = null, run = spawnSync }) {
+function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedKind = null, mode, claim = true, copy = true, forThread = null, newThread = false, task = null, explicitProject = false, origin = ctx, orchestrator = null, assignedBy = ASSIGNED_TECHNICAL, run = spawnSync, not = null, distinct = null, fixGate = false }) {
   if (!isValidId(id)) throw new Error(`topic id "${id}" must be lowercase letters, digits and hyphens (P-036)`);
   if (id === MAIN_TOPIC) throw new Error('topic id "main" is reserved for the persona main thread: use topic.mjs main (P-045)');
   if (!subject || !String(subject).trim()) throw new Error('topic needs --subject "<one sentence>" (P-045)');
@@ -314,11 +335,23 @@ function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedK
   // A persona has no project code (P-025): a code topic from its session without --project went to the persona repo
   // instead of the managed project (bob 2026-11-03, t3-workarounds-check in bob, not the managed project).
   if (kind === 'code' && !explicitProject && isPersonaProject(ctx)) throw new Error(`code topic ${id} would be created in persona project ${path.basename(ctx.projectDir)}: a persona has no project code (P-025). Pass --project <managed project dir> (or --project ${ctx.projectDir} if the persona repo itself is the code)`);
-  guardThread(ctx, 'create', { codeStart: newThread && !forThread });
-  if (topicExists(ctx.brainDir, id) || fs.existsSync(path.join(ctx.brainDir, 'topics', 'archive', id))) throw new Error(`topic ${id} already exists`);
+  guardThread(ctx, 'create', { allowWake: true, codeStart: newThread && !forThread });
+  // P-074 (agent-alice/D-0092): during a freeze a code topic in a frozen repo (workflow, mail) runs only when the freeze
+  // allows it (the work of the rebuild); the old version is not fixed, so the report or issue is rejected instead.
+  if (kind === 'code') {
+    const frozen = freezeRefusal(ctx.policy, { id, repo: path.basename(mainCheckout(ctx.projectDir)) });
+    if (frozen) throw new Error(frozen);
+  }
+  if (topicExists(ctx.brainDir, id) || closedTopicExists(ctx.brainDir, id)) throw new Error(`topic ${id} already exists`);
   const topic = { id, subject: String(subject).trim(), class: String(cls), kind, state: 'working', created: nowIso() };
+  // flow-public#87: the task is kept with the topic, so the drift judge compares new work with it, not only with the subject.
+  if (task && String(task).trim()) topic.task = String(task).trim();
+  // P-075 (agent-alice/D-0093): a topic from a report or an issue starts its fix only after its orchestrator agreed.
+  if (fixGate) topic.fix_gate = true;
   // The creating thread may clean up its own topic (test, mistake) without operator approval (P-018).
   if (ctx.thread) topic.created_by = ctx.thread;
+  // Layout 2 (D-0044): who gave the topic decides the triage at done --topic; layout 1 records nothing (no triage).
+  if (dataLayoutVersion(ctx.brainDir) === 2) topic.assigned_by = assignedBy === ASSIGNED_OPERATOR ? ASSIGNED_OPERATOR : ASSIGNED_TECHNICAL;
   if (kind === 'code') {
     // Only a copy that is made is recorded: the intake (copy: false) recorded a path its thread then named as
     // `Kópia kódu`, a folder that never existed (report-228e044c).
@@ -329,6 +362,12 @@ function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedK
   if (explicitProject) {
     const mp = commsProjectName(ctx);
     if (mp && mp !== commsProjectName(origin || ctx)) topic.project = mp;
+  } else if (sharedDomainBrain(ctx)) {
+    // A domain brain shared by the domain's projects: registerTopic registers the topic under this session's mail project,
+    // so the record names it; the topic folder alone tells the sender only the brain repo (report-3c65fd98:
+    // <domain brain>/<topic> held while the topic was registered as <project of the domain>/<topic>).
+    const mp = commsProjectName(ctx);
+    if (mp) topic.project = mp;
   }
   // This thread claims its own new topic: the holder goes into the create commit, one sync cycle instead of two
   // (49 extra `topic claim` commits, median 11.1 s against ~6 s).
@@ -341,16 +380,29 @@ function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedK
     if (o) topic.orchestrator = o;
   }
   const holder = claimNow ? { thread: ctx.thread, machine: machineName(), mode: mode || ctx.policy?.topics?.default_holder_mode || 'operator', since: nowIso() } : null;
+  // agent-alice/D-0082 (point 3): a thread's new scope is compared with the open topics of the same repo or project before
+  // anything is written; code without a thread (auto, intake) is checked by its caller, which only prints the lines.
+  const overlap = ctx.thread ? checkOverlap(ctx, { scope: topicScopeText(topic.subject, topic.task), not, repo: topic.repo || null, project: topic.project || null, exclude: [id], distinct }) : { lines: [], refusal: null };
+  if (overlap.refusal) throw new Error(overlap.refusal);
+  // Point 1: a topic this thread gives to another thread is a handoff record in the topic it holds (code writes it, not
+  // the agent's handover); a thread that takes its own topic, and code without a thread, record none.
+  const giverBrain = (origin || ctx).brainDir || ctx.brainDir;
+  const giver = !claimNow && ctx.thread ? giverTopic(giverBrain, ctx.thread) : null;
+  const record = giver && giver !== id ? newRecord(ctx.brainDir, { to: id, project: topic.project || null, scope: topicScopeText(topic.subject, topic.task), not, via: 'create', snapshot: { open: true, task: HANDOVER_FREE_TEXT, next: '', decisions: [] } }) : null;
+  const sameBrain = record && realPathLoose(giverBrain) === realPathLoose(ctx.brainDir);
   const res = brainWrite(ctx, {
     internal: true,
     ops: [
-      { path: `topics/${id}/topic.json`, content: JSON.stringify(topic, null, 2) + '\n' },
-      { path: `topics/${id}/holder.json`, content: holder ? JSON.stringify(holder, null, 2) + '\n' : '{}\n' },
-      { path: `topics/${id}/handover.md`, content: freeHandover() },
+      topicOp(ctx.brainDir, id, topic),
+      holderOp(ctx.brainDir, id, holder || {}),
+      { path: topicRel(ctx.brainDir, id, 'handover'), content: freeHandover() },
+      ...(sameBrain ? [handoffsOp(ctx.brainDir, giver, [...readHandoffs(ctx.brainDir, giver), record])] : []),
     ],
-    message: `topic create ${id}${holder ? ` (claimed by ${ctx.thread})` : ''}`,
+    message: `topic create ${id}${holder ? ` (claimed by ${ctx.thread})` : ''}${sameBrain ? `, handoff from ${giver}` : ''}`,
   });
-  const out = { topic, write: res, claim: null, copy: null, thread: null, effortNote: null };
+  if (record && !sameBrain) writeHandoff(origin, giver, record);
+  if (sameBrain) armStallCheck(ctx, id);
+  const out = { topic, write: res, claim: null, copy: null, thread: null, effortNote: null, overlap: overlap.lines, handoff: record ? giver : null };
   let model = null;
   if (newThread && !forThread) {
     // P-036: a new topic gets its own T3 thread titled by the topic; its first message shows what the topic holds, so the
@@ -386,6 +438,17 @@ function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedK
   return out;
 }
 
+/**
+ * The session's brain is the domain brain (marker `brain`), a repo of its own other than the session's, and not a persona
+ * brain (a persona brain keeps its topics in its own mail project, D-0035).
+ */
+function sharedDomainBrain(ctx) {
+  if (!ctx.brainDir || !ctx.domain?.brain) return false;
+  const brain = realPathLoose(mainCheckout(ctx.brainDir));
+  if (brain !== realPathLoose(ctx.domain.brain) || brain === realPathLoose(mainCheckout(ctx.projectDir))) return false;
+  return readWorkflowConfig(brain).brain !== PERSONA_BRAIN;
+}
+
 /** First message of a topic's own thread: what the topic holds and what to do (P-036). */
 // With a task the operator already gave the work, so the thread does it now instead of waiting for a prompt (operator
 // 2026-11-02: topic agent-playbook was created for a clear task and its thread stopped asking for an instruction).
@@ -398,6 +461,8 @@ export function topicThreadMessage(topic, { task = null } = {}) {
     ...(topic.copy ? [`Kópia kódu: ${topic.copy}`] : []),
     // P-064: the operator does not follow topic threads; questions go to the thread that created the topic.
     ...(topic.orchestrator?.topic ? [`Orchestrátor: ${orchestratorAddress(topic.orchestrator)}. Operátora sa nepýtaj (AskUserQuestion ani Otázky na operátora): otázku pošli poštou orchestrátorovi (comms send --to ${orchestratorAddress(topic.orchestrator)}, blocker alebo assist, možnosti a odporúčanie) a pokračuj odporúčaným predpokladom.`] : []),
+    // P-075: the fix waits for the orchestrator's yes (no recommended assumption); verifying and the first comment do not.
+    ...(topic.fix_gate && topic.orchestrator?.topic ? [`Oprava (P-075): pred prvou zmenou kódu sa spýtaj orchestrátora (comms send --level assist --to ${orchestratorAddress(topic.orchestrator)} --text "fix ${topic.id}: čo, verzia, príčina, ak ju poznáš"); oprava začne až po odpovedi „áno, relevantné“, pri „nie, pracuje sa na novej verzii“ hlásenie či issue odmietni s týmto dôvodom a výzvou nahlásiť znova v novej verzii. Dovtedy iba overenie a prvý komentár issue.`] : []),
     '',
     ...(t
       ? ['Zadanie operátora:', t, '', 'Zadanie vykonaj hneď; na ďalší pokyn nečakaj a nepýtaj sa, či začať.']
@@ -428,7 +493,7 @@ export function spawnTarget(name, args, { platform = process.platform, env = pro
 
 /** Where the first message of a topic's thread is kept when the CLI could not start it (fallback t3_thread_launch). */
 export function threadMessageFile(ctx, id) {
-  return path.join(ctx.projectDir, 'scratch', `topic-${id}-thread.md`);
+  return path.join(topicWorkDir(ctx.brainDir, ctx.projectDir, id), `topic-${id}-thread.md`);
 }
 
 /**
@@ -480,23 +545,60 @@ export function startTopicThread(ctx, topic, run = spawnSync, { task = null, pla
 }
 
 /**
+ * Context of the repo a code topic changes (.tema.json `repo`, set with `project` by create --project, D-0035) when this
+ * command runs in another project of the same brain (the persona brain): thread <id> started the thread in the persona's
+ * T3 project and done --topic merged the copy into the persona repo (alice 2026-11-14, index-name: 'topic/index-name - not
+ * something we can merge'). Otherwise ctx itself.
+ */
+export function topicRepoContext(ctx, topic) {
+  const name = topic?.kind === 'code' ? topic.repo || topic.project : null;
+  if (!name || !ctx.domain || path.basename(mainCheckout(ctx.projectDir)) === name) return ctx;
+  const hit = domainRepos(ctx.domain).find((r) => r.name === name);
+  if (!hit) return ctx;
+  let repoCtx;
+  try { repoCtx = loadContext({ project: hit.dir }); } catch { return ctx; }
+  if (!repoCtx.brainDir || realPathLoose(repoCtx.brainDir) !== realPathLoose(ctx.brainDir)) return ctx;
+  return repoCtx;
+}
+
+/**
  * New T3 thread for an existing topic nobody holds (P-036): the persona's main thread could not start the work of a topic
  * whose own thread never claimed it; mail has no address without a holder and t3_thread_send is not for other agents'
  * work (Bob 2026-11-03: thread of tracker-remote-verify stood on a question). A held topic is refused (takeover is P-037).
  */
-export function startThreadForTopic(ctx, id, { task = null, mode, run, forThread = null } = {}) {
-  guardThread(ctx, 'thread', { codeStart: !forThread });
+export function startThreadForTopic(ctx, id, { task = null, mode, run, forThread = null, not = null, distinct = null } = {}) {
+  guardThread(ctx, 'thread', { allowWake: true, codeStart: !forThread });
   if (!topicExists(ctx.brainDir, id)) throw new Error(`topic ${id} does not exist (archived or never created)`);
   const holder = readHolder(ctx.brainDir, id);
   if (holder.thread) return { ok: false, reason: `topic ${id} ${heldBy(holder)}; a new thread needs a free topic: write to the holder (comms send --to ${topicMailProject(ctx.brainDir, id) || commsProjectName(ctx)}/${id}) or ask the operator about a takeover (P-037)` };
-  // --for-thread: the thread was started by the T3 tool (fallback of a failed CLI start); it only gets the topic.
-  if (forThread) return { ok: true, thread: String(forThread), claim: assignTopic(ctx, id, String(forThread), { mode }) };
   // The class comes from topic.json (D-0021); a topic from before the classes starts on the project's default model.
-  const topic = readTopic(ctx.brainDir, id);
+  let topic = readTopic(ctx.brainDir, id);
+  // flow-public#87: a new task for the thread is kept with the topic (drift judge).
+  const newTask = task && String(task).trim();
+  // agent-alice/D-0082: the scope given to the new thread is checked for an overlap (point 3) and recorded as a handoff of
+  // the topic this thread holds (point 1); code without a thread does neither.
+  const scope = topicScopeText(topic.subject, newTask || topic.task);
+  const overlap = ctx.thread ? checkOverlap(ctx, { scope, not, repo: topic.repo || null, project: topic.project || null, exclude: [id], distinct }) : { lines: [], refusal: null };
+  if (overlap.refusal) return { ok: false, reason: overlap.refusal };
+  const giver = ctx.thread ? giverTopic(ctx.brainDir, ctx.thread) : null;
+  const giverCtx = ctx;
+  const recordHandoff = (res) => {
+    if (!res.ok || !giver || giver === id) return res;
+    try { writeHandoff(giverCtx, giver, newRecord(giverCtx.brainDir, { to: id, project: topic.project || null, scope, not, via: 'thread' })); res.handoff = giver; } catch (err) { res.handoffError = err.message; }
+    return res;
+  };
+  if (newTask && topic.task !== newTask) {
+    topic = { ...topic, task: newTask };
+    brainWrite(ctx, { internal: true, ops: [topicOp(ctx.brainDir, id, topic)], message: `topic task ${id}` });
+  }
+  // The thread of a repo topic starts in the repo's T3 project, as create --project does (D-0035).
+  ctx = topicRepoContext(ctx, topic);
+  // --for-thread: the thread was started by the T3 tool (fallback of a failed CLI start); it only gets the topic.
+  if (forThread) return recordHandoff({ ok: true, thread: String(forThread), claim: assignTopic(ctx, id, String(forThread), { mode }), overlap: overlap.lines });
   const started = startTopicThread(ctx, topic, run, { task });
   if (!started.ok) return { ok: false, reason: `no thread was started (${started.reason}); ${started.fallback}` };
   const claim = assignTopic(ctx, id, started.thread, { mode, model: started.model });
-  return { ok: true, thread: started.thread, claim, effortNote: started.effortNote };
+  return recordHandoff({ ok: true, thread: started.thread, claim, effortNote: started.effortNote, overlap: overlap.lines });
 }
 
 /**
@@ -509,7 +611,7 @@ function assignTopic(ctx, id, thread, { mode, model = null } = {}) {
   const holder = { thread, machine: machineName(), mode: mode || policyMode, since: nowIso(), assigned_by: ctx.thread, model: model || null, effort: null };
   const res = brainWrite(ctx, {
     internal: true,
-    ops: [{ path: `topics/${id}/holder.json`, content: JSON.stringify(holder, null, 2) + '\n' }],
+    ops: [holderOp(ctx.brainDir, id, holder)],
     message: `topic assign ${id} to ${thread} by ${ctx.thread}`,
   });
   const comms = registerTopic(ctx, id, { holder: thread });
@@ -551,7 +653,7 @@ function claimTopicUnlocked(ctx, id, { force = false, operatorApproved = false, 
     const updated = { ...holder, mode };
     const w = brainWrite(ctx, {
       internal: true,
-      ops: [{ path: `topics/${id}/holder.json`, content: JSON.stringify(updated, null, 2) + '\n' }],
+      ops: [holderOp(ctx.brainDir, id, updated)],
       message: `topic mode ${id} ${mode} by ${ctx.thread}`,
     });
     const comms = registerTopic(ctx, id);
@@ -564,7 +666,7 @@ function claimTopicUnlocked(ctx, id, { force = false, operatorApproved = false, 
   const res = brainWrite(ctx, {
     internal: true,
     sync: false,
-    ops: [{ path: `topics/${id}/holder.json`, content: JSON.stringify(newHolder, null, 2) + '\n' }],
+    ops: [holderOp(ctx.brainDir, id, newHolder)],
     message: `topic claim ${id} by ${ctx.thread}${force ? (operatorApproved ? ' (force, operator approved)' : ' (force, own topic)') : ''}`,
   });
   const sync = brainSync(ctx.brainDir);
@@ -577,8 +679,8 @@ function claimTopicUnlocked(ctx, id, { force = false, operatorApproved = false, 
       const undo = git(['reset', '--quiet', '--keep', before], { cwd: ctx.brainDir });
       if (!undo.ok) throw new Error(`claim of ${id} lost the race and its commit could not be dropped (${undo.stderr.split('\n')[0]}); nothing was discarded, resolve by hand (P-040)`);
     }
-    const remote = git(['show', `origin/${branch}:topics/${id}/holder.json`], { cwd: ctx.brainDir });
-    try { holder = remote.ok ? JSON.parse(remote.stdout || '{}') : readHolder(ctx.brainDir, id); } catch { holder = {}; }
+    const remote = git(['show', `origin/${branch}:${topicRel(ctx.brainDir, id, 'holderFile')}`], { cwd: ctx.brainDir });
+    try { holder = remote.ok ? holderFromText(ctx.brainDir, remote.stdout) : readHolder(ctx.brainDir, id); } catch { holder = {}; }
     brainSync(ctx.brainDir);
     if (holder.thread && !isHolderOf(holder, ctx.thread)) {
       return { ok: false, reason: `topic ${id} ${heldBy(holder)} (claimed first)`, holder };
@@ -618,9 +720,9 @@ export function claimMain(ctx, opts = {}) {
       brainWrite(ctx, {
         internal: true,
         ops: [
-          { path: `topics/${MAIN_TOPIC}/topic.json`, content: JSON.stringify(topic, null, 2) + '\n' },
-          { path: `topics/${MAIN_TOPIC}/holder.json`, content: '{}\n' },
-          { path: `topics/${MAIN_TOPIC}/handover.md`, content: freeHandover() },
+          topicOp(ctx.brainDir, MAIN_TOPIC, topic),
+          holderOp(ctx.brainDir, MAIN_TOPIC, {}),
+          { path: topicRel(ctx.brainDir, MAIN_TOPIC, 'handover'), content: freeHandover() },
         ],
         message: 'topic main created',
       });
@@ -654,7 +756,7 @@ function releaseTopicUnlocked(ctx, id, { force = false, operatorApproved = false
   // An already free topic still registers the release: a mail registration that failed earlier is repaired here (P-041).
   const res = holder.thread ? brainWrite(ctx, {
     internal: true,
-    ops: [{ path: `topics/${id}/holder.json`, content: '{}\n' }],
+    ops: [holderOp(ctx.brainDir, id, {})],
     message: `topic release ${id} by ${ctx.thread}`,
   }) : null;
   // The mail service stops carrying this thread as holder (wake events, P-043); messages for the topic keep waiting.
@@ -723,7 +825,7 @@ export function pauseTopic(ctx, id, { until = null, reason = null } = {}) {
   if (until && !(at > Date.now())) throw new Error('--until must be a future time (ISO 8601 or <n>d / <n>h)');
   const { paused_until: _u, paused_reason: _r, ...rest } = topic;
   const next = { ...rest, state: 'paused', paused_at: nowIso(), ...(at ? { paused_until: new Date(at).toISOString() } : {}), ...(reason ? { paused_reason: String(reason).slice(0, 200) } : {}), updated: nowIso() };
-  const write = brainWrite(ctx, { internal: true, ops: [{ path: `topics/${id}/topic.json`, content: JSON.stringify(next, null, 2) + '\n' }], message: `topic pause ${id}${at ? ` until ${next.paused_until}` : ''}` });
+  const write = brainWrite(ctx, { internal: true, ops: [topicOp(ctx.brainDir, id, next)], message: `topic pause ${id}${at ? ` until ${next.paused_until}` : ''}` });
   return { ok: true, topic: next, write };
 }
 
@@ -734,7 +836,7 @@ export function resumeTopic(ctx, id) {
   if (topic.state !== 'paused') return { ok: true, already: true, topic };
   const { paused_at: _a, paused_until: _u, paused_reason: _r, ...rest } = topic;
   const next = { ...rest, state: 'working', updated: nowIso() };
-  const write = brainWrite(ctx, { internal: true, ops: [{ path: `topics/${id}/topic.json`, content: JSON.stringify(next, null, 2) + '\n' }], message: `topic resume ${id}` });
+  const write = brainWrite(ctx, { internal: true, ops: [topicOp(ctx.brainDir, id, next)], message: `topic resume ${id}` });
   return { ok: true, topic: next, write };
 }
 
@@ -745,7 +847,7 @@ export function setTopicState(ctx, id, state) {
   if (!topic) throw new Error(`topic ${id} does not exist`);
   topic.state = state;
   topic.updated = nowIso();
-  return { path: `topics/${id}/topic.json`, content: JSON.stringify(topic, null, 2) + '\n' };
+  return topicOp(ctx.brainDir, id, topic);
 }
 
 /**
@@ -834,7 +936,7 @@ function copyTopicUnlocked(ctx, id, { operatorApproved = false, explicitProject 
   const rel = relPosix(ctx.projectDir, copy.path);
   if (topic.copy === rel) return { ...copy, recorded: false };
   const next = { ...topic, copy: rel, repo: path.basename(mainCheckout(ctx.projectDir)), ...(discussion ? { copy_approved: { by: 'operator', at: nowIso(), thread: ctx.thread } } : {}), updated: nowIso() };
-  const write = brainWrite(ctx, { internal: true, ops: [{ path: `topics/${id}/topic.json`, content: JSON.stringify(next, null, 2) + '\n' }], message: `topic copy ${id}${discussion ? ' (operator approved)' : ''} by ${ctx.thread}` });
+  const write = brainWrite(ctx, { internal: true, ops: [topicOp(ctx.brainDir, id, next)], message: `topic copy ${id}${discussion ? ' (operator approved)' : ''} by ${ctx.thread}` });
   return { ...copy, recorded: true, write };
 }
 
@@ -881,7 +983,7 @@ export function recordImplementation(ctx, id, { cls, model }) {
     if (!topic) throw new Error(`topic ${id} does not exist (archived or never created)`);
     const entry = { at: nowIso(), class: cls, model };
     const next = { ...topic, implementations: [...(Array.isArray(topic.implementations) ? topic.implementations : []), entry] };
-    const write = brainWrite(ctx, { internal: true, ops: [{ path: `topics/${id}/topic.json`, content: JSON.stringify(next, null, 2) + '\n' }], message: `topic implement ${id}: class ${cls}, model ${model} by ${ctx.thread}` });
+    const write = brainWrite(ctx, { internal: true, ops: [topicOp(ctx.brainDir, id, next)], message: `topic implement ${id}: class ${cls}, model ${model} by ${ctx.thread}` });
     return { entry, write };
   });
 }

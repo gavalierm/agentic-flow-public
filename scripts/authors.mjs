@@ -3,9 +3,11 @@
 // before need no migration. Shown by name only and only on a record of another operator (session start, find, save): a brain
 // of one author reads as before.
 import { git } from './util.mjs';
+import { LAYOUT, dataRel } from './layout.mjs';
 
-/** Record folders of the brain the author log looks at. */
-export const RECORD_DIRS = ['memory', 'decisions', 'rules', 'skills'];
+/** Record folders of the brain the author log looks at (logical names of layout.mjs; RECORD_DIRS: their layout-1 paths). */
+const RECORD_NAMES = ['memory', 'decisions', 'rules', 'skills'];
+export const RECORD_DIRS = RECORD_NAMES.map((n) => LAYOUT[n]);
 
 /** Git identity of this machine for the brain (effective config user.email and user.name); null when neither is set. */
 export function localIdentity(brainDir) {
@@ -32,7 +34,7 @@ export function sameIdentity(a, b) {
  * machine. Returns { me, files: Map<brain-relative path, { name, email }>, git } (`git`: the log result, which also tells a
  * repo git refuses, see gitAccessProblem).
  */
-export function recordAuthors(brainDir, { paths = RECORD_DIRS } = {}) {
+export function recordAuthors(brainDir, { paths = RECORD_NAMES.map((n) => dataRel(brainDir, n)) } = {}) {
   const res = git(['-c', 'core.quotePath=false', 'log', '--no-renames', '--diff-filter=A', '--relative', '--format=%x01%ae%x02%an', '--name-only', '--', ...paths], { cwd: brainDir });
   const files = new Map();
   let cur = null;
@@ -58,7 +60,7 @@ export function byTag(name) {
   return name ? ` [by ${name}]` : '';
 }
 
-/** Records (.md) of other operators under `prefix` (e.g. `rules/`): { path: name }. */
+/** Records (.md) of other operators under `prefix` (e.g. the rules folder with a trailing slash): { path: name }. */
 export function foreignRecords(authors, prefix = '') {
   const out = {};
   for (const rel of authors?.files?.keys() || []) {

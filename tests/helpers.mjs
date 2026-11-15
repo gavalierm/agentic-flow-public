@@ -6,6 +6,7 @@ import { spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { heldTopics } from '../scripts/topic.mjs';
 import { isMainTopic } from '../scripts/comms.mjs';
+import { flowModel, commsModel, resolve as resolveComms } from '../scripts/comms-pair.mjs';
 
 export const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = (name) => path.join(PLUGIN_ROOT, 'bin', name);
@@ -76,7 +77,7 @@ export function repoFiles(root) {
 }
 
 export function cleanEnv(extra = {}) {
-  const env = { ...process.env, WORKFLOW_PLUGIN_ROOT: PLUGIN_ROOT, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', WORKFLOW_TEMP_DIRS: '/nonexistent-temp-dir', WORKFLOW_SERVICES_DIR: '/nonexistent-services-dir', WORKFLOW_RULE_JUDGE: 'off', WORKFLOW_MACHINE_FILE: '/nonexistent-machine-dir/machine-id', WORKFLOW_PIN_FILE: '/nonexistent-machine-dir/pin.json', WORKFLOW_ROOT_FILE: '/nonexistent-machine-dir/projects-root', WORKFLOW_ISSUE_WATCH_INDEX: '/nonexistent-machine-dir/issue-watch-index.json', WORKFLOW_WAKE_FILE: '/nonexistent-machine-dir/wake.json' };
+  const env = { ...process.env, WORKFLOW_PLUGIN_ROOT: PLUGIN_ROOT, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', WORKFLOW_TEMP_DIRS: '/nonexistent-temp-dir', WORKFLOW_SERVICES_DIR: '/nonexistent-services-dir', WORKFLOW_RULE_JUDGE: 'off', WORKFLOW_OVERLAP_JUDGE: 'off', WORKFLOW_MACHINE_FILE: '/nonexistent-machine-dir/machine-id', WORKFLOW_PIN_FILE: '/nonexistent-machine-dir/pin.json', WORKFLOW_ROOT_FILE: '/nonexistent-machine-dir/projects-root', WORKFLOW_ISSUE_WATCH_INDEX: '/nonexistent-machine-dir/issue-watch-index.json', WORKFLOW_WAKE_FILE: '/nonexistent-machine-dir/wake.json', WORKFLOW_TIMER_INDEX: '/nonexistent-machine-dir/timer-index.json' };
   for (const k of ['CLAUDE_PROJECT_DIR', 'WORKFLOW_PROJECT_DIR', 'WORKFLOW_THREAD_ID', 'T3CODE_THREAD_ID', 'WORKFLOW_AGENT_ID', 'CLAUDE_AGENT_ID', 'CLAUDE_PLUGIN_ROOT']) delete env[k];
   return { ...env, ...extra };
 }
@@ -162,13 +163,30 @@ export function setup({ thread = 'a1', remote = true, second = false, brainName 
 export const memoryRecord = (key, body = 'x', extra = '') => `---\nkey: ${key}\ntype: ${key.split('-')[0]}\nname: ${key.split('-').slice(1).join(' ')}\norigin: operator\n${extra}---\n${body}\n`;
 
 // --- mail (agentic-comms) fixtures ----------------------------------------------------------------
-// The comms client is looked up next to the plugin clone (../agentic-comms) or via AGENTIC_COMMS_DIR; integration
-// tests skip when it is missing. The service runs as a child process on a temporary instance under the fixture root.
+// The comms client is looked up via AGENTIC_COMMS_DIR, next to the plugin clone (../agentic-comms) or, from a topic
+// worktree <domain>/.worktrees/<repo>/<id>, in <domain>/agentic-comms; integration tests skip when it is missing. The
+// service runs as a child process on a temporary instance under the fixture root.
+// Only mail of the model the workflow declares (package.json commsModel, D-0089, scripts/comms-pair.mjs): a found
+// checkout of another model is replaced by its newest tag with the model (export in the system temp dir); none, or
+// AGENTIC_COMMS_DIR of another model, throws: the mail tests fail loudly, never run against another model.
 
+let commsClientCache;
 export function commsClient() {
-  const dir = process.env.AGENTIC_COMMS_DIR || path.resolve(PLUGIN_ROOT, '..', 'agentic-comms');
-  const client = path.join(dir, 'bin', 'comms.mjs');
-  return fs.existsSync(client) ? client : null;
+  if (commsClientCache !== undefined) return commsClientCache;
+  const explicit = process.env.AGENTIC_COMMS_DIR;
+  const dirs = explicit ? [explicit]
+    : [path.resolve(PLUGIN_ROOT, '..', 'agentic-comms'), path.resolve(PLUGIN_ROOT, '..', '..', '..', 'agentic-comms')];
+  const dir = dirs.find((d) => fs.existsSync(path.join(d, 'bin', 'comms.mjs')));
+  if (!dir) return (commsClientCache = null);
+  const model = flowModel();
+  let use = dir;
+  if (commsModel(dir) !== model) {
+    if (explicit) throw new Error(`AGENTIC_COMMS_DIR=${dir} is mail model ${commsModel(dir)}, the workflow model ${model} (package.json commsModel)`);
+    const r = resolveComms(dir, model, path.join(os.tmpdir(), 'agentic-comms-pair'));
+    if (r.error) throw new Error(r.line);
+    use = r.dir;
+  }
+  return (commsClientCache = path.join(use, 'bin', 'comms.mjs'));
 }
 
 function commsCli(client, args, env = {}) {

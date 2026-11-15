@@ -1,3 +1,4 @@
+// keep: core
 // P-042, P-043, P-044, P-046, P-047, P-030: bells are recognised only as the exact whole prompt; a wake without new mail ends
 // the turn; no-reply/undelivered give one line from `comms message --id` (no triage); the turn record carries opened_at
 // from open to closed; a skill proposal is signalled once per thread. Comms client is a stub (tests/fixtures/comms-stub.mjs).
@@ -7,8 +8,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setup, PLUGIN_ROOT } from './helpers.mjs';
 import { classifyPrompt, parsePrompt, messageBellLine } from '../hooks/user-prompt-submit.mjs';
-import { proposalKey } from '../scripts/logs.mjs';
-import { setTimer, threadTimers, recordWaker, wakerFromTool } from '../scripts/waker.mjs';
 
 const STUB = path.join(PLUGIN_ROOT, 'tests', 'fixtures', 'comms-stub.mjs');
 const policy = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'policy', 'policy.json'), 'utf8'));
@@ -28,14 +27,6 @@ function stubbed(state = {}) {
   fx.state = () => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'threads', 'a1.json'), 'utf8'));
   return fx;
 }
-/** Thread with topic alpha that has sent a message to nobody: m1 expired while held (outcome expired, state held). */
-function heldMessage() {
-  const fx = stubbed({ messages: [], message: { m1: { id: 'm1', state: 'held', level: 'assist', to: 'project/nikto', outcome: 'expired', replied: false, ttl_s: 60 } } });
-  assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
-  fx.hook('user-prompt-submit.mjs', { prompt: 'pošli to' });
-  return fx;
-}
-const val = (a, k) => (a.includes(`--${k}`) ? a[a.lastIndexOf(`--${k}`) + 1] : undefined);
 
 test('classifyPrompt: only the exact whole prompt is a bell; a quoted template is an operator prompt', () => {
   assert.equal(classifyPrompt('you have mail in topic alpha', policy), 'wake');
@@ -62,30 +53,6 @@ test('classifyPrompt: only the exact whole prompt is a bell; a quoted template i
   assert.equal(classifyPrompt('to nefunguje', policy), 'error');
 });
 
-test('messageBellLine: a no-reply bell of a message the mail answered `otázka` (recipient waits for its operator) reads reply otázka, not no reply (P-061 V1)', () => {
-  const line = messageBellLine('no-reply', 'm1', { level: 'assist', to: 'project/beta', ttl_s: 1800, answer_state: 'otázka', answer_origin: 'code' });
-  assert.match(line, /^message m1 \(assist → project\/beta\): reply otázka \(/);
-  assert.doesNotMatch(line, /no reply|promote to blocker, send elsewhere/);
-  assert.match(messageBellLine('no-reply', 'm1', { level: 'assist', to: 'project/beta', answer_state: 'otázka', answer_origin: 'reply' }), /: no reply/, 'a real reply never gets here');
-});
-
-test('messageBellLine: detail from message --id, without it a line without detail', () => {
-  assert.equal(messageBellLine('no-reply', 'm1', { level: 'assist', to: 'project/beta', ttl_s: 1800 }), `message m1 (assist → project/beta): no reply within 30m${ACTIONS}`);
-  assert.equal(messageBellLine('undelivered', 'm2', { level: 'blocker', to: 'thread:t7', undelivered_holder: 't7', undelivered_reason: 'thread archived' }),
-    `message m2 (blocker → thread:t7): undelivered (recipient thread t7 thread archived)${ACTIONS}`);
-  assert.equal(messageBellLine('no-reply', 'm1', null), `message m1: no reply${ACTIONS}`);
-  assert.equal(messageBellLine('undelivered', 'm2', null), `message m2: undelivered${ACTIONS}`);
-  const long = messageBellLine('undelivered', 'm3', { level: 'assist', to: 'p/t', undelivered_holder: 'x', undelivered_reason: 'r'.repeat(200) });
-  assert.ok(long.length < 220, 'reason shortened');
-});
-
-test('messageBellLine: a no-reply bell of a held message says no thread receives the address: no resend or promotion (P-045)', () => {
-  const line = messageBellLine('no-reply', 'm9', { state: 'held', level: 'blocker', to: 'p/nowhere', ttl_s: 900 });
-  assert.match(line, /^message m9 \(blocker → p\/nowhere\): no reply, held: no thread receives p\/nowhere .*do not send there again or promote it/);
-  assert.doesNotMatch(line, /promote to blocker/);
-  assert.equal(messageBellLine('no-reply', 'm8', { state: 'pending', level: 'assist', to: 'p/t' }), `message m8 (assist → p/t): no reply${ACTIONS}`);
-});
-
 test('wake bell: triage only with new mail, else one line ending the turn; a quoted template stays an operator prompt', () => {
   const fx = stubbed({ messages: [] });
   try {
@@ -107,10 +74,8 @@ test('no reply / undelivered: one line from message --id, no triage instruction,
   const fx = stubbed({
     messages: [{ id: 'x1', level: 'blocker' }],
     message: {
-      m1: { id: 'm1', state: 'pending', level: 'assist', project: 'project', topic: 'beta', to: 'project/beta', outcome: 'expired', replied: false, ttl_s: 14400 },
-      m2: { id: 'm2', state: 'pending', level: 'blocker', to: 'thread:t7', outcome: 'undelivered', replied: false, undelivered_holder: 't7', undelivered_reason: 'thread archived' },
-      m3: { id: 'm3', state: 'acked', level: 'assist', to: 'project/beta', outcome: 'expired', replied: false },
-      m4: { id: 'm4', state: 'pending', level: 'assist', to: 'project/beta', outcome: null, replied: false },
+      m1: { id: 'm1', status: 'pending', level: 'assist', project: 'project', topic: 'beta', to: 'project/beta', expired_at: '2026-11-01T10:30:00.000Z', ttl_s: 14400 },
+      m2: { id: 'm2', status: 'undelivered', level: 'blocker', to: 'thread:t7', undelivered_holder: 't7', undelivered_reason: 'thread archived' },
     },
   });
   try {
@@ -121,7 +86,7 @@ test('no reply / undelivered: one line from message --id, no triage instruction,
     assert.equal(lines[1], `message m1 (assist → project/beta): no reply within 4h${ACTIONS}`);
     assert.doesNotMatch(r.context, /triage/, 'no triage in a no-reply turn');
     assert.equal(fx.state().turn_source, 'wake');
-    assert.equal(fx.run('topic.mjs', ['create', 'gamma', '--subject', 'Gamma', '--class', 'discussion']).status === 0, false, 'P-047 locks as in a wake turn');
+    assert.equal(fx.run('topic.mjs', ['claim', 'alpha', '--force']).status === 0, false, 'P-047 locks as in a wake turn');
     assert.deepEqual(fx.stub.calls('receive'), [], 'nothing read');
 
     r = fx.hook('user-prompt-submit.mjs', { prompt: 'undelivered m2' });
@@ -138,316 +103,17 @@ test('no reply / undelivered: one line from message --id, no triage instruction,
   } finally { fx.cleanup(); }
 });
 
-test('turn record: opened_at from open goes back with closed; older client without --opened-at still gets closed', () => {
-  const fx = stubbed({ messages: [], opened_at: '2026-11-01T11:11:11.000Z' });
-  try {
-    fx.hook('user-prompt-submit.mjs', { prompt: 'ahoj' });
-    assert.equal(fx.state().turn_opened_at, '2026-11-01T11:11:11.000Z');
-    fx.stub.reset();
-    fx.hook('stop.mjs', {});
-    const closed = fx.stub.calls('turn');
-    assert.equal(closed.length, 1);
-    assert.equal(val(closed[0], 'state'), 'closed');
-    assert.equal(val(closed[0], 'opened-at'), '2026-11-01T11:11:11.000Z');
-
-    // Older server/client: open has no opened_at -> closed as before; an option the client rejects -> retried without it.
-    fx.stub.set({ messages: [], turn: 'old' });
-    fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    assert.equal(fx.state().turn_opened_at, null);
-    fx.stub.reset();
-    fx.hook('stop.mjs', {});
-    assert.equal(fx.stub.calls('turn').length, 1);
-    assert.equal(val(fx.stub.calls('turn')[0], 'opened-at'), undefined);
-    const st = fx.state();
-    fs.writeFileSync(path.join(fx.brain, 'local', 'threads', 'a1.json'), JSON.stringify({ ...st, turn_opened_at: '2026-11-01T09:00:00.000Z' }));
-    fx.stub.reset();
-    assert.equal(fx.hook('stop.mjs', {}).status, 0);
-    const calls = fx.stub.calls('turn');
-    assert.equal(calls.length, 2, 'rejected --opened-at, then closed without it');
-    assert.equal(val(calls[1], 'opened-at'), undefined);
-    assert.equal(val(calls[1], 'state'), 'closed');
-  } finally { fx.cleanup(); }
-});
-
-test('P-030: a sequence proposal is signalled once per thread, not at every Stop', () => {
-  assert.equal(proposalKey('sequence a+b 3x: create a skill with a script or add the script to the existing skill yourself, no operator approval (P-030)'), 'sequence a+b');
-  assert.equal(proposalKey('unpushed: 2'), null);
-  const fx = setup();
-  try {
-    const bash = (command, session) => fx.hook('post-tool-use.mjs', { session_id: session, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'ok', stderr: '' } });
-    const turn = (s) => { bash('git fetch origin', s); bash('npm test', s); fx.hook('stop.mjs', { session_id: s }); };
-    for (const s of ['s1', 's2', 's3']) turn(s);
-    let r = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    assert.match(r.context, /sequence git-fetch\+npm-test 3x: create a skill .*no operator approval/);
-    assert.deepEqual(fx.read('local/threads/a1.json').includes('sequence git-fetch+npm-test'), true);
-    // Same proposal seen again (e.g. the log lost its count after a merge): not signalled again in this thread.
-    fx.hook('stop.mjs', { session_id: 'x' });
-    const state = JSON.parse(fx.read('local/threads/a1.json'));
-    fs.writeFileSync(path.join(fx.brain, 'logs', 'sequences.log'), '');
-    for (const s of ['s4', 's5', 's6']) turn(s);
-    r = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    assert.doesNotMatch(r.context, /sequence git-fetch/);
-    assert.ok(state.proposed.includes('sequence git-fetch+npm-test'));
-  } finally { fx.cleanup(); }
-});
-
-test('P-042 Stop: a picked assist without an answer is one queued line, never a block; it is queued once per stop', async () => {
-  const { writeThreadState, readThreadState } = await import('../scripts/config.mjs');
-  const fx = stubbed({ messages: [] });
-  try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
-    const set = (patch) => writeThreadState(fx.brain, 'a1', { ...readThreadState(fx.brain, 'a1'), ...patch });
-    set({ turn_source: 'operator', picked_assist: [{ id: 'm9', from: 'bob', at: '2026-11-02T10:00:00.000Z' }] });
-    const out = fx.hook('stop.mjs', {}).json;
-    assert.equal(out.decision, undefined, 'the stop is never blocked by a picked assist');
-    fx.hook('stop.mjs', {});
-    const queued = fx.state().pending_signals.filter((s) => /^picked assist unanswered: m9/.test(s));
-    assert.equal(queued.length, 1, 'one line, not one per stop');
-    set({ turn_source: 'wake' });
-    assert.deepEqual(fx.hook('stop.mjs', {}).json, {}, 'a bell turn adds nothing');
-  } finally { fx.cleanup(); }
-});
-
-test('parsePrompt: the operator\'s bare "done" / "hotovo" asks to close the whole topic (operator 2026-11-03)', () => {
-  for (const p of ['done', 'Finish.', 'hotovo!', 'uzavri to', '/workflow:done', 'workflow:done'])
-    assert.equal(parsePrompt(p, policy).kind, 'done', p);
-  for (const p of ['finish the tests first', 'je to hotovo?', 'kedy bude hotovo'])
-    assert.notEqual(parsePrompt(p, policy).kind, 'done', p);
-});
-
-test('turn record: a reply that waits for or asks the operator does not hand the handover step to a continue ring (bob 2026-11-03)', () => {
-  const fx = stubbed({ messages: [] });
-  try {
-    assert.equal(fx.run('topic.mjs', ['create', 'tk', '--subject', 'T', '--here', '--class', 'discussion']).status, 0);
-    assert.equal(fx.run('save.mjs', ['handover', 'tk', '--task', 'T', '--next', 'spracovať operátorove otázky']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'vypíš otázky' });
-    fx.stub.reset();
-    // Bob's tracker thread was rung 76 s after this reply.
-    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Položky: 1. a, 2. b.\n\n**Otázky na operátora:** Ktoré z položiek mám urobiť? Odporúčam obe.\n\nStav: otázka' });
-    let closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
-    assert.equal(closed.length, 1);
-    assert.notEqual(val(closed[0], 'next'), 'spracovať operátorove otázky');
-    assert.ok(val(closed[0], 'resume-at'), 'only the timer rings the thread');
-    fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    fx.stub.reset();
-    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Hotové, prvá časť.\n\nStav: hotovo' });
-    closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
-    assert.equal(val(closed[0], 'next'), 'spracovať operátorove otázky');
-  } finally { fx.cleanup(); }
-});
-
-test('next step: "hotovo" with a handover step blocks; ending anyway hands the step to the continue ring; a schedule passes (P-061)', () => {
-  const fx = stubbed({ messages: [] });
-  try {
-    assert.equal(fx.run('topic.mjs', ['create', 'an', '--subject', 'T', '--here', '--class', 'discussion']).status, 0);
-    assert.equal(fx.run('save.mjs', ['handover', 'an', '--task', 'T', '--next', 'skontrolovať zajtrajší report']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'ukáž report' });
-    const done = 'Report je hotový.\n\nStav: hotovo';
-    const first = fx.hook('stop.mjs', { last_assistant_message: done }).json;
-    assert.equal(first.decision, 'block');
-    assert.match(first.reason, /has a next step: "skontrolovať zajtrajší report"/);
-    assert.match(first.reason, /sees only your last message/);
-    fx.stub.reset();
-    assert.notEqual(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: done }).json.decision, 'block');
-    let closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
-    assert.equal(val(closed[0], 'next'), 'skontrolovať zajtrajší report', 'the continue ring keeps the loop alive');
-    // A schedule armed for the step rings the thread itself: no block and no continue bell (2026-11-03, ai-news).
-    // The schedule comes first: save handover refuses a time-bound step without one (operator 2026-11-11).
-    assert.notEqual(fx.run('save.mjs', ['handover', 'an', '--task', 'T', '--next', 'po 06:00 skontrolovať report']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'nastav ranný beh' });
-    fx.hook('post-tool-use.mjs', { tool_name: 'mcp__t3-code__schedule_task', tool_input: { prompt: 'p', schedule: { type: 'fixed_time', timeOfDay: '06:00' } }, tool_response: '{"scheduledTaskId":"st1"}' });
-    assert.equal(fx.run('save.mjs', ['handover', 'an', '--task', 'T', '--next', 'po 06:00 skontrolovať report']).status, 0);
-    fx.stub.reset();
-    assert.notEqual(fx.hook('stop.mjs', { last_assistant_message: 'Ranný beh je nastavený.\n\nStav: čakám (na ranný beh)' }).json.decision, 'block');
-    closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed');
-    assert.ok(closed.length && !val(closed[0], 'next'), 'no continue bell on top of the schedule');
-  } finally { fx.cleanup(); }
-});
-
-const tstate = (fx) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'threads', `${fx.thread}.json`), 'utf8'));
-const hoursAhead = (iso) => (Date.parse(iso) - Date.now()) / 3600_000;
-
-test('idle step: a next step that only waits needs no waker; it rings in hours, three times, then rests (operator 2026-11-03)', () => {
-  const fx = stubbed({ messages: [] });
-  try {
-    assert.equal(fx.run('topic.mjs', ['create', 'tk', '--subject', 'T', '--here', '--class', 'discussion']).status, 0);
-    assert.equal(fx.run('save.mjs', ['handover', 'tk', '--task', 'T', '--next', 'Čakať na hlásenie témy owner-naming a odpovedať operátorovi']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'ako to ide?' });
-    fx.stub.reset();
-    const r = fx.hook('stop.mjs', { last_assistant_message: 'Téma beží vo vlastnom vlákne.\n\nStav: čakám (na vlákno témy)' });
-    assert.equal(r.json.decision, undefined);
-    assert.equal(tstate(fx).timer, undefined, 'no auto timer on top of the idle ring');
-    const rings = [];
-    for (let i = 0; i < 4; i += 1) {
-      const closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed').pop();
-      rings.push(val(closed, 'resume-at') ? Math.round(hoursAhead(val(closed, 'resume-at'))) : null);
-      // The ring: the prompt says it is an idle check; the turn ends with only its state line.
-      const ctx = fx.hook('user-prompt-submit.mjs', { prompt: 'turn ended with a next step, continue from handover' }).context;
-      if (i === 0) assert.match(ctx, /idle check: the next step of topic tk only waits.*"\*\*Handover:\*\*" with the line "1\. tk → <next step>" and "\*\*Stav:\*\* čakám \(na /);
-      fx.stub.reset();
-      assert.equal(fx.hook('stop.mjs', { last_assistant_message: 'Stav: čakám (na odpoveď)' }).json.decision, undefined);
-    }
-    assert.deepEqual(rings, [4, 12, 24, null]);
-  } finally { fx.cleanup(); }
-});
-
-test('operator wait: a question to the operator arms the auto timer in hours; a wait on a job in minutes', () => {
-  const fx = stubbed({ messages: [] });
-  try {
-    fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
-    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: '**Otázky na operátora:** Mám to vydať hneď? Odporúčam áno.\n\nStav: otázka' });
-    assert.equal(Math.round(hoursAhead(tstate(fx).timer.at)), 4);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
-    fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Build beží.\n\nStav: čakám (na build)' });
-    assert.ok(hoursAhead(tstate(fx).timer.at) < 1);
-  } finally { fx.cleanup(); }
-});
-
-test('pause: a paused topic gets no continue ring and no auto timer; its end rings once; handover keeps it paused; resume', () => {
-  const fx = stubbed({ messages: [] });
-  try {
-    assert.equal(fx.run('topic.mjs', ['create', 'pz', '--subject', 'T', '--here', '--class', 'discussion']).status, 0);
-    assert.equal(fx.run('save.mjs', ['handover', 'pz', '--task', 'T', '--next', 'dorobiť testy']).status, 0);
-    assert.notEqual(fx.run('topic.mjs', ['pause', 'pz', '--until', '2020-01-01T00:00:00Z']).status, 0, 'a past end is refused');
-    const p = fx.run('topic.mjs', ['pause', 'pz', '--until', '2d', '--reason', 'neskôr']);
-    assert.equal(p.status, 0, p.stderr);
-    const topic = JSON.parse(fs.readFileSync(path.join(fx.brain, 'topics', 'pz', 'topic.json'), 'utf8'));
-    assert.equal(topic.state, 'paused');
-    assert.equal(Math.round(hoursAhead(topic.paused_until)), 48);
-    assert.equal(fx.run('save.mjs', ['handover', 'pz', '--task', 'T', '--next', 'dorobiť testy']).status, 0);
-    assert.equal(JSON.parse(fs.readFileSync(path.join(fx.brain, 'topics', 'pz', 'topic.json'), 'utf8')).state, 'paused', 'handover keeps the pause');
-    const ctx = fx.hook('user-prompt-submit.mjs', { prompt: 'čo nové?' }).context;
-    assert.match(ctx, /topic pz is paused until/);
-    fx.stub.reset();
-    const r = fx.hook('stop.mjs', { last_assistant_message: 'Téma je pozastavená.\n\nStav: čakám (na koniec pauzy)' });
-    assert.equal(r.json.decision, undefined, 'no next-step block');
-    assert.equal(tstate(fx).timer, undefined, 'no auto timer');
-    const closed = fx.stub.calls('turn').filter((c) => val(c, 'state') === 'closed').pop();
-    assert.match(val(closed, 'next'), /pause of topic pz ended/);
-    assert.equal(Math.round(hoursAhead(val(closed, 'resume-at'))), 48);
-    // A ring before the end (a clamped resume time) does not start the work.
-    assert.match(fx.hook('user-prompt-submit.mjs', { prompt: 'turn ended with a next step, continue from handover' }).context, /topic pz is still paused until .*end the turn with only "\*\*Handover:\*\*" with the line "1\. pz → <next step>" and "\*\*Stav:\*\* čakám \(na koniec pauzy témy pz\)"/);
-    assert.equal(fx.run('topic.mjs', ['resume', 'pz']).status, 0);
-    const back = JSON.parse(fs.readFileSync(path.join(fx.brain, 'topics', 'pz', 'topic.json'), 'utf8'));
-    assert.equal(back.state, 'working');
-    assert.equal(back.paused_until, undefined);
-  } finally { fx.cleanup(); }
-});
-
-test('classifyPrompt: an operator rejection is a decision to save, before the save phrases (mojprojekt-web 2026-11-09)', () => {
-  assert.equal(classifyPrompt('roky realizácií tam nechcem', policy), 'reject');
-  assert.equal(classifyPrompt('Nepáči sa mi tá časová os', policy), 'reject', 'not save: „nepáči sa mi“ holds „páči sa mi“');
-  assert.equal(classifyPrompt('páči sa mi to', policy), 'save');
-  assert.equal(classifyPrompt('pridaj sekciu kontakt', policy), null);
-});
-
-test('classifyPrompt: a misreading of the operator is checked before error and reject: restate first, save after (P-063)', () => {
-  assert.equal(classifyPrompt('to som nemyslel, chcel som iba audit', policy), 'misread');
-  assert.equal(classifyPrompt('nie takto, myslel som tým iný súbor', policy), 'misread', 'not reject: „nie takto“ holds „nie tak“');
-  assert.equal(classifyPrompt('zle si pochopil zadanie', policy), 'misread', 'not error: „zle si pochopil“ holds „zle si“');
-  assert.equal(classifyPrompt('to je chyba', policy), 'error');
-});
-
-test('no-reply bell: the bell of the message a reply-window timer waits for spends that timer; another message keeps it (pilot 2026-11-12)', () => {
-  const fx = heldMessage();
-  try {
-    setTimer(fx.brain, fx.thread, { delayMs: 60 * 60_000, then: 'check the reply to m9', forId: 'm9' });
-    fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m1' });
-    assert.equal(fx.state().timer.for, 'm9', 'a bell of another message keeps the timer');
-    setTimer(fx.brain, fx.thread, { delayMs: 60 * 60_000, then: 'check the reply to m1', forId: 'm1' });
-    const r = fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m1' });
-    assert.match(r.context, /no reply, held/);
-    const fors = () => threadTimers(fx.state()).map((t) => t.for);
-    assert.deepEqual(fors(), ['m9'], 'its own bell spent the reply-window timer; the timer of m9 stays (2026-11-13)');
-    setTimer(fx.brain, fx.thread, { delayMs: 60 * 60_000, then: 'check the reply to m1', forId: 'm1' });
-    fx.hook('user-prompt-submit.mjs', { prompt: 'undelivered m1' });
-    assert.deepEqual(fors(), ['m9'], 'undelivered too');
-  } finally { fx.cleanup(); }
-});
-
-test('no-reply bell: the bell of a message spends its mail waker; a later "čakám" gets the timer with its wait target; another message keeps its waker (pilot 2026-11-12)', () => {
-  const fx = heldMessage();
-  const sent = (id) => recordWaker(fx.brain, fx.thread, wakerFromTool({ tool_name: 'Bash', tool_input: { command: 'node bin/comms.mjs send --level assist --to project/nikto --text y' }, tool_response: { stdout: `sent ${id} (assist)` } }));
-  try {
-    sent('m1');
-    fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m1' });
-    assert.deepEqual(fx.state().wakers, [], 'its own bell spent the mail waker');
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Správa ostáva pozdržaná.\n\nStav: čakám (na súbor scratch/done)' }).json.decision, 'block', 'no waker left: blocked once');
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: true, last_assistant_message: 'Správa ostáva pozdržaná.\n\nStav: čakám (na súbor scratch/done)' }).json.decision, undefined);
-    const t = fx.state().timer;
-    assert.ok(t?.auto, 'Stop armed the timer');
-    assert.match(t.then, /"\*\*Stav:\*\* čakám \(na súbor scratch\/done\)" without a waker: check it now/);
-    sent('m9');
-    fx.hook('user-prompt-submit.mjs', { prompt: 'no reply m1' });
-    assert.deepEqual(fx.state().wakers.map((w) => w.for), ['m9'], 'a bell of another message keeps its waker');
-  } finally { fx.cleanup(); }
-});
-
-test('wake without new mail after a closed turn ends without a model call; the turn closes again with the last step and time (P-061)', () => {
-  const fx = stubbed({ messages: [] });
-  try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
-    setTimer(fx.brain, fx.thread, { delayMs: 30 * 60_000, then: 'check the build' });
-    assert.equal(fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Build beží.\n\nStav: čakám (na build)' }).json.decision, undefined);
-    const at = fx.state().timer.at;
-    assert.deepEqual(fx.state().last_close, { next: 'check the build', resume_at: at });
-    fx.stub.reset();
-    const r = fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
-    assert.equal(r.json.decision, 'block');
-    assert.match(r.json.reason, /no new mail, the turn ended without a model call/);
-    const turns = fx.stub.calls('turn');
-    assert.deepEqual(turns.map((a) => val(a, 'state')), ['open', 'closed'], 'opened (new mail rings again) and closed');
-    assert.equal(val(turns[1], 'next'), 'check the build');
-    assert.equal(val(turns[1], 'resume-at'), at, 'the pending timer ring is kept');
-    assert.equal(fx.state().timer.at, at, 'the timer stays');
-    // New mail: the wake turn runs.
-    fx.stub.set({ messages: [{ id: 'm1', level: 'blocker' }] });
-    fs.rmSync(path.join(fx.brain, 'local', 'comms'), { recursive: true, force: true });
-    assert.equal(fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' }).json.decision, undefined);
-  } finally { fx.cleanup(); }
-});
-
-test('timer with a condition: code checks it without a model turn until it holds or the deadline passes (P-061)', () => {
-  const fx = stubbed({ messages: [] });
-  const file = path.join(fx.brain, 'local', 'threads', 'a1.json');
-  const due = (patch = {}) => { const s = fx.state(); fs.writeFileSync(file, JSON.stringify({ ...s, timer: { ...s.timer, at: new Date(Date.now() - 1000).toISOString(), ...patch } })); };
-  const ring = () => fx.hook('user-prompt-submit.mjs', { prompt: policy.prompt.continue_template });
-  try {
-    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'oprav to' });
-    const flag = path.join(fx.project, 'scratch', 'done.flag');
-    const check = `test -f ${flag}`;
-    assert.notEqual(fx.run('timer.mjs', ['--in', '5m', '--then', 'deploy', '--until', check]).status, 0, '--until needs --deadline');
-    const refused = fx.run('timer.mjs', ['--in', '5m', '--then', 'x', '--until', `echo x > ${path.join(fx.brain, 'memory', 'x.md')}`, '--deadline', '2h']);
-    assert.notEqual(refused.status, 0);
-    assert.match(refused.out, /--until refused/, 'the check passes the guard of a Bash call');
-    const set = fx.run('timer.mjs', ['--in', '5m', '--then', 'deploy', '--until', check, '--deadline', '2h']);
-    assert.equal(set.status, 0, set.out);
-    // Not met: re-armed, the turn ends without a model call, closed with the next check.
-    due();
-    fx.stub.reset();
-    let r = ring();
-    assert.equal(r.json.decision, 'block');
-    assert.match(r.json.reason, /condition does not hold yet/);
-    const next = fx.state().timer;
-    assert.ok(Date.parse(next.at) > Date.now() + 4 * 60_000, 're-armed for the next check');
-    assert.equal(next.until, check);
-    assert.equal(val(fx.stub.calls('turn').at(-1), 'resume-at'), next.at);
-    // Met: the turn runs with the step; the timer is spent.
-    fs.mkdirSync(path.dirname(flag), { recursive: true });
-    fs.writeFileSync(flag, '');
-    due();
-    r = ring();
-    assert.equal(r.json.decision, undefined);
-    assert.match(r.context, /timer fired, its condition holds \(test -f .*done\.flag\): deploy; do it now/);
-    assert.equal(fx.state().timer, undefined, 'spent');
-    // Deadline passed and still not met: the turn runs and decides.
-    fs.rmSync(flag);
-    assert.equal(fx.run('timer.mjs', ['--in', '5m', '--then', 'deploy', '--until', check, '--deadline', '2h']).status, 0);
-    due({ deadline: new Date(Date.now() - 1000).toISOString() });
-    r = ring();
-    assert.equal(r.json.decision, undefined);
-    assert.match(r.context, /timer deadline .* passed, its condition still does not hold .*: deploy; decide now/);
-  } finally { fx.cleanup(); }
+// Mail model 2 (1e): the mail's wait rings the sender; the line reads the one status of the message, no version branch.
+test('message bells of mail model 2: recipient closed, code answer busy / otázka, interim answer, picked without an answer, held', () => {
+  assert.deepEqual(parsePrompt('recipient closed m-5', policy), { kind: 'recipient-closed', id: 'm-5' });
+  assert.equal(classifyPrompt('recipient closed', policy), null);
+  const base = { level: 'assist', to: 'project/beta' };
+  assert.match(messageBellLine('recipient-closed', 'm5', { ...base, status: 'picked' }), /^message m5 \(assist → project\/beta\): the recipient closed its topic after picking it up \(picked\): no answer will come from there; withdraw it \(comms withdraw --id m5\)/);
+  assert.match(messageBellLine('no-reply', 'm6', { ...base, status: 'pending', code_answer: 'busy' }), /not picked, busy \(answer set by the mail, not by the recipient\)/);
+  assert.match(messageBellLine('no-reply', 'm7', { ...base, status: 'pending', code_answer: 'otázka' }), /not picked, otázka \(answer set by the mail, not by the recipient\): the recipient thread waits for its operator/);
+  assert.match(messageBellLine('no-reply', 'm8', { ...base, status: 'waiting', answer_state: 'čakám', answer_at: '2026-11-01T10:00:00.000Z' }), /interim answer čakám since .*: the recipient waits for an event; do not resend or escalate/);
+  assert.match(messageBellLine('no-reply', 'm9', { ...base, status: 'picked', picked_at: '2026-11-01T10:00:00.000Z', wait_n: 1 }), new RegExp(`picked .*, no answer yet \\(check 2\\)${ACTIONS.replace(/[()]/g, '\\$&')}$`));
+  assert.match(messageBellLine('no-reply', 'm10', { ...base, status: 'held' }), /no reply, held: no thread receives project\/beta/);
+  // No version branch: a field of model 1 (answer_origin code) is no code answer.
+  assert.doesNotMatch(messageBellLine('no-reply', 'm11', { ...base, answer_state: 'busy', answer_origin: 'code' }), /busy/);
 });

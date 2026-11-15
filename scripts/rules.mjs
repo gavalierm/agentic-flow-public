@@ -6,6 +6,7 @@ import { normalizeKey } from './keys.mjs';
 import { machineName } from './config.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { byTag } from './authors.mjs';
+import { LAYOUT, dataPath, dataRel } from './layout.mjs';
 
 export const LAYERS = ['harness', 'machine', 'project', 'local'];
 
@@ -40,23 +41,24 @@ export function parseExceptions(text, file, immutable) {
 export function layerFiles(brainDir, { harness = 'claude-code', machine = machineName() } = {}) {
   if (!brainDir) return [];
   return [
-    { layer: 'harness', file: path.join(brainDir, 'exceptions', `harness-${normalizeKey(harness)}.md`) },
-    { layer: 'machine', file: path.join(brainDir, 'exceptions', `machine-${normalizeKey(machine)}.md`) },
-    { layer: 'project', file: path.join(brainDir, 'exceptions', 'project.md') },
-    { layer: 'local', file: path.join(brainDir, 'local', 'exceptions.md') },
+    { layer: 'harness', file: dataPath(brainDir, 'exceptions', `harness-${normalizeKey(harness)}.md`) },
+    { layer: 'machine', file: dataPath(brainDir, 'exceptions', `machine-${normalizeKey(machine)}.md`) },
+    { layer: 'project', file: dataPath(brainDir, 'exceptions', 'project.md') },
+    { layer: 'local', file: dataPath(brainDir, 'local', 'exceptions.md') },
   ];
 }
 
 /** Folders of project rules in order (D-0025): domain brain, project brain when it is another one, `<repo>/agentic/rules/`. */
 export function ruleLayers(brainDir, layers = null) {
-  if (!layers?.inDomain) return brainDir ? [{ dir: path.join(brainDir, 'rules'), own: true, heading: PROJECT_RULES }] : [];
+  if (!layers?.inDomain) return brainDir ? [{ dir: dataPath(brainDir, 'rules'), root: brainDir, own: true, heading: projectRules(brainDir) }] : [];
   return [
-    { dir: path.join(layers.domainBrain, 'rules'), own: !layers.projectBrain, heading: layers.projectBrain ? 'Pravidlá domény (brain `rules/`):' : PROJECT_RULES },
-    layers.projectBrain && { dir: path.join(layers.projectBrain, 'rules'), own: true, heading: PROJECT_RULES },
-    layers.repo && { dir: path.join(layers.repo.knowledge, 'rules'), own: false, repo: layers.repo.name, heading: `Pravidlá repa ${layers.repo.name} (\`agentic/rules/\`):` },
+    { dir: dataPath(layers.domainBrain, 'rules'), root: layers.domainBrain, own: !layers.projectBrain, heading: layers.projectBrain ? `Pravidlá domény (brain \`${dataRel(layers.domainBrain, 'rules')}/\`):` : projectRules(layers.domainBrain) },
+    layers.projectBrain && { dir: dataPath(layers.projectBrain, 'rules'), root: layers.projectBrain, own: true, heading: projectRules(layers.projectBrain) },
+    layers.repo && { dir: dataPath(layers.repo.knowledge, 'rules'), root: layers.repo.knowledge, own: false, repo: layers.repo.name, heading: `Pravidlá repa ${layers.repo.name} (\`${dataRel(layers.repo.dir, 'projectKnowledge', dataRel(layers.repo.knowledge, 'rules'))}/\`):` },
   ].filter(Boolean);
 }
-const PROJECT_RULES = 'Pravidlá projektu (brain `rules/`):';
+/** Heading of the rules of a brain, with its rules folder by layout (dataRel of rules). */
+const projectRules = (root) => `Pravidlá projektu (brain \`${root ? dataRel(root, 'rules') : LAYOUT.rules}/\`):`;
 const ruleFiles = (dir) => listFiles(dir, (f) => f.endsWith('.md') && path.basename(f) !== 'README.md', { recursive: false });
 
 /**
@@ -79,6 +81,8 @@ export function assembleRules({ brainDir = null, policy, harness = 'claude-code'
     blocks.push(...b);
   }
   const applied = [];
+  // The wording of each applied exception (the last layer wins), for the rule gate (scripts/rule-gate.mjs, agent-alice/D-0094).
+  const wordings = new Map();
   const errors = [];
   const extra = [];
   const exceptionsBrain = layers?.inDomain ? layers.domainBrain : brainDir;
@@ -97,23 +101,24 @@ export function assembleRules({ brainDir = null, policy, harness = 'claude-code'
       else extra.push({ id: entry.id, text });
       const prev = applied.find((a) => a.id === entry.id);
       if (prev) prev.layer = layer; else applied.push({ id: entry.id, layer });
+      wordings.set(entry.id, { id: entry.id, layer, wording: entry.wording });
     }
   }
   if (layers?.inDomain) {
     const refused = [];
     if (layers.projectBrain) refused.push(...layerFiles(layers.projectBrain, { harness, machine }).map((l) => l.file));
-    if (layers.repo) refused.push(...ruleFiles(path.join(layers.repo.knowledge, 'exceptions')));
+    if (layers.repo) refused.push(...ruleFiles(dataPath(layers.repo.knowledge, 'exceptions')));
     for (const file of refused.filter((f) => readText(f, null) !== null)) {
       errors.push(`${path.relative(path.dirname(layers.domainBrain), file).split(path.sep).join('/')}: the project layer has no exceptions, only the domain brain grants them; not applied (D-0025)`);
     }
   }
   // Project rules: one record per file in rules/ of each layer (written by `save rule`, P-024, P-039, D-0025).
-  const ruleSections = ruleLayers(brainDir, layers).map(({ dir, own, heading }) => ({
+  const ruleSections = ruleLayers(brainDir, layers).map(({ dir, root, own, heading }) => ({
     heading,
     rules: ruleFiles(dir).map((file) => {
       const { data, body } = parseFrontmatter(readText(file, ''));
       const title = data.title || path.basename(file, '.md');
-      const by = foreign && own ? foreign(`rules/${path.basename(file)}`) : null;
+      const by = foreign && own ? foreign(dataRel(root, 'rules', path.basename(file))) : null;
       return body.trim() ? { text: `### ${title}\n${body.trim()}`, shown: `### ${title}${byTag(by)}\n${body.trim()}` } : null;
     }).filter(Boolean),
   }));
@@ -135,5 +140,5 @@ export function assembleRules({ brainDir = null, policy, harness = 'claude-code'
   const overLimit = [];
   if (lines > (limits.rules_lines ?? 200)) overLimit.push(`rules ${lines} lines > ${limits.rules_lines ?? 200}`);
   if (chars > (limits.rules_chars ?? 10000)) overLimit.push(`rules ${chars} chars > ${limits.rules_chars ?? 10000}`);
-  return { text, shown, applied, errors, lines, chars, overLimit };
+  return { text, shown, applied, exceptions: [...wordings.values()], errors, lines, chars, overLimit };
 }

@@ -6,11 +6,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readJson, writeJson, toPosix } from './util.mjs';
 import { heldTopics } from './topic.mjs';
+import { dataPath } from './layout.mjs';
 
 export const ARTIFACT_TOOL = 'Artifact';
 const URL_RE = /https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]+/;
 
-export const artifactsDir = (brainDir) => path.join(brainDir, 'local', 'artifacts');
+export const artifactsDir = (brainDir) => dataPath(brainDir, 'local', 'artifacts');
 
 function recordKey(brainDir, thread) {
   let id = null;

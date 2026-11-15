@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { spawnTarget } from './topic.mjs';
-import { ensureIssueWatchJob } from './wake-job.mjs';
+import { ensureIssueWatchJob, ensureTimerCheckJob } from './wake-job.mjs';
 export { pendingT3Line } from './wizard.mjs';
 
 export const WELCOME_TITLE = 'vitaj';
@@ -44,7 +44,7 @@ export function trustFolder(dir, { file = claudeConfigFile(), platform = process
   return { ok: true, line: `trust: accepted for ${key} (backup ${path.basename(file)}.workflow-bak)` };
 }
 
-// Same text as TOPIC_QUESTION in boot.mjs (tests/welcome-topic.test.mjs keeps them equal).
+// Same text as TOPIC_QUESTION in boot.mjs: keep them equal.
 export const WELCOME_TOPIC_QUESTION = 'Aká bude téma?';
 
 // An adopted project: the adoption topic tidies the older setup (CLAUDE.md, an older brain); the welcome thread proposed
@@ -80,6 +80,7 @@ export function setupT3(dir, { name, repo = path.basename(dir), policy = {}, wel
   const lines = [trustFolder(dir, { file: trustFile, platform }).line];
   // The reporter's issue check (D-0024): job issue-watch in this machine's wake.json (opt-in: `wakeJob` = the project ctx).
   if (wakeJob) { try { lines.push(ensureIssueWatchJob(wakeJob).line); } catch (err) { lines.push(`wake job issue-watch not written (${err.message})`); } }
+  if (wakeJob) { try { lines.push(ensureTimerCheckJob(wakeJob).line); } catch (err) { lines.push(`wake job timer-check not written (${err.message})`); } }
   const pending = [];
   const addCmd = policy?.project?.t3_project_add_command ?? 't3 project add';
   const add = runCli(addCmd, ['--title', repo, dir], { run, platform });

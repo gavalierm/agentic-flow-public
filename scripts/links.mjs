@@ -10,6 +10,7 @@ import path from 'node:path';
 import { git, PLUGIN_ROOT } from './util.mjs';
 import { normalizeKey, tokens } from './keys.mjs';
 import { machineStores, machineRecords, refProblem, storeOptions, memoryArgs } from './stores.mjs';
+import { LAYOUT, dataRel, layoutFor, topicWorkLabel } from './layout.mjs';
 
 const DECISION = /^(?:([A-Za-z0-9][\w.-]*)\/)?(D-\d{4})$/i;
 const PRINCIPLE = /^P-\d{3}$/i;
@@ -74,7 +75,7 @@ export function linkProblem(ctx, store, value) {
   if (memoryKeys(ctx).has(v)) return null;
   const file = fileState(ctx, store, v);
   if (file === 'tracked') return null;
-  if (file === 'untracked') return `${v}: the file exists but git does not track it (local/, scratch/ and ignored files have no history)`;
+  if (file === 'untracked') return `${v}: the file exists but git does not track it (${noHistory(ctx, true)} and ignored files have no history)`;
   const similar = similarKeys(ctx, v);
   return `${v}: no record key, decision, principle or file tracked in git${similar.length ? ` (similar key: ${similar.join(', ')})` : ''}`;
 }
@@ -95,7 +96,17 @@ export function checkLinks(ctx, store, values) {
 // tracks (material from outside goes to materialy/<topic>/ first), a decision, a principle or a URL. A record key is no
 // source: the fingerprint reads files, and a key would never turn stale.
 const URL_RE = /^https?:\/\/\S+$/i;
-export const SOURCE_FORMS = 'a source is a file tracked in git (material from outside: save it to materialy/<topic>/ first, skill materialy), a decision (D-NNNN), a principle (P-NNN) or a URL';
+export const sourceForms = (root = null) => `a source is a file tracked in git (material from outside: save it to ${root ? dataRel(root, 'materialy') : LAYOUT.materialy}/<topic>/ first, skill materialy), a decision (D-NNNN), a principle (P-NNN) or a URL`;
+// Layout 1; a message about a repository names its folder (sourceForms(root)).
+export const SOURCE_FORMS = sourceForms();
+/** The folders without history as a message names them, by the layout of the session project: local/ and the work files. */
+function noHistory(ctx, localFirst) {
+  const root = ctx?.projectDir || null;
+  const local = `${root ? dataRel(root, 'local') : LAYOUT.local}/`;
+  // The work files are in the topic home (a brain in layout 2, D-0056).
+  const work = root ? topicWorkLabel(ctx?.brainDir, root) : `${LAYOUT.scratch}/`;
+  return localFirst ? `${local}, ${work}` : `${work}, ${local}`;
+}
 
 /** What is wrong with one source of a record in store, or null when it lasts. */
 export function sourceProblem(ctx, store, value) {
@@ -105,7 +116,7 @@ export function sourceProblem(ctx, store, value) {
   if (DECISION.test(v) || PRINCIPLE.test(v)) return linkProblem(ctx, store, v);
   const file = fileState(ctx, store, v);
   if (file === 'tracked') return null;
-  if (file === 'untracked') return `${v}: git does not track it (scratch/, local/ and ignored files have no history)`;
+  if (file === 'untracked') return `${v}: git does not track it (${noHistory(ctx, false)} and ignored files have no history)`;
   return `${v}: no such file${memoryKeys(ctx).has(v) ? ' (a record key is no source: name the file the record is in)' : ''}`;
 }
 
@@ -117,12 +128,16 @@ export function sourceProblems(ctx, store, values) {
 /** Refusal text of save for new sources that do not last, or null. */
 export function checkSources(ctx, store, values) {
   const problems = sourceProblems(ctx, store, values);
-  return problems.length ? `sources: ${problems.join('; ')}; ${SOURCE_FORMS}; nothing saved` : null;
+  return problems.length ? `sources: ${problems.join('; ')}; ${sourceForms(ctx?.projectDir || null)}; nothing saved` : null;
 }
 
 /** Work-file paths (scratch/) named in a body: they vanish when the work files are cleaned (consolidate, D-0036). */
+// Both layouts: scratch/ (1) and temy/<topic>/tmp/ (2); a record may name work files of a repo in either layout.
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const WORK_DIRS = `(?:${escRe(LAYOUT.scratch)}|${escRe(layoutFor(2).topics)}\\/[\\w.-]+\\/${escRe(layoutFor(2).topicTmp)})`;
+const SCRATCH_PATH = new RegExp(`(?:^|[\\s(\`'"[])(\\/?(?:[\\w.~-]+\\/)*${WORK_DIRS}\\/[^\\s)\`'"\\],;]+)`, 'gm');
 export function scratchPaths(body) {
-  const found = [...String(body || '').matchAll(/(?:^|[\s(`'"[])(\/?(?:[\w.~-]+\/)*scratch\/[^\s)`'"\],;]+)/gm)].map((m) => m[1].replace(/[.,;:]+$/, ''));
+  const found = [...String(body || '').matchAll(SCRATCH_PATH)].map((m) => m[1].replace(/[.,;:]+$/, ''));
   return [...new Set(found)];
 }
 

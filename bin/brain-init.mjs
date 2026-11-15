@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Create or attach a brain repository from templates/brain (P-024, P-018, P-040).
-//   brain-init.mjs <path> [--attach [--adopt]] [--remote <url>] [--project <dir>] [--persona]
+//   brain-init.mjs <path> [--attach [--adopt]] [--remote <url>] [--project <dir>] [--persona] [--layout 1|2]
+// --layout: data layout of a new brain (layout.mjs, D-0048): 1 (default, templates/brain) or 2 (templates/brain-2:
+// .brain/, temy/, vystupy/); an attach keeps the layout of the brain it attaches.
 // --adopt: a brain from an older setup: its git hooks are replaced by the workflow ones, .gitignore gets the
 // workflow lines, and the change is committed; data stays (the old hooks remain in the git history).
 // --persona: the repository (remote and directory) must be named agent-<name>.
@@ -11,6 +13,7 @@ import path from 'node:path';
 import { PLUGIN_ROOT, copyDir, git, fail, parseArgs, exists } from '../scripts/util.mjs';
 import { assertPersonaRemote, PERSONA_REPO_RE } from '../scripts/persona-name.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv } from '../scripts/config.mjs';
+import { dataPath, dataRel, dataLayoutVersion, layoutFor, DEFAULT_LAYOUT_VERSION } from '../scripts/layout.mjs';
 
 const HOOKS = ['pre-commit', 'commit-msg'];
 
@@ -31,13 +34,24 @@ function commitHookModes(brainDir, env) {
   return rels.map((rel) => path.basename(rel));
 }
 
-export function brainInit(target, { attach = false, adopt = false, remote = null, project = null, persona = false } = {}) {
+/** Template folder of a data layout version: templates/brain (1), templates/brain-<v> (newer); an unknown version is an error. */
+export function brainTemplate(version = DEFAULT_LAYOUT_VERSION) {
+  const v = Number(version);
+  layoutFor(v);
+  return path.join(PLUGIN_ROOT, 'templates', v === 1 ? 'brain' : `brain-${v}`);
+}
+
+export function brainInit(target, { attach = false, adopt = false, remote = null, project = null, persona = false, layout = null } = {}) {
   const brainDir = path.resolve(target);
+  if (layout !== null && layout !== undefined && !/^\d+$/.test(String(layout))) throw new Error(`--layout must be a data layout version (1 or 2), got "${layout}"`);
   if (persona) {
     if (!PERSONA_REPO_RE.test(path.basename(brainDir))) throw new Error(`persona directory must be named agent-<name>, got "${path.basename(brainDir)}"`);
     if (remote) assertPersonaRemote(remote);
   }
-  const template = path.join(PLUGIN_ROOT, 'templates', 'brain');
+  const isGit = exists(path.join(brainDir, '.git'));
+  const version = layout !== null && layout !== undefined ? Number(layout) : (isGit ? dataLayoutVersion(brainDir) : DEFAULT_LAYOUT_VERSION);
+  if (isGit && layout !== null && layout !== undefined && dataLayoutVersion(brainDir) !== version) throw new Error(`${brainDir} has data layout ${dataLayoutVersion(brainDir)}, not ${version}; an attach keeps the layout of the brain`);
+  const template = brainTemplate(version);
   const env = brainScriptEnv();
   const created = [];
   const isRepo = exists(path.join(brainDir, '.git'));
@@ -89,8 +103,10 @@ export function brainInit(target, { attach = false, adopt = false, remote = null
         created.push(rel);
       }
     }
-    for (const dir of ['memory', 'decisions', 'rules', 'skills/operator', 'skills/agentic', 'topics/archive', 'exceptions', 'logs']) {
-      fs.mkdirSync(path.join(brainDir, dir), { recursive: true });
+    const map = layoutFor(version);
+    for (const dir of [['memory'], ['decisions'], ['rules'], ['skills', 'operator'], ['skills', 'agentic'], ['topicArchive'], ['topics'], ['exceptions'], ['logs']]) {
+      if (map[dir[0]] === null) continue;
+      fs.mkdirSync(dataPath(brainDir, ...dir), { recursive: true });
     }
   }
   for (const hook of HOOKS) {
@@ -98,11 +114,8 @@ export function brainInit(target, { attach = false, adopt = false, remote = null
   }
   const hooks = git(['config', 'core.hooksPath', '.githooks'], { cwd: brainDir });
   if (!hooks.ok) throw new Error(`git config failed: ${hooks.stderr}`);
-  fs.mkdirSync(path.join(brainDir, 'local', 'index'), { recursive: true });
-  fs.mkdirSync(path.join(brainDir, 'local', 'threads'), { recursive: true });
-  fs.mkdirSync(path.join(brainDir, 'local', 'log-buffer'), { recursive: true });
-  fs.mkdirSync(path.join(brainDir, 'local', 'outbox'), { recursive: true });
-  created.push('local/');
+  for (const dir of ['index', 'threads', 'log-buffer', 'outbox']) fs.mkdirSync(dataPath(brainDir, 'local', dir), { recursive: true });
+  created.push(`${dataRel(brainDir, 'local')}/`);
 
   if (adopt) {
     git(['add', '--', '.githooks', '.gitattributes', '.gitignore'], { cwd: brainDir, env });
@@ -136,9 +149,9 @@ export function brainInit(target, { attach = false, adopt = false, remote = null
     else created.push('pushed to origin');
   }
   if (project) {
-    const localDir = path.join(path.resolve(project), 'local');
+    const localDir = dataPath(path.resolve(project), 'local');
     fs.mkdirSync(localDir, { recursive: true });
-    created.push(`${path.resolve(project)}/local/`);
+    created.push(`${path.resolve(project)}/${dataRel(path.resolve(project), 'local')}/`);
   }
   return { brainDir, created };
 }
@@ -146,9 +159,9 @@ export function brainInit(target, { attach = false, adopt = false, remote = null
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('brain-init.mjs')) {
   const args = parseArgs(process.argv.slice(2));
   const [target] = args._;
-  if (!target) fail('usage: brain-init.mjs <path> [--attach [--adopt]] [--remote <url>] [--project <dir>] [--persona]');
+  if (!target) fail('usage: brain-init.mjs <path> [--attach [--adopt]] [--remote <url>] [--project <dir>] [--persona] [--layout 1|2]');
   try {
-    const res = brainInit(target, { attach: !!args.attach, adopt: !!args.adopt, remote: args.remote || null, project: args.project || null, persona: !!args.persona });
+    const res = brainInit(target, { attach: !!args.attach, adopt: !!args.adopt, remote: args.remote || null, project: args.project || null, persona: !!args.persona, layout: args.layout ?? null });
     process.stdout.write(`brain ${args.attach ? 'attached' : 'created'}: ${res.brainDir}\n${res.created.map((c) => `- ${c}`).join('\n')}\n`);
   } catch (err) {
     fail(err.message);

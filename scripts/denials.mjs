@@ -3,14 +3,31 @@
 // Never throws: a log failure must not change a hook decision.
 import fs from 'node:fs';
 import path from 'node:path';
+import { dataPath } from './layout.mjs';
 
 export const DENIALS_FILE = 'denials.jsonl';
 const KEEP = 2000;
 const SECRETISH = /\b(gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|[A-Za-z0-9+_-]{40,})\b/g;
 
-export const denialsFile = (brainDir) => path.join(brainDir, 'local', DENIALS_FILE);
+export const denialsFile = (brainDir) => dataPath(brainDir, 'local', DENIALS_FILE);
 
 const head = (s, n) => String(s || '').replace(/\s+/g, ' ').replace(SECRETISH, '<masked>').slice(0, n);
+
+/**
+ * The kind of a refusal: the first clause of its reason without the variable parts (paths, quoted text, numbers, the
+ * parentheses), at most 10 words. The counts group by it, so one check is one group (P-076: a hook that keeps refusing the
+ * same kind of step shows a skill or rule that does not lead the work).
+ */
+export function kindOf(reason) {
+  const text = String(reason || '')
+    .replace(/`[^`]*`|"[^"]*"|„[^“”]*[“”]|'[^'\s][^']*'/g, '…')
+    .replace(/\([^()]*\)/g, '')
+    .replace(/(?:[A-Za-z]:)?(?:~|\.{1,2})?[\\/][^\s,;()]+/g, '<path>')
+    .replace(/\b\d[\d.,:-]*\b/g, 'N')
+    .replace(/\s+/g, ' ').replace(/ ([,.;:])/g, '$1').trim();
+  const clause = text.split(/[;:](?:\s|$)/).map((s) => s.trim()).find((s) => s.split(' ').length >= 2) || text;
+  return clause.split(' ').slice(0, 10).join(' ').replace(/[\s,.]+$/, '');
+}
 
 /** What the call did, in one short line: the command, the file path, or the prompt head. */
 export function inputHead(tool, toolInput = {}) {
@@ -32,7 +49,7 @@ export function logDecision(brainDir, { event, tool = null, toolInput = null, ou
     // The first cited principle is the check's own; later ones are references (`(P-007, P-013)`).
     const cited = [...new Set(reason.match(/\b[PD]-\d{3,4}\b/g) || [])];
     const principle = cited[0] || null;
-    const line = { t: now.toISOString(), event, decision, principle, cited, tool, thread, agent: agentType || null, input: tool ? inputHead(tool, toolInput) : null, reason: head(reason, 200) };
+    const line = { t: now.toISOString(), event, decision, kind: kindOf(reason), principle, cited, tool, thread, agent: agentType || null, input: tool ? inputHead(tool, toolInput) : null, reason: head(reason, 200) };
     const file = denialsFile(brainDir);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.appendFileSync(file, JSON.stringify(line) + '\n');
@@ -67,4 +84,27 @@ export function summarize(entries, { examples = 3 } = {}) {
     groups.set(key, g);
   }
   return [...groups.values()].sort((a, b) => b.n - a.n).map((g) => ({ ...g, last: g.last.slice(-examples) }));
+}
+
+/**
+ * The most frequent kinds of refusal (event and kindOf), most frequent first: [{ event, kind, principle, n, last }]; the input
+ * for consolidate (P-076: fix the skill or the rule that should have led the step, or loosen the hook). An entry from before
+ * the kind field gets its kind from its reason.
+ */
+export function topDenials(entries, { top = 5 } = {}) {
+  const groups = new Map();
+  for (const e of entries) {
+    const kind = e.kind || kindOf(e.reason);
+    const key = `${e.event}\0${kind}`;
+    const g = groups.get(key) || { event: e.event, kind, principle: e.principle || null, n: 0, last: '' };
+    g.n++;
+    g.last = e.input || e.reason || '';
+    groups.set(key, g);
+  }
+  return [...groups.values()].sort((a, b) => b.n - a.n).slice(0, top);
+}
+
+/** One line of the counts for a report: `3× PreToolUse P-052 "target <path> is outside the project"`; 'none' without entries. */
+export function denialsLine(groups) {
+  return groups.length ? groups.map((g) => `${g.n}× ${g.event}${g.principle ? ` ${g.principle}` : ''} "${g.kind}"`).join('; ') : 'none';
 }

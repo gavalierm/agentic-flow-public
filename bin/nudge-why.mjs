@@ -11,6 +11,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseArgs, fail, readJson } from '../scripts/util.mjs';
 import { loadContext, readThreadState } from '../scripts/config.mjs';
+import { deployedSkillName } from '../scripts/skills-sync.mjs';
 import { mailCount, mailProjectName } from '../scripts/comms.mjs';
 import { heldTopics } from '../scripts/topic.mjs';
 import { wakeFile } from '../scripts/wake-job.mjs';
@@ -51,6 +52,20 @@ function findTranscript(projectDirs, thread, sessionId) {
   return null;
 }
 
+/** The thread's session before `current` (same transcript folder, older, naming the thread): a prompt the hook blocked
+ * ended it, and the operator's nudge started the current one (maintainer/workflow-dev 2026-11-14). */
+function previousTranscript(current, thread) {
+  if (!current) return null;
+  try {
+    const dir = path.dirname(current);
+    const before = fs.statSync(current).birthtimeMs || fs.statSync(current).mtimeMs;
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl')).map((f) => path.join(dir, f)).filter((f) => f !== current)
+      .map((f) => ({ f, m: fs.statSync(f).mtimeMs })).filter((x) => x.m <= before + 60_000).sort((a, b) => b.m - a.m).slice(0, 10);
+    for (const { f } of files) if (fs.readFileSync(f, 'utf8').includes(`thread ${thread}`)) return f;
+  } catch { /* none */ }
+  return null;
+}
+
 /** The wake module's log since `since`: the journal of its unit (system or user), '' when none can be read. */
 function wakeLog(instance, since) {
   const sinceArg = new Date(since).toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
@@ -77,13 +92,14 @@ try {
   const log = str(args['wake-log']) ? fs.readFileSync(args['wake-log'], 'utf8') : wf?.instance && !args['no-journal'] ? wakeLog(wf.instance, since) : '';
   const transcriptFile = str(args.transcript) || findTranscript([ctx.projectDir, process.cwd()], thread, state.t3_cursor);
   const transcript = readTranscript(transcriptFile);
+  const prevTranscript = readTranscript(str(args['prev-transcript']) || previousTranscript(transcriptFile, thread));
   let mail = null;
   try { mail = mailCount({ ...ctx, brainDir, thread }); } catch (e) { mail = { unknown: true, note: e.message }; }
   let topics = [];
   try { const p = mailProjectName(ctx); topics = heldTopics(brainDir, thread).map((x) => `${p}/${x.id}`); } catch { /* labels only filter the log */ }
   const nudges = ctx.policy?.prompt?.nudge_prompts;
-  const res = diagnose({ thread, state, turn, wakeState, wakeLog: log, transcript, mail, now, since, topics, ...(Array.isArray(nudges) ? { nudges } : {}) });
-  process.stdout.write(`${format({ thread, ...res })}\n`);
+  const res = diagnose({ thread, state, turn, wakeState, wakeLog: log, transcript, prevTranscript, mail, now, since, topics, ...(Array.isArray(nudges) ? { nudges } : {}) });
+  process.stdout.write(`${format({ thread, ...res, fixSkill: deployedSkillName(ctx.projectDir, 'fix') })}\n`);
 } catch (err) {
   fail(err.message);
 }

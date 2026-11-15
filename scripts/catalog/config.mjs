@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readJson, isInside } from '../util.mjs';
 import { mainCheckout, WORKFLOW_CONFIG, LOCAL_CONFIG } from '../config.mjs';
+import { LAYOUT, dataPath } from '../layout.mjs';
 
 export const DEFAULT_IGNORE = ['.git/**', '**/.DS_Store', '**/Thumbs.db', '**/~$*', '**/.~lock.*', '**/.sync*/**', '**/.tmp.drivedownload/**', '**/node_modules/**'];
 export const DEFAULT_PII_COLUMNS = ['email', 'e-mail', 'mail', 'telefon', 'tel', 'phone', 'mobil', 'rodne-cislo', 'rc', 'iban', 'ucet', 'cislo-uctu', 'datum-narodenia', 'birth', 'meno', 'priezvisko', 'adresa', 'address'];
@@ -66,17 +67,17 @@ export function catalogConfig(projectDir) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || !isObj(s) || typeof s.path !== 'string' || !s.path) continue;
       const abs = expand(s.path, repo);
       // `from`: the file that defines the source, named in a refusal so a thread can tell who switched it on
-      const from = isObj(local?.catalog?.sources?.[name]) ? 'local/workflow.json' : WORKFLOW_CONFIG;
+      const from = isObj(local?.catalog?.sources?.[name]) ? `${LAYOUT.local}/workflow.json` : WORKFLOW_CONFIG;
       sources.push({ name, path: abs, mode: s.mode === 'rw' ? 'rw' : 'ro', from });
     }
     // materialy/ of the repo is a source of its own (rw: the topics save into it); catalog.materialy:false switches it off
-    const mat = path.join(repo, 'materialy');
+    const mat = dataPath(repo, 'materialy');
     if (raw.materialy !== false && !sources.some((s) => s.name === 'materialy') && fs.existsSync(mat)) sources.push({ name: 'materialy', path: mat, mode: 'rw', from: 'materialy' });
     if (!sources.length) return off;
     return {
       enabled: true,
       repo,
-      dir: path.join(repo, 'local', 'catalog'),
+      dir: dataPath(repo, 'catalog'),
       sources,
       ignore: Array.isArray(raw.ignore) ? raw.ignore.map(String) : DEFAULTS.ignore,
       exclude_llm: Array.isArray(raw.exclude_llm) ? raw.exclude_llm.map(String) : DEFAULTS.exclude_llm,

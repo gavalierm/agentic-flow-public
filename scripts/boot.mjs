@@ -14,21 +14,25 @@ import { policyIgnoredLine } from './policy-layers.mjs';
 import { gitAccessProblem } from './brain.mjs';
 import { readTopics } from './records.mjs';
 import { undeliveredIssues } from './issue-watch.mjs';
-import { sessionKnowledgeSources, skillSources, KNOWLEDGE_KINDS, REPO_HANDOVER } from './repo-knowledge.mjs';
+import { sessionKnowledgeSources, skillSources, knowledgeKinds } from './repo-knowledge.mjs';
 import { HANDOVER_NONE_LINE } from './protocol.mjs';
-
+import { dataPath, dataRel, dataLayoutVersion, layoutFor, topicHome, topicWorkLabel } from './layout.mjs';
+import { workDir, workTopic } from './topic-files.mjs';
+import { bootHandoffLines } from './handoff.mjs';
+import { migrateLocalMail } from './comms-migrate.mjs';
 export const BOOT_MARKERS = ['## Pravidlá', '## Stav vlákna', '## Index pamäte', '## Index rozhodnutí', '## Otvorené témy', '## Workflow'];
 
 /**
- * Status line (P-023 e) plus the data behind it: held topics, mail count (with the listing items, P-044). `discussion`
- * (D-0015, D-0022): the thread discusses with the operator, so waiting steer and assist are left out until it ends.
+ * Status line (P-023 e) plus the data behind it: held topics, mail count (with the listing items, P-044) and the rest of
+ * the mail's `obligations` (`mail.obligations`, one request). `discussion` (D-0015, D-0022): the thread discusses with the
+ * operator, so waiting steer and assist are left out until it ends. `since`: the cursor of recent rows already shown.
  */
-export function statusInfo(ctx, { discussion = false } = {}) {
+export function statusInfo(ctx, { discussion = false, since = null } = {}) {
   const held = ctx.brainDir ? heldTopics(ctx.brainDir, ctx.thread) : [];
   const topic = held.length ? `${held[0].id} (${held[0].state || 'working'}, mode ${held[0].holder?.mode || 'operator'})` : '- (none)';
   // Mailboxes as in comms list/receive: held topics and free-point topics (P-044).
   const mailTopics = ctx.brainDir ? mailboxTopics(ctx) : [];
-  const counted = mailCount(ctx, mailTopics);
+  const counted = mailCount(ctx, mailTopics, { since });
   const mail = discussion ? discussionMail(counted) : counted;
   // Open notices of the instance, in the persona main thread only (D-0011: 41 open, none decided, nobody saw them).
   const notices = held.some(isMainTopic) && mail.available ? noticesCount(ctx) : null;
@@ -110,8 +114,8 @@ export function changedRules(text, prev) {
   return { changed, removed: Object.keys(prev).filter((k) => !seen.has(k)).map((k) => k.replace(/^#+ /, '')) };
 }
 
-const BOOT_STAMPS = ['local', 'boot'];
-const bootStamp = (brainDir, sessionId) => path.join(brainDir, ...BOOT_STAMPS, `${encodeURIComponent(sessionId)}.json`);
+const bootDir = (brainDir) => dataPath(brainDir, 'local', 'boot');
+const bootStamp = (brainDir, sessionId) => path.join(bootDir(brainDir), `${encodeURIComponent(sessionId)}.json`);
 
 /**
  * session-start.mjs after the brain pull (P-040): the rules hook running at the same time reads the rules after it.
@@ -121,7 +125,7 @@ const bootStamp = (brainDir, sessionId) => path.join(brainDir, ...BOOT_STAMPS, `
 export function stampBootPull(brainDir, sessionId, now = Date.now(), extra = {}) {
   if (!brainDir || !sessionId) return;
   try {
-    const dir = path.join(brainDir, ...BOOT_STAMPS);
+    const dir = bootDir(brainDir);
     fs.mkdirSync(dir, { recursive: true });
     for (const f of fs.readdirSync(dir)) {
       try { if (now - fs.statSync(path.join(dir, f)).mtimeMs > 86_400_000) fs.rmSync(path.join(dir, f), { force: true }); } catch { /* gone */ }
@@ -168,7 +172,8 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   const ignoredLine = policyIgnoredLine(ctx.policyIgnored);
   if (ignoredLine) notices.push(ignoredLine);
   if (ctx.domainError) notices.push(`domain: ${ctx.domainError}`);
-
+  // Mail model 2, first run (4b step 5): the local waits go to the mail, the local message state goes (once per brain).
+  if (ctx.brainDir && ctx.thread) { try { migrateLocalMail(ctx); } catch { /* retried at the next prompt */ } }
   // 3. status line (+ the waiting mail as mechanical lines, P-044; + handover of the held topic after compaction, P-026)
   const info = statusInfo(ctx);
   info.ended = ctx.brainDir && !info.held.length ? endedProgrammaticThread(ctx.brainDir, ctx.thread) : null;
@@ -192,6 +197,8 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
     const held = info.held;
     if (held.length && held[0].handover) status += `\nHandover (primárny podklad, P-026):\n${held[0].handover.trim().replace(/^## /gm, '### ')}`;
   }
+  // agent-alice/D-0082: the topics this thread's topics handed off, their state read live from the topics themselves.
+  if (ctx.brainDir && ctx.thread) { try { for (const line of bootHandoffLines(ctx.brainDir, ctx.thread)) status += `\n${line}`; } catch { /* never fails the boot */ } }
   // repo knowledge of the session repo and held code topics (D-0002): one line each, the HANDOVER of a topic's repo in full.
   for (const line of repoKnowledgeLines(ctx)) status += `\n${line}`;
   // catalog of project data (scripts/catalog/hooks.mjs): 1 line per source, computed by session-start after its scan.
@@ -234,9 +241,16 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
       ? `brain: none (optional, P-024): project without its own brain; do not propose one, it is created only on the operator's instruction`
       : ctx.brainInfo.error || `brain not found at ${rel}; propose: node <plugin>/bin/brain-init.mjs ${rel} (only after operator approval, P-024)`);
   }
+  version.push(...dataMapLines(ctx));
   // The harness names its own scratchpad in the system temp dir; the write hook refuses it (P-052) and the refusal cost
   // turns (alice 2026-11-07: a patch script in /tmp was refused, the work waited for the operator).
-  if (harness === 'claude-code') version.push(`work files: ${toPosix(path.join(ctx.projectDir, SCRATCH_DIR))}/ (gitignored); the harness "scratchpad directory" in the system temp dir is not used here: Write/Edit there go to this scratch/ (read the file there), other writes outside the project are refused (P-052)`);
+  if (harness === 'claude-code') {
+    // Layout 2 (D-0048): the work files belong to the held topic (temy/<topic>/tmp, main without one), outside git; a
+    // brain in layout 2 holds them (D-0056), else the project repo.
+    const v1 = dataLayoutVersion(topicHome(ctx.brainDir, ctx.projectDir)) === 1;
+    const here = toPosix(workDir(ctx));
+    version.push(`work files: ${here}/ (gitignored${v1 ? '' : `; per topic ${topicWorkLabel(ctx.brainDir, ctx.projectDir)}, the topic this thread holds or main`}); the harness "scratchpad directory" in the system temp dir is not used here: Write/Edit there go to ${v1 ? 'this scratch/' : 'this folder'} (read the file there), other writes outside the project are refused (P-052)`);
+  }
   version.push(...notices);
   parts.push(`${BOOT_MARKERS[5]}\n${version.join('\n')}`);
 
@@ -247,14 +261,51 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   return { text, chars: text.length, overLimit, notices, rules, source, status: operatorStatus(ctx, info) };
 }
 
+/**
+ * Start block "Tvar dát tohto repa" (D-0048): the paths of the logical names rules and skills use (zdroje, práca témy,
+ * pracovné súbory, výstupy, fakt o subjekte, INDEX.md) for the layout version of this project and its brain, so no rule
+ * or skill spells a folder of one layout. Topics, decisions and memory live in the brain, sources and documents in the
+ * project repo; the work of a topic and its work files in the brain in layout 2 (D-0056), else in the project repo (P-052, P-024).
+ */
+export function dataMapLines(ctx) {
+  const proj = ctx?.projectDir;
+  if (!proj) return [];
+  const brain = ctx.brainDir || null;
+  let pv;
+  let bv = null;
+  try { pv = dataLayoutVersion(proj); layoutFor(pv); if (brain) { bv = dataLayoutVersion(brain); layoutFor(bv); } } catch { return []; }
+  const same = brain && path.resolve(brain) === path.resolve(proj);
+  const P = same ? 'brain' : 'projekt';
+  const at = (who, root, name, ...rest) => `${who} ${[dataRel(root, name), ...rest].filter(Boolean).join('/')}/`;
+  const topic = workTopic(ctx);
+  const t = topic && topic !== 'main' ? topic : '<téma>';
+  const head = `Tvar dát tohto repa (verzia ${pv}${brain && !same && bv !== pv ? `, brain verzia ${bv}` : ''}; ${same ? `brain = projekt = repo ${toPosix(proj)}` : `projekt = repo ${toPosix(proj)}${brain ? `, brain = repo ${toPosix(brain)}` : ''}`}; cesta nižšie je od koreňa repa, ktoré riadok menuje):`;
+  const index = [[P, proj, pv], ...(brain && !same ? [['brain', brain, bv]] : [])].filter(([, , v]) => v === 2).map(([who]) => `${who} INDEX.md (generuje workflow pri zápise, ručne nie)`);
+  // D-0056: a brain in layout 2 holds the whole topic (work, conclusions, tmp/), also beside a project repo in layout 1.
+  const inBrain = !!brain && bv === 2;
+  return [
+    head,
+    `- zdroje (súbory zvonka, nemenia sa): ${at(P, proj, 'materialy', '<téma>')}`,
+    pv === 1 && !inBrain
+      ? `- práca témy: handover ${brain ? at('brain', brain, 'topics', t) : 'bez brainu'}, výsledky práce ${at(P, proj, 'materialy', t)}`
+      : `- práca témy (handover, .tema.json, súbory práce, závery pracovníkov v zavery/): ${brain ? at('brain', brain, 'topics', t) : at(P, proj, 'topics', t)}`,
+    `- pracovné súbory (mimo gitu, ${same || inBrain ? 'v brainu' : 'v repe projektu'}): ${toPosix(workDir(ctx))}/`,
+    `- výstupy: rozhodnutia ${brain ? at('brain', brain, 'decisions') : 'bez brainu'}, dokumenty ${at(P, proj, 'docs')}${inBrain && !same ? ' (hotové výsledky témy sem presunie triáž pri done --topic)' : ''}`,
+    `- fakt o subjekte (pamäť agenta): ${brain ? at('brain', brain, 'memory') : 'bez brainu'}`,
+    // Layout 1 has no INDEX.md: the block does not name it there.
+    ...(index.length ? [`- INDEX.md: ${index.join(', ')}`] : []),
+  ];
+}
+
 /** Records in a repo knowledge folder (memory, decisions, runbooks, skills). */
 function countKnowledge(dir) {
   let n = 0;
-  for (const sub of Object.keys(KNOWLEDGE_KINDS)) {
-    const d = path.join(dir, sub);
+  const kinds = knowledgeKinds(dir);
+  for (const sub of Object.keys(kinds)) {
+    const d = path.join(dir, ...sub.split('/'));
     if (!fs.existsSync(d)) continue;
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-      if (sub === 'skills' ? e.isDirectory() && fs.existsSync(path.join(d, e.name, 'SKILL.md')) : e.isFile() && e.name.endsWith('.md')) n++;
+      if (kinds[sub] === 'skill' ? e.isDirectory() && fs.existsSync(path.join(d, e.name, 'SKILL.md')) : e.isFile() && e.name.endsWith('.md')) n++;
     }
   }
   return n;
@@ -264,7 +315,7 @@ function countKnowledge(dir) {
 export function repoKnowledgeLines(ctx) {
   const lines = [];
   for (const src of sessionKnowledgeSources(ctx)) {
-    const handover = path.join(src.dir, REPO_HANDOVER);
+    const handover = dataPath(src.dir, 'repoHandover');
     const has = fs.existsSync(handover);
     lines.push(`repo vedomosti: ${src.repo}${src.topic ? ` (téma ${src.topic})` : ''} ${countKnowledge(src.dir)} záznamov, ${has ? 'HANDOVER' : 'bez HANDOVER'}`);
     if (has && src.topic) lines.push(`HANDOVER ${src.repo} (stav projektu):\n${fs.readFileSync(handover, 'utf8').trim().replace(/^## /gm, '### ')}`);

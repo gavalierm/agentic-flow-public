@@ -10,26 +10,28 @@ import { readText, today, nowIso, listFiles, git, PLUGIN_ROOT } from './util.mjs
 import { brainWrite } from './brain.mjs';
 import { rejectedProposal } from './find.mjs';
 import { machineName } from './config.mjs';
+import { LAYOUT, dataPath, dataRel } from './layout.mjs';
 
 export const LOG_FILES = ['sequences.log', 'failures.log', 'procedures.log', 'derivations.log'];
 const DAY_FILE = /^(\d{4}-\d{2}-\d{2})\.log$/;
 const kindOf = (logName) => String(logName).replace(/\.log$/, '');
 
 /** This machine's day file (brain-relative). */
-export function machineLogPath(date = today(), machine = machineName()) {
-  return `logs/${machine}/${date}.log`;
+export function machineLogPath(date = today(), machine = machineName(), brainDir = null) {
+  return `${brainDir ? dataRel(brainDir, 'logs') : LAYOUT.logs}/${machine}/${date}.log`;
 }
 
 /** Day files of every machine, in date order (machine name breaks ties). */
 function dayFiles(brainDir) {
-  const root = path.join(brainDir, 'logs');
+  const root = dataPath(brainDir, 'logs');
+  const relRoot = dataRel(brainDir, 'logs');
   const out = [];
   let dirs = [];
   try { dirs = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch { return out; }
   for (const machine of dirs) {
     let files = [];
     try { files = fs.readdirSync(path.join(root, machine)); } catch { continue; }
-    for (const f of files) { const m = DAY_FILE.exec(f); if (m) out.push({ machine, date: m[1], file: path.join(root, machine, f), rel: `logs/${machine}/${f}` }); }
+    for (const f of files) { const m = DAY_FILE.exec(f); if (m) out.push({ machine, date: m[1], file: path.join(root, machine, f), rel: `${relRoot}/${machine}/${f}` }); }
   }
   return out.sort((a, b) => a.date.localeCompare(b.date) || a.machine.localeCompare(b.machine));
 }
@@ -44,9 +46,10 @@ export function readLog(brainDir, logName, { rotationDays = null } = {}) {
   const kind = kindOf(logName);
   const days = dayFiles(brainDir);
   // Sources are stated before they are read: a line appended meanwhile changes the stat, so the next read rewrites the view.
-  const sources = [path.join(brainDir, 'logs', logName), ...days.map((d) => d.file)].map(statSig);
+  const sharedFile = dataPath(brainDir, 'logs', logName);
+  const sources = [sharedFile, ...days.map((d) => d.file)].map(statSig);
   // Lines of the old shared file are plain strings (no machine): one object per line of a 100k-line file cost time (D-0034).
-  const shared = fileLines(path.join(brainDir, 'logs', logName));
+  const shared = fileLines(sharedFile);
   const entries = [];
   const drops = [];
   const undrops = [];
@@ -143,7 +146,7 @@ function fileLines(file) {
  */
 function writeView(brainDir, logName, lines, sig) {
   try {
-    const view = path.join(brainDir, 'local', 'logs', logName);
+    const view = dataPath(brainDir, 'local', 'logs', logName);
     const sigFile = `${view}.sig`;
     const viewSig = () => JSON.stringify(statSig(view));
     const stored = readText(sigFile, '');
@@ -155,15 +158,15 @@ function writeView(brainDir, logName, lines, sig) {
 }
 
 /** Append op for this machine's day file (entries of one log). */
-export function appendOp(logName, entries, { date = today() } = {}) {
+export function appendOp(logName, entries, { date = today(), brainDir = null } = {}) {
   const kind = kindOf(logName);
-  return { path: machineLogPath(date), append: entries.map((e) => `${kind} ${e}\n`).join('') };
+  return { path: machineLogPath(date, machineName(), brainDir), append: entries.map((e) => `${kind} ${e}\n`).join('') };
 }
 
 /** Removal by appending: names (procedures, derivations, sequences) or whole failure lines. */
-export function dropOp(logName, whats) {
+export function dropOp(logName, whats, brainDir = null) {
   const kind = kindOf(logName);
-  return { path: machineLogPath(), append: whats.map((w) => `drop ${kind} ${w}\n`).join('') };
+  return { path: machineLogPath(today(), machineName(), brainDir), append: whats.map((w) => `drop ${kind} ${w}\n`).join('') };
 }
 
 /**
@@ -171,7 +174,7 @@ export function dropOp(logName, whats) {
  * and the old shared logs, physically (a drop line would keep the text). An emptied file is removed.
  */
 export function removeLinesOps(brainDir, match) {
-  const files = [...LOG_FILES.map((f) => ({ file: path.join(brainDir, 'logs', f), rel: `logs/${f}` })), ...dayFiles(brainDir)];
+  const files = [...LOG_FILES.map((f) => ({ file: dataPath(brainDir, 'logs', f), rel: dataRel(brainDir, 'logs', f) })), ...dayFiles(brainDir)];
   const ops = [];
   let removed = 0;
   for (const { file, rel } of files) {
@@ -200,16 +203,17 @@ export function rotationOps(brainDir, days, machine = machineName()) {
   const ops = dayFiles(brainDir).filter((d) => d.machine === machine && Date.parse(d.date) < cutoff).map((d) => ({ path: d.rel, remove: true }));
   const cutDay = new Date(cutoff).toISOString().slice(0, 10);
   for (const name of ROTATED_SHARED_LOGS) {
-    const lines = fileLines(path.join(brainDir, 'logs', name));
+    const lines = fileLines(dataPath(brainDir, 'logs', name));
     const kept = lines.filter(byHead((head) => !/^\d{4}-\d{2}-\d{2}$/.test(head) || head >= cutDay));
     if (kept.length === lines.length) continue;
-    ops.push(kept.length ? { path: `logs/${name}`, content: kept.join('\n') + '\n' } : { path: `logs/${name}`, remove: true });
+    const rel = dataRel(brainDir, 'logs', name);
+    ops.push(kept.length ? { path: rel, content: kept.join('\n') + '\n' } : { path: rel, remove: true });
   }
   return ops;
 }
 
 export function bufferFile(brainDir, sessionId) {
-  return path.join(brainDir, 'local', 'log-buffer', `${sessionId || 'unknown'}.jsonl`);
+  return dataPath(brainDir, 'local', 'log-buffer', `${sessionId || 'unknown'}.jsonl`);
 }
 
 export function bufferAppend(brainDir, sessionId, entry) {
@@ -224,11 +228,35 @@ export function readBuffer(brainDir, sessionId) {
 
 const INTERPRETERS = ['node', 'python', 'python3', 'bash', 'sh'];
 
-/** Script of the installed workflow plugin (any install path or the hook placeholder). */
+/**
+ * Script of the workflow plugin or of a skill: any install path, the hook placeholder, a skill folder
+ * (`.claude/skills/<skill>/`, a skill script is already the procedure of its skill), or a relative or variable path whose
+ * script name is a script of the plugin (`$P/bin/save.mjs`, `$W/comms.mjs`, `../agentic-flow/bin/timer.mjs`), or an absolute
+ * path into another clone of the workflow (`<clone>/bin/<x>` next to `<clone>/scripts/logs.mjs`: a worktree, the pilot).
+ */
 export function isWorkflowScript(p) {
   const norm = String(p).replace(/\\/g, '/');
   const root = String(PLUGIN_ROOT).replace(/\\/g, '/');
-  return norm.startsWith(root + '/') || norm.includes('${CLAUDE_PLUGIN_ROOT}') || /\/\.claude\/skills\/workflow\//.test(norm);
+  if (norm.startsWith(root + '/') || norm.includes('${CLAUDE_PLUGIN_ROOT}') || /(?:^|\/)\.claude\/skills\/[^/]+\//.test(norm)) return true;
+  const name = norm.split('/').pop();
+  const dir = /(?:^|\/)(bin|scripts)\/[^/]+$/.exec(norm)?.[1];
+  if (norm.startsWith('/')) return !!dir && fs.existsSync(path.join(norm, '..', '..', 'scripts', 'logs.mjs'));
+  return (dir ? [dir] : ['bin', 'scripts']).some((d) => fs.existsSync(path.join(PLUGIN_ROOT, d, name)));
+}
+
+/** A bare variable (`$S`, `${C}`) names no script or program: it carries no shape of the command. */
+const BARE_VAR = /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/;
+
+const INLINE_FLAGS = ['-e', '--eval', '-p', '--print', '-c', '-', '-m'];
+
+/** The script file an interpreter runs (first non-option word), null for inline code, stdin or a module (`node -e`, `python3 -`, heredoc, `sh -c`). */
+function interpreterScript(args) {
+  for (const w of args) {
+    if (INLINE_FLAGS.includes(w) || /^--(?:eval|print)=/.test(w) || w.startsWith('<') || w === 'Q') return null;
+    if (w.startsWith('-')) continue;
+    return w;
+  }
+  return null;
 }
 
 /** Split a shell command line into simple commands and normalize to "program [subcommand]". */
@@ -239,7 +267,8 @@ export function normalizeCommand(command, policy) {
   // into fake programs (alice 2026-11-03: `the` from a commit body counted as a command of a sequence).
   const masked = String(command)
     .replace(/<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n\s*\2\s*(?=\n|$)/g, (m) => m.split('\n')[0])
-    .replace(/'[^']*'|"(?:\\.|[^"\\])*"/g, 'Q');
+    // a quoted single word without shell syntax is kept (`node "$P/bin/x.mjs"` runs x.mjs), other quoted text is Q
+    .replace(/'([^']*)'|"((?:\\.|[^"\\])*)"/g, (m, a, b) => { const t = a ?? b; return /^[^\s;&|<>()`'"\\]+$/.test(t) ? t : 'Q'; });
   for (const part of masked.split(/\s*(?:&&|\|\||;|\||\n)\s*/)) {
     const words = part.trim().split(/\s+/).filter(Boolean);
     const assigned = /^[A-Za-z_][A-Za-z0-9_]*=\$\((.+)$/.exec(words[0] || '');
@@ -257,16 +286,22 @@ export function normalizeCommand(command, policy) {
     if (['sudo', 'time', 'env'].includes(prog) && words[1]) { words.shift(); prog = words[0].split('/').pop(); }
     // Interpreter + script: the script is the procedure (`node bin/<script>.mjs` -> `node <script>.mjs`). Scripts of the workflow
     // itself are already procedures with a skill and never count toward a skill proposal (P-005, pilot 2026-11-01).
-    if (INTERPRETERS.includes(prog) && words[1] && /\.(m?js|cjs|py|sh)$/.test(words[1])) {
-      if (isWorkflowScript(words[1])) continue;
-      out.push(`${prog} ${words[1].split('/').pop()}`);
+    // An interpreter without a script file (inline code, stdin, heredoc) is not a repeatable procedure step.
+    if (INTERPRETERS.includes(prog)) {
+      const script = interpreterScript(words.slice(1));
+      if (!script || BARE_VAR.test(script) || isWorkflowScript(script)) continue;
+      out.push(`${prog} ${script.split('/').pop()}`);
       continue;
     }
+    if (BARE_VAR.test(words[0]) || (words[0].includes('/') && isWorkflowScript(words[0]))) continue; // `$C list`; a workflow or skill script run directly
     // sed without in-place editing only reads (`sed -n 10,20p`): it is reading code, not a procedure step.
     if (prog === 'sed' && !words.some((w) => /^-[a-zA-Z]*i/.test(w) || w.startsWith('--in-place'))) { out.push('sed -n'); continue; }
     let sub = null;
     if (programs.includes(prog)) {
-      const cand = words.slice(1).find((w) => !w.startsWith('-'));
+      // `git -C <dir> log` is `git log`: the value of -C/-c is not the subcommand
+      const args = words.slice(1);
+      if (prog === 'git') while (['-C', '-c'].includes(args[0])) args.splice(0, 2);
+      const cand = args.find((w) => !w.startsWith('-'));
       if (cand && /^[a-z][a-z0-9:-]*$/.test(cand)) sub = cand;
     }
     out.push(sub ? `${prog} ${sub}` : prog);
@@ -279,11 +314,19 @@ export function isReadonly(normalized, policy) {
   return list.includes(normalized) || list.includes(normalized.split(' ')[0]);
 }
 
-export function sequencesFrom(commands, { min = 2, max = 5 } = {}) {
+const isScriptStep = (c) => INTERPRETERS.includes(c.split(' ')[0]) && c.includes(' ');
+
+/**
+ * Contiguous subsequences of length min..max; a sequence of scripts only (`sh x.sh+node y.mjs`) counts from `scriptMin`
+ * (a pair of named scripts is one procedure, a pair of common programs such as `cp+rm` is a chance match).
+ */
+export function sequencesFrom(commands, { min = 2, max = 5, scriptMin = 2 } = {}) {
   const seqs = [];
-  for (let len = min; len <= max; len++) {
+  for (let len = Math.min(min, scriptMin); len <= max; len++) {
     for (let i = 0; i + len <= commands.length; i++) {
-      seqs.push(commands.slice(i, i + len).map((c) => c.replace(/\s+/g, '-')).join('+'));
+      const steps = commands.slice(i, i + len);
+      if (len < min && !steps.every(isScriptStep)) continue;
+      seqs.push(steps.map((c) => c.replace(/\s+/g, '-')).join('+'));
     }
   }
   return seqs;
@@ -368,7 +411,7 @@ export function flushBuffer(ctx, sessionId, { sync = true } = {}) {
   const newSeqs = [];
   const push = (agent) => {
     const run = runs.get(agent) || [];
-    if (run.length >= policy.logs.sequence_min_length) newSeqs.push(...sequencesFrom(run, { min: policy.logs.sequence_min_length, max: policy.logs.sequence_max_length }));
+    if (run.length >= 2) newSeqs.push(...sequencesFrom(run, { min: policy.logs.sequence_min_length, max: policy.logs.sequence_max_length }));
     runs.set(agent, []);
   };
   for (const e of entries) {
@@ -404,7 +447,7 @@ export function flushBuffer(ctx, sessionId, { sync = true } = {}) {
   });
   if (oldFailures.length) signals.push(`failures.log: ${oldFailures.length} unprocessed failure(s) older than ${policy.logs.failure_signal_days} days; run error skill (P-030)`);
 
-  const ops = [appendOp('sequences.log', seqEntries), appendOp('failures.log', newFails)].filter((o) => o.append);
+  const ops = [appendOp('sequences.log', seqEntries, { brainDir }), appendOp('failures.log', newFails, { brainDir })].filter((o) => o.append);
   ops.push(...rotationOps(brainDir, policy.logs.rotation_days));
   const res = ops.length ? brainWrite(ctx, { ops, internal: true, sync, message: `logs flush ${sessionId}` }) : { committed: false, unpushed: 0 };
   fs.rmSync(bufferFile(brainDir, sessionId), { force: true });
@@ -419,7 +462,7 @@ export function recordNames(ctx, logName, names, { thread }) {
   const entries = names.map((n) => `${date} ${n} ${thread || '-'}`);
   lines.push(...entries);
   const counts = countByField(lines);
-  return { op: appendOp(logName, entries), counts, lines };
+  return { op: appendOp(logName, entries, { brainDir }), counts, lines };
 }
 
 export function existingNames(brainDir, logName) {
@@ -428,7 +471,7 @@ export function existingNames(brainDir, logName) {
 }
 
 export function removeNames(brainDir, logName, names) {
-  return dropOp(logName, names);
+  return dropOp(logName, names, brainDir);
 }
 
 export function listFailures(brainDir) {
@@ -456,7 +499,7 @@ export function resolveFailuresOp(brainDir, ids) {
   const byId = new Map(lines.map((l) => [failureId(l), l]));
   const missing = want.filter((k) => !byId.has(k));
   if (missing.length) throw new Error(`no unprocessed failure with id ${missing.join(', ')}; nothing resolved`);
-  return { op: dropOp('failures.log', want.map((k) => byId.get(k))), ids: want, remaining: lines.length - want.length };
+  return { op: dropOp('failures.log', want.map((k) => byId.get(k)), brainDir), ids: want, remaining: lines.length - want.length };
 }
 
 /**
@@ -465,16 +508,16 @@ export function resolveFailuresOp(brainDir, ids) {
  */
 export function restoreFailuresOp(brainDir, commit) {
   if (!commit || commit === true) throw new Error('usage: restore <brain commit that dropped the failure>');
-  const r = git(['show', '--format=', '--no-color', '-U0', String(commit), '--', 'logs'], { cwd: brainDir });
+  const r = git(['show', '--format=', '--no-color', '-U0', String(commit), '--', dataRel(brainDir, 'logs')], { cwd: brainDir });
   if (!r.ok) throw new Error(`git show ${commit}: ${(r.stderr || r.stdout || '').trim()}`);
   const dropped = r.stdout.split('\n').filter((l) => l.startsWith('+drop failures ')).map((l) => l.slice('+drop failures '.length));
   if (!dropped.length) throw new Error(`commit ${commit} dropped no failure`);
   const listed = new Set(listFailures(brainDir));
   const lines = [...new Set(dropped)].filter((l) => !listed.has(l));
   if (!lines.length) throw new Error(`the failure(s) dropped by ${commit} are listed already; nothing restored`);
-  return { op: { path: machineLogPath(), append: lines.map((l) => `undrop failures ${l}\n`).join('') }, lines };
+  return { op: { path: machineLogPath(today(), machineName(), brainDir), append: lines.map((l) => `undrop failures ${l}\n`).join('') }, lines };
 }
 
 export function pendingBuffers(brainDir) {
-  return listFiles(path.join(brainDir, 'local', 'log-buffer'), (f) => f.endsWith('.jsonl'));
+  return listFiles(dataPath(brainDir, 'local', 'log-buffer'), (f) => f.endsWith('.jsonl'));
 }

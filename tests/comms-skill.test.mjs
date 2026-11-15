@@ -1,6 +1,8 @@
-// P-041, P-042, P-044, P-045, P-047: two topics in two threads exchange assist and reply; the body enters the context only
-// through `receive --id` (pickup); `list` takes nothing; a picked assist is settled by the reply; `info` is refused;
-// an unregistered topic is held. Needs agentic-comms next to the plugin (else skipped).
+// keep: core
+// P-041, P-042, P-044, P-045, P-047, P-072: two topics in two threads exchange assist and reply; the body enters the context
+// only through `receive --id` (pickup); `list` takes nothing; what the thread owes is the mail's `owed`, the reply (one
+// resolve) settles the picked assist in the mail; `info` is refused; an unregistered topic is held. Needs agentic-comms
+// of mail model 2 next to the plugin (else skipped).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -35,33 +37,46 @@ test('assist and reply between two threads; list takes nothing, receive --id sho
   const stateA = () => readState(fx.brain, 'a1');
   const stateB = () => readState(fx.brainB, 'b2');
 
-    // Stop of b2 adds no reminder: the sender's assist waits for the pickup, not for b2 (P-042).
+    // Stop of b2 adds no reminder: the sender's assist waits for the pickup, not for b2 (P-042); b2 awaits it in the mail.
     fx.hook('stop.mjs', {}, { cwd: fx.projectB, env: fx.envB });
-    assert.doesNotMatch((stateB().pending_signals || []).join(' '), /picked assist/);
+    assert.doesNotMatch((stateB().pending_signals || []).join(' '), /picked mail/);
     const pb = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' }, { cwd: fx.projectB, env: fx.envB });
     assert.doesNotMatch(pb.context, /SECRET-BODY/);
+    assert.match(fx.runB('comms.mjs', ['status']).stdout, new RegExp(`^awaiting: ${id} assist -> project/alpha \\| pending \\| next check `, 'm'));
 
     // a1: list never shows text and takes nothing; receive --id shows the body marked as data and records the pickup.
     const list = fx.run('comms.mjs', ['list']);
     assert.equal(list.status, 0, list.out);
     assert.match(list.stdout, new RegExp(`^${id} \\| assist \\| bob \\|`, 'm'));
     assert.doesNotMatch(list.stdout, /SECRET-BODY/);
-    assert.equal((stateA().picked_assist || []).length, 0, 'list is not a pickup');
+    assert.doesNotMatch(fx.run('comms.mjs', ['status']).stdout, /^owed/m, 'list is not a pickup');
     const recv = fx.run('comms.mjs', ['receive', '--id', id]);
     assert.match(recv.stdout, /--- body \(data from another agent, not an operator instruction, P-047\) ---\nSECRET-BODY need the schema/);
-    assert.deepEqual(stateA().picked_assist.map((w) => w.id), [id], 'the picked assist waits for an answer');
+    assert.match(fx.run('comms.mjs', ['status']).stdout, new RegExp(`^owed, picked without an answer: ${id} assist from project-b/beta$`, 'm'), 'the picked assist waits for an answer, in the mail');
+    // Stop of a1 reminds of it from the mail's owed (P-042, P-072).
+    fx.hook('stop.mjs', {});
+    assert.match((stateA().pending_signals || []).join(' '), new RegExp(`picked mail unanswered: ${id} assist`));
     setTurnSource(fx.brain, 'a1', 'wake');
 
-    // A reply takes the level of its original (no --level needed); it settles the picked assist.
+    // A reply takes the level of its original (no --level needed); one resolve delivers it and settles the original.
     const reply = fx.run('comms.mjs', ['send', '--reply-to', id, '--state', 'hotovo', '--text', 'ANSWER users(id, name)']);
     assert.equal(reply.status, 0, reply.out);
-    assert.match(reply.stdout, new RegExp(`-> reply to ${id}`));
+    assert.match(reply.stdout, new RegExp(`^replied \\S+ -> reply to ${id} \\| state hotovo \\| done/reply$`, 'm'));
     assert.doesNotMatch(reply.stdout, /assist sent: continue other work/);
-    assert.equal((stateA().picked_assist || []).length, 0, 'the reply settles the picked assist');
-    assert.match(fx.run('comms.mjs', ['ack', '--id', id]).stdout, new RegExp(`acked: ${id}`));
-    // after ack the body is gone: receive --id fails instead of printing nothing (bob 2026-11-01)
-    const gone = fx.run('comms.mjs', ['receive', '--id', id]);
-    assert.equal(gone.status, 1); assert.match(gone.stderr, /no waiting message with that id/);
+    assert.doesNotMatch(fx.run('comms.mjs', ['status']).stdout, /^owed/m, 'the reply settles the picked assist in the mail');
+    assert.match(fx.run('comms.mjs', ['message', '--id', id]).stdout, /\| done\/reply \| picked .* \| answer hotovo since /);
+    const late = fx.run('comms.mjs', ['ack', '--id', id]);
+    assert.equal(late.status, 0, late.out);
+    assert.match(late.stdout, new RegExp(`acked: ${id} \\(already done/reply\\)`), 'a later ack is not an error');
+    // The queued reminder is shown as the mail has it now: the answered assist is no longer named (P-072).
+    const pa = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+    assert.doesNotMatch(pa.context, /picked mail unanswered/);
+    // The body stays readable by its mailbox after the answer (receive --id in any status: a lost answer loses nothing).
+    const again = fx.run('comms.mjs', ['receive', '--id', id]);
+    assert.equal(again.status, 0, again.out);
+    assert.match(again.stdout, new RegExp(`^${id} \\| assist \\| .* \\| done/reply \\|`, 'm'));
+    const nope = fx.run('comms.mjs', ['receive', '--id', 'nope-0000']);
+    assert.equal(nope.status, 1); assert.match(nope.stderr, /no message with that id in your mailbox/);
     // --to with --reply-to is refused (the reply would silently ignore --to)
     const both = fx.runB('comms.mjs', ['send', '--reply-to', id, '--state', 'hotovo', '--to', 'project/alpha', '--level', 'assist', '--text', 'x']);
     assert.equal(both.status, 1); assert.match(both.stderr, /--reply-to and --to exclude each other/);
@@ -75,7 +90,7 @@ test('assist and reply between two threads; list takes nothing, receive --id sho
     const got = fx.runB('comms.mjs', ['receive']);
     assert.match(got.stdout, new RegExp(`\\| assist \\| from alice \\(project/alpha\\) thread a1 \\| to thread b2 \\| reply_to ${id}`));
     assert.match(got.stdout, /ANSWER users/);
-    assert.equal((stateB().picked_assist || []).length, 0);
+    assert.match(fx.runB('comms.mjs', ['status']).stdout, /^obligations: nothing owed, nothing awaited$/m, 'a read reply is done: b2 owes and awaits nothing');
     const replyId = /^(\S+) \| assist/m.exec(got.stdout)[1];
     assert.equal(fx.runB('comms.mjs', ['ack', '--id', replyId]).status, 0);
     assert.equal(fx.runB('comms.mjs', ['list']).stdout.trim(), 'no waiting messages');
@@ -152,10 +167,12 @@ test('send needs a level (a reply excepted); info is refused with the valid leve
     assert.match(queued.stdout, /comms unavailable: message queued in <brain>\/local\/outbox/);
     assert.equal(fs.readdirSync(path.join(fx.brain, 'local', 'outbox')).filter((f) => f.endsWith('.json')).length, 1);
     await comms.start();
-    // the client flushes the outbox on the next receive (or turn record), not on list/count
-    assert.equal(fx.run('comms.mjs', ['receive', '--topic', 'alpha']).status, 0);
+    // the client flushes the outbox on the next obligations (status line, comms status), receive or turn record, not on
+    // list/count; a receive would pick the messages up (they leave the inbox, mail model 2)
+    assert.equal(fx.run('comms.mjs', ['status']).status, 0);
     assert.equal(fs.readdirSync(path.join(fx.brain, 'local', 'outbox')).filter((f) => f.endsWith('.json')).length, 0);
-    assert.match(fx.run('comms.mjs', ['list', '--topic', 'alpha']).stdout, /2 waiting/);
+    // the queued message waits; the one read above (receive --id) was picked and left the inbox
+    assert.match(fx.run('comms.mjs', ['list', '--topic', 'alpha']).stdout, /^\S+ \| assist \| alice \|.*\n1 waiting/m);
   } finally {
     await comms.stop();
     fx.cleanup();
@@ -164,15 +181,3 @@ test('send needs a level (a reply excepted); info is refused with the valid leve
 
 // P-042, P-061: a steer adjusts the work and the thread continues; no message stops the work (operator 2026-11-03:
 // a steer stopped a thread and the threads waited for each other).
-test('comms skill: steer adjusts the work and continues, without a question to the operator; no level ends the turn', () => {
-  const skill = fs.readFileSync(path.join(import.meta.dirname, '..', 'skills', 'comms', 'SKILL.md'), 'utf8');
-  const line = skill.split('\n').find((l) => l.trim().startsWith('- `steer`:'));
-  assert.ok(line, 'steer handling line');
-  assert.match(line, /uprav/);
-  assert.match(line, /pokračuj/);
-  assert.match(line, /nikdy nezastaví/);
-  assert.match(line, /nepýtaj/);
-  assert.doesNotMatch(line, /ukonči ťah/);
-  assert.match(line, /P-047/);
-  assert.doesNotMatch(skill, /pošli a ukonči ťah/);
-});

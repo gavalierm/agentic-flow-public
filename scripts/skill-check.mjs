@@ -8,7 +8,8 @@ import path from 'node:path';
 import { PLUGIN_ROOT, readJson } from './util.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { readSkills } from './records.mjs';
-import { workflowSkillNames, GENERATED_MARKER, PROJECT_SKILLS_DIR } from './skills-sync.mjs';
+import { workflowSkillNames, GENERATED_MARKER, PROJECT_SKILLS_DIR, personaSkillPrefix } from './skills-sync.mjs';
+import { dataLayoutVersion, topicHome } from './layout.mjs';
 
 const TRIGGER = /^(Použi|Použij|Use)\b/i;
 
@@ -66,13 +67,56 @@ const ANTI = [
   [/\$\{CLAUDE_PLUGIN_ROOT\}/, 'error', '${CLAUDE_PLUGIN_ROOT} is not expanded in a project skill: use the script path the save output gives'],
 ];
 
+/** The public command that prints and creates the work files folder of the thread (bin/work-dir.mjs, P-068). */
+export const WORK_DIR_COMMAND = 'node ~/.claude/skills/workflow/bin/work-dir.mjs';
+
+// "nie <wrong way>, lebo <why>" (also in a script comment): its paths document the wrong way, they are not a use.
+const NIE_LINE = /^\s*(?:\/\/|#|\*|-)?\s*nie\s/i;
+const NIE_LEBO = /(?<!\p{L})nie(?!\p{L}).*(?<!\p{L})lebo(?!\p{L})/iu;
+
+/** Visible marker on a line that the check cannot tell from a use: its paths are not work files of the thread (P-068). */
+export const WORK_PATH_OK = 'work-path: ok';
+// A comment line of a script (#, //, /* or *): it describes, it does not use a path. The shebang is no path either.
+const SCRIPT_COMMENT = /^\s*(?:#|\/\/|\/\*|\*)/;
+// The label of a shell case branch (`scratch/?*)`): it matches a string, it does not touch the path.
+const CASE_LABEL = /^\s*[^\s()|;]+(?:\|[^\s()|;]+)*\)/;
+// The quoted message of echo or printf: text for the reader, a redirect after it stays checked.
+const ECHO_MESSAGE = /\b(?:echo|printf)\s+(?:-\w+\s+)*(?:"[^"]*"|'[^']*')/g;
+// The root before the path: a variable ($p/, ${p}/, not $HOME) or a placeholder (<projekt>/) names another folder
+// chosen at run time (a pilot or a copied project), not the work files of this thread.
+const FOREIGN_ROOT = String.raw`(?<!(?:\$(?!HOME\b)\w+|\$\{(?!HOME\})\w+\}|<[^<>\s]+>)\/)`;
+const SCRATCH = new RegExp(String.raw`(?<![\w.$-])${FOREIGN_ROOT}scratch\/(?!,)`, 'g');
+const TOPIC_TMP = new RegExp(String.raw`(?<![\w.$-])${FOREIGN_ROOT}temy\/[^\s/\`'"<>$*{}()[\]]+\/tmp(?![\w-])`, 'g');
+
 /**
- * Check one skill. { name, dir, text, owner: operator|agentic|unmanaged, projectDir, home, limit } -> findings
- * [{ level, line, code, message }]. Pure apart from filesystem existence checks.
+ * Fixed work files paths in one line (P-068): a use (write, read, cd, mktemp, redirect, command argument) of a literal
+ * scratch/ or temy/<a concrete topic>/tmp. Not a use, so it passes: the placeholder temy/<téma>/tmp/ (also $X, ${x}, *);
+ * "nie …, lebo …" lines; a shell variable named scratch ($scratch/); a path under another root in a variable or
+ * placeholder ($p/scratch/, <projekt>/scratch/); the bare folder name in an enumeration ("scratch/, .worktrees");
+ * the WORK_PATH_OK marker. In a script (script: true) also a comment line, a case label and an echo/printf message.
+ * Meaningful only in a topic home of data layout 2.
  */
-export function checkSkill({ name, dir, text, owner, projectDir, home = os.homedir(), limit = 300, pendingScripts = [], known = null }) {
+export function fixedWorkPaths(line, { script = false } = {}) {
+  if (NIE_LINE.test(line) || NIE_LEBO.test(line) || line.includes(WORK_PATH_OK)) return [];
+  let text = line;
+  if (script) {
+    if (SCRIPT_COMMENT.test(text)) return [];
+    text = text.replace(CASE_LABEL, '').replace(ECHO_MESSAGE, '');
+  }
+  return [...text.matchAll(SCRATCH), ...text.matchAll(TOPIC_TMP)].map((m) => m[0]);
+}
+
+const workPathMessage = (p) => `fixed work files path ${p}: the folder depends on the topic the thread holds and the data layout; get it at run time with \`${WORK_DIR_COMMAND}\` (--main: topic main), in the text write the placeholder temy/<téma>/tmp/ (P-068); a line that only describes the path (layout 1, another project) passes with the marker "${WORK_PATH_OK}"`;
+
+/**
+ * Check one skill. { name, dir, text, owner: operator|agentic|unmanaged, projectDir, home, limit, layout, scriptTexts }
+ * -> findings [{ level, line, code, message }]. layout: data layout of the topic home (2: fixed work paths are errors);
+ * scriptTexts: { <file>: content } of scripts being saved (others are read from dir). Pure apart from filesystem reads.
+ */
+export function checkSkill({ name, dir, text, owner, projectDir, home = os.homedir(), limit = 300, pendingScripts = [], known = null, layout = null, scriptTexts = {} }) {
   const findings = [];
   const add = (level, line, code, message) => findings.push({ level, line, code, message });
+  const prefix = personaSkillPrefix(projectDir);
   const { data, body } = parseFrontmatter(text);
   const bodyStart = text.split('\n').length - body.split('\n').length; // lines before the body
   if (!data.name) add('error', 1, 'name', 'frontmatter has no name');
@@ -110,9 +154,11 @@ export function checkSkill({ name, dir, text, owner, projectDir, home = os.homed
       const renamed = oldDomainPath(abs, home);
       if (renamed) { add('error', n, 'path', `${p}: path from before the domain rename; now ${renamed.replace(home, '~')}`); continue; }
       const inSkills = /\/\.claude\/skills\/[^/]+\/[^/]+\.(mjs|js|sh|py)$/.test(abs);
-      if (!fs.existsSync(abs)) {
+      // D-0065: a persona deploys its own skill <name> as <persona>-<name>; the deployed copy rewrites the brain path.
+      const prefixed = inSkills && prefix ? path.join(path.dirname(path.dirname(abs)), prefix + path.basename(path.dirname(abs)), path.basename(abs)) : null;
+      if (!fs.existsSync(abs) && !(prefixed && fs.existsSync(prefixed))) {
         // A script of this skill is deployed at session start: it exists in the skill folder of brain.
-        const deployedOwn = inSkills && path.basename(path.dirname(abs)) === name && own.includes(path.basename(abs));
+        const deployedOwn = inSkills && [name, prefix + name].includes(path.basename(path.dirname(abs))) && own.includes(path.basename(abs));
         if (!deployedOwn) add(inSkills ? 'error' : 'warn', n, 'path', `${p} does not exist`);
       }
       const inProject = projectDir && (abs + path.sep).startsWith(path.dirname(path.resolve(projectDir)) + path.sep);
@@ -120,6 +166,7 @@ export function checkSkill({ name, dir, text, owner, projectDir, home = os.homed
         add('warn', n, 'environment', `${p}: home of another user; the skill works only on this machine`);
       }
     }
+    if (layout === 2) for (const p of fixedWorkPaths(line)) add('error', n, 'work-path', workPathMessage(p));
     if (/\S\\n\S|\\n\d+\./.test(line.replace(/`[^`]*`/g, ''))) add('error', n, 'format', 'literal \\n in the text: the line breaks were saved as characters (pass real newlines)');
     for (const [re, level, message] of ANTI) if (re.test(line) && (level === 'error' || !MENTION.test(line))) add(level, n, 'anti-pattern', message);
   });
@@ -128,6 +175,13 @@ export function checkSkill({ name, dir, text, owner, projectDir, home = os.homed
   if (additions >= 1) add('warn', 0, 'growth', `${additions} "## Doplnenie" section(s): merge them into one coherent body without loss of meaning (save skill --replace)`);
   if (body.length > 8000) add('warn', 0, 'growth', `body ${body.length} chars: shorten or split by tool`);
   for (const f of own) if (!referenced.has(f)) add('warn', 0, 'script', `${f} in the skill folder is not called from SKILL.md`);
+  if (layout === 2) {
+    for (const f of own) {
+      let content = scriptTexts[f];
+      if (content === undefined) { try { content = fs.readFileSync(path.join(dir, f), 'utf8'); } catch { continue; } }
+      String(content).split('\n').forEach((l, i) => { for (const p of fixedWorkPaths(l, { script: true })) add('error', 0, 'work-path', `${f}:${i + 1}: ${workPathMessage(p)}`); });
+    }
+  }
   return findings;
 }
 
@@ -152,13 +206,19 @@ function knownSkillNames(ctx, skills) {
   return new Set([...skills.map((s) => s.name), ...dirs(path.join(ctx.projectDir, PROJECT_SKILLS_DIR)), ...workflowSkillNames(), ...dirs(path.join(os.homedir(), '.claude', 'skills'))]);
 }
 
+/** Data layout of the topic home whose work files the skills of this project use (topicHome: a brain in layout 2, else the project). */
+export function workLayout(ctx) {
+  const home = topicHome(ctx.brainDir, ctx.projectDir);
+  return home ? dataLayoutVersion(home) : null;
+}
+
 export function checkProject(ctx, only = null) {
   const limit = ctx.policy?.limits?.skill_description_chars ?? 300;
   const skills = projectSkills(ctx);
   const known = knownSkillNames(ctx, skills);
   return skills.filter((s) => !only || s.name === only).map((s) => ({
     ...s,
-    findings: checkSkill({ name: s.name, dir: s.dir, text: fs.readFileSync(s.file, 'utf8'), owner: s.owner, projectDir: ctx.projectDir, limit, known }),
+    findings: checkSkill({ name: s.name, dir: s.dir, text: fs.readFileSync(s.file, 'utf8'), owner: s.owner, projectDir: ctx.projectDir, limit, known, layout: workLayout(ctx) }),
   }));
 }
 
