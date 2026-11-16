@@ -30,6 +30,7 @@ import { brainWrite, gitAccessProblem } from './brain.mjs';
 import { INDEX_FILE, refreshIndex, indexProblem, commitIndexAfterMerge, refreshDeployIgnores, deployIgnoreGaps, formatDeployIgnores } from './data-index.mjs';
 import { CLASSES, MOVED_CLASSES, BRAIN_SUFFIX, classTargetIn } from './triage.mjs';
 import { redactUrl } from './secrets.mjs';
+import { isJunk, isLarge, sizeOf, sizeText, leftovers, removeJunk, leftoverLines, junkText } from './leftovers.mjs';
 
 const L1 = LAYOUTS[1];
 const L2 = LAYOUTS[2];
@@ -289,6 +290,7 @@ function triageTarget(item, row, kind = 'brain', untracked = false) {
  */
 export const SCRATCH_TARGET = `${L2.topics}/main/${L2.topicTmp}/`;
 function defaultProposal(t) {
+  // Only a small scratch/ as one item carries it; a large one is split per entry without a proposal (planMigration).
   if (t.path !== `${L1.scratch}/` || t.untracked.size !== t.files.length) return null;
   return { proposal: SCRATCH_TARGET, topic: '', reason: `${L1.scratch}/ outside git: data ${dataName(TO_VERSION)} keeps work files in ${L2.topics}/<topic>/${L2.topicTmp}/ (operator)` };
 }
@@ -367,8 +369,21 @@ export function planMigration(dir, { proposals = new Map(), confirmed = null } =
     const list = [];
     plan.units = new Map();
     scanUntracked(dir, L1.scratch, list, plan.units);
-    const untracked = list.filter((r) => !plan.tracked.includes(r));
-    if (untracked.length) for (const r of untracked) addTriage(`${L1.scratch}/`, r, true);
+    // Junk (__pycache__, *.pyc) is no work: the apply removes it, it is never triaged nor moved.
+    const untracked = list.filter((r) => !plan.tracked.includes(r) && !isJunk(r));
+    plan.scratchJunk = list.filter((r) => !plan.tracked.includes(r) && isJunk(r));
+    // A large scratch/ (doma-pc 2026-11-16: 2.7 GB of exports) is triaged per entry with its size, never moved whole
+    // blindly: each entry is an item of its own without a proposal (operator: no 3 GB without triage).
+    const whole = sizeOf(path.join(dir, L1.scratch));
+    plan.scratchSize = whole;
+    // A row for scratch/ itself (the operator confirmed it whole) keeps it one item.
+    const split = isLarge(whole) && !(confirmed?.has(`${L1.scratch}/`) || proposals.has(`${L1.scratch}/`));
+    for (const r of untracked) {
+      const rest = r.slice(L1.scratch.length + 1).split('/');
+      const item = split ? (rest.length > 1 ? `${L1.scratch}/${rest[0]}/` : r) : `${L1.scratch}/`;
+      addTriage(item, r, true);
+    }
+    if (split) for (const t of triage.values()) if (t.path.startsWith(`${L1.scratch}/`) && t.path !== `${L1.scratch}/`) t.reason = `${L1.scratch}/ outside git (operator): ${sizeText(sizeOf(path.join(dir, t.path)))}; ${L1.scratch}/ is ${sizeText(whole)} in all, triage each entry: remove what is not needed, the rest to ${L2.topics}/<topic>/${L2.topicTmp}/`;
   }
   // A target that already exists or that two files take: that file waits for the operator.
   const taken = new Set(plan.tracked.filter((r) => !plan.moves.some((m) => m.from === r)));
@@ -706,14 +721,17 @@ export function applyMigration(dir, { confirmedFile = null, proposalsFile = null
     if (plan.units?.has(m.from)) { process.stderr.write(`${m.from}: not deleted (${plan.units.get(m.from).why}: the move deletes no folder of its own; move it to a topic's work folder or remove it by hand)\n`); continue; }
     try { fs.rmSync(path.join(dir, m.from)); removedOutside.push(m.from); } catch (err) { process.stderr.write(`${m.from}: not deleted (${err.message})\n`); }
   }
+  // Junk outside git (__pycache__, *.pyc, .DS_Store) kept a folder of data 1 alive after its files moved (doma-pc
+  // 2026-11-16: materialy/ with only .pyc): removed with the folders it leaves empty; other files there the check reports.
+  const junk = removeJunk(dir, { version: TO_VERSION, role: plan.kind });
   const pruned = pruneOldFolders(dir, moves);
   const adapter = regenerateAdapter(dir);
   const check = checkMigration(dir, { before, project, cwd, consolidate, outsideHere: true });
   // scratch/ left (not confirmed): said in one line with the row that moves it, not only as a triage item that stays.
   const scratchLeft = fs.existsSync(path.join(dir, L1.scratch))
-    ? `${L1.scratch}/ stays (outside git, not confirmed); data ${dataName(TO_VERSION)} has no ${L1.scratch}/: work files are in ${L2.topics}/<topic>/${L2.topicTmp}/; move its content to ${SCRATCH_TARGET} with the operator's consent (outside git: git does not restore it); before the move a confirmed row "${L1.scratch}/<TAB>${SCRATCH_TARGET}" does it`
+    ? `${L1.scratch}/ stays (outside git, not confirmed, ${sizeText(sizeOf(path.join(dir, L1.scratch)))}); data ${dataName(TO_VERSION)} has no ${L1.scratch}/: triage it with the operator, entry by entry: remove what is not needed (exports, backups, generated files), move the rest into the work folder of its topic ${L2.topics}/<topic>/${L2.topicTmp}/ (${SCRATCH_TARGET} only for work of no topic); outside git: git does not restore it`
     : null;
-  return { ok: true, sha, brainSha, plan, moves, outside, deleted: removedOutside, note: ready.note, adapter, check, pruned, scratchLeft, deployIgnores: info.deployIgnores || [] };
+  return { ok: true, sha, brainSha, plan, moves, outside, deleted: removedOutside, note: ready.note, adapter, check, pruned, junk, scratchLeft, deployIgnores: info.deployIgnores || [] };
 }
 
 /** Content of a file for the brain writer: text when it is text, else the bytes. */
@@ -966,6 +984,7 @@ export function checkMigration(dir, { before = null, project = null, cwd = proce
   const index = version === TO_VERSION ? indexProblem(dir) : null;
   if (index) problems.push(`${INDEX_FILE}: ${index === 'missing' ? 'missing' : 'stale (differs from the tracked files)'} in HEAD; regenerate it: migrate.mjs ${dir} --check --fix`);
   for (const rel of oldEmptyFolders(dir, rows)) problems.push(`${rel}/: empty folder of data ${dataName(FROM_VERSION)} left after the move (no file inside; remove it)`);
+  problems.push(...leftoverProblems(dir, { version: TO_VERSION, role: repoKind(dir), fix: `migrate.mjs ${dir} --check --fix` }));
   const stayed = rows.filter((r) => r.from === r.to).map((r) => r.from);
   const { find } = makeRewriter(rows.filter((r) => r.from !== r.to && relocated(r)), { tracked: stayed, kind: repoKind(dir) });
   const waiting = new Set(rows.filter((r) => r.status === STATUS.triageStay).map((r) => r.from));
@@ -998,6 +1017,18 @@ export function checkMigration(dir, { before = null, project = null, cwd = proce
   const again = adapterCommand(dir);
   if (again) notes.push(`after git revert of the move run the adapter again: ${again}`);
   return { ok: !problems.length, problems, notes, refs, cross };
+}
+
+/**
+ * Leftovers outside git in the folders of an older layout, as problems (doma-pc 2026-11-16): the junk with the command
+ * that removes it, every other entry with its size, to triage with the operator. Shared by both checks (data 2.0, 2.1).
+ */
+export function leftoverProblems(dir, { version, role, fix, skip } = {}) {
+  const found = leftovers(dir, { version, role, skip });
+  const out = [];
+  if (found.junk.length) out.push(`${junkText(found.junk)}: left outside git in folders of an older data layout; remove them: ${fix}`);
+  for (const l of leftoverLines(found.other)) out.push(`${l}: outside git in a folder of an older data layout, left after the move; triage it with the operator: remove what is not needed, move the rest into the work folder of its topic (outside git, nothing is deleted without consent)`);
+  return out;
 }
 
 /**

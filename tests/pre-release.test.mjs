@@ -126,3 +126,27 @@ test('pre-release: a domain folder without .agentic-domain whose repo names a br
     assert.match(r.stdout, /^- \S*Delta has no \.agentic-domain, though its repos name the brain delta-brain: this check and migrate --to 2\.1 do not see the domain; write \S*Delta\/\.agentic-domain with \{"brain": "delta-brain"\}/m);
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
+
+test('pre-release and overview: leftovers of an older layout and work files over the limit are findings (doma-pc 2026-11-16)', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-pre-'));
+  try {
+    const root = path.join(base, 'machine');
+    const brain = domain(root, 'Gamma', 3);
+    // A brain of data 2.1 with temy/ of 2.0 holding only .pyc and a scratch/ of data 1; a work folder of 600 MB (sparse).
+    fs.mkdirSync(path.join(brain, 'temy', 'old', '__pycache__'), { recursive: true });
+    fs.writeFileSync(path.join(brain, 'temy', 'old', '__pycache__', 'a.pyc'), 'c');
+    fs.mkdirSync(path.join(brain, 'scratch'), { recursive: true });
+    fs.writeFileSync(path.join(brain, 'scratch', 'export.csv'), 'x\n');
+    fs.mkdirSync(path.join(brain, 'topics', 'main', 'tmp'), { recursive: true });
+    const big = path.join(brain, 'topics', 'main', 'tmp', 'export-full.csv');
+    fs.writeFileSync(big, '');
+    fs.truncateSync(big, 600 * 1024 * 1024);
+    const r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'overview.mjs'), '--pre-release', '--root', root, '--no-mail'], { env: cleanEnv({}), encoding: 'utf8', cwd: base });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /^- \S*brain: 1 generated file\(s\) or folder\(s\) \(__pycache__, \*\.pyc, \.DS_Store …\) in temy\/ outside git, left by a move of the data: node \S+migrate\.mjs \S+brain --to 2\.1 --check --fix removes them/m);
+    assert.match(r.stdout, /^- \S*brain: outside git in folders of an older data layout, left by a move of the data: scratch\/export\.csv \(1 file\(s\), 2 B\)/m);
+    assert.match(r.stdout, /^- brain: 1 file\(s\), 600 MB of work files outside git \(limit 500 MB\): topics\/main\/tmp\/ 600 MB; largest: topics\/main\/tmp\/export-full\.csv 600 MB\. Triage them with the operator/m);
+    const o = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'overview.mjs'), '--root', root], { env: cleanEnv({}), encoding: 'utf8', cwd: base });
+    assert.match(o.stdout, /work files: Gamma\/brain: 1 file\(s\), 600 MB of work files outside git/, o.stdout + o.stderr);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});

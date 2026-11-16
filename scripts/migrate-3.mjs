@@ -32,8 +32,9 @@ import { MODES } from './topic-files.mjs';
 import { turnFields } from './topic-state.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { operatorRepo, readPeople } from './people.mjs';
-import { trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand } from './migrate.mjs';
+import { trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand, leftoverProblems } from './migrate.mjs';
 import { gitAccessProblem } from './brain.mjs';
+import { leftovers, removeJunk, leftoverLines, junkText, sizeOf, sizeText, isLarge, human, LARGE_BYTES, LARGE_FILES } from './leftovers.mjs';
 import { defaultRepoName } from './target.mjs';
 
 const L2 = LAYOUTS[2];
@@ -718,6 +719,36 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
       brain.tmp.push({ fromAbs, to: live ? `${B3.topics}/${id}/${B3.topicTmp}` : `${B3.topics}/main/${B3.topicTmp}/${r.name}-${id}`, prune: r.dir });
     }
   }
+  // Leftovers outside git (doma-pc 2026-11-16: no junk after a move, no data piled up without triage):
+  //   - in the folders of data 1 (a machine that pulled the move of 2.0 kept its untracked scratch/, materialy/ with .pyc):
+  //     junk the apply removes, anything else waits for the operator's triage;
+  //   - in the folders of data 2.0 that the move leaves (temy/, vystupy/ … of the brain): files git does not track and no
+  //     work folder takes stay behind, so they wait too;
+  //   - a work folder over the limit moves only with the operator's approval (--approve "<repo>:<path>/<TAB>presunut").
+  for (const t of [brain, ...plan.repos]) {
+    const role = t === brain ? ROLE_BRAIN : ROLE_REPO;
+    const moving = [...brain.tmp, ...plan.repos.flatMap((r) => r.tmp)].filter((m) => (m.prune || dom.brain) === t.dir).map((m) => posix(path.relative(t.dir, m.fromAbs)));
+    const skip = (rel) => moving.some((m) => under(rel, m));
+    const junk = [];
+    const other = [];
+    for (const v of [2, TO]) {
+      const found = leftovers(t.dir, { version: v, role, skip });
+      junk.push(...found.junk);
+      for (const g of found.other) if (!other.some((o) => o.path === g.path)) other.push(g);
+    }
+    t.junk = [...new Set(junk)];
+    if (t.junk.length) t.notes.push(`${junkText(t.junk)}: generated, removed by --apply`);
+    for (const l of leftoverLines(other.sort((a, b) => b.bytes - a.bytes))) blockers.push(`${t.name}:${l}: outside git in a folder of an older data layout, the move does not take it; triage it with the operator: remove what is not needed, move work into the work folder of its topic (${B3.topics}/<topic>/${B3.topicTmp}/ of the brain), then run the preview again`);
+  }
+  for (const m of [...brain.tmp, ...plan.repos.flatMap((r) => r.tmp)]) {
+    const src = m.prune || dom.brain;
+    m.size = sizeOf(m.fromAbs);
+    m.key = `${path.basename(src)}:${posix(path.relative(src, m.fromAbs))}/`;
+    if (!isLarge(m.size)) continue;
+    const ap = approvalOf(approve, m.key);
+    if (ap?.action === 'presunut') continue;
+    blockers.push(`${m.key}: ${sizeText(m.size)} of work files outside git, too many to move without triage (limit ${human(LARGE_BYTES)} or ${LARGE_FILES} files): triage them with the operator (remove exports, backups and copies not needed), or approve the move as it is: --approve "${m.key}<TAB>presunut"`);
+  }
   // Incoming files of every target: clash with a file it tracks, sources.json, record rows.
   for (const t of [brain, ...plan.repos, ...plan.targets]) {
     if (t === brain) continue;
@@ -852,7 +883,7 @@ export function formatPlan(plan, { all = false } = {}) {
     if (t.incoming.length) { lines.push(`  from the brain (${t.incoming.length}):`); for (const o of t.incoming) lines.push(`    ${o.from} -> ${o.to}`); }
     const rewritten = [...t.content.keys()].filter((k) => !t.incoming.some((i) => i.to === k));
     if (rewritten.length) lines.push(`  written with a new content (${rewritten.length}): ${(all ? rewritten : rewritten.slice(0, 12)).join(', ')}${!all && rewritten.length > 12 ? ', …' : ''}`);
-    for (const m of t.tmp) lines.push(`  outside git: ${posix(m.fromAbs)}/ -> ${m.to}/`);
+    for (const m of t.tmp) lines.push(`  outside git: ${posix(m.fromAbs)}/ -> ${m.to}/${m.size ? ` (${sizeText(m.size)})` : ''}`);
     for (const n of t.notes) lines.push(`  note: ${n}`);
   }
   lines.push(`outputs and sources of the brain (${plan.triage.length}; TSV: cesta, navrh, tema, dovod):`);
@@ -990,12 +1021,20 @@ export function applyDomain(dir, { confirmedFile = null, approveFile = null, env
       if (m.prune) pruneEmpty(m.prune, L2.topics);
     }
   }
+  // Junk outside git in the old folders (generated, never work) goes with the folders it leaves empty.
+  const junk = [];
+  for (const t of [plan.brain, ...plan.repos]) {
+    const role = t === plan.brain ? ROLE_BRAIN : ROLE_REPO;
+    // The old folders of data 2.1 include those of data 1 (scratch/, materialy/, docs/); memory/ … of data 1 are folders
+    // of the brain again, never pruned here.
+    junk.push(...removeJunk(t.dir, { version: TO, role }).removed.map((r) => `${t.name}:${r}`));
+  }
   const pruned = [L2.topics, OUTPUTS, L2.materialy, KNOWLEDGE].flatMap((rel) => pruneEmpty(plan.brain.dir, rel));
   // The empty vystupy/rozhodnutia/ a project repo's decisions left (they moved to .brain/decisions/).
   for (const t of plan.repos) pruned.push(...pruneEmpty(t.dir, L2.decisions).map((p) => `${t.name}:${p}`));
   const adapters = [...plan.repos.map((t) => ({ name: t.name, res: t.adapter })), { name: plan.brain.name, res: regenerateAdapter(plan.brain.dir) }].filter((a) => a.res);
   const check = checkDomain(plan.brain.dir);
-  return { ok: true, commits, plan, moved, pruned, adapters, check };
+  return { ok: true, commits, plan, moved, pruned, junk, adapters, check };
 }
 
 // ---- check ------------------------------------------------------------------------------------------------------------
@@ -1017,6 +1056,8 @@ export function checkRepo(dir, { brainDir = null } = {}) {
   const role = layoutRole(dir);
   const map = layoutFor(TO, role);
   const files = trackedFiles(dir).map((f) => f.rel);
+  // Outside git in the folders of data 2.0 and 1 (doma-pc 2026-11-16): junk (--fix removes it) and entries to triage.
+  problems.push(...leftoverProblems(dir, { version: TO, role, fix: `migrate.mjs ${dir} --to 2.1 --check --fix` }));
   const record = recordRel(role);
   if (!files.includes(record)) problems.push(`${record} missing: no record of the move 2.0 -> 2.1`);
   const commits = moveCommits(dir);
@@ -1100,6 +1141,19 @@ export function checkDomain(dir) {
   const dom = domainOf(dir);
   const results = [checkRepo(dom.brain), ...dom.repos.map((r) => checkRepo(r, { brainDir: dom.brain }))];
   return { ok: results.every((r) => !r.problems.length), results };
+}
+
+/** --check --fix: junk outside git in the old folders of every repository of the domain removed: lines. */
+export function fixJunk(dir) {
+  const dom = domainOf(dir);
+  const out = [];
+  for (const d of [dom.brain, ...dom.repos]) {
+    if (dataLayoutVersion(d) !== TO) continue;
+    const res = removeJunk(d, { version: TO, role: layoutRole(d) });
+    if (res.removed.length) out.push(`${path.basename(d)}: removed generated files outside git: ${res.removed.join(', ')}`);
+    if (res.pruned.length) out.push(`${path.basename(d)}: removed empty folders of an older data layout: ${res.pruned.join(', ')}`);
+  }
+  return out;
 }
 
 /** --check --fix: INDEX.md of every repository of the domain regenerated (one commit each where stale). */

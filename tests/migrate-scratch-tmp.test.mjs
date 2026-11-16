@@ -56,8 +56,10 @@ test('an apply without a confirmed row for scratch/ leaves it and says so', () =
   try {
     const web = project(fx, 'web2');
     const a = fx.run('migrate.mjs', [web, '--apply']);
-    assert.equal(a.status, 0, a.out);
+    // The move is committed, the scratch/ it leaves fails the check (no leftovers after a move, operator 2026-11-16).
+    assert.equal(a.status, 1, a.out);
     assert.ok(fs.existsSync(path.join(web, 'scratch', 'notes.txt')));
-    assert.match(a.stdout, /note: scratch\/ stays \(outside git, not confirmed\).*temy\/main\/tmp\//);
+    assert.match(a.stdout, /note: scratch\/ stays \(outside git, not confirmed, \d+ file\(s\), [^)]+\).*triage it with the operator, entry by entry.*temy\/main\/tmp\//);
+    assert.match(a.stdout, /scratch\/notes\.txt \(1 file\(s\), \d+ B\): outside git in a folder of an older data layout/);
   } finally { fx.cleanup(); }
 });

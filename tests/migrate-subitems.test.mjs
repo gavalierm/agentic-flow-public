@@ -41,7 +41,9 @@ test('a TSV row for a part of scratch/ gets its own navrh; the rest of scratch/ 
     assert.match(p.stdout, /scratch\/audit\/\tzdroj\tseo\t.*-> zdroje\/seo\/audit\/ \(1 file\(s\)\)/);
     assert.match(p.stdout, /scratch\/\ttemy\/main\/tmp\/\t.*stays \(1 file\(s\)\)/);
     const a = fx.run('migrate.mjs', [web, '--apply', '--confirmed', tsv]);
-    assert.equal(a.status, 0, a.out);
+    // scratch/notes.txt was not confirmed: it stays and the check names it.
+    assert.equal(a.status, 1, a.out);
+    assert.match(a.out, /scratch\/notes\.txt \(1 file\(s\)/);
     assert.ok(!fs.existsSync(path.join(web, 'scratch', 'clone', 'a.txt')) && !fs.existsSync(path.join(web, 'scratch', 'clone', 'sub', 'b.txt')), a.out);
     assert.ok(fs.existsSync(path.join(web, 'zdroje', 'seo', 'audit', 'data.csv')));
     assert.ok(fs.existsSync(path.join(web, 'scratch', 'notes.txt')));

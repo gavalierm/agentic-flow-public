@@ -43,6 +43,7 @@ test('a tracked name with diacritics is in the move record: --check reports noth
   const fx = setup2({ thread: 'mc1' });
   try {
     const web = project(fx, 'web');
+    fs.rmSync(path.join(web, 'scratch'), { recursive: true, force: true });
     const a = fx.run('migrate.mjs', [web, '--apply']);
     assert.equal(a.status, 0, a.out);
     assert.ok(fs.existsSync(path.join(web, 'podklady', 'cenník-ľúbivý.txt')), a.out);

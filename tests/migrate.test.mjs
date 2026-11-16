@@ -192,9 +192,20 @@ test('apply refuses a dirty tree, a divergence from origin and a layout above 2;
     fs.writeFileSync(path.join(clone, 'README.md'), 'changed\n');
     const state = fx.run('migrate.mjs', [fx.brain]).stdout;
     assert.ok(state.includes(`scratch/work/: nested git repository (origin ${fx.origin}, uncommitted 2, unpushed 1)`), state);
+    fs.mkdirSync(path.join(fx.brain, 'scratch', '__pycache__'));
+    fs.writeFileSync(path.join(fx.brain, 'scratch', '__pycache__', 'x.cpython-312.pyc'), 'c');
+    fs.writeFileSync(path.join(fx.brain, 'scratch', 'tool.pyc'), 'c');
+    // The move is committed; the scratch/ it leaves is no pass: the check names each entry with its size (operator 2026-11-16).
     r = fx.run('migrate.mjs', [fx.brain, '--apply']);
-    assert.equal(r.status, 0, r.out);
+    assert.equal(r.status, 1, r.out);
+    assert.equal(dataLayoutVersion(fx.brain), 2);
     assert.ok(fs.existsSync(path.join(fx.brain, 'scratch', 'note.md')));
+    assert.match(r.out, /scratch\/note\.md \(1 file\(s\), 2 B\): outside git in a folder of an older data layout/);
+    assert.match(r.out, /scratch\/clone\/ \(\d+ file\(s\), .*a nested repository\)/);
+    assert.match(r.out, /removed empty folders of data 1: .*memory\//);
+    // Junk is no work: removed by the apply, never triaged.
+    assert.match(r.out, /removed generated files outside git: 2 \(scratch\/__pycache__\/, scratch\/tool\.pyc\)/);
+    assert.ok(!fs.existsSync(path.join(fx.brain, 'scratch', '__pycache__')));
     // A layout above 2 is refused.
     commitFiles(fx.brain, { '.brain/policy.json': JSON.stringify({ data_layout: 3 }) + '\n' }, 'layout 3', { noVerify: true });
     r = fx.run('migrate.mjs', [fx.brain]);
@@ -262,5 +273,28 @@ test('confirmed scratch/ moves whole to temy/main/tmp/, a clone inside it with i
     for (const p of ['note.md', 'work/.git']) assert.ok(fs.existsSync(path.join(fx.brain, 'temy', 'main', 'tmp', p)), p);
     assert.equal(gitq(path.join(fx.brain, 'temy', 'main', 'tmp', 'work'), 'log', '-1', '--format=%s'), 'local only', 'the clone keeps its commits');
     assert.ok(!fs.existsSync(path.join(fx.brain, 'scratch', 'work')), 'nothing left in scratch/');
+  } finally { fx.cleanup(); }
+});
+
+test('a large scratch/ is triaged per entry with its size, never offered whole to temy/main/tmp/ (no 3 GB without triage)', () => {
+  const fx = brainV1();
+  try {
+    fs.writeFileSync(path.join(fx.brain, '.git', 'info', 'exclude'), 'scratch/\n');
+    fs.mkdirSync(path.join(fx.brain, 'scratch', 'exports'), { recursive: true });
+    fs.mkdirSync(path.join(fx.brain, 'scratch', 'notes'), { recursive: true });
+    for (let i = 0; i < 501; i++) fs.writeFileSync(path.join(fx.brain, 'scratch', 'exports', `e${i}.csv`), 'x\n');
+    fs.writeFileSync(path.join(fx.brain, 'scratch', 'notes', 'a.md'), 'a\n');
+    const p = fx.run('migrate.mjs', [fx.brain]);
+    assert.equal(p.status, 0, p.out);
+    assert.match(p.stdout, /scratch\/exports\/\tbez navrhu\t\tscratch\/ outside git \(operator\): 501 file\(s\), 1002 B; scratch\/ is 502 file\(s\), 1004 B in all, triage each entry/);
+    assert.match(p.stdout, /scratch\/notes\/\tbez navrhu\t/);
+    assert.doesNotMatch(p.stdout, /scratch\/\ttemy\/main\/tmp\//);
+    // The operator may still confirm scratch/ whole: one item again.
+    const tsv = path.join(fx.root, 'scratch.tsv');
+    fs.writeFileSync(tsv, 'cesta\tnavrh\ttema\tdovod\nscratch/\ttemy/main/tmp/\t\tchecked by the operator\n');
+    const r = fx.run('migrate.mjs', [fx.brain, '--apply', '--confirmed', tsv]);
+    assert.equal(r.status, 0, r.out);
+    assert.ok(fs.existsSync(path.join(fx.brain, 'temy', 'main', 'tmp', 'exports', 'e0.csv')));
+    assert.ok(!fs.existsSync(path.join(fx.brain, 'scratch')));
   } finally { fx.cleanup(); }
 });

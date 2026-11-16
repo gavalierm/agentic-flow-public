@@ -27,6 +27,10 @@ Na každom stroji spusti `node <plugin>/bin/overview.mjs --pre-release [--root <
 - otvorená správa, ktorú 2.0 nespracuje: otázka na schválenie fixu (P-075) alebo práca odovzdaná inej téme (P-055, `handoffs.json`). Uzavri ju odpoveďou (`comms send --reply-to <id> --state hotovo`, `comms settle --id <id>`) alebo ju stiahni (`comms withdraw --id <id>`);
 - pošta neodpovedá: kontrola správ neprebehla, zopakuj ju, keď pošta odpovedá;
 - brain v dátach 1: najprv ho migruj na dáta 2.0 (`node <plugin>/bin/migrate.mjs <brain>`, potom `--apply`). Kód 2.0 potrebuje aspoň dáta 2.0 (O22).
+- zvyšky mimo gitu v priečinkoch starších dát (`scratch/`, `materialy/`, `docs/`, `temy/` …). Ostávajú aj na stroji, ktorý presun iba stiahol cez pull:
+  - generované súbory (`__pycache__`, `*.pyc`, `.DS_Store`) odstráni `migrate.mjs <repo> [--to 2.1] --check --fix`;
+  - ostatné súbory triedi operátor po položkách, s veľkosťou a počtom súborov. Čo netreba, zmaže. Prácu presunie do pracovného priečinka jej témy;
+- pracovné súbory mimo gitu (`topics/<téma>/tmp/`) nad 500 MB v jednom repe: nález vymenuje najväčšie priečinky a súbory. Exporty, zálohy a kópie, ktoré netreba, sa zmažú so súhlasom operátora. Hotové dielo patrí do `vystupy/` alebo `zdroje/`. Rovnaký nález hlási aj prehľad supervisora.
 
 Kontrola vypíše aj riadky, ktoré nie sú nálezy:
 
@@ -50,7 +54,7 @@ Brána: verzia 2.0.0 je na každom stroji pred prvým vláknom.
 
 Migruj po jednej doméne, celú doménu naraz: brain a každé repo projektu, ktoré ho menuje. Domény migruj v poradí pilot, doména supervisora (bod 12 nižšie), ďalšie domény. Ak doména zlyhá, ďalšia sa nezačne. Pre každú doménu použi príkazy z výstupu kroku 1:
 
-1. Repo v dátach 1 najprv: `node <plugin>/bin/migrate.mjs <repo> --apply`.
+1. Repo v dátach 1 najprv: `node <plugin>/bin/migrate.mjs <repo> --apply`. Veľký `scratch/` (nad 100 MB alebo nad 500 súborov) náhľad rozdelí na položky triáže, každú s veľkosťou a bez návrhu. Celý ho nepresunie do `temy/main/tmp/`, kým operátor nepotvrdí riadok `scratch/`.
 2. Náhľad a tabuľka triáže: `node <plugin>/bin/migrate.mjs <brain> --to 2.1 --write-triage <tsv>`. Operátor potvrdí riadky:
    - výstupy brainu: `<repo>:vystupy/<typ>/`;
    - zdroje brainu: `<repo>:zdroje/<téma>/` alebo `pomocne`;
@@ -63,7 +67,9 @@ Migruj po jednej doméne, celú doménu naraz: brain a každé repo projektu, kt
    - zapíše `default_repo` ako meno repa;
    - zmení `knowledge_branch` na `target_branch`;
    - presunie rozhodnutia repa projektu z `vystupy/rozhodnutia/` do `.brain/decisions/` a prepíše odkazy na ne v repe aj v braine.
-4. Kontrola: `node <plugin>/bin/migrate.mjs <brain> --to 2.1 --check`. Musí skončiť bez nálezu a s jedným migračným commitom v každom repe. `--fix` pregeneruje zastaraný `INDEX.md`. Potom pushni repá, ktoré výstup vymenuje.
+   - presunie pracovné súbory mimo gitu k ich téme v braine. Priečinok nad 100 MB alebo nad 500 súborov náhľad zastaví: operátor ho najprv roztriedi, alebo presun schváli riadkom `<repo>:<cesta>/<TAB>presunut` v `--approve`;
+   - odstráni generované súbory mimo gitu v priečinkoch starších dát. Ostatné súbory mimo gitu, ktoré presun nevezme (napríklad `scratch/` dát 1), náhľad zastaví, kým ich operátor neroztriedi.
+4. Kontrola: `node <plugin>/bin/migrate.mjs <brain> --to 2.1 --check`. Musí skončiť bez nálezu a s jedným migračným commitom v každom repe. Nálezom je aj každý zvyšok mimo gitu v priečinku starších dát. `--fix` pregeneruje zastaraný `INDEX.md` a odstráni generované súbory. Potom pushni repá, ktoré výstup vymenuje.
 5. Iné stroje: urob pull klonov domény ešte pred spustením vlákien. Štart session v repe, ktorého dáta nesedia s brainom domény, sa odmietne s príkazom na pull.
 
 Bod 12 (doména supervisora a doména workflow):

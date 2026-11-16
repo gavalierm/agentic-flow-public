@@ -336,7 +336,9 @@ test('work files outside git of a project repo (temy/<id>/tmp/) go to the brain,
     assert.match(p.stdout, /outside git: \S*srv\/temy\/main\/tmp\/ -> topics\/main\/tmp\//);
     assert.match(p.stdout, /outside git: \S*srv\/temy\/old\/tmp\/ -> topics\/main\/tmp\/srv-old\//);
     const a = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--apply', '--confirmed', confirmed, '--approve', approve]);
-    assert.equal(a.status, 0, a.out);
+    // The clash stays in the temy/ of the repo: the check names it, no pass with a leftover (doma-pc 2026-11-16).
+    assert.equal(a.status, 1, a.out);
+    assert.match(a.out, /srv: 1 problem\(s\)\n\s+temy\/main\/ \(1 file\(s\), 4 B\): outside git in a folder of an older data layout/);
     const T = (rel) => fs.readFileSync(path.join(fx.brain, 'topics', 'main', 'tmp', rel), 'utf8');
     assert.equal(T('a.md'), 'a\n');
     assert.equal(T('both.md'), 'brain\n', 'nothing overwritten');
@@ -344,5 +346,46 @@ test('work files outside git of a project repo (temy/<id>/tmp/) go to the brain,
     assert.match(a.out, /srv\/temy\/main\/tmp\/both\.md: not moved, topics\/main\/tmp\/both\.md exists/);
     assert.ok(fs.existsSync(path.join(fx.srv, 'temy', 'main', 'tmp', 'both.md')), 'the clash stays where it was');
     assert.ok(!fs.existsSync(path.join(fx.srv, 'temy', 'old')), 'emptied folders of temy/ are removed');
+  } finally { fx.cleanup(); }
+});
+
+test('leftovers outside git (doma-pc 2026-11-16): data 1 work files wait for triage, junk goes with --apply, a large work folder moves only approved', () => {
+  const fx = domainV2();
+  try {
+    // A machine that pulled the move of 2.0: scratch/ and materialy/ of data 1 left outside git, materialy/ with only .pyc.
+    fs.writeFileSync(path.join(fx.srv, '.git', 'info', 'exclude'), 'scratch/\nmaterialy/\ntemy/*/tmp/\n');
+    fs.mkdirSync(path.join(fx.srv, 'scratch', 'exports'), { recursive: true });
+    fs.writeFileSync(path.join(fx.srv, 'scratch', 'exports', 'export.csv'), 'x'.repeat(2048));
+    fs.mkdirSync(path.join(fx.srv, 'materialy', 'audit', '__pycache__'), { recursive: true });
+    fs.writeFileSync(path.join(fx.srv, 'materialy', 'audit', '__pycache__', 'a.cpython-312.pyc'), 'c');
+    fs.writeFileSync(path.join(fx.srv, 'materialy', 'tool.pyc'), 'c');
+    // A work folder of 600 files.
+    fs.mkdirSync(path.join(fx.srv, 'temy', 'main', 'tmp'), { recursive: true });
+    for (let i = 0; i < 600; i++) fs.writeFileSync(path.join(fx.srv, 'temy', 'main', 'tmp', `p${i}.csv`), 'y\n');
+    const confirmed = tsvFile(fx, 'confirmed.tsv', ['vystupy/dokumenty/spec.md\tsrv:vystupy/specifikacie/\talpha\t', 'zdroje/alpha/\tpomocne\t\t']);
+    const rows = ['.brain/skills/agentic/old-gate/\tzmazat', '.brain/memory/person-jana.md\tzmazat'];
+    let p = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--confirmed', confirmed, '--approve', approveFile(fx, rows)]);
+    assert.match(p.stdout, /srv:scratch\/exports\/ \(1 file\(s\), 2\.0 kB\): outside git in a folder of an older data layout, the move does not take it/);
+    assert.match(p.stdout, /note: 2 generated file\(s\) or folder\(s\) \(__pycache__, \*\.pyc, \.DS_Store …\) in materialy\/: generated, removed by --apply/);
+    assert.match(p.stdout, /srv:temy\/main\/tmp\/: 600 file\(s\), \S+ \S+ of work files outside git, too many to move without triage .*--approve "srv:temy\/main\/tmp\/<TAB>presunut"/);
+    assert.match(p.stdout, /outside git: \S*srv\/temy\/main\/tmp\/ -> topics\/main\/tmp\/ \(600 file\(s\)/);
+    // The operator triaged scratch/ (removed the export) and approved the work folder as it is.
+    fs.rmSync(path.join(fx.srv, 'scratch'), { recursive: true });
+    const a = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--apply', '--confirmed', confirmed, '--approve', approveFile(fx, [...rows, 'srv:temy/main/tmp/\tpresunut'])]);
+    assert.equal(a.status, 0, a.out);
+    assert.match(a.out, /check \(data 2\.1\): ok/);
+    assert.ok(!fs.existsSync(path.join(fx.srv, 'materialy')), 'materialy/ of only junk is gone');
+    assert.ok(fs.existsSync(path.join(fx.brain, 'topics', 'main', 'tmp', 'p599.csv')));
+    // A later leftover: --check names it, --check --fix removes junk only.
+    fs.mkdirSync(path.join(fx.srv, 'temy', 'x'), { recursive: true });
+    fs.writeFileSync(path.join(fx.srv, 'temy', 'x', '.DS_Store'), 'd');
+    fs.writeFileSync(path.join(fx.srv, 'temy', 'x', 'keep.md'), 'k\n');
+    let c = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check']);
+    assert.equal(c.status, 1, c.out);
+    assert.match(c.out, /1 generated file\(s\) or folder\(s\) .* in temy\/: left outside git in folders of an older data layout; remove them: migrate\.mjs \S+ --to 2\.1 --check --fix/);
+    assert.match(c.out, /temy\/x\/ \(1 file\(s\), 2 B\): outside git/);
+    c = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check', '--fix']);
+    assert.match(c.out, /srv: removed generated files outside git: temy\/x\/\.DS_Store/);
+    assert.ok(fs.existsSync(path.join(fx.srv, 'temy', 'x', 'keep.md')), 'work is never deleted by code');
   } finally { fx.cleanup(); }
 });

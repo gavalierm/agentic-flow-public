@@ -17,7 +17,8 @@ import { gitAccessProblem } from './brain.mjs';
 import { DOMAIN_MARKER as DOMAIN_MARKER_FILE } from './config.mjs';
 import { git, gitRemote, readJson, PLUGIN_ROOT } from './util.mjs';
 import { domainBrains, unmarkedDomains } from './stores.mjs';
-import { layoutOf, dataLayoutVersion, dataPath, dataName } from './layout.mjs';
+import { layoutOf, layoutRole, dataLayoutVersion, dataPath, dataName, ROLE_BRAIN, ROLE_REPO } from './layout.mjs';
+import { leftovers, leftoverLines, junkText, workFinding, workMap } from './leftovers.mjs';
 import { listTopicRecords } from './topic-files.mjs';
 import { isMainTopic, commsProjectName, readObligations } from './comms.mjs';
 import { handoverNextStep, handoverQuestions, handoverTasks, TASKS_SECTION } from './brain-checks.mjs';
@@ -147,6 +148,15 @@ export function preRelease({ root = null, ctx = null, brains = null, env = proce
     for (const d of [b.dir, ...domRepos]) {
       const access = gitAccessProblem(d);
       if (access) findings.push({ kind: 'git-access', where, text: access });
+      // Leftovers outside git in folders of an older layout and work folders over the limit (doma-pc 2026-11-16).
+      const v = dataLayoutVersion(d);
+      if (v === 1 || access) continue;
+      const role = v === 3 ? layoutRole(d) : (d === b.dir ? ROLE_BRAIN : ROLE_REPO);
+      const found = leftovers(d, { version: v, role });
+      if (found.junk.length) findings.push({ kind: 'leftovers', where, text: `${posix(d)}: ${junkText(found.junk)} outside git, left by a move of the data: node ${MIGRATE} ${posix(d)}${v === 3 ? ' --to 2.1' : ''} --check --fix removes them` });
+      if (found.other.length) findings.push({ kind: 'leftovers', where, text: `${posix(d)}: outside git in folders of an older data layout, left by a move of the data: ${leftoverLines(found.other, { max: 5 }).join('; ')}; triage with the operator: remove what is not needed, move work into the work folder of its topic` });
+      const work = workFinding(d, workMap(v, role));
+      if (work) findings.push({ kind: 'work-files', where, text: work.text });
     }
     if (version !== 3) {
       const dom = domainOf(b.dir);
