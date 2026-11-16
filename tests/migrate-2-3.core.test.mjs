@@ -293,3 +293,14 @@ test('repos two brains share (each machine its own brain): the second brain move
     assert.equal(c.status, 0, c.out);
   } finally { fx.cleanup(); }
 });
+
+test('preview names an unclean working tree (a file outside git) as what refuses --apply, before the apply', () => {
+  const fx = domainV2();
+  try {
+    fs.mkdirSync(path.join(fx.srv, 'tools', '__pycache__'), { recursive: true });
+    fs.writeFileSync(path.join(fx.srv, 'tools', '__pycache__', 'x.pyc'), 'bytecode');
+    const p = fx.run('migrate.mjs', [fx.brain, '--to', '2.1']);
+    assert.equal(p.status, 0, p.out);
+    assert.match(p.stdout, /--apply is refused until these are settled[\s\S]*srv: the working tree is not clean \(tools\/\): commit it, add it to \.gitignore or remove it/);
+  } finally { fx.cleanup(); }
+});

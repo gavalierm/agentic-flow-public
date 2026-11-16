@@ -724,6 +724,13 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
       seen.set(k, true);
     }
   }
+  // The apply needs a clean working tree in every repository (readyForMove): the preview names what would refuse it, so a
+  // file left outside git (an ignored-nowhere __pycache__/) is no surprise at --apply.
+  for (const t of [brain, ...plan.repos, ...plan.targets]) {
+    const st = git([...GIT_PATHS, 'status', '--porcelain', '--untracked-files=normal'], { cwd: t.dir });
+    const list = st.ok ? st.stdout.split('\n').filter(Boolean).map((l) => l.slice(3)) : [];
+    if (list.length) blockers.push(`${t.dir}: the working tree is not clean (${list.slice(0, 5).join(', ')}${list.length > 5 ? ', …' : ''}): commit it, add it to .gitignore or remove it; --apply needs a clean tree`);
+  }
   plan.defaultRepo = defaultRepo;
   return plan;
 }
