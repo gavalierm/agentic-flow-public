@@ -9,7 +9,7 @@ Dáta workflow pre jednu doménu (P-024), dáta 2.1 (`"data_layout": "2.1"` v `p
 - `exceptions/`: výnimky z princípov po vrstvách (P-035). `logs/`: surové pozorovania (P-030).
 - `policy.json`: doplnky politiky domény (P-017), verzia tvaru dát a predvolené repo projektu domény (`default_repo`).
 - `INDEX.md`: riadok na každý súbor v `topics/` a `decisions/`; generuje ho workflow pri každom zápise, ručne sa needituje.
-- `local/` (necommitované): indexy, `threads/`, `log-buffer/`, `outbox/`.
+- `local/` (necommitované): indexy, `threads/`, `log-buffer/`, `outbox/`, `tajomstva/` (heslá a tokeny ako `<služba>.env`, P-018).
 
 Hotové výstupy a zdroje v braine nie sú: idú do cieľového repa témy, do `vystupy/<typ>/` a `zdroje/<téma>/` repa projektu, ktoré nesie rovnaký `data_layout` v `.brain/policy.json`. Štart session odmietne prácu v repe, ktorého dáta nesedia s brainom (urob pull).
 

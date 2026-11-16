@@ -1,12 +1,12 @@
 // keep: core
-// Secrets stay in local/ (P-018, P-052): a token, a credential or a private key written anywhere else is denied with the
-// local/ route; a placeholder, a format check naming the PEM header and a command that writes no file pass.
+// Secrets stay in local/tajomstva/ (P-018, P-052; operator 2026-11-16): a token, a credential or a private key written
+// anywhere else, also elsewhere in local/, is denied with the local/tajomstva/ route; a placeholder, a format check naming the PEM header and a command that writes no file pass.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
-import { findSecret } from '../scripts/secrets.mjs';
+import { findSecret, ensureSecretsDir, secretsDir } from '../scripts/secrets.mjs';
 
 const HEADER = '-----BEGIN ' + 'PRIVATE KEY-----';
 const decision = (r) => r.json?.hookSpecificOutput?.permissionDecision || null;
@@ -20,7 +20,7 @@ test('findSecret: a key with its body and a token are secrets; a PEM header alon
   assert.equal(findSecret('tok' + 'en = "<your-token-here>"\napi' + '_key: "${API_KEY}"\n'), null);
 });
 
-test('hook: a secret written outside local/ is denied with the local/ route; local/, placeholders and a command writing no file pass', () => {
+test('hook: a secret written outside local/tajomstva/ is denied with its route; local/tajomstva/, placeholders and a command writing no file pass', () => {
   const fx = setup();
   try {
     const token = 'ghp_' + 'A1b2'.repeat(9);
@@ -32,12 +32,28 @@ test('hook: a secret written outside local/ is denied with the local/ route; loc
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: `echo ${token} > scratch/t.txt` } });
     assert.equal(decision(r), 'deny');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.project, 'local', 'gh.env'), content: `GH_TOKEN=${token}\n` } });
-    assert.notEqual(decision(r), 'deny', 'local/ is the place for secrets');
+    assert.equal(decision(r), 'deny', 'local/ outside tajomstva/ holds workflow state, not secrets');
+    assert.match(reason(r), /local\/tajomstva\/ as KEY=value lines in <service>\.env/);
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Write', tool_input: { file_path: path.join(fx.project, 'local', 'tajomstva', 'github.env'), content: `GH_TOKEN=${token}\n` } });
+    assert.notEqual(decision(r), 'deny', 'local/tajomstva/ is the place for secrets');
+    r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: `printf 'GH_TOKEN=%s\\n' ${token} > local/tajomstva/github.env` } });
+    assert.notEqual(decision(r), 'deny', 'a shell write into local/tajomstva/');
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: `curl -H "Authorization: token ${token}" https://api.github.com/user` } });
     assert.notEqual(decision(r), 'deny', 'a command that writes no file is not stopped');
     fs.mkdirSync(path.join(fx.project, 'local', 'tool'), { recursive: true });
     const check = `python3 -I - /x/key.json <<'EOF'\nimport json,sys\nd=json.load(open(sys.argv[1]))\nprint(d.get("private_key","").startswith("${HEADER}"))\nEOF\nprintf '%s' "$PWD/local/tool/key.json" > scratch/key-path.txt`;
     r = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: check } });
     assert.notEqual(decision(r), 'deny', 'a format check naming the PEM header');
+  } finally { fx.cleanup(); }
+});
+
+test('ensureSecretsDir: local/tajomstva with mode 700, also over an existing folder', () => {
+  const fx = setup();
+  try {
+    fs.mkdirSync(path.join(fx.project, 'local', 'tajomstva'), { recursive: true, mode: 0o755 });
+    const dir = ensureSecretsDir(fx.project);
+    assert.equal(dir, secretsDir(fx.project));
+    assert.equal(dir, path.join(fx.project, 'local', 'tajomstva'));
+    if (process.platform !== 'win32') assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
   } finally { fx.cleanup(); }
 });

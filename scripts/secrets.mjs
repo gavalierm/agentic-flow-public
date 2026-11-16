@@ -1,4 +1,24 @@
-// Secret detection (P-018, P-052): a secret belongs to local/ (gitignored, never shared), not to scratch/ or tracked files.
+// Secret detection (P-018, P-052): a secret belongs to local/tajomstva/ (gitignored, never shared), not to scratch/,
+// tracked files or the rest of local/ (workflow state, logs and the outbox live there).
+import fs from 'node:fs';
+import { dataPath } from './layout.mjs';
+
+/**
+ * Folder of secrets inside local/ (operator 2026-11-16): values as KEY=value lines in `<služba>.env`, secret files
+ * (private keys, JSON of a service account) beside them; the folder 700, the files 600.
+ */
+export const SECRETS_DIR = 'tajomstva';
+
+/** `<repo>/local/tajomstva` of a project or brain. */
+export const secretsDir = (root) => dataPath(root, 'local', SECRETS_DIR);
+
+/** Creates `<repo>/local/tajomstva` with mode 700 (also an existing one); returns its path. */
+export function ensureSecretsDir(root) {
+  const dir = secretsDir(root);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(dir, 0o700); } catch { /* windows */ }
+  return dir;
+}
 
 /** Token formats of known providers and private keys. */
 // Built from pieces so the pattern itself does not look like a token to secret scanners (public snapshot gate).

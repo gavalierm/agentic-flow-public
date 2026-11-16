@@ -13,7 +13,8 @@ import { syncBrainSkills, ensureGitignore, crontabSkillNotes } from '../scripts/
 import { adapterSkillSources } from '../scripts/repo-knowledge.mjs';
 import { generateCodex } from '../adapters/codex/generate.mjs';
 import { ensureIssueWatchJob, ensureTimerCheckJob, ensureOverviewJob } from '../scripts/wake-job.mjs';
-import { dataPath, dataRel, workIgnoreLine } from '../scripts/layout.mjs';
+import { dataRel, workIgnoreLine } from '../scripts/layout.mjs';
+import { ensureSecretsDir } from '../scripts/secrets.mjs';
 import { workDir } from '../scripts/topic-files.mjs';
 import { threadId } from '../scripts/config.mjs';
 
@@ -90,7 +91,8 @@ export function generateClaudeCode({ projectDir, brainRel: brainRelArg = null, c
   writeJson(settingsFile, ordered);
   written.push('.claude/settings.json');
 
-  fs.mkdirSync(dataPath(projectDir, 'local'), { recursive: true });
+  // local/ with local/tajomstva/ for secrets (P-018).
+  ensureSecretsDir(projectDir);
   // Work files (P-052): layout 1 scratch/, layout 2 temy/<topic>/tmp/ of the held topic (main without one), both ignored.
   fs.mkdirSync(workDir({ projectDir, brainDir: hasBrain ? brainDir : null, thread: threadId() }), { recursive: true });
   if (ensureGitignore(projectDir, ['.claude/skills/', `${dataRel(projectDir, 'local')}/`, workIgnoreLine(projectDir)])) written.push('.gitignore');

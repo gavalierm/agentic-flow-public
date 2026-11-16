@@ -9,7 +9,7 @@ Dáta workflow pre jeden projekt (P-024), dáta 2.0 (`"data_layout": "2.0"` v `.
 - `.brain/memory/` (pamäť agenta: fakty o ľuďoch, prostredí, nástrojoch, službách, projektoch), `.brain/rules/`: jedna vec = jeden súbor s frontmatter `key` (P-031, P-039); rozhodnutia vo `vystupy/rozhodnutia/` rovnako.
 - `.brain/skills/operator/` (skilly operátora), `.brain/skills/agentic/` (skilly agenta, `origin: error | routine`, P-032).
 - `.brain/exceptions/`: výnimky z princípov po vrstvách (P-035). `.brain/logs/`: surové pozorovania (P-030).
-- `local/` (necommitované): indexy, `exceptions.md`, `threads/`, `log-buffer/`, `outbox/`.
+- `local/` (necommitované): indexy, `exceptions.md`, `threads/`, `log-buffer/`, `outbox/`, `tajomstva/` (heslá a tokeny ako `<služba>.env`, P-018).
 - `.brain/policy.json`: projektové doplnky politiky (P-017) a verzia tvaru dát.
 - Persona (P-024): repo persony je zároveň brain (`"brain": "."`); navyše obsahuje iba `.workflow.json`, `.gitignore`, `.claude/settings.json` (commituje adaptér) a necommitované `temy/*/tmp/`, `local/`.
 

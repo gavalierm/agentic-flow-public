@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// PreToolUse: secrets outside local/, brain protection (P-013, persona P-024), dangerous targets (P-018), work files outside the project (P-052), subagent limits incl. mail (P-025), decision binding (P-031), agent-to-agent channel (P-041), foreground waiting (P-061). Output: deny/ask or 1 line (c).
+// PreToolUse: secrets outside local/tajomstva/, brain protection (P-013, persona P-024), dangerous targets (P-018), work files outside the project (P-052), subagent limits incl. mail (P-025), decision binding (P-031), agent-to-agent channel (P-041), foreground waiting (P-061). Output: deny/ask or 1 line (c).
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -12,7 +12,7 @@ import { parse, programIndex } from '../scripts/shell-parse.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
 import { SUBAGENT_ALLOWED, recordWaitingOperator, isMainTopic } from '../scripts/comms.mjs';
 import { knowledgeDirOf, knowledgeLabel } from '../scripts/repo-knowledge.mjs';
-import { findSecret } from '../scripts/secrets.mjs';
+import { findSecret, secretsDir } from '../scripts/secrets.mjs';
 import { LAYOUT, dataPath, isWorkPath, workLabel, topicHome, topicWorkLabel, isSessionWorkPath, hasScratch } from '../scripts/layout.mjs';
 import { workDir, heldWorkDirs } from '../scripts/topic-files.mjs';
 
@@ -1319,15 +1319,21 @@ function claudeMdWrite(ctx, absPaths) {
   return hit ? CLAUDE_MD_REASON(toPosix(path.relative(ctx.projectDir, hit) || hit)) : null;
 }
 
-/** A secret written into the project outside local/ (P-018, P-052; Carol 2026-11-02: tokens stayed in scratch/). */
+/** Folders a secret may be written to: local/tajomstva/ of the project and of its brain (P-018; operator 2026-11-16). */
+const secretDirs = (ctx) => [secretsDir(ctx.projectDir), ctx.brainDir && secretsDir(ctx.brainDir)].filter(Boolean);
+
+/**
+ * A secret written into the project outside local/tajomstva/ (P-018, P-052; Carol 2026-11-02: tokens stayed in scratch/;
+ * operator 2026-11-16: one known folder for secrets, the rest of local/ holds workflow state, logs and the outbox).
+ */
 function secretOutsideLocal(ctx, absPaths, text) {
-  const local = [dataPath(ctx.projectDir, 'local'), ctx.brainDir && dataPath(ctx.brainDir, 'local')].filter(Boolean);
+  const local = secretDirs(ctx);
   const inWork = (p) => isInside(ctx.projectDir, p) || isInside(topicsDir(ctx.projectDir), p) || (ctx.persona && managedProjectOf(ctx.projectDir, p));
   const hit = absPaths.filter((p) => inWork(p) && !local.some((l) => isInside(l, p)));
   if (!hit.length) return null;
   const kind = findSecret(text);
   if (!kind) return null;
-  return `a secret (${kind}) would be written to ${toPosix(path.relative(ctx.projectDir, hit[0]) || hit[0])}; secrets go only to ${toPosix(dataPath(ctx.projectDir, 'local'))}/ (gitignored, never shared; ${topicWorkLabel(ctx.brainDir, ctx.projectDir)} is for work files and may end up in a worker brief or a snapshot), reference them by path (P-018, P-052)`;
+  return `a secret (${kind}) would be written to ${toPosix(path.relative(ctx.projectDir, hit[0]) || hit[0])}; secrets go only to ${toPosix(secretsDir(ctx.projectDir))}/ as KEY=value lines in <service>.env, secret files beside them, chmod 600 (gitignored, never shared; ${topicWorkLabel(ctx.brainDir, ctx.projectDir)} is for work files and may end up in a worker brief or a snapshot, the rest of local/ is workflow state), reference them by path (P-018, P-052; workflow:secrets)`;
 }
 
 // Claude Code's built-in privacy plugin asks the operator when a shell or web call holds the signed-in account email
@@ -1725,9 +1731,9 @@ export function run(input) {
       paths = [...new Set(writes.map((p) => path.resolve(cwd, p)))].filter((p) => !p.startsWith('/dev/') && !insideProject(ctx, p));
       if (!paths.length) paths = found.paths.filter((p) => !insideProject(ctx, p));
     }
-    // A secret refusal names local/ as its way: locking local/ closed the place it sends the secret to (report-123b3205).
+    // A secret refusal names local/tajomstva/ as its way: locking it closed the place it sends the secret to (report-123b3205).
     if (/^a secret \(/.test(reasonText)) {
-      const locals = [dataPath(ctx.projectDir, 'local'), ctx.brainDir && dataPath(ctx.brainDir, 'local')].filter(Boolean);
+      const locals = secretDirs(ctx);
       paths = paths.filter((p) => !locals.some((l) => isInside(l, path.resolve(cwd, p))));
     }
     if (paths.length) writeThreadState(ctx.brainDir, ctx.thread, withDenial(readThreadState(ctx.brainDir, ctx.thread), { key: callKey(tool, toolInput), tool, paths, write, reason: out.hookSpecificOutput.permissionDecisionReason.slice(0, 160) }));

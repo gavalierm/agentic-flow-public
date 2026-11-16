@@ -14,6 +14,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { PLUGIN_ROOT, copyDir, git, fail, parseArgs, exists } from '../scripts/util.mjs';
 import { assertPersonaRemote, PERSONA_REPO_RE } from '../scripts/persona-name.mjs';
+import { ensureSecretsDir } from '../scripts/secrets.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv } from '../scripts/config.mjs';
 import { dataPath, dataRel, dataLayoutVersion, layoutFor, DEFAULT_LAYOUT_VERSION, NEW_BRAIN_LAYOUT, layoutVersions, dataName, parseDataVersion } from '../scripts/layout.mjs';
 
@@ -117,6 +118,7 @@ export function brainInit(target, { attach = false, adopt = false, remote = null
   const hooks = git(['config', 'core.hooksPath', '.githooks'], { cwd: brainDir });
   if (!hooks.ok) throw new Error(`git config failed: ${hooks.stderr}`);
   for (const dir of ['index', 'threads', 'log-buffer', 'outbox']) fs.mkdirSync(dataPath(brainDir, 'local', dir), { recursive: true });
+  ensureSecretsDir(brainDir);
   created.push(`${dataRel(brainDir, 'local')}/`);
 
   if (adopt) {
@@ -151,8 +153,7 @@ export function brainInit(target, { attach = false, adopt = false, remote = null
     else created.push('pushed to origin');
   }
   if (project) {
-    const localDir = dataPath(path.resolve(project), 'local');
-    fs.mkdirSync(localDir, { recursive: true });
+    ensureSecretsDir(path.resolve(project));
     created.push(`${path.resolve(project)}/${dataRel(path.resolve(project), 'local')}/`);
   }
   return { brainDir, created };
