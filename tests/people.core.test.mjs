@@ -219,3 +219,30 @@ test('collect: the operator is who wrote the records, not the agent that later m
     assert.equal(fs.readFileSync(path.join(op.dir, 'profile.md'), 'utf8'), '# Profil\n\nMoje nastavenia.\n\nOperátor tejto inštalácie: [Ana Writer](osoby/ana-writer.md)\n');
   } finally { m.cleanup(); }
 });
+
+test('collect: a person the operator repo has already (by alias) is merged into with migrated_from, not proposed again', () => {
+  const m = machine();
+  try {
+    const op = operatorRepo(m.root, { profile: '# Profil\n\nOperátor tejto inštalácie: [Ana](osoby/ana.md)\n' });
+    fs.mkdirSync(path.join(op.dir, 'osoby'), { recursive: true });
+    fs.writeFileSync(path.join(op.dir, 'osoby', 'ana.md'), '---\nname: Ana\naliases: [Ana Writer]\ndomains: []\ncreated: 2026-11-01\nmigrated_from: [old:memory/operator-x.md]\n---\n## x\n\nPíše po slovensky.\n');
+    gitq(op.dir, 'add', '-A'); gitq(op.dir, 'commit', '-q', '-m', 'ana'); gitq(op.dir, 'push', '-q');
+    m.record('Alpha', 'operator-limits.md', mem('operator-limits', 'limits', 'Usage limit 30 percent.'), 'Ana Writer');
+    m.record('Beta', 'person-ana.md', mem('person-ana', 'Ana', 'Owner of the shop.'));
+    const plan = path.join(m.root, 'plan.json');
+    let r = m.run(['collect', '--out', plan], op.env);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.stdout, /- osoby\/ana\.md \(exists: merged into it\): Ana Writer \(operator\), aliases Ana, all domains; from alpha-brain:memory\/operator-limits\.md, beta-brain:memory\/person-ana\.md/);
+    assert.equal((r.stdout.match(/osoby\/ana\.md/g) || []).length, 1, 'one entry for the one person');
+    assert.doesNotMatch(r.stdout, /ana-writer|ana-2/);
+    r = m.run(['collect', '--apply', plan], op.env);
+    assert.equal(r.status, 0, r.out);
+    const ana = parseFrontmatter(fs.readFileSync(path.join(op.dir, 'osoby', 'ana.md'), 'utf8'));
+    assert.equal(ana.data.name, 'Ana');
+    assert.deepEqual(ana.data.aliases, ['Ana Writer']);
+    assert.deepEqual(ana.data.domains, [], 'a person of every domain stays so');
+    assert.deepEqual(ana.data.migrated_from, ['old:memory/operator-x.md', 'alpha-brain:memory/operator-limits.md', 'beta-brain:memory/person-ana.md']);
+    assert.match(ana.body, /Píše po slovensky\.[\s\S]*## limits\n\nUsage limit 30 percent\.[\s\S]*Owner of the shop\./);
+    assert.equal(fs.readdirSync(path.join(op.dir, 'osoby')).filter((f) => f !== 'INDEX.md').join(' '), 'ana.md');
+  } finally { m.cleanup(); }
+});

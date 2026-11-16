@@ -58,7 +58,7 @@ function collect(repo) {
     for (const line of applyPlan(ctx, repo, plan)) out(line);
     return;
   }
-  const plan = collectPlan(ctx);
+  const plan = collectPlan(ctx, repo);
   if (args.out && args.out !== true) {
     fs.writeFileSync(path.resolve(String(args.out)), JSON.stringify(plan, null, 2) + '\n');
     out(`plan: ${toPosix(path.resolve(String(args.out)))} (${plan.people.length} person(s))`);

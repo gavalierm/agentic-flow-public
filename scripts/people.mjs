@@ -10,7 +10,7 @@ import { cloneWrite } from './own-clone.mjs';
 import { parseFrontmatter, serializeFrontmatter, asList } from './frontmatter.mjs';
 import { normalizeKey, isValidId } from './keys.mjs';
 import { lc, machineStores, storeRecords, recordType } from './stores.mjs';
-import { recordAuthors } from './authors.mjs';
+import { recordAuthors, localIdentity, sameIdentity } from './authors.mjs';
 
 export const PEOPLE_DIR = 'osoby';
 export const PEOPLE_INDEX = 'INDEX.md';
@@ -277,7 +277,7 @@ const subjectNamesOf = (r) => [String(r.key).replace(/^person-/, ''), r.data?.na
  * the operator-*.md records of one author (git identity of the commit that added them) are one entry, the operator.
  * Every source is in exactly one entry, so applying the list loses no record.
  */
-export function collectPlan(ctx) {
+export function collectPlan(ctx, repo = null) {
   const entries = [];
   for (const x of personSources(ctx)) {
     const operator = recordType(x.r) === 'operator';
@@ -301,9 +301,37 @@ export function collectPlan(ctx) {
     const head = operator ? `## ${String(x.r.data?.name || x.r.key)}` : null;
     if (body && !e.bodies.some((b) => b.text === body)) e.bodies.push({ head, text: body });
   }
+  // A person the operator repo has already (a second domain, a second machine of the same operator): the entry merges into
+  // that file with migrated_from instead of proposing a new id (doma-pc 2026-11-16: the operator's own records got a new
+  // id from the git identity next to osoby/<operator>.md with that identity as alias). An operator entry matches by the
+  // author's name or e-mail name, or is the operator of profile.md when the author is this machine's git identity.
+  const existing = repo && !repo.error ? readPeople(repo.dir) : [];
+  const profileId = repo && !repo.error && fs.existsSync(repo.profile) ? profilePersonId(fs.readFileSync(repo.profile, 'utf8')) : null;
+  const me = repo && !repo.error ? localIdentity(repo.dir) : null;
+  for (const e of entries) {
+    const names = e.operator
+      ? [e.name, ...(e.author && e.author.includes('@') ? [e.author.split('@')[0]] : [e.author])].filter(Boolean).map(lc)
+      : [e.id, e.name, ...e.aliases].map(lc);
+    let hit = existing.find((p) => personNames(p).some((n) => names.includes(n)));
+    if (!hit && e.operator && profileId && me && sameIdentity({ name: e.name, email: e.author?.includes('@') ? e.author : '' }, me)) hit = existing.find((p) => p.id === profileId);
+    if (hit) { e.id = hit.id; e.existing = hit.path; }
+  }
+  // Entries that merge into the same person are one entry (the operator's records and a person record of them).
+  for (let i = entries.length - 1; i > 0; i--) {
+    const e = entries[i];
+    const first = e.existing && entries.find((o, j) => j < i && o.existing === e.existing);
+    if (!first) continue;
+    first.sources.push(...e.sources);
+    for (const b of e.bodies) if (!first.bodies.some((x) => x.text === b.text)) first.bodies.push(b);
+    for (const n of [e.name, ...e.aliases]) if (lc(n) !== lc(first.name) && !first.aliases.map(lc).includes(lc(n))) first.aliases.push(n);
+    first.domains = first.domains.length && e.domains.length ? [...new Set([...first.domains, ...e.domains])] : [];
+    first.operator = first.operator || e.operator;
+    entries.splice(i, 1);
+  }
   // Two entries must not propose one id.
   const ids = new Map();
   for (const e of entries) {
+    if (e.existing) continue;
     const n = (ids.get(e.id) || 0) + 1;
     ids.set(e.id, n);
     if (n > 1) e.id = `${e.id}-${n}`;
@@ -314,7 +342,7 @@ export function collectPlan(ctx) {
 /** One line per entry for the operator (the list to approve). */
 export function planLines(plan) {
   return [
-    ...plan.people.map((p) => `- ${PEOPLE_DIR}/${p.id}.md: ${p.name}${p.operator ? ' (operator)' : ''}${p.aliases.length ? `, aliases ${p.aliases.join(', ')}` : ''}${p.domains.length ? `, domains ${p.domains.join(', ')}` : ', all domains'}; from ${p.sources.map((s) => s.label).join(', ')}`),
+    ...plan.people.map((p) => `- ${PEOPLE_DIR}/${p.id}.md${p.existing ? ' (exists: merged into it)' : ''}: ${p.name}${p.operator ? ' (operator)' : ''}${p.aliases.length ? `, aliases ${p.aliases.join(', ')}` : ''}${p.domains.length ? `, domains ${p.domains.join(', ')}` : ', all domains'}; from ${p.sources.map((s) => s.label).join(', ')}`),
     ...plan.dropped.map((d) => `- dropped ${d.label || d.file}: ${d.reason || '(no reason)'}`),
   ];
 }
@@ -338,9 +366,23 @@ export function applyPlan(ctx, repo, plan) {
     if (seen.has(p.id)) throw new Error(`id ${p.id} twice in the list; nothing written`);
     seen.add(p.id);
     const rel = `${PEOPLE_DIR}/${p.id}.md`;
-    if (fs.existsSync(path.join(repo.dir, rel))) throw new Error(`${rel} exists already: fold the entry into it with people.mjs change, then drop it from the list; nothing written`);
+    const labels = asList(p.sources).map((s) => s.label || s);
+    if (fs.existsSync(path.join(repo.dir, rel))) {
+      if (p.existing !== rel) throw new Error(`${rel} exists already: fold the entry into it with people.mjs change, then drop it from the list; nothing written`);
+      // Merge into the person the repo has: its name and fields stay, new aliases and the bodies not in it yet are added,
+      // migrated_from names every source (the move to data 2.1 removes those records from memory).
+      const cur = personOf(path.join(repo.dir, rel), repo.dir);
+      const aliases = [...cur.aliases];
+      for (const n of [p.name, ...asList(p.aliases)].map(String)) if (n.trim() && !personNames(cur).includes(lc(n)) && !aliases.map(lc).includes(lc(n))) aliases.push(n);
+      const domains = cur.domains.length && asList(p.domains).length ? [...new Set([...cur.domains, ...asList(p.domains).map(String)])] : [];
+      const add = String(p.body || '').split(/\n(?=## )/).map((s) => s.trim()).filter((s) => s && !cur.body.includes(s));
+      const body = [cur.body.trim(), ...add].filter(Boolean).join('\n\n');
+      const { name: _n, aliases: _a, domains: _d, updated: _u, migrated_from: was, ...extra } = cur.data;
+      files[rel] = personText({ name: cur.name, aliases, domains, created: cur.data.created || today(), body, extra: { ...extra, migrated_from: [...new Set([...asList(was).map(String), ...labels])] } });
+      continue;
+    }
     if (!String(p.name || '').trim()) throw new Error(`${p.id}: name missing; nothing written`);
-    files[rel] = personText({ name: p.name, aliases: asList(p.aliases), domains: asList(p.domains), body: String(p.body || ''), extra: { migrated_from: asList(p.sources).map((s) => s.label || s) } });
+    files[rel] = personText({ name: p.name, aliases: asList(p.aliases), domains: asList(p.domains), body: String(p.body || ''), extra: { migrated_from: labels } });
   }
   const operators = people.filter((p) => p.operator);
   const notes = [];
