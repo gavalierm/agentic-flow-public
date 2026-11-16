@@ -275,3 +275,27 @@ test('collect marks an entry whose body repeats a section (records of several ma
   const lines = planLines({ people: [{ id: 'op-one', name: 'Op One', operator: true, aliases: [], domains: [], sources: [{ label: 'a:memory/operator-operator.md' }], body }] });
   assert.match(lines.join('\n'), /! repeated sections "## operator" \(2×\): merge them into one in the body of the plan and check each fact with the operator/);
 });
+
+test('change with the full name moves a first-name record to meno-priezvisko (the old id stays an alias); a local commit not on origin refuses the write', () => {
+  const fx = setup();
+  try {
+    const op = operatorRepo(fx.root);
+    assert.equal(people(fx, op, ['new', 'mira', '--name', 'mira', '--aliases', 'klientka', '--domains', 'Shop', '--content', 'Klientka obchodu.']).status, 0);
+    let r = people(fx, op, ['change', 'mira', '--name', 'Mira Kováčová']);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.stdout, /renamed osoby\/mira\.md -> osoby\/mira-kovacova\.md/);
+    assert.ok(!fs.existsSync(path.join(op.dir, 'osoby/mira.md')), 'no old record beside the new one');
+    const rec = parseFrontmatter(fs.readFileSync(path.join(op.dir, 'osoby/mira-kovacova.md'), 'utf8'));
+    assert.equal(rec.data.name, 'Mira Kováčová');
+    assert.deepEqual(rec.data.aliases, ['mira', 'klientka']);
+    assert.equal(rec.body.trim(), 'Klientka obchodu.');
+    const index = fs.readFileSync(path.join(op.dir, 'INDEX.md'), 'utf8');
+    assert.doesNotMatch(index, /osoby\/mira\.md/);
+    // A commit by hand that origin does not have: the write refuses instead of writing beside it.
+    fs.writeFileSync(path.join(op.dir, 'README.md'), 'changed\n');
+    gitq(op.dir, 'commit', '-qam', 'local');
+    r = people(fx, op, ['change', 'mira-kovacova', '--content', 'x']);
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.stderr, /1 local commit\(s\) not on origin\/main; push or drop it first/);
+  } finally { fx.cleanup(); }
+});

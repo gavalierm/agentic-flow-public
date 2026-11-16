@@ -133,12 +133,16 @@ export function personText({ name, aliases = [], domains = [], created = today()
 export function writeOperatorRepo(repoDir, files, message) {
   const head = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repoDir });
   const branch = head.ok && head.stdout !== 'HEAD' ? head.stdout : 'main';
+  // The records are read from this checkout and written through the own clone on origin: a local commit or change origin
+  // does not have would be lost or doubled (a rename by hand left the old record beside the new one, 2026-11-16).
+  const local = localOnly(repoDir, branch);
+  if (local) throw new Error(`operator repo ${toPosix(repoDir)}: ${local}; push or drop it first (git -C ${toPosix(repoDir)} status), nothing written`);
   const res = cloneWrite(repoDir, {
     branch,
     name: 'operator repo',
     message,
     indexFiles: [PEOPLE_INDEX],
-    ops: Object.entries(files).map(([rel, content]) => ({ path: rel, content })),
+    ops: Object.entries(files).map(([rel, content]) => (content === null ? { path: rel, remove: true } : { path: rel, content })),
     index: (dir) => {
       fs.writeFileSync(path.join(dir, PEOPLE_INDEX), indexText(readPeople(dir)));
       const add = git(['add', '--', PEOPLE_INDEX], { cwd: dir });
@@ -147,6 +151,15 @@ export function writeOperatorRepo(repoDir, files, message) {
   });
   if (!res.committed) return ['nothing changed'];
   return [`committed: ${res.sha} ${message}`, 'pushed', ...res.notes];
+}
+
+/** What the checkout has that origin does not: commits ahead of origin/<branch> or changes of the records; null when none. */
+function localOnly(repoDir, branch) {
+  const ahead = git(['rev-list', '--count', `origin/${branch}..HEAD`], { cwd: repoDir });
+  if (ahead.ok && Number(ahead.stdout) > 0) return `${ahead.stdout} local commit(s) not on origin/${branch}`;
+  const st = git(['status', '--porcelain', '--', PEOPLE_DIR, PEOPLE_INDEX], { cwd: repoDir });
+  if (st.ok && st.stdout.trim()) return `uncommitted changes (${st.stdout.trim().split('\n').map((l) => l.slice(3)).slice(0, 3).join(', ')})`;
+  return null;
 }
 
 /** One line naming a person: path, name, aliases, domains. */
@@ -197,7 +210,21 @@ export function changePerson(repo, { alias, domain = null, name, aliases, domain
   if (same.length && !another) throw new Error(`already named by ${same.map(showPerson).join('; ')}: one name names one person; ask the operator, or pass --new to keep both; nothing written`);
   const { name: _n, aliases: _a, domains: _d, created, updated, ...extra } = p.data;
   const body = content !== undefined ? String(content) : p.body;
-  return [...writeOperatorRepo(repo.dir, { [p.path]: personText({ name: nm, aliases: al, domains: dom, created: created || undefined, body, extra }) }, `people: change ${p.id}`), `person ${p.path}`];
+  // A first-name id with the full name known now: the record moves to meno-priezvisko, the old id stays an alias
+  // (operator 2026-11-16).
+  let rel = p.path;
+  let aliasesOut = al;
+  const files = {};
+  if (shortIdProblem(p.id, [nm, ...al])) {
+    const id = proposedId(fullNameOf([nm, ...al]));
+    rel = `${PEOPLE_DIR}/${id}.md`;
+    if (people.some((x) => x.path === rel)) throw new Error(`${rel} exists: the full name names another record; ask the operator; nothing written`);
+    if (!aliasesOut.includes(p.id)) aliasesOut = [p.id, ...aliasesOut];
+    files[p.path] = null;
+  }
+  files[rel] = personText({ name: nm, aliases: aliasesOut, domains: dom, created: created || undefined, body, extra });
+  const moved = rel !== p.path ? [`renamed ${p.path} -> ${rel} (meno-priezvisko; ${p.id} stays an alias)`] : [];
+  return [...writeOperatorRepo(repo.dir, files, `people: change ${p.id}${moved.length ? ` -> ${path.posix.basename(rel, '.md')}` : ''}`), ...moved, `person ${rel}`];
 }
 
 /** The person id of the operator: the first osoby/<id>.md that profile.md names. */
