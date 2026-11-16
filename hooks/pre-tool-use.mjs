@@ -1707,7 +1707,9 @@ export function run(input) {
   // and its lock denied that Edit as a bypass until the end of the turn (report-14a1f628, 2026-11-13).
   // Nor does a step that needs the operator's consent (D-0042): it locked nothing while it was a window, the same check
   // guards every call.
-  if (decision === 'deny' && state && !/ adds ignored files too |\(policy harness\.deny_commands of the brain\)$|\(P-042, D-0042\)$/.test(out.hookSpecificOutput.permissionDecisionReason || '')) {
+  // Nor does the catalog reminder: the first listing of a source is refused once and the same command passes again (its
+  // own words); its lock closed every path of the call, a memory record too, for the rest of the turn (doma-pc 2026-11-16).
+  if (decision === 'deny' && state && !/ adds ignored files too |\(policy harness\.deny_commands of the brain\)$|\(P-042, D-0042\)$|^katalóg: pre dáta v /.test(out.hookSpecificOutput.permissionDecisionReason || '')) {
     const found = analyze(tool, toolInput, cwd, anchors);
     const write = found.write;
     // A P-052 refusal (write outside the project) is about the outside target only: the way it names, a work file in

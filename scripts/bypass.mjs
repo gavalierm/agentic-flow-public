@@ -31,8 +31,13 @@ function expand(p) {
   return p.replace(/^\$HOME(?=\/|$)/, os.homedir()).replace(/^\$env:USERPROFILE(?=[\\/]|$)/i, os.homedir());
 }
 
+/**
+ * Shell words: a word joins quoted and unquoted parts (`B="D:/Claude projekty/x"` is one word; split at the space inside
+ * the quotes, `projekty/x"` read as an unknown program, the read-only call counted as a write and P-054 locked a memory
+ * record after a catalog reminder, doma-pc 2026-11-16). Quotes are removed from the word.
+ */
 function tokens(segment) {
-  return (segment.match(/"[^"]*"|'[^']*'|[^\s]+/g) || []).map((t) => t.replace(/^["']|["']$/g, '').replace(/^[<>]+|^\d?>+&?\d?/, ''));
+  return (segment.match(/(?:"[^"]*"|'[^']*'|[^\s"'])+/g) || []).map((t) => t.replace(/"([^"]*)"|'([^']*)'/g, '$1$2').replace(/^[<>]+|^\d?>+&?\d?/, ''));
 }
 
 /**
