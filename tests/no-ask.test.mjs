@@ -69,3 +69,25 @@ test('D-0042 with D-0039: the dialog may name the paths of a step refused for co
     assert.ok(fs.existsSync(other), 'nothing else is touched');
   } finally { fx.cleanup(); }
 });
+
+// report-dd7a8da4 (follow-up): `cd <repo>; rm local/.env local/s.json; ls -a local local/tajomstva` — the folders ls only
+// reads counted as targets the dialog had to name, so the yes of a dialog naming both files paired with nothing.
+test('D-0042: the yes pairs with the files a shell command removes, not with the folders it only reads', () => {
+  const fx = setup();
+  try {
+    fx.hook('user-prompt-submit.mjs', { prompt: 'zmaž' });
+    fs.mkdirSync(path.join(fx.project, 'local', 'tajomstva'), { recursive: true });
+    fs.writeFileSync(path.join(fx.project, 'local', '.env'), 'A=b\n');
+    fs.writeFileSync(path.join(fx.project, 'local', 'shoptet-session.json'), '{}\n');
+    const cmd = `cd ${fx.project}; rm local/.env local/shoptet-session.json; ls -a local local/tajomstva`;
+    assert.equal(bash(fx, cmd).permissionDecision, 'deny');
+    const q = 'Ochrana dát chce potvrdenie s presnými cestami. Zmazať tieto dva súbory, ktorých kópie sú už v priečinku tajomstiev: local/.env a local/shoptet-session.json?';
+    const dialog = { questions: [{ question: q, header: 'Zmazanie', options: [
+      { label: 'Áno, zmaž (Recommended)', description: 'Oba súbory sa zmažú, lebo ich kópie už sú v priečinku tajomstiev.' },
+      { label: 'Nie', description: 'Súbory ostanú.' }] }] };
+    assert.notEqual(fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', cwd: fx.project, tool_input: dialog }).json?.hookSpecificOutput?.permissionDecision, 'deny');
+    fx.hook('post-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: dialog, tool_response: { answers: { [q]: 'Áno, zmaž (Recommended)' } } });
+    const out = bash(fx, cmd);
+    assert.equal(out.permissionDecision, 'allow', out.permissionDecisionReason);
+  } finally { fx.cleanup(); }
+});

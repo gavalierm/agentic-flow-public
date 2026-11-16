@@ -233,14 +233,17 @@ export const noAskReason = (why) => `${String(why || '').replace(/[\s.]+$/, '')}
 
 /**
  * agent-alice/D-0094: what the operator's dialog must name for its yes to let a call that needs a consent pass: the file
- * targets of the call (analyze), and for a listed shell command (policy harness.ask_commands) the words after it that are
+ * targets of the call (analyze; of a shell command only what it changes or removes, not what it reads), and for a listed shell command (policy harness.ask_commands) the words after it that are
  * no options (the branch of `git branch -d`, the paths of `git restore`); a call with neither names its command itself
  * (`git stash drop`, `chmod -R`). `git branch -d topic/x` had no file target, so the pairing could not tell its dialog.
  */
 export function consentTargets(tool, toolInput = {}, cwd = process.cwd(), anchors = [], policy = {}) {
-  const paths = analyze(tool, toolInput, cwd, anchors).paths;
-  if (tool !== 'Bash' && tool !== 'PowerShell') return paths;
-  const text = executedText(String(toolInput.command || '')).replace(/\s+/g, ' ').trim();
+  if (tool !== 'Bash' && tool !== 'PowerShell') return analyze(tool, toolInput, cwd, anchors).paths;
+  // Only what the command changes or removes, as the refusal lists it: a folder it only reads (`; ls -a local local/tajomstva`
+  // after the rm) is no target, and the dialog naming both files got the yes that paired with nothing (report-dd7a8da4).
+  const cmd = String(toolInput.command || '');
+  const paths = [...new Set([...bashTargets(cmd, cwd), ...bashEdits(cmd, cwd)])];
+  const text = executedText(cmd).replace(/\s+/g, ' ').trim();
   const op = historyOperation(text, policy?.harness?.ask_commands || [], policy?.harness?.ask_commands_except || []);
   const words = [];
   if (op) {
