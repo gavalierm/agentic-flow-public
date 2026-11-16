@@ -225,3 +225,26 @@ test('after an outage the mail\'s answer replaces the backup: owed offline from 
     assertNoMessageState(fx.brain, [id]);
   } finally { await comms.stop(); fx.cleanup(); }
 });
+
+test('send --maintainer goes to the maintainer thread; --to thread/<id> is refused without a held message; a reply to a message delivered to a thread resolves in that thread (a shop repo 2026-11-16)', () => {
+  const fx = stubbed({
+    message: { 'm-th1': { id: 'm-th1', status: 'picked', level: 'assist', to_thread: 'th-reporter', picked_at: '2026-11-01T10:00:00.000Z' } },
+    sends: [], resolves: [],
+  });
+  try {
+    let r = fx.run('comms.mjs', ['send', '--maintainer', '--level', 'assist', '--text', 'bežná správa']);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.stdout, /sent \S+ \(assist\) -> maintainer/);
+    const send = fx.stub.calls('send').at(-1);
+    assert.ok(send.includes('--maintainer') && !send.includes('--project'), JSON.stringify(send));
+    r = fx.run('comms.mjs', ['send', '--level', 'assist', '--to', 'thread/abc', '--text', 'x']);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /a thread is a mailbox you read .* send --maintainer/);
+    assert.equal(fx.stub.calls('send').length, 1, 'nothing sent');
+    assert.equal(fx.run('comms.mjs', ['send', '--maintainer', '--to', 'x/y', '--level', 'assist', '--text', 'x']).status, 1);
+    r = fx.run('comms.mjs', ['send', '--reply-to', 'm-th1', '--state', 'hotovo', '--text', 'ďakujem']);
+    assert.equal(r.status, 0, r.out);
+    const res = fx.stub.calls('resolve').at(-1);
+    assert.deepEqual(res.slice(res.indexOf('--thread'), res.indexOf('--thread') + 2), ['--thread', 'th-reporter'], JSON.stringify(res));
+  } finally { fx.cleanup(); }
+});

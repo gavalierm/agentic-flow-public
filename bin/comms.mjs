@@ -13,7 +13,7 @@
 //   comms.mjs settle --id <id>[,<id>]                   a message of your mailbox answered another way: done without a reply (settled)
 //   comms.mjs ack --id <id>[,<id>]                      a picked message that needs no answer: done (acked); not after an interim answer
 //   comms.mjs withdraw --id <id>                        take back a message you sent that has no final answer (done, withdrawn)
-//   comms.mjs send --level blocker|steer|assist (--to [<project>/]<topic> | --to @<persona>/main) (--text "..." | --file <path>) [--ttl 5m|30m] [--from <held topic>] [--key <key>]
+//   comms.mjs send --level blocker|steer|assist (--to [<project>/]<topic> | --to @<persona>/main | --maintainer) (--text "..." | --file <path>) [--ttl 5m|30m] [--from <held topic>] [--key <key>]
 //   comms.mjs send --reply-to <id> --state hotovo|otázka|čakám [--wait-for "<what>"] [--cancels <id of your final reply>] [--text ...]
 //                                                       the answer with its state (P-061), one operation of the mail (resolve): one final
 //                                                       `hotovo` per message, a reply is never answered; --cancels replaces your final reply
@@ -251,7 +251,9 @@ function cmdMessage(ctx) {
 
 /** The mailbox a message is in, as client options (resolve acts only in it): its thread, a persona main thread or the topic. */
 function mailboxArgs(m) {
-  if (!m || m.to_thread) return [];
+  if (!m) return [];
+  // A message delivered to a thread (the maintainer's answer to a report) is in that thread's mailbox (a shop repo 2026-11-16).
+  if (m.to_thread) return ['--thread', m.to_thread];
   if (/^@/.test(m.project || '') && m.topic === 'main') return ['--persona', m.project.slice(1)];
   return m.project && m.topic ? ['--project', m.project, '--topic', m.topic] : [];
 }
@@ -334,13 +336,13 @@ function fromNote(ctx, from) {
 }
 
 /** Options `send` reads; an unknown one was dropped silently and the error named only the next missing option (report-66bf5f76). */
-const SEND_OPTIONS = ['level', 'to', 'topic', 'text', 'file', 'reply-to', 'state', 'wait-for', 'cancels', 'key', 'ttl', 'from', 'project'];
+const SEND_OPTIONS = ['maintainer', 'level', 'to', 'topic', 'text', 'file', 'reply-to', 'state', 'wait-for', 'cancels', 'key', 'ttl', 'from', 'project'];
 const SEND_SUGGEST = { body: 'text', message: 'text', category: 'level', kind: 'level', priority: 'level', reply: 'reply-to', 'reply_to': 'reply-to' };
 
 function cmdSend(ctx) {
   guardMain('send');
   const unknown = Object.keys(args).filter((k) => k !== '_' && !SEND_OPTIONS.includes(k));
-  if (unknown.length) fail(`comms send: unknown option ${unknown.map((k) => `--${k}${SEND_SUGGEST[k] ? ` (use --${SEND_SUGGEST[k]})` : ''}`).join(', ')}; nothing sent (usage: send --level blocker|steer|assist --to [<project>/]<topic> --text "..." | --file <path>; reply: send --reply-to <id> --state hotovo|otázka|čakám --text "...")`);
+  if (unknown.length) fail(`comms send: unknown option ${unknown.map((k) => `--${k}${SEND_SUGGEST[k] ? ` (use --${SEND_SUGGEST[k]})` : ''}`).join(', ')}; nothing sent (usage: send --level blocker|steer|assist --to [<project>/]<topic> | --maintainer --text "..." | --file <path>; reply: send --reply-to <id> --state hotovo|otázka|čakám --text "...")`);
   const replyTo = args['reply-to'] !== undefined && args['reply-to'] !== true ? String(args['reply-to']) : null;
   let level = args.level === true ? undefined : args.level;
   // A reply names its state (P-061), with no default: a reply sent as final by default was the fault (2026-11-11).
@@ -388,11 +390,20 @@ function cmdSend(ctx) {
   const clientArgs = ['send', '--text', '-'];
   if (level) clientArgs.push('--level', level);
   let destination;
-  {
+  const to = String(args.to || args.topic || '');
+  // thread/<id> is the mailbox a bell names (receive reads it), no address: the mail would hold it as an unknown topic and
+  // ask the operator (a shop repo 2026-11-16).
+  if (/^thread\//.test(to)) fail(`--to ${to}: a thread is a mailbox you read (comms receive), not an address; the workflow maintainer: send --maintainer --level assist --text "..."; an answer to a message: send --reply-to <id> --state hotovo --text "..."; nothing sent`);
+  if (args.maintainer) {
+    if (to) fail('--maintainer and --to exclude each other; nothing sent');
+    // The maintainer's T3 thread, named by the mail server (instance.json maintainer.thread), as error.mjs report sends.
+    clientArgs.push('--maintainer');
+    destination = 'maintainer';
+  } else {
     const addr = parseAddress(args.to || args.topic, s.project);
     // D-0035: a bare topic of this brain created for another project (--project) lives there in the mail service.
     if (addr?.topic && !String(args.to || args.topic).includes('/') && ctx.brainDir) addr.project = topicMailProject(ctx.brainDir, addr.topic) || addr.project;
-    if (!addr) fail('usage: comms.mjs send --level <level> --to [<project>/]<topic> | @<persona>/main --text "..."  |  --reply-to <id>');
+    if (!addr) fail('usage: comms.mjs send --level <level> --to [<project>/]<topic> | @<persona>/main | --maintainer --text "..."  |  --reply-to <id>');
     // The topic of this persona lives in another of its projects: the sender's address error is not an unregistered topic
     // for the operator to decide (P-045, P-046); name the right address and send nothing (2026-11-14: alice/data-migrate
     // was held while the topic ran as agentic-flow/data-migrate, and agentic-flow/workflow-dev while it ran as maintainer/workflow-dev).
