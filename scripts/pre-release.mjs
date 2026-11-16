@@ -19,6 +19,7 @@ import { git, gitRemote, readJson, PLUGIN_ROOT } from './util.mjs';
 import { domainBrains, unmarkedDomains } from './stores.mjs';
 import { layoutOf, layoutRole, dataLayoutVersion, dataPath, dataName, ROLE_BRAIN, ROLE_REPO } from './layout.mjs';
 import { deployIgnoreGaps, deployIgnoreLines } from './data-index.mjs';
+import { branchProblems } from './topic-branches.mjs';
 import { leftovers, leftoverLines, junkText, workFinding, workMap } from './leftovers.mjs';
 import { listTopicRecords } from './topic-files.mjs';
 import { isMainTopic, commsProjectName, readObligations } from './comms.mjs';
@@ -159,6 +160,7 @@ export function preRelease({ root = null, ctx = null, brains = null, env = proce
       const work = workFinding(d, workMap(v, role));
       if (work) findings.push({ kind: 'work-files', where, text: work.text });
       // A deployed web repo whose deploy ignore files do not exclude every path of the workflow (gma 2026-11-16).
+      if (role === ROLE_REPO) for (const l of branchProblems(d)) findings.push({ kind: 'topic-branch', where, text: `${posix(d)}: ${l}` });
       if (role === ROLE_REPO) for (const l of deployIgnoreLines(deployIgnoreGaps(d), `node ${MIGRATE} ${posix(d)}${v === 3 ? ' --to 2.1' : ''} --check --fix`)) findings.push({ kind: 'deploy-ignore', where, text: `${posix(d)}: ${l}` });
     }
     if (version !== 3) {

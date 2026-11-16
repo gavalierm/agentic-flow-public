@@ -32,12 +32,13 @@ import { MODES } from './topic-files.mjs';
 import { turnFields } from './topic-state.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { operatorRepo, readPeople } from './people.mjs';
-import { trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand, leftoverProblems, fixDeployIgnores } from './migrate.mjs';
+import { trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand, leftoverProblems, fixDeployIgnores, removedByScript } from './migrate.mjs';
 import { gitAccessProblem } from './brain.mjs';
 import { staleCatalog, rescanStale } from './catalog/stale.mjs';
 const LOCAL_CATALOG = 'local/catalog';
 import { leftovers, removeJunk, leftoverLines, junkText, sizeOf, sizeText, isLarge, human, LARGE_BYTES, LARGE_FILES } from './leftovers.mjs';
 import { defaultRepoName } from './target.mjs';
+import { branchProblems } from './topic-branches.mjs';
 
 const L2 = LAYOUTS[2];
 const B3 = layoutFor(3, ROLE_BRAIN);
@@ -1129,6 +1130,7 @@ export function checkRepo(dir, { brainDir = null } = {}) {
   // Outside git in the folders of data 2.0 and 1 (doma-pc 2026-11-16): junk (--fix removes it) and entries to triage.
   problems.push(...leftoverProblems(dir, { version: TO, role, fix: `migrate.mjs ${dir} --to 2.1 --check --fix` }));
   if (role === ROLE_REPO) problems.push(...deployIgnoreLines(deployIgnoreGaps(dir), `migrate.mjs ${dir} --to 2.1 --check --fix`));
+  if (role === ROLE_REPO) problems.push(...branchProblems(dir));
   for (const s of staleCatalog(dir)) problems.push(`${LOCAL_CATALOG}: source ${s.name} is indexed on ${posix(s.indexed)}, the data is in ${posix(s.path)} now (moved): catalog.mjs find misses it; scan it again: migrate.mjs ${dir} --to 2.1 --check --fix`);
   const record = recordRel(role);
   // A repo outside the move (data 2.1 already) that took files of a brain has a commit of those files only: no move of its own.
@@ -1208,7 +1210,12 @@ export function checkRepo(dir, { brainDir = null } = {}) {
       if (status === STATUS.out && i > 0) {
         const other = path.resolve(dir, to.slice(0, i));
         if (!fs.existsSync(path.join(other, to.slice(i + 1)))) problems.push(`${from}: moved to ${to}, not there`);
-      } else if (!tracked.has(to)) problems.push(`${from}: new place ${to}, not tracked`);
+      } else if (!tracked.has(to)) {
+        // A record removed on purpose after the move (save ... --remove) is no lost move (alice 2026-11-16).
+        const gone = removedByScript(dir, to);
+        if (gone) notes.push(`${to}: removed after the move by ${gone.sha} (${gone.subject})`);
+        else problems.push(`${from}: new place ${to}, not tracked`);
+      }
     }
   }
   return { dir, name, problems, notes };

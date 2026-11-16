@@ -468,3 +468,50 @@ test('only the brain moves (its repo is in data 2.1 already): the repo\'s work f
     assert.match(a.stdout, /srv: ok\n\s+note: born in data 2\.1/, 'the commit of the files it took is no move of its own');
   } finally { fx.cleanup(); }
 });
+
+test('--check: a record a brain script removed after the move is a note, a file lost otherwise a problem (alice 2026-11-16)', () => {
+  const fx = domainV2();
+  try {
+    const confirmed = tsvFile(fx, 'confirmed.tsv', ['vystupy/dokumenty/spec.md\tsrv:vystupy/specifikacie/\talpha\tšpecifikácia', 'zdroje/alpha/\tsrv:zdroje/alpha/\t\tpodklady']);
+    const approve = approveFile(fx, ['.brain/skills/agentic/old-gate/\tzmazat']);
+    const env = operatorRepoWith(fx, `${path.basename(fx.brain)}:.brain/memory/person-jana.md`);
+    const a = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--apply', '--confirmed', confirmed, '--approve', approve], { env });
+    assert.equal(a.status, 0, a.out);
+    const benv = { ...process.env, [BRAIN_SCRIPT_ENV]: '1' };
+    const rm = (rel, msg) => { for (const args of [['rm', '-q', rel], ['commit', '-q', '--no-verify', '-m', msg]]) assert.equal(spawnSync('git', args, { cwd: fx.brain, env: benv }).status, 0); };
+    rm('memory/tool-x.md', `${BRAIN_COMMIT_TAG} remove memory tool-x`);
+    let c = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check']);
+    assert.equal(c.status, 0, c.out);
+    assert.match(c.stdout, /note: memory\/tool-x\.md: removed after the move by \w+ \(\[brain-script\] remove memory tool-x\)/);
+    rm('topics/alpha/w1.md', 'by hand');
+    c = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check']);
+    assert.equal(c.status, 1, c.out);
+    assert.match(c.stdout, /temy\/alpha\/zavery\/w1\.md: new place topics\/alpha\/w1\.md, not tracked/);
+  } finally { fx.cleanup(); }
+});
+
+test('a topic branch adding files on paths of an older layout: --check names it, done refuses the merge (a shop repo 2026-11-16)', async () => {
+  const { mergeRefusal, mergeTarget } = await import('../scripts/topic-branches.mjs');
+  const fx = domainV2();
+  try {
+    const confirmed = tsvFile(fx, 'confirmed.tsv', ['vystupy/dokumenty/spec.md\tsrv:vystupy/specifikacie/\talpha\tšpecifikácia', 'zdroje/alpha/\tsrv:zdroje/alpha/\t\tpodklady']);
+    const approve = approveFile(fx, ['.brain/skills/agentic/old-gate/\tzmazat']);
+    const env = operatorRepoWith(fx, `${path.basename(fx.brain)}:.brain/memory/person-jana.md`);
+    assert.equal(fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--apply', '--confirmed', confirmed, '--approve', approve], { env }).status, 0);
+    gitq(fx.srv, 'checkout', '-q', '-b', 'topic/alpha');
+    commitFiles(fx.srv, { 'materialy/alpha/shoptet/a.md': '# A\n', 'materialy/alpha/b.md': '# B\n', 'src/app.js': 'x\n' }, 'work');
+    gitq(fx.srv, 'checkout', '-q', '-');
+    const c = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check']);
+    assert.equal(c.status, 1, c.out);
+    assert.match(c.stdout, /branch topic\/alpha \(1 commit\(s\) not in \S+\): work on paths of an older data layout, materialy\/alpha\/ \(2 file\(s\)\); done --topic refuses/);
+    const into = mergeTarget(fx.srv);
+    assert.match(mergeRefusal(fx.srv, 'topic/alpha', into), /adds files on paths of an older data layout, materialy\/alpha\/ \(2 file\(s\)\); nothing merged/);
+    // Moved on the branch: nothing to refuse.
+    gitq(fx.srv, 'checkout', '-q', 'topic/alpha');
+    fs.mkdirSync(path.join(fx.srv, 'zdroje'), { recursive: true });
+    gitq(fx.srv, 'mv', 'materialy/alpha', 'zdroje/alpha-shop');
+    gitq(fx.srv, 'commit', '-qm', 'move');
+    gitq(fx.srv, 'checkout', '-q', '-');
+    assert.equal(mergeRefusal(fx.srv, 'topic/alpha', into), null);
+  } finally { fx.cleanup(); }
+});

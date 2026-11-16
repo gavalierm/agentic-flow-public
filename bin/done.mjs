@@ -44,6 +44,7 @@ import { scratchReminder, citedScratch, topicResultsLabel } from '../scripts/mat
 import { topicFiles, handoverTask, confirmRefusal, bellRefusal, ownStepRequested, removeTopicTmp, parseTypeTriage, typeTriageListing, UNCLEAR, NEW_TYPE } from '../scripts/triage.mjs';
 import { hasTypeTriage, targetRepos, targetRepoDir, targetBranch, targetProtected, topicBranch, contentBranch, contentWrite, contentWhere, outputTypes, withTopicHeader, onOrigin, mergedInto, mergeRequest } from '../scripts/target.mjs';
 import { cloneMerge } from '../scripts/own-clone.mjs';
+import { mergeRefusal } from '../scripts/topic-branches.mjs';
 import { pushBranch } from '../scripts/push-hook.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -441,6 +442,9 @@ function settleRepos(ctx, id, topic, names, { contentOnly = false, unit = false 
     const target = targetBranch(dir);
     const heads = [...(contentOnly ? [] : [branch]), contentBranch(id)].filter((b) => onOrigin(dir, b) && !mergedInto(dir, b, target));
     if (!heads.length) { lines.push(`${name}: nothing to merge into ${target}${onOrigin(dir, branch) ? ` (${branch} is in it)` : ''}`); continue; }
+    // Work on paths of an older data layout (a branch forked before the migration) never merges (a shop repo 2026-11-16).
+    const refusal = heads.map((h) => mergeRefusal(dir, `origin/${h}`, `origin/${target}`)).find(Boolean);
+    if (refusal) { failures.push({ repo: name, error: refusal }); continue; }
     if (unit && targetProtected(dir)) { lines.push(`${name}: target branch ${target} is protected: done --topic asks for the merge of ${heads.join(', ')} (spec 4.1)`); continue; }
     if (targetProtected(dir) || contentOnly) {
       for (const head of heads) {

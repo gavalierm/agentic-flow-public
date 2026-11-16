@@ -27,6 +27,7 @@ import { BRAIN_COMMIT_TAG, MIGRATE_MOVE_ENV, DOMAIN_MARKER, brainScriptEnv, load
 import { checkBrainFile } from './brain-checks.mjs';
 import { LAYOUTS, LAYOUT_KEY, dataLayoutVersion, dataName } from './layout.mjs';
 import { brainWrite, gitAccessProblem } from './brain.mjs';
+import { branchProblems } from './topic-branches.mjs';
 import { INDEX_FILE, refreshIndex, indexProblem, commitIndexAfterMerge, refreshDeployIgnores, deployIgnoreGaps, deployIgnoreLines, formatDeployIgnores } from './data-index.mjs';
 import { CLASSES, MOVED_CLASSES, BRAIN_SUFFIX, classTargetIn } from './triage.mjs';
 import { redactUrl } from './secrets.mjs';
@@ -980,10 +981,15 @@ export function checkMigration(dir, { before = null, project = null, cwd = proce
       if (!fs.existsSync(path.join(dir, r.to))) (outsideHere ? problems.push(`${r.from}: moved outside git to ${r.to}, not there`) : outsideAway.push(r));
       continue;
     }
-    if (!now.has(r.to) && !archivedTopicPlaces(r.to).some((p) => now.has(p))) problems.push(`${r.from}: ${r.from === r.to ? 'should stay' : `new place ${r.to}`}, not tracked`);
+    if (!now.has(r.to) && !archivedTopicPlaces(r.to).some((p) => now.has(p))) {
+      const gone = removedByScript(dir, r.to);
+      if (gone) notes.push(`${r.to}: removed after the move by ${gone.sha} (${gone.subject})`);
+      else problems.push(`${r.from}: ${r.from === r.to ? 'should stay' : `new place ${r.to}`}, not tracked`);
+    }
   }
   if (outsideAway.length) notes.push(`${outsideAway.length} file(s) the move put outside git are not here (${outsideAway.slice(0, 3).map((r) => r.to).join(', ')}${outsideAway.length > 3 ? ', …' : ''}): untracked work files exist only on the machine that ran the move, a clone or another machine has none; not checked`);
   problems.push(...deployIgnoreLines(deployIgnoreGaps(dir), `migrate.mjs ${dir} --check --fix`));
+  problems.push(...branchProblems(dir));
   for (const rel of now) if (LAYOUT2_FOLDERS.has(rel)) problems.push(`${rel}: a tracked file on the path of a folder of data ${dataName(TO_VERSION)}; move it under ${rel}/ or elsewhere`);
   const index = version === TO_VERSION ? indexProblem(dir) : null;
   if (index) problems.push(`${INDEX_FILE}: ${index === 'missing' ? 'missing' : 'stale (differs from the tracked files)'} in HEAD; regenerate it: migrate.mjs ${dir} --check --fix`);
@@ -1246,6 +1252,18 @@ export function fixIndex(dir) {
   if (!indexProblem(dir)) return { sha: null };
   const committed = commitIndexAfterMerge(dir, { env: brainScriptEnv(), message: `${BRAIN_COMMIT_TAG} regenerate ${INDEX_FILE} (migrate --check --fix)` });
   return { sha: committed ? git(['rev-parse', '--short', 'HEAD'], { cwd: dir }).stdout : null };
+}
+
+/**
+ * The commit of a brain script that removed `rel` after the move (save ... --remove, a skill or record dropped on purpose):
+ * { sha, subject }, or null when the last removal was no brain script's (a move lost the file). A check names it as a note.
+ */
+export function removedByScript(dir, rel) {
+  const r = git([...GIT_PATHS, 'log', '-1', '--diff-filter=D', '--format=%h%x09%s', '--', rel], { cwd: dir });
+  if (!r.ok || !r.stdout) return null;
+  const [sha, ...rest] = r.stdout.split('\t');
+  const subject = rest.join('\t');
+  return subject.startsWith(`${BRAIN_COMMIT_TAG} `) ? { sha, subject } : null;
 }
 
 /**
