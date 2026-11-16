@@ -44,9 +44,15 @@ const FINAL_STATUS = /^(completed|failed|killed|stopped|cancell?ed|error|timeout
 /** Ids of the tasks whose end the harness notified in `text` (a prompt or the session transcript): a <task-notification>
  * with a final <status>. A notification comes as a prompt when the thread is idle, inside the running turn otherwise. */
 export function finishedTasks(text) {
+  const s = String(text || '');
   const out = new Set();
-  for (const m of String(text || '').matchAll(/<task-id>([^<\s]+)<\/task-id>([\s\S]{0,3000}?)<\/task-notification>/g)) {
-    const status = /<status>([\w-]+)<\/status>/.exec(m[2])?.[1];
+  // The status is in the head of the notification, before the agent's <result>: the closing tag may come thousands of
+  // characters later (2026-11-16: 3 354 characters, over the former limit of 3 000, so four finished agents
+  // kept their wakers for 2 h and the turn closed with no continuation). The head ends at the result, the end or the next id.
+  for (const m of s.matchAll(/<task-id>([^<\s]+)<\/task-id>/g)) {
+    const from = m.index + m[0].length;
+    const head = s.slice(from, from + 4000).split(/<result>|<\/task-notification>|<task-id>/)[0];
+    const status = /<status>([\w-]+)<\/status>/.exec(head)?.[1];
     if (status && FINAL_STATUS.test(status)) out.add(m[1]);
   }
   return out;
