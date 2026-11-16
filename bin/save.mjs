@@ -62,7 +62,7 @@ import { workflowSkillNames, PROJECT_SKILLS_DIR, syncBrainSkills, deployedSkillN
 import { skillSources, PROJECT_KNOWLEDGE, domainRepos, knowledgeDirs, repoByName, sessionRepo, singleRepoOf, nextRepoDecisionId, repoWrite, formatRepoWrite, heldRepoTopic, repoPublic } from '../scripts/repo-knowledge.mjs';
 import { isInside } from '../scripts/util.mjs';
 import { checkSkill, meaningDiff, workLayout } from '../scripts/skill-check.mjs';
-import { personRedirect, requireOperatorRepo, readPeople, findPeople, newPerson, changePerson } from '../scripts/people.mjs';
+import { personRedirect, requireOperatorRepo, readPeople, findPeople, newPerson, changePerson, shortIdProblem, proposedId } from '../scripts/people.mjs';
 import { machineStores, machineRecords, targetStore, sameStore, checkDecisionRefs, decisionRefs, rewriteDecisionRefs, subjectMatch, saveHint, displayPath, refFiles, isTombstone, SUBJECT_TYPES, ID_LINE, lc } from '../scripts/stores.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -1136,7 +1136,14 @@ function savePerson(ctx) {
   const domain = args.domain === undefined ? null : args.domain !== true ? String(args.domain) : ctx.domain?.root ? path.basename(ctx.domain.root) : fail('--domain without a name: this session has no domain; name it: --domain <domain>');
   const fields = { name: args.name, aliases: args.aliases, domains: args.domains, content: args.content, another: !!args.new };
   const create = args.name !== undefined && !findPeople(readPeople(repo.dir), alias, domain).length;
-  for (const line of create ? newPerson(repo, { id: alias, ...fields }) : changePerson(repo, { alias, domain, ...fields })) out(line);
+  // A new person gets the id meno-priezvisko when --name is the full name; the word it was called by stays an alias.
+  let id = alias;
+  if (create && shortIdProblem(alias, [String(args.name)])) {
+    id = proposedId(String(args.name));
+    const given = String(fields.aliases || '').split(',').map((a) => a.trim()).filter(Boolean);
+    if (!given.map((a) => a.toLowerCase()).includes(alias.toLowerCase())) fields.aliases = [...given, alias].join(',');
+  }
+  for (const line of create ? newPerson(repo, { id, ...fields }) : changePerson(repo, { alias, domain, ...fields })) out(line);
 }
 
 /** Persona docs/ (P-024): files written directly are committed and pushed in one script commit. */

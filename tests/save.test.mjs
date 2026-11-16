@@ -196,11 +196,12 @@ test('person: a new person with --name, a change of the one match, no match with
     assert.match(r.stderr, /no person "jana": ask the operator who it is/);
     r = fx.run('save.mjs', ['person', 'jana', '--name', 'Jana Nová', '--aliases', 'janka', '--content', 'Účtovníčka.'], { env });
     assert.equal(r.status, 0, r.out);
-    assert.match(r.stdout, /^pushed$/m); assert.match(r.stdout, /person osoby\/jana\.md/);
+    // The id is meno-priezvisko (operator 2026-11-16); the word the person was called by stays an alias.
+    assert.match(r.stdout, /^pushed$/m); assert.match(r.stdout, /person osoby\/jana-nova\.md/);
     r = fx.run('save.mjs', ['person', 'janka', '--content', 'Účtovníčka, posiela faktúry v piatok.'], { env });
     assert.equal(r.status, 0, r.out);
-    assert.match(fx.git(origin, 'show', 'main:osoby/jana.md'), /posiela faktúry v piatok/);
-    assert.match(fx.git(origin, 'show', 'main:INDEX.md'), /^- janka → osoby\/jana\.md$/m);
+    assert.match(fx.git(origin, 'show', 'main:osoby/jana-nova.md'), /posiela faktúry v piatok/);
+    assert.match(fx.git(origin, 'show', 'main:INDEX.md'), /^- janka → osoby\/jana-nova\.md$/m);
     assert.ok(!fs.existsSync(path.join(fx.brain, 'memory', 'person-jana.md')), 'nothing in memory');
   } finally { fx.cleanup(); }
 });

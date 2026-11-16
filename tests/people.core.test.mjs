@@ -43,12 +43,16 @@ test('find by id, name or alias within the domain: 0, 1 and 2+ matches; new and 
   const fx = setup();
   try {
     const op = operatorRepo(fx.root);
-    let r = people(fx, op, ['new', 'alice', '--name', 'Alice Example', '--aliases', 'ali,boss', '--content', 'Customer of the shop; prefers short mails.']);
+    // The id is meno-priezvisko when the surname is known (operator 2026-11-16).
+    let r = people(fx, op, ['new', 'alice', '--name', 'Alice Example', '--content', 'x']);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /id "alice" is the first name only, while the full name "Alice Example" is known: the id of a person is meno-priezvisko, alice-example/);
+    r = people(fx, op, ['new', 'alice-example', '--name', 'Alice Example', '--aliases', 'ali,boss', '--content', 'Customer of the shop; prefers short mails.']);
     assert.equal(r.status, 0, r.out);
-    assert.match(r.stdout, /committed: \w+ people: new alice/);
+    assert.match(r.stdout, /committed: \w+ people: new alice-example/);
     assert.match(r.stdout, /^pushed$/m);
-    assert.equal(gitq(path.join(fx.root, 'operator.git'), 'log', '-1', '--format=%s', 'main'), 'people: new alice', 'pushed from the own clone');
-    const rec = parseFrontmatter(fs.readFileSync(path.join(op.dir, 'osoby/alice.md'), 'utf8'));
+    assert.equal(gitq(path.join(fx.root, 'operator.git'), 'log', '-1', '--format=%s', 'main'), 'people: new alice-example', 'pushed from the own clone');
+    const rec = parseFrontmatter(fs.readFileSync(path.join(op.dir, 'osoby/alice-example.md'), 'utf8'));
     assert.equal(rec.data.name, 'Alice Example'); assert.deepEqual(rec.data.aliases, ['ali', 'boss']); assert.deepEqual(rec.data.domains, []);
     assert.equal(people(fx, op, ['new', 'alex', '--name', 'Alex', '--aliases', 'ali', '--domains', 'Shop', '--content', 'Developer.']).status, 1, 'alias of another person refused without --new');
     r = people(fx, op, ['new', 'alex', '--name', 'Alex', '--aliases', 'ali', '--domains', 'Shop', '--content', 'Developer.', '--new']);
@@ -60,16 +64,16 @@ test('find by id, name or alias within the domain: 0, 1 and 2+ matches; new and 
     // 1 match (case-insensitive, by alias), the record shown.
     r = people(fx, op, ['find', 'BOSS']);
     assert.equal(r.status, 0, r.out);
-    assert.match(r.stdout, /^osoby\/alice\.md: Alice Example/);
+    assert.match(r.stdout, /^osoby\/alice-example\.md: Alice Example/);
     assert.match(r.stdout, /prefers short mails/);
     // Domain filter: Bob is a person of Farm only; a person without domains is in every domain.
     assert.match(people(fx, op, ['find', 'bob', '--domain', 'Shop']).stdout, /no person "bob" in domain Shop/);
     assert.match(people(fx, op, ['find', 'bob', '--domain', 'farm']).stdout, /^osoby\/bob\.md: Bob/);
-    assert.match(people(fx, op, ['find', 'boss', '--domain', 'Farm']).stdout, /^osoby\/alice\.md/);
+    assert.match(people(fx, op, ['find', 'boss', '--domain', 'Farm']).stdout, /^osoby\/alice-example\.md/);
     // 2+ matches: reported, nothing chosen; out of Shop only Alice has the alias.
     r = people(fx, op, ['find', 'ali']);
-    assert.match(r.stdout, /2 persons "ali": osoby\/alex\.md.*osoby\/alice\.md.*ask the operator which one/s);
-    assert.match(people(fx, op, ['find', 'ali', '--domain', 'Farm']).stdout, /^osoby\/alice\.md/);
+    assert.match(r.stdout, /2 persons "ali": osoby\/alex\.md.*osoby\/alice-example\.md.*ask the operator which one/s);
+    assert.match(people(fx, op, ['find', 'ali', '--domain', 'Farm']).stdout, /^osoby\/alice-example\.md/);
     // 0 matches: only a note.
     r = people(fx, op, ['find', 'nobody']);
     assert.equal(r.status, 0); assert.match(r.stdout, /no person "nobody"/);
@@ -81,28 +85,28 @@ test('find by id, name or alias within the domain: 0, 1 and 2+ matches; new and 
     assert.equal(r.status, 1); assert.match(r.stderr, /no person "nobody".*ask the operator/);
     r = people(fx, op, ['change', 'ali', '--domain', 'Farm', '--content', 'Customer; prefers phone calls.']);
     assert.equal(r.status, 0, r.out);
-    const changed = parseFrontmatter(fs.readFileSync(path.join(op.dir, 'osoby/alice.md'), 'utf8'));
+    const changed = parseFrontmatter(fs.readFileSync(path.join(op.dir, 'osoby/alice-example.md'), 'utf8'));
     assert.equal(changed.body.trim(), 'Customer; prefers phone calls.');
     assert.deepEqual(changed.data.aliases, ['ali', 'boss'], 'fields not given stay');
     assert.equal(changed.data.created, rec.data.created);
 
     // INDEX.md: every name of every person, a shared alias marked as a collision.
     const index = fs.readFileSync(path.join(op.dir, 'INDEX.md'), 'utf8');
-    assert.match(index, /^- boss → osoby\/alice\.md$/m);
-    assert.match(index, /^- alice example → osoby\/alice\.md$/m);
+    assert.match(index, /^- boss → osoby\/alice-example\.md$/m);
+    assert.match(index, /^- alice example → osoby\/alice-example\.md$/m);
     assert.match(index, /^- bob → osoby\/bob\.md \(Farm\)$/m);
-    assert.match(index, /^- ali → osoby\/alex\.md \(Shop\), osoby\/alice\.md \(kolízia/m);
+    assert.match(index, /^- ali → osoby\/alex\.md \(Shop\), osoby\/alice-example\.md \(kolízia/m);
     assert.equal(gitq(op.dir, 'show', '--name-only', '--format=', 'HEAD~1').split('\n').sort().join(' '), 'INDEX.md osoby/bob.md', 'INDEX in the commit of the write (new bob)');
-    assert.equal(gitq(op.dir, 'show', '--name-only', '--format=', 'HEAD'), 'osoby/alice.md', 'a body change leaves INDEX as it is');
+    assert.equal(gitq(op.dir, 'show', '--name-only', '--format=', 'HEAD'), 'osoby/alice-example.md', 'a body change leaves INDEX as it is');
 
     // consolidate (spec 6.5): the alias collision and a duplicate name, with both paths.
-    assert.equal(people(fx, op, ['new', 'alice-2', '--name', 'alice example', '--content', 'Same name.', '--new']).status, 0);
+    assert.equal(people(fx, op, ['new', 'alice-example-2', '--name', 'alice example', '--content', 'Same name.', '--new']).status, 0);
     r = fx.run('consolidate.mjs', ['report'], { env: op.env });
     assert.equal(r.status, 0, r.out);
     const line = r.stdout.split('\n').find((l) => l.startsWith('people ('));
     assert.ok(line, r.stdout);
-    assert.match(line, /duplicates [^;]*alice example[^;]*osoby\/alice-2\.md \+ osoby\/alice\.md|duplicates [^;]*alice example[^;]*osoby\/alice\.md \+ osoby\/alice-2\.md/);
-    assert.match(line, /alias collisions ali: osoby\/alex\.md \+ osoby\/alice\.md/);
+    assert.match(line, /duplicates [^;]*alice example[^;]*osoby\/alice-example-2\.md \+ osoby\/alice-example\.md|duplicates [^;]*alice example[^;]*osoby\/alice-example\.md \+ osoby\/alice-example-2\.md/);
+    assert.match(line, /alias collisions ali: osoby\/alex\.md \+ osoby\/alice-example\.md/);
     assert.doesNotMatch(line, /osoby\/bob\.md/, 'Bob shares no name');
     assert.match(fx.run('consolidate.mjs', ['report']).stdout, /^people \(osoby\/ of the operator repo\): operator repo not configured/m);
   } finally { fx.cleanup(); }
@@ -158,8 +162,8 @@ test('collect: operator-*.md and person records of every brain of the machine ->
     let r = m.run(['collect', '--out', plan], op.env);
     assert.equal(r.status, 0, r.out);
     assert.match(r.stdout, /- osoby\/op-one\.md: Op One \(operator\), all domains; from alpha-brain:memory\/operator-operator\.md, beta-brain:memory\/operator-limits\.md/);
-    assert.match(r.stdout, /- osoby\/bob\.md: Bob, aliases bobby, Robert, domains Alpha, Beta; from alpha-brain:memory\/person-bob\.md, beta-brain:memory\/person-robert\.md/);
-    assert.match(r.stdout, /- osoby\/carol\.md: Carol, domains Beta; from beta-brain:memory\/person-carol\.md/);
+    assert.match(r.stdout, /- osoby\/bob\.md \(surname unknown: ask the operator, the id is meno-priezvisko\): Bob, aliases bobby, Robert, domains Alpha, Beta; from alpha-brain:memory\/person-bob\.md, beta-brain:memory\/person-robert\.md/);
+    assert.match(r.stdout, /- osoby\/carol\.md \(surname unknown: ask the operator, the id is meno-priezvisko\): Carol, domains Beta; from beta-brain:memory\/person-carol\.md/);
     assert.doesNotMatch(r.stdout, /saw/);
     assert.match(r.stdout, /show this list to the operator/);
     assert.equal(gitq(op.dir, 'rev-list', '--count', 'HEAD'), '1', 'the list alone writes nothing');
@@ -245,4 +249,12 @@ test('collect: a person the operator repo has already (by alias) is merged into 
     assert.match(ana.body, /Píše po slovensky\.[\s\S]*## limits\n\nUsage limit 30 percent\.[\s\S]*Owner of the shop\./);
     assert.equal(fs.readdirSync(path.join(op.dir, 'osoby')).filter((f) => f !== 'INDEX.md').join(' '), 'ana.md');
   } finally { m.cleanup(); }
+});
+
+test('the id of a person is meno-priezvisko when the surname is known (operator 2026-11-16)', async () => {
+  const { fullNameOf, shortIdProblem } = await import('../scripts/people.mjs');
+  assert.equal(fullNameOf(['Mira', 'Mira Kováčová', 'Mirka']), 'Mira Kováčová');
+  assert.match(shortIdProblem('mira', ['Mira', 'Mira Kováčová']), /meno-priezvisko, mira-kovacova/);
+  assert.equal(shortIdProblem('mira', ['Mira']), null, 'surname unknown: the first name stays');
+  assert.equal(shortIdProblem('mira-kovacova', ['Mira Kováčová']), null);
 });

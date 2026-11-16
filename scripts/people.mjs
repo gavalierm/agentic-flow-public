@@ -166,6 +166,8 @@ const listOf = (v) => (v === undefined ? undefined : asList(v === true ? '' : v)
  */
 export function newPerson(repo, { id, name, aliases, domains, content, another = false }) {
   if (!isValidId(id)) throw new Error(`id "${id}" is not lowercase ascii with hyphens (e.g. ${proposedId(id)})`);
+  const short = shortIdProblem(id, [name, ...(Array.isArray(aliases) ? aliases : String(aliases || '').split(','))]);
+  if (short) throw new Error(`${short}; nothing written`);
   if (!name || name === true) throw new Error('--name required');
   if (content === undefined || content === true) throw new Error('--content required (who it is, relation, preferences)');
   const rel = `${PEOPLE_DIR}/${id}.md`;
@@ -226,6 +228,19 @@ export function operatorProfile(env = process.env) {
 
 /** Proposed id of a person from a name: lowercase ascii with hyphens. */
 export const proposedId = (name) => normalizeKey(name) || 'person';
+
+/**
+ * The id of a person is meno-priezvisko when the surname is known (operator 2026-11-16: a first name alone is not
+ * enough, two people share it): of the names of a person the one with the most words is the full name.
+ */
+const words = (n) => String(n ?? '').trim().split(/\s+/).filter(Boolean).length;
+export const fullNameOf = (names) => [...names].map((n) => String(n ?? '').trim()).filter(Boolean).sort((a, b) => words(b) - words(a))[0] || '';
+/** An id of one word while a name of two or more words is known: the refusal with the id to use, else null. */
+export function shortIdProblem(id, names) {
+  const full = fullNameOf(names);
+  if (String(id).includes('-') || words(full) < 2) return null;
+  return `id "${id}" is the first name only, while the full name "${full}" is known: the id of a person is meno-priezvisko, ${proposedId(full)} (operator 2026-11-16)`;
+}
 
 /**
  * Refusal of save memory person|operator (spec 4.3, 11.4: from the code release a fact about a person goes to osoby/):
@@ -301,6 +316,17 @@ export function collectPlan(ctx, repo = null) {
     const head = operator ? `## ${String(x.r.data?.name || x.r.key)}` : null;
     if (body && !e.bodies.some((b) => b.text === body)) e.bodies.push({ head, text: body });
   }
+  // The id is meno-priezvisko when one of the names is the full name; the shorter names stay aliases (operator 2026-11-16).
+  for (const e of entries) {
+    if (e.operator && !e.name) continue;
+    const full = fullNameOf([e.name, ...e.aliases]);
+    if (words(full) > words(e.name)) {
+      e.aliases = [...new Set([e.name, ...e.aliases.filter((a) => lc(a) !== lc(full))])];
+      e.name = full;
+    }
+    e.id = proposedId(e.name);
+    e.surname = words(e.name) >= 2;
+  }
   // A person the operator repo has already (a second domain, a second machine of the same operator): the entry merges into
   // that file with migrated_from instead of proposing a new id (doma-pc 2026-11-16: the operator's own records got a new
   // id from the git identity next to osoby/<operator>.md with that identity as alias). An operator entry matches by the
@@ -342,7 +368,7 @@ export function collectPlan(ctx, repo = null) {
 /** One line per entry for the operator (the list to approve). */
 export function planLines(plan) {
   return [
-    ...plan.people.map((p) => `- ${PEOPLE_DIR}/${p.id}.md${p.existing ? ' (exists: merged into it)' : ''}: ${p.name}${p.operator ? ' (operator)' : ''}${p.aliases.length ? `, aliases ${p.aliases.join(', ')}` : ''}${p.domains.length ? `, domains ${p.domains.join(', ')}` : ', all domains'}; from ${p.sources.map((s) => s.label).join(', ')}`),
+    ...plan.people.map((p) => `- ${PEOPLE_DIR}/${p.id}.md${p.existing ? ' (exists: merged into it)' : ''}${!p.existing && p.surname === false ? ' (surname unknown: ask the operator, the id is meno-priezvisko)' : ''}: ${p.name}${p.operator ? ' (operator)' : ''}${p.aliases.length ? `, aliases ${p.aliases.join(', ')}` : ''}${p.domains.length ? `, domains ${p.domains.join(', ')}` : ', all domains'}; from ${p.sources.map((s) => s.label).join(', ')}`),
     ...plan.dropped.map((d) => `- dropped ${d.label || d.file}: ${d.reason || '(no reason)'}`),
   ];
 }
@@ -382,6 +408,8 @@ export function applyPlan(ctx, repo, plan) {
       continue;
     }
     if (!String(p.name || '').trim()) throw new Error(`${p.id}: name missing; nothing written`);
+    const short = shortIdProblem(p.id, [p.name, ...asList(p.aliases)]);
+    if (short) throw new Error(`${short}; nothing written`);
     files[rel] = personText({ name: p.name, aliases: asList(p.aliases), domains: asList(p.domains), body: String(p.body || ''), extra: { migrated_from: labels } });
   }
   const operators = people.filter((p) => p.operator);
