@@ -112,17 +112,20 @@ export function domainOf(dir) {
   const repos = [];
   const add = (d) => { if (!same(d, brain) && !repos.some((r) => same(r, d))) repos.push(d); };
   if (!same(start, brain)) add(start);
-  if (domainDir && fs.existsSync(domainDir)) {
-    for (const e of fs.readdirSync(domainDir, { withFileTypes: true })) {
+  // Without a marker the repos beside the brain that name it are still its project repos (a domain adopted before the
+  // marker): found, and the plan asks for the marker (unmarked).
+  const scan = domainDir || path.dirname(brain);
+  if (scan && fs.existsSync(scan)) {
+    for (const e of fs.readdirSync(scan, { withFileTypes: true })) {
       if (!e.isDirectory() || e.name.startsWith('.')) continue;
-      const d = path.join(domainDir, e.name);
+      const d = path.join(scan, e.name);
       const c = readJson(path.join(d, WORKFLOW_CONFIG), null);
       if (!fs.existsSync(path.join(d, '.git')) || !c || typeof c.brain !== 'string') continue;
       if (same(path.resolve(d, c.brain), brain)) add(d);
     }
   }
   repos.sort((a, b) => a.localeCompare(b));
-  return { brain, domainDir, repos };
+  return { brain, domainDir, repos, unmarked: !domainDir && repos.length ? path.dirname(brain) : null };
 }
 
 /** A target repository of a TSV row: a repository of the domain by name, else a path relative to the domain folder. */
@@ -438,6 +441,7 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
   // first brain moved them; a repo already in data 2.1 stays as it is and only this brain moves.
   for (const r of plan.repos.filter((x) => x.version === TO)) notes.push(`repo ${r.dir} is in data 2.1 already (moved with another brain of these repos): it stays, only the brain moves`);
   plan.repos = plan.repos.filter((x) => x.version !== TO);
+  if (dom.unmarked) blockers.push(`${posix(dom.unmarked)} has no ${DOMAIN_MARKER}, though ${plan.repos.map((r) => r.name).join(', ')} name this brain: write ${posix(path.join(dom.unmarked, DOMAIN_MARKER))} with {"brain": "${path.basename(dom.brain)}"} (the domain folder, D-0002), then run the preview again`);
   for (const r of plan.repos) {
     if (r.version === 1) blockers.push(`repo ${r.dir} is in data 1: move it to data 2.0 first (migrate.mjs ${r.dir} --apply), then --to 2.1`);
     else if (r.version !== FROM) blockers.push(`repo ${r.dir}: data ${dataName(r.version)}, its brain has 2.0; the domain moves at once`);

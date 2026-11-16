@@ -112,3 +112,17 @@ test('pre-release: each finding, the domains to migrate, a mail down; settled it
     assert.equal(r.status, 0, r.stdout);
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
+
+test('pre-release: a domain folder without .agentic-domain whose repo names a brain beside it is a finding', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-pre-'));
+  try {
+    const root = path.join(base, 'machine');
+    const brain = path.join(root, 'Delta', 'delta-brain');
+    const app = path.join(root, 'Delta', 'app');
+    for (const d of [brain, app]) { fs.mkdirSync(d, { recursive: true }); git(d, 'init', '-q', '-b', 'main'); }
+    fs.writeFileSync(path.join(app, '.workflow.json'), JSON.stringify({ brain: '../delta-brain' }));
+    const r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'overview.mjs'), '--pre-release', '--root', root, '--no-mail'], { env: cleanEnv({}), encoding: 'utf8', cwd: base });
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /^- \S*Delta has no \.agentic-domain, though its repos name the brain delta-brain: this check and migrate --to 2\.1 do not see the domain; write \S*Delta\/\.agentic-domain with \{"brain": "delta-brain"\}/m);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});

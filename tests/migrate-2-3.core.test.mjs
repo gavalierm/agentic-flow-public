@@ -304,3 +304,16 @@ test('preview names an unclean working tree (a file outside git) as what refuses
     assert.match(p.stdout, /--apply is refused until these are settled[\s\S]*srv: the working tree is not clean \(tools\/\): commit it, add it to \.gitignore or remove it/);
   } finally { fx.cleanup(); }
 });
+
+test('a domain folder without .agentic-domain: the preview finds the repos that name the brain and asks for the marker', () => {
+  const fx = domainV2();
+  try {
+    const marker = path.join(path.dirname(fx.brain), '.agentic-domain');
+    assert.ok(fs.existsSync(marker), 'the fixture has a marker');
+    fs.rmSync(marker);
+    const p = fx.run('migrate.mjs', [fx.brain, '--to', '2.1']);
+    assert.equal(p.status, 0, p.out);
+    assert.match(p.stdout, /domain: brain \S+ \(data 2\.0\), repos project, srv/);
+    assert.match(p.stdout, /has no \.agentic-domain, though project, srv name this brain: write \S+\.agentic-domain with \{"brain": "brain"\}/);
+  } finally { fx.cleanup(); }
+});

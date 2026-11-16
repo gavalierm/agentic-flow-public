@@ -106,6 +106,27 @@ export function domainBrains(root) {
   return out;
 }
 
+/**
+ * Folders under the machine root without DOMAIN_MARKER whose git repositories name a brain beside them in .workflow.json:
+ * a domain the overview, the pre-release check and the move to data 2.1 do not see (a project adopted before the marker,
+ * doma-pc 2026-11-16). [{ dir, brain: <folder name of the brain> }].
+ */
+export function unmarkedDomains(root) {
+  const out = [];
+  for (const d of subdirs(root)) {
+    if (fs.existsSync(path.join(d, DOMAIN_MARKER))) continue;
+    let brain = null;
+    for (const r of subdirs(d)) {
+      const cfg = readJson(path.join(r, '.workflow.json'), null);
+      if (!fs.existsSync(path.join(r, '.git')) || !cfg || typeof cfg.brain !== 'string') continue;
+      const b = path.resolve(r, cfg.brain);
+      if (!same(b, r) && same(path.dirname(b), d) && fs.existsSync(path.join(b, '.git'))) { brain = path.basename(b); break; }
+    }
+    if (brain) out.push({ dir: d, brain });
+  }
+  return out;
+}
+
 /** Stores a consolidate of this session reports on: the session brain, the domain brain and the domain repos. */
 export function sessionStores(ctx) {
   return machineStores(ctx).filter((s) => s.session || (s.sessionDomain && (s.kind === 'repo' || same(s.dir, ctx.domain?.brain))));

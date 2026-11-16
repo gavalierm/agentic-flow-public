@@ -14,8 +14,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { gitAccessProblem } from './brain.mjs';
+import { DOMAIN_MARKER as DOMAIN_MARKER_FILE } from './config.mjs';
 import { git, gitRemote, readJson, PLUGIN_ROOT } from './util.mjs';
-import { domainBrains } from './stores.mjs';
+import { domainBrains, unmarkedDomains } from './stores.mjs';
 import { layoutOf, dataLayoutVersion, dataPath, dataName } from './layout.mjs';
 import { listTopicRecords } from './topic-files.mjs';
 import { isMainTopic, commsProjectName, readObligations } from './comms.mjs';
@@ -128,6 +129,8 @@ export function preRelease({ root = null, ctx = null, brains = null, env = proce
   const cache = new Map();
   const topics = [];
   const doms = new Map();
+  // A domain folder without .agentic-domain is invisible to this check and to the move to data 2.1 (doma-pc 2026-11-16).
+  for (const u of base ? unmarkedDomains(base) : []) findings.push({ kind: 'domain-marker', where: path.basename(u.dir), text: `${posix(u.dir)} has no ${DOMAIN_MARKER_FILE}, though its repos name the brain ${u.brain}: this check and migrate --to 2.1 do not see the domain; write ${posix(path.join(u.dir, DOMAIN_MARKER_FILE))} with {"brain": "${u.brain}"}, then run the check again` });
   for (const b of list) {
     const version = dataLayoutVersion(b.dir);
     const where = `${b.domainRoot ? `${path.basename(b.domainRoot)}/` : ''}${b.name}`;
