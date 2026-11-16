@@ -181,6 +181,9 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   // A brain git refuses (dubious ownership) fails every save, log and topic write: say it with the fix at start (#23).
   const gitProblem = ctx.brainDir ? gitAccessProblem(ctx.brainDir, who.git) : null;
   if (gitProblem) status += `\n${gitProblem}`;
+  // The project repo too: a domain cloned through another account fails half (brain trusted, project not) without a word.
+  const projectProblem = ctx.projectDir && (!ctx.brainDir || path.resolve(ctx.projectDir) !== path.resolve(ctx.brainDir)) ? gitAccessProblem(ctx.projectDir) : null;
+  if (projectProblem) status += `\n${projectProblem}`;
   if (mailLine) status += `\n${mailLine}`;
   // Spec 10.7: no status block; the first reply of a thread that holds a topic starts with the line of the topic's name.
   const named = info.held.find((t) => !isMainTopic(t)) || info.held[0];

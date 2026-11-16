@@ -33,6 +33,7 @@ import { turnFields } from './topic-state.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { operatorRepo, readPeople } from './people.mjs';
 import { trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand } from './migrate.mjs';
+import { gitAccessProblem } from './brain.mjs';
 import { defaultRepoName } from './target.mjs';
 
 const L2 = LAYOUTS[2];
@@ -728,6 +729,8 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
   // file left outside git (an ignored-nowhere __pycache__/) is no surprise at --apply.
   for (const t of [brain, ...plan.repos, ...plan.targets]) {
     const st = git([...GIT_PATHS, 'status', '--porcelain', '--untracked-files=normal'], { cwd: t.dir });
+    const access = st.ok ? null : gitAccessProblem(t.dir, st);
+    if (access) { blockers.push(access); continue; }
     const list = st.ok ? st.stdout.split('\n').filter(Boolean).map((l) => l.slice(3)) : [];
     if (list.length) blockers.push(`${t.dir}: the working tree is not clean (${list.slice(0, 5).join(', ')}${list.length > 5 ? ', …' : ''}): commit it, add it to .gitignore or remove it; --apply needs a clean tree`);
   }

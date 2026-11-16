@@ -441,7 +441,14 @@ export function lockLostText(lost) {
 export function gitAccessProblem(dir, r = git(['rev-parse', '--git-dir'], { cwd: dir })) {
   if (r.ok || !/dubious ownership|safe\.directory/i.test(r.stderr)) return null;
   const home = process.env.HOME || process.env.USERPROFILE || '?';
-  return `git refuses ${toPosix(dir)} (dubious ownership: the repo belongs to another user than this process); run: git config --global --add safe.directory ${toPosix(dir)} (global config of this process: HOME=${toPosix(home)}; a hook that still fails runs with another HOME, add it there too)`;
+  // git names both users (Windows: DOMAIN/user; elsewhere the uid): the operator sees whose repo it is.
+  const owner = /is owned by:\s*\n?\s*'?([^'\n]+?)'?\s*(?:\(|\n|$)/i.exec(r.stderr)?.[1]?.trim();
+  const me = /current user is:\s*\n?\s*'?([^'\n]+?)'?\s*(?:\(|\n|$)/i.exec(r.stderr)?.[1]?.trim();
+  const who = owner || me ? ` (owner ${owner || '?'}, this process runs as ${me || '?'})` : '';
+  const chown = process.platform === 'win32'
+    ? `as administrator: icacls "${path.resolve(dir)}" /setowner "${me || '<this user>'}" /T /C`
+    : `sudo chown -R ${me || '<this user>'} ${toPosix(dir)}`;
+  return `git refuses ${toPosix(dir)} (dubious ownership: the repo belongs to another user than this process${who}); every git command there fails. Fix one way: make this user the owner (${chown}), or trust it: git config --global --add safe.directory ${toPosix(dir)} (global config of this process: HOME=${toPosix(home)}; a hook that still fails runs with another HOME, add it there too)`;
 }
 
 /** Files and new folders a write touches, as they were before it: a failed write restores them (nothing half written). */

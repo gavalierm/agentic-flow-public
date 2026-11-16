@@ -26,7 +26,7 @@ import { git, gitRemote, readJson, PLUGIN_ROOT } from './util.mjs';
 import { BRAIN_COMMIT_TAG, MIGRATE_MOVE_ENV, DOMAIN_MARKER, brainScriptEnv, loadPolicy, threadId } from './config.mjs';
 import { checkBrainFile } from './brain-checks.mjs';
 import { LAYOUTS, LAYOUT_KEY, dataLayoutVersion, dataName } from './layout.mjs';
-import { brainWrite } from './brain.mjs';
+import { brainWrite, gitAccessProblem } from './brain.mjs';
 import { INDEX_FILE, refreshIndex, indexProblem, commitIndexAfterMerge, refreshDeployIgnores, deployIgnoreGaps, formatDeployIgnores } from './data-index.mjs';
 import { CLASSES, MOVED_CLASSES, BRAIN_SUFFIX, classTargetIn } from './triage.mjs';
 import { redactUrl } from './secrets.mjs';
@@ -568,7 +568,7 @@ const firstLine = (s) => String(s || '').split('\n')[0];
 /** Clean tree and up to date with origin (fast-forward); refuses a divergence. Returns { ok, error, note }. */
 export function readyForMove(dir) {
   const status = git([...GIT_PATHS, 'status', '--porcelain', '--untracked-files=normal'], { cwd: dir });
-  if (!status.ok) return { ok: false, error: `git status failed: ${firstLine(status.stderr)}` };
+  if (!status.ok) return { ok: false, error: gitAccessProblem(dir, status) || `git status failed: ${firstLine(status.stderr)}` };
   if (status.stdout) {
     const list = status.stdout.split('\n').map((l) => l.slice(3));
     return { ok: false, error: `the working tree is not clean (${list.slice(0, 5).join(', ')}${list.length > 5 ? ', …' : ''}); commit or restore first` };

@@ -13,6 +13,7 @@
 // reads from topics.auto.projects. Read only: no fetch (git ls-remote), status without optional locks, nothing written.
 import fs from 'node:fs';
 import path from 'node:path';
+import { gitAccessProblem } from './brain.mjs';
 import { git, gitRemote, readJson, PLUGIN_ROOT } from './util.mjs';
 import { domainBrains } from './stores.mjs';
 import { layoutOf, dataLayoutVersion, dataPath, dataName } from './layout.mjs';
@@ -136,6 +137,13 @@ export function preRelease({ root = null, ctx = null, brains = null, env = proce
     if (autoProjects.length && !Array.isArray(policy?.topics?.shared_checkouts)) {
       const shared = autoProjects.map((p) => posix(path.relative(b.domainRoot || path.dirname(b.dir), path.resolve(b.dir, p))));
       notes.push(`${where}: shared checkouts (D-0038) come from topics.shared_checkouts in 2.0, topics.auto.projects is no longer read: add "shared_checkouts": ${JSON.stringify(shared)} under topics of ${posix(path.relative(b.dir, dataPath(b.dir, 'policy')))} (migrate --to 2.1 carries it)`);
+    }
+    // A repo git refuses (dubious ownership: cloned through another account) fails every check below without a word.
+    let domRepos = [];
+    try { domRepos = domainOf(b.dir).repos; } catch { domRepos = []; }
+    for (const d of [b.dir, ...domRepos]) {
+      const access = gitAccessProblem(d);
+      if (access) findings.push({ kind: 'git-access', where, text: access });
     }
     if (version !== 3) {
       const dom = domainOf(b.dir);
