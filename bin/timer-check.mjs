@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 // Check of the thread timers with a condition before their ring (P-061): job `timer-check` of the wake module (wake.json,
 // written with issue-watch by adapter.mjs claude-code / project.mjs t3). For every thread of the timer index (timer.mjs
-// --until | --topic registers it) whose closed turn has a conditional timer due soon, preRing (scripts/waker.mjs) runs the
+// --until registers it) whose closed turn has a conditional timer due soon, preRing (scripts/waker.mjs) runs the
 // check: not met -> the timer moves and the turn record is closed again with the new resume_at, so no prompt reaches the
-// thread (a prompt the hook blocks is an error in T3 and starts a fresh session); a topic timer whose topic is closed and
-// whose mail came -> dropped, the turn record closed again without it; a standing topic -> the timer rings now with the model. The prompt hook keeps its check as a backup.
+// thread (a prompt the hook blocks is an error in T3 and starts a fresh session). The prompt hook keeps its check as a backup.
 //   timer-check.mjs [--now <iso>]
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { recordTurn } from '../scripts/comms.mjs';
 import { heldTopics } from '../scripts/topic.mjs';
-import { preRing, readTimerIndex, writeTimerIndex, threadTimers, resumeAtFor, sameTimer, TOPIC_STALL_MS } from '../scripts/waker.mjs';
+import { preRing, readTimerIndex, writeTimerIndex, threadTimers, resumeAtFor, sameTimer } from '../scripts/waker.mjs';
 
 // Code without a thread id of its own: each turn record names its thread (ctx.thread), never an inherited one.
 delete process.env.WORKFLOW_THREAD_ID;
@@ -31,31 +30,25 @@ try {
     // project made `topic.mjs closed` fail, pilot 2026-11-14, so a closed topic counted as open).
     if (entry.project) process.env.WORKFLOW_PROJECT_DIR = entry.project;
     else delete process.env.WORKFLOW_PROJECT_DIR;
-    const stallH = Number(ctx.policy?.timer?.topic_stall_h);
     // Every due timer of the thread: one moved timer must not hand resume_at to the next one, unchecked (pilot 2026-11-14:
     // two timers due together, the second rang 1 s after the first was moved).
     const done = [];
     let r;
     for (let i = 0; i < 20; i++) {
-      r = preRing(entry.brain, thread, { now, cwd: entry.project || entry.brain, stallMs: stallH > 0 ? stallH * 3600_000 : TOPIC_STALL_MS, skip: (t) => done.some((d) => sameTimer(d.timer, t)) });
-      if (r.action !== 'rearm' && r.action !== 'drop') break;
+      r = preRing(entry.brain, thread, { now, cwd: entry.project || entry.brain, skip: (t) => done.some((d) => sameTimer(d.timer, t)) });
+      if (r.action !== 'rearm') break;
       done.push(r);
     }
-    if (r.action !== 'stall') {
-      if (!done.length) continue;
-      const left = threadTimers(readThreadState(entry.brain, thread));
-      r = { ...done[done.length - 1], resume: { next: left.length ? readThreadState(entry.brain, thread).last_close?.next || left[0].then : null, at: left.length ? resumeAtFor(left[0], now) : null } };
-    }
+    if (!done.length) continue;
+    const left = threadTimers(readThreadState(entry.brain, thread));
+    r = { ...done[done.length - 1], resume: { next: left.length ? readThreadState(entry.brain, thread).last_close?.next || left[0].then : null, at: left.length ? resumeAtFor(left[0], now) : null } };
     const st = readThreadState(entry.brain, thread);
     writeThreadState(entry.brain, thread, { ...st, last_close: { next: r.resume.next, resume_at: r.resume.at } });
     // The same close the Stop hook sent, with the new time: discussion as that turn ended (Stop: state otázka).
     const res = recordTurn(ctx, 'closed', heldTopics(entry.brain, thread), { openedAt: st.turn_opened_at || null, next: r.resume.next, resumeAt: r.resume.at, discussion: st.last_end_state === 'otázka' });
     const mail = res.ok ? (res.stale ? 'turn record newer, left' : 'turn record moved') : `turn record not moved (${res.error || 'mail off'}): the prompt hook checks it`;
-    for (const d of done.slice(0, -1)) process.stdout.write(`${thread}: ${d.action === 'rearm' ? `condition does not hold (${d.timer.until}), timer moved to ${d.timer.at}` : `timer of topic ${d.timer.topic || d.timer.until} dropped without a ring`}\n`);
-    const what = r.action === 'rearm' ? `condition does not hold (${r.timer.until}), timer moved to ${r.timer.at}`
-      : r.action === 'drop' ? `timer of topic ${r.timer.topic || r.timer.until} dropped without a ring (topic closed, its mail came)${r.resume.at ? `, next timer ${r.resume.at}` : ', no timer left'}`
-        : `rings now: ${r.reason}`;
-    process.stdout.write(`${thread}: ${what}; ${mail}\n`);
+    for (const d of done.slice(0, -1)) process.stdout.write(`${thread}: condition does not hold (${d.timer.until}), timer moved to ${d.timer.at}\n`);
+    process.stdout.write(`${thread}: condition does not hold (${r.timer.until}), timer moved to ${r.timer.at}; ${mail}\n`);
   }
   if (changed) writeTimerIndex(idx);
 } catch (err) {

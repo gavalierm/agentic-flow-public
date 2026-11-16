@@ -396,12 +396,19 @@ export function proposalKey(signal) {
   return m ? `sequence ${m[1]}` : null;
 }
 
-/** Turn the per-session buffer into log lines; returns ops for brainWrite and signals. */
-export function flushBuffer(ctx, sessionId, { sync = true } = {}) {
+/**
+ * Turn the per-session buffer into log lines; returns ops for brainWrite and signals. `ops`: further writes that go into
+ * the same commit (the Stop hook's topic state, plan risk 4.7), `message` their part of the commit message.
+ */
+export function flushBuffer(ctx, sessionId, { sync = true, ops: extra = [], message = null } = {}) {
   const { brainDir, policy } = ctx;
   const entries = readBuffer(brainDir, sessionId);
   const signals = [];
-  if (!entries.length) return { written: false, signals };
+  if (!entries.length && !extra.length) return { written: false, signals };
+  if (!entries.length) {
+    const res = brainWrite(ctx, { ops: extra, internal: true, sync, message: message || 'turn state' });
+    return { written: res.committed, signals, unpushed: res.unpushed, sync: res.sync, sequences: 0, failures: 0 };
+  }
   const seqLines = readLog(brainDir, 'sequences.log', { rotationDays: policy.logs.rotation_days });
   const failLines = readLog(brainDir, 'failures.log');
   const newFails = [];
@@ -448,10 +455,10 @@ export function flushBuffer(ctx, sessionId, { sync = true } = {}) {
   if (oldFailures.length) signals.push(`failures.log: ${oldFailures.length} unprocessed failure(s) older than ${policy.logs.failure_signal_days} days; run error skill (P-030)`);
 
   const ops = [appendOp('sequences.log', seqEntries, { brainDir }), appendOp('failures.log', newFails, { brainDir })].filter((o) => o.append);
-  ops.push(...rotationOps(brainDir, policy.logs.rotation_days));
-  const res = ops.length ? brainWrite(ctx, { ops, internal: true, sync, message: `logs flush ${sessionId}` }) : { committed: false, unpushed: 0 };
+  ops.push(...rotationOps(brainDir, policy.logs.rotation_days), ...extra);
+  const res = ops.length ? brainWrite(ctx, { ops, internal: true, sync, message: message ? `${message}; logs flush ${sessionId}` : `logs flush ${sessionId}` }) : { committed: false, unpushed: 0 };
   fs.rmSync(bufferFile(brainDir, sessionId), { force: true });
-  return { written: res.committed, signals, unpushed: res.unpushed, sequences: newSeqs.length, failures: entries.filter((e) => e.kind === 'fail').length };
+  return { written: res.committed, signals, unpushed: res.unpushed, sync: res.sync, sequences: newSeqs.length, failures: entries.filter((e) => e.kind === 'fail').length };
 }
 
 /** procedures.log / derivations.log (P-005, P-006): append names, rotate, report repeats. */

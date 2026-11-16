@@ -1,10 +1,10 @@
 // Freeze during a rebuild (P-074, agent-alice/D-0092): while a new version of the workflow and the mail is being built,
-// no work comes from issues or reports and nothing fixes the old version. The state lives in the brain policy
+// nothing fixes the old version. The state lives in the brain policy
 // (`<brain>/policy.json` key `freeze`, written by `brain.mjs freeze on|off`), so code enforces it, not a text:
 //   { "reason": "<why>", "until": "<version that ends it>", "allow": ["<topic>", ...], "repos": ["<repo>", ...],
 //     "since": "<iso>", "by": "<thread>" }
-// The report intake rejects a report with a reply to the reporter (report again in the new version) instead of a topic;
-// `topic create` of a code topic in a frozen repo is refused unless the topic is allowed (the work of the rebuild).
+// `topic create` of a code topic in a frozen repo is refused unless the topic is allowed (the work of the rebuild); error
+// reports are still delivered to the maintainer topic (spec 9, P-074; plan B15).
 
 /** Repos a freeze covers when the policy names none: the workflow and the mail. */
 export const FREEZE_REPOS = Object.freeze(['agentic-flow', 'agentic-comms']);
@@ -48,11 +48,6 @@ export function frozenRepo(f, repo) {
 export function freezeRefusal(policy, { id, repo }) {
   const f = freezeOf(policy);
   if (!f || !frozenRepo(f, repo) || f.allow.includes(String(id))) return null;
-  return `topic ${id} refused: ${repoName(repo)} is frozen until ${f.until || 'the new version'}${f.reason ? ` (${f.reason})` : ''}; only the work of the rebuild runs (allowed topics: ${f.allow.join(', ') || 'none'}), a fix of the old version is not made: reject the report or issue with this reason and ask to report it again in the new version (P-074). The orchestrator allows a topic of the rebuild: brain.mjs freeze allow ${id}`;
+  return `topic ${id} refused: ${repoName(repo)} is frozen until ${f.until || 'the new version'}${f.reason ? ` (${f.reason})` : ''}; only the work of the rebuild runs (allowed topics: ${f.allow.join(', ') || 'none'}), a fix of the old version is not made (P-074). The operator allows a topic of the rebuild: brain.mjs freeze allow ${id}`;
 }
 
-/** The answer a reporter gets for a report (or an issue, `what`) rejected during the freeze (no topic, nothing fixed). */
-export function freezeRejectText(f, messageId, what = 'Hlásenie') {
-  const until = f?.until || 'nová verzia';
-  return `${what} ${messageId} je odmietnuté: workflow a pošta sú zmrazené do verzie ${until}${f?.reason ? ` (${f.reason})` : ''}; stará verzia sa neopravuje a téma nevznikla (P-074). Ak chyba pretrvá vo verzii ${until}, nahlás ju znova${what === 'Hlásenie' ? ' (error.mjs report)' : ''}.`;
-}

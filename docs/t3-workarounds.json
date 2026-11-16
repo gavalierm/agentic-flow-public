@@ -17,16 +17,6 @@
       "remove_when": "fix PR merged and contained in the installed T3 version; then remove the marked code and this entry"
     },
     {
-      "id": "hook-message-hidden",
-      "title": "T3 does not show hook systemMessage; the agent prints the status block in its first reply (P-050)",
-      "upstream": null,
-      "files": ["scripts/boot.mjs"],
-      "depends_on": ["T3 hides `systemMessage` of hooks"],
-      "auto": [],
-      "pilot": "new pilot thread: does T3 show the SessionStart systemMessage? if yes, the agent-printed block is shown twice and can be dropped",
-      "remove_when": "T3 shows hook systemMessage"
-    },
-    {
       "id": "t3-cli-title",
       "title": "The hook cannot rename a thread; it reads the title via the T3 CLI and asks the agent to rename (P-036); topics start threads via the CLI",
       "upstream": null,

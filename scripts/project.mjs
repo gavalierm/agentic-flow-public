@@ -10,7 +10,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PLUGIN_ROOT, git, gitRemote, exists, readJson, toPosix } from './util.mjs';
 import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDirName, checkDomainName, DOMAIN_MARKER, machineRoot, classifyNames } from './config.mjs';
-import { LAYOUT, dataPath, layoutFor } from './layout.mjs';
+import { LAYOUT, dataPath, layoutFor, layoutVersions } from './layout.mjs';
 // The projects root saved for this machine lives in config.mjs: the write hook reads it without this module's GitHub code.
 export { ROOT_FILE, rootFile, machineRoot, setMachineRoot } from './config.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
@@ -429,10 +429,13 @@ export async function create({ name, repo = null, purpose, domain = null, root =
 
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // First folder of a path in the brain layout (inventoryGroup).
-// Both layouts (D-0048): layout 1 rules/, decisions/, ...; layout 2 .brain/rules/, vystupy/rozhodnutia/, ..., work files temy/<id>/tmp/.
-const L2 = layoutFor(2);
-const UNDER = Object.fromEntries(['rules', 'decisions', 'skills', 'memory'].map((n) => [n, new RegExp(`^(?:${esc(LAYOUT[n])}|${esc(L2[n])})/`)]));
-UNDER.scratch = new RegExp(`^(?:${esc(LAYOUT.scratch)}|${esc(L2.topics)}/[^/]+/${esc(L2.topicTmp)})/`);
+// Every layout (D-0048): layout 1 rules/, decisions/, ...; layout 2 .brain/rules/, vystupy/rozhodnutia/, ..., work files
+// temy/<id>/tmp/; layout 3 as layout 1, work files topics/<id>/tmp/.
+const MAPS = layoutVersions().map((v) => layoutFor(v));
+const any = (rels) => [...new Set(rels)].map(esc).join('|');
+const UNDER = Object.fromEntries(['rules', 'decisions', 'skills', 'memory'].map((n) => [n, new RegExp(`^(?:${any(MAPS.map((L) => L[n]))})/`)]));
+const TOPIC_WORK = [...new Set(MAPS.filter((L) => L.topicTmp).map((L) => `${esc(L.topics)}/[^/]+/${esc(L.topicTmp)}`))];
+UNDER.scratch = new RegExp(`^(?:${[esc(LAYOUT.scratch), ...TOPIC_WORK].join('|')})/`);
 
 // Absolute paths in text (older setups pointed at /opt, /root or other homes).
 const ABS_PATH = /(?<![\w.:/-])(\/(?:opt|root|home|srv|var|etc|usr)\/[\w.@-]+(?:\/[\w.@-]+)*)/g;

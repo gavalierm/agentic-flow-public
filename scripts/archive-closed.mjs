@@ -4,7 +4,7 @@
 // has already is only listed. One commit for all, INDEX.md in it (done.mjs --archive-closed).
 import fs from 'node:fs';
 import path from 'node:path';
-import { dataLayoutVersion, dataRel, layoutOf } from './layout.mjs';
+import { dataLayoutVersion, dataRel, layoutOf, hasData } from './layout.mjs';
 import { topicFiles } from './triage.mjs';
 import { brainWrite } from './brain.mjs';
 
@@ -29,7 +29,7 @@ function filesIn(dir) {
  * other.files: work files outside tmp/ and files in tmp/ (tmp/<file>), which the move would take along.
  */
 export function closedTopicsPlan(brainDir) {
-  if (dataLayoutVersion(brainDir) !== 2) throw new Error(`${brainDir}: data layout ${dataLayoutVersion(brainDir)}; the hidden archive of topics is in layout 2 only`);
+  if (!hasData(brainDir, 'topicHidden')) throw new Error(`${brainDir}: data layout ${dataLayoutVersion(brainDir)}; the hidden archive of topics is in layout 2 only`);
   const L = layoutOf(brainDir);
   const root = path.join(brainDir, ...L.topics.split('/'));
   const plan = { archive: [], other: [], clash: [] };

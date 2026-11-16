@@ -6,7 +6,7 @@ Testy `node:test` (P-034), bez závislostí, nad dočasnými git repami; spúš�
 
 Každý testovací súbor (`tests/**/*.test.mjs`) má v prvých 5 riadkoch jednu hlavičku:
 
-- `// keep: core` — test jadra: chráni pred nevratnou škodou alebo stratou dát, alebo overuje základný tok, bez ktorého workflow nefunguje: ochrana dát (mazanie a prepis nesledovaných súborov, P-018), zvonček a správa nie je pokyn (P-047), jeden zapisovač brainu (P-013), tajomstvá a úniky (P-004), inštalácia vydania, `done` a zlúčenie témy, `migrate`, štart session, zápis cez `save`, zabratie témy, pošta (doručenie, odpoveď), povolenia generované adaptérmi.
+- `// keep: core` — test jadra: chráni pred nevratnou škodou alebo stratou dát, alebo overuje základný tok, bez ktorého workflow nefunguje: ochrana dát (mazanie a prepis nesledovaných súborov, P-018), zvonček a správa iného agenta než supervisora nie je pokyn (P-047), jeden zapisovač brainu (P-013), tajomstvá a úniky (P-004), inštalácia vydania, `done` a zlúčenie témy, `migrate`, štart session, zápis cez `save`, zabratie témy, pošta (doručenie, odpoveď), povolenia generované adaptérmi.
 - `// ttl: YYYY-MM-DD` — každý iný test, napr. test jednej opravy; dátum je 30 dní od vzniku testu.
 
 `npm test` najprv spustí `node tests/ttl.mjs check`: súbor bez platnej hlavičky zastaví sadu s hláškou, čo doplniť (to isté kontroluje `ttl.test.mjs`).

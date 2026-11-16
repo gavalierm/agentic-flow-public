@@ -3,12 +3,14 @@
 // reported "tracked before the move, missing in .brain/migrate-1-2.tsv", because git printed it quoted under
 // core.quotepath ("\304\276"); and in a fresh clone every untracked file the move put outside git was reported "moved
 // outside git to temy/main/tmp/..., not there", though outside git such files exist only on the machine that ran the move.
+// A clone of another machine not pulled after the move of its domain to layout 3 (spec 11.10, plan B16): the session start
+// refuses work in it until the pull.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { setup2, gitq } from './layout-2-helpers.mjs';
+import { setup2, setup3, makeLayout2Repo, gitq } from './layout-2-helpers.mjs';
 import { initProject } from './helpers.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV } from '../scripts/config.mjs';
 
@@ -73,5 +75,22 @@ test('a fresh clone after the move: files moved outside git are a note, not a pr
     assert.doesNotMatch(c.out, /moved outside git to .*not there/, c.out);
     assert.match(c.out, /note: 2 file\(s\) the move put outside git are not here \(temy\/main\/tmp\/notes\.txt, temy\/main\/tmp\/run\/out\.log\)/, c.out);
     assert.equal(c.status, 0, c.out);
+  } finally { fx.cleanup(); }
+});
+
+test('a clone not pulled after the domain moved to layout 3: the session start refuses it until git pull, then starts', () => {
+  const fx = setup3({ thread: 'mc3', projectLayout: 2 });
+  try {
+    const clone = path.join(fx.root, 'project-b');
+    gitq(fx.root, 'clone', '-q', fx.project, clone);
+    makeLayout2Repo(fx.project, 3);
+    const opts = { cwd: clone, projectDir: clone };
+    let h = fx.hook('session-start.mjs', { source: 'startup' }, opts);
+    assert.match(h.context, /STOP, work refused: data layout of repo .*project-b is 2, the brain of its domain .* has 3/, h.context);
+    assert.match(h.context, /git -C \S*project-b pull/);
+    gitq(clone, 'pull', '-q');
+    h = fx.hook('session-start.mjs', { source: 'startup' }, opts);
+    assert.doesNotMatch(h.context, /STOP/, h.context);
+    assert.match(h.context, /Tvar dát tohto repa \(verzia 3;/);
   } finally { fx.cleanup(); }
 });

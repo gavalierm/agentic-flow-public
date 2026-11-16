@@ -9,7 +9,7 @@ import { PLUGIN_ROOT, readJson } from './util.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { readSkills } from './records.mjs';
 import { workflowSkillNames, GENERATED_MARKER, PROJECT_SKILLS_DIR, personaSkillPrefix } from './skills-sync.mjs';
-import { dataLayoutVersion, topicHome } from './layout.mjs';
+import { dataLayoutVersion, topicHome, layoutFor, layoutVersions } from './layout.mjs';
 
 const TRIGGER = /^(Použi|Použij|Use)\b/i;
 
@@ -59,7 +59,7 @@ const ANTI = [
   [/dangerouslyDisableSandbox/, 'warn', 'disables the sandbox: a bypass (P-054)'],
   [/\bgit\s+push\s+(?:\S+\s+)*(--force|-f)\b/, 'warn', 'force push rewrites shared history (P-018)'],
   [/\bgit\s+reset\s+--hard\b/, 'warn', 'git reset --hard discards work (P-018)'],
-  [/\bt3_thread_send\b/, 'warn', 'another agent gets work only by mail, not t3_thread_send (P-055)'],
+  [/\bt3_thread_send\b/, 'warn', 'another agent gets work only by mail, not t3_thread_send (P-041)'],
   [/--level\s+info\b/, 'error', 'mail level info was abolished (2026-11-02): assist'],
   [/\bsleep\s+\d{2,}/, 'warn', 'a long sleep is polling: wait on a notification or a timer (P-061)'],
   [/\bcd\s+"?\$\{?[A-Za-z_]/, 'warn', 'cd into a variable: the hook cannot resolve the target and asks (skill fix)'],
@@ -86,7 +86,9 @@ const ECHO_MESSAGE = /\b(?:echo|printf)\s+(?:-\w+\s+)*(?:"[^"]*"|'[^']*')/g;
 // chosen at run time (a pilot or a copied project), not the work files of this thread.
 const FOREIGN_ROOT = String.raw`(?<!(?:\$(?!HOME\b)\w+|\$\{(?!HOME\})\w+\}|<[^<>\s]+>)\/)`;
 const SCRATCH = new RegExp(String.raw`(?<![\w.$-])${FOREIGN_ROOT}scratch\/(?!,)`, 'g');
-const TOPIC_TMP = new RegExp(String.raw`(?<![\w.$-])${FOREIGN_ROOT}temy\/[^\s/\`'"<>$*{}()[\]]+\/tmp(?![\w-])`, 'g');
+// The topic folders of every layout with work files per topic (temy/ in 2, topics/ in 3).
+const TOPIC_DIRS = [...new Set(layoutVersions().map((v) => layoutFor(v)).filter((L) => L.topicTmp).map((L) => L.topics))].join('|');
+const TOPIC_TMP = new RegExp(String.raw`(?<![\w.$-])${FOREIGN_ROOT}(?:${TOPIC_DIRS})\/[^\s/\`'"<>$*{}()[\]]+\/tmp(?![\w-])`, 'g');
 
 /**
  * Fixed work files paths in one line (P-068): a use (write, read, cd, mktemp, redirect, command argument) of a literal
@@ -116,6 +118,9 @@ const workPathMessage = (p) => `fixed work files path ${p}: the folder depends o
 export function checkSkill({ name, dir, text, owner, projectDir, home = os.homedir(), limit = 300, pendingScripts = [], known = null, layout = null, scriptTexts = {} }) {
   const findings = [];
   const add = (level, line, code, message) => findings.push({ level, line, code, message });
+  // Work files per topic (no scratch/: layouts 2, 3): a fixed work files path is an error (P-068).
+  let perTopic = false;
+  try { perTopic = layout !== null && layout !== undefined && layoutFor(layout).scratch === null; } catch { perTopic = false; }
   const prefix = personaSkillPrefix(projectDir);
   const { data, body } = parseFrontmatter(text);
   const bodyStart = text.split('\n').length - body.split('\n').length; // lines before the body
@@ -166,7 +171,7 @@ export function checkSkill({ name, dir, text, owner, projectDir, home = os.homed
         add('warn', n, 'environment', `${p}: home of another user; the skill works only on this machine`);
       }
     }
-    if (layout === 2) for (const p of fixedWorkPaths(line)) add('error', n, 'work-path', workPathMessage(p));
+    if (perTopic) for (const p of fixedWorkPaths(line)) add('error', n, 'work-path', workPathMessage(p));
     if (/\S\\n\S|\\n\d+\./.test(line.replace(/`[^`]*`/g, ''))) add('error', n, 'format', 'literal \\n in the text: the line breaks were saved as characters (pass real newlines)');
     for (const [re, level, message] of ANTI) if (re.test(line) && (level === 'error' || !MENTION.test(line))) add(level, n, 'anti-pattern', message);
   });
@@ -175,7 +180,7 @@ export function checkSkill({ name, dir, text, owner, projectDir, home = os.homed
   if (additions >= 1) add('warn', 0, 'growth', `${additions} "## Doplnenie" section(s): merge them into one coherent body without loss of meaning (save skill --replace)`);
   if (body.length > 8000) add('warn', 0, 'growth', `body ${body.length} chars: shorten or split by tool`);
   for (const f of own) if (!referenced.has(f)) add('warn', 0, 'script', `${f} in the skill folder is not called from SKILL.md`);
-  if (layout === 2) {
+  if (perTopic) {
     for (const f of own) {
       let content = scriptTexts[f];
       if (content === undefined) { try { content = fs.readFileSync(path.join(dir, f), 'utf8'); } catch { continue; } }

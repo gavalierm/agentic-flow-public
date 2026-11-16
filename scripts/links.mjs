@@ -10,7 +10,7 @@ import path from 'node:path';
 import { git, PLUGIN_ROOT } from './util.mjs';
 import { normalizeKey, tokens } from './keys.mjs';
 import { machineStores, machineRecords, refProblem, storeOptions, memoryArgs } from './stores.mjs';
-import { LAYOUT, dataRel, layoutFor, topicWorkLabel } from './layout.mjs';
+import { LAYOUT, dataRel, layoutFor, layoutVersions, topicWorkLabel } from './layout.mjs';
 
 const DECISION = /^(?:([A-Za-z0-9][\w.-]*)\/)?(D-\d{4})$/i;
 const PRINCIPLE = /^P-\d{3}$/i;
@@ -96,7 +96,7 @@ export function checkLinks(ctx, store, values) {
 // tracks (material from outside goes to materialy/<topic>/ first), a decision, a principle or a URL. A record key is no
 // source: the fingerprint reads files, and a key would never turn stale.
 const URL_RE = /^https?:\/\/\S+$/i;
-export const sourceForms = (root = null) => `a source is a file tracked in git (material from outside: save it to ${root ? dataRel(root, 'materialy') : LAYOUT.materialy}/<topic>/ first, skill materialy), a decision (D-NNNN), a principle (P-NNN) or a URL`;
+export const sourceForms = (root = null) => `a source is a file tracked in git (material from outside: save it to ${root ? dataRel(root, 'materialy') : LAYOUT.materialy}/<topic>/ first with save.mjs source), a decision (D-NNNN), a principle (P-NNN) or a URL`;
 // Layout 1; a message about a repository names its folder (sourceForms(root)).
 export const SOURCE_FORMS = sourceForms();
 /** The folders without history as a message names them, by the layout of the session project: local/ and the work files. */
@@ -132,9 +132,10 @@ export function checkSources(ctx, store, values) {
 }
 
 /** Work-file paths (scratch/) named in a body: they vanish when the work files are cleaned (consolidate, D-0036). */
-// Both layouts: scratch/ (1) and temy/<topic>/tmp/ (2); a record may name work files of a repo in either layout.
+// Every layout: scratch/ (1), temy/<topic>/tmp/ (2), topics/<topic>/tmp/ (3); a record may name work files of a repo in any.
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const WORK_DIRS = `(?:${escRe(LAYOUT.scratch)}|${escRe(layoutFor(2).topics)}\\/[\\w.-]+\\/${escRe(layoutFor(2).topicTmp)})`;
+const TOPIC_WORK = [...new Set(layoutVersions().map((v) => layoutFor(v)).filter((L) => L.topicTmp).map((L) => `${escRe(L.topics)}\\/[\\w.-]+\\/${escRe(L.topicTmp)}`))];
+const WORK_DIRS = `(?:${[escRe(LAYOUT.scratch), ...TOPIC_WORK].join('|')})`;
 const SCRATCH_PATH = new RegExp(`(?:^|[\\s(\`'"[])(\\/?(?:[\\w.~-]+\\/)*${WORK_DIRS}\\/[^\\s)\`'"\\],;]+)`, 'gm');
 export function scratchPaths(body) {
   const found = [...String(body || '').matchAll(SCRATCH_PATH)].map((m) => m[1].replace(/[.,;:]+$/, ''));

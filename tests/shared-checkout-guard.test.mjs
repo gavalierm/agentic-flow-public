@@ -17,7 +17,7 @@ function domainFx({ worktrees = true } = {}) {
   fs.writeFileSync(path.join(fx.root, '.agentic-domain'), '{"brain":"brain"}');
   if (worktrees) {
     fs.mkdirSync(path.join(fx.root, '.worktrees', 'project'), { recursive: true });
-    fs.writeFileSync(path.join(fx.brain, 'policy.json'), JSON.stringify({ topics: { auto: { projects: { '../project': ['project'] } } } }));
+    fs.writeFileSync(path.join(fx.brain, 'policy.json'), JSON.stringify({ topics: { shared_checkouts: ['project'] } }));
   }
   fs.writeFileSync(path.join(fx.project, 'tracked.txt'), 'a\n');
   return fx;

@@ -12,8 +12,7 @@ import { brainWrite } from '../scripts/brain.mjs';
 import { nowIso } from '../scripts/util.mjs';
 import { heldTopics } from '../scripts/topic.mjs';
 import { RESULTS_FILE, workerTaskLine, resultEntry } from '../scripts/materialy.mjs';
-import { dataRel } from '../scripts/layout.mjs';
-import { hasTriage, CONCLUSIONS_DIR, conclusionName, conclusionText } from '../scripts/triage.mjs';
+import { dataRel, hasScratch } from '../scripts/layout.mjs';
 
 export const HOOK_META = { event: 'SubagentStop', class: 'block', limit: '1 reason', principles: ['P-028'] };
 
@@ -96,29 +95,20 @@ export function recordWorkerFailures(input, ctx, now = nowIso()) {
 }
 
 /**
- * An accepted worker result goes to <brain>/topics/<held topic>/results.md (D-0032): it lived only in the conversation and
- * was lost with it. It is archived with the topic (done --topic) and never indexed. No held topic: nothing is written.
- * Layout 2: temy/<held topic>/zavery/<time>-<agent>.md, one file per result (D-0044).
+ * An accepted worker result goes to <brain>/topics/<held topic>/results.md in data layout 1 (D-0032): it lived only in
+ * the conversation and was lost with it. It is archived with the topic (done --topic) and never indexed. No held topic:
+ * nothing is written. A brain without scratch/ (layout 2 and 3, flow v2 plan O13): the hook writes nothing, the manager
+ * keeps a result worth keeping with save.mjs result (spec 5); zavery/ is gone.
  */
 export function recordWorkerResult(input, ctx, now = nowIso()) {
   if (!/(^|:)worker$/.test(String(input.agent_type || ''))) return null;
   const result = String(input.last_assistant_message || '').trim();
-  if (!result || !ctx.brainDir) return null;
+  if (!result || !ctx.brainDir || !hasScratch(ctx.brainDir)) return null;
   const topic = heldTopics(ctx.brainDir, ctx.thread)[0]?.id;
   if (!topic) return null;
   const file = agentTranscriptPath(input);
   const task = file ? workerTaskLine(file) : '';
   const agent = String(input.agent_id || input.agent_type || 'worker').replace(/\s+/g, '-');
-  if (hasTriage(ctx.brainDir)) {
-    // Layout 2 (D-0044): one file per conclusion in temy/<topic>/zavery/, a file of the topic like any other (triage at
-    // done --topic), not an entry appended to results.md.
-    const dir = dataRel(ctx.brainDir, 'topics', topic, CONCLUSIONS_DIR);
-    let name = conclusionName(now, agent);
-    for (let n = 2; fs.existsSync(path.join(ctx.brainDir, ...dir.split('/'), name)); n++) name = conclusionName(now, `${agent}-${n}`);
-    const file = `${dir}/${name}`;
-    brainWrite(ctx, { ops: [{ path: file, content: conclusionText({ task, agent, result }) }], internal: true, message: `worker conclusion: ${topic}` });
-    return file;
-  }
   const rel = dataRel(ctx.brainDir, 'topics', topic, RESULTS_FILE);
   brainWrite(ctx, { ops: [{ path: rel, append: resultEntry({ at: now, agent, task, result }) }], internal: true, message: `worker result: ${topic}` });
   return rel;
@@ -131,10 +121,10 @@ export function run(input, policy = loadPolicy(null)) {
   // Only the workflow worker gets the result rules (delegate.mjs prepare); a built-in or plugin agent never saw them,
   // and a block there only cost a turn (operator 2026-11-08, hooks review).
   if (!/(^|:)worker$/.test(String(input.agent_type || ''))) return {};
-  // The limit is enforced here: 45 of 47 results were over it and the manual `delegate.mjs check` ran 0 times (audit M4
-  // 2026-11-11). A block costs the worker one cached turn; stop_hook_active above lets the second stop through.
+  // The Failures section is enforced here (the manual `delegate.mjs check` ran 0 times, audit M4 2026-11-11); the length of
+  // the result is the brief's (P-027, no fixed limit). A block costs the worker one cached turn; stop_hook_active above lets
+  // the second stop through.
   const text = String(input.last_assistant_message || '');
-  const limit = policy.limits?.worker_result_chars ?? 3000;
   const errors = [];
   if (!hasFailuresSection(text)) errors.push('the result must end with a section "Failures: <what failed and what finally worked>" (write "Failures: none" if nothing failed), P-028');
   if (hasFailuresSection(text) && !failuresText(text)) {
@@ -142,7 +132,6 @@ export function run(input, policy = loadPolicy(null)) {
     const failed = file ? failedSourceCalls(file) : [];
     if (failed.length) errors.push(`${failed.length} source call(s) failed (${failed.slice(0, 3).map((f) => `${f.tool} ${f.target}: ${f.error}`).join('; ')}), yet the result says "Failures: none": a source not read (error, blocked, empty or cut page) is a failure, list it under Failures and in the conclusion tell sources not read apart from facts not found (P-028, flow-public#34)`);
   }
-  if (text.length > limit) errors.push(`the result has ${text.length} chars, the limit is ${limit} (P-027): keep the conclusion and its sources (paths, lines, commands), drop raw content and repeated detail`);
   if (!errors.length) return {};
   return { decision: 'block', reason: `Return the result again: ${errors.join('; ')}.` };
 }
@@ -150,7 +139,7 @@ export function run(input, policy = loadPolicy(null)) {
 if (isMain(import.meta.url)) {
   try {
     const input = readHookInput();
-    // The project's composed policy (D-0025): its limit and exempt types, not the plugin's alone.
+    // The project's composed policy (D-0025): its exempt types, not the plugin's alone.
     let ctx = null;
     try { ctx = loadContext({ requireBrain: false }); } catch (err) { process.stderr.write(`subagent-stop: plugin policy only: ${err.message}\n`); }
     const out = ctx ? run(input, ctx.policy) : run(input);

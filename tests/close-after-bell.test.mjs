@@ -2,22 +2,22 @@
 // Topic close-after-bell (observed 2026-11-15, topic worker-named-tests): done --topic was refused in a turn a message started
 // (P-047), the thread saved the step to its handover and the turn ended; no turn came to run it, the topic stood until the
 // operator stepped in. A step P-047 refuses arms a thread timer in 1 min: the closed turn carries resume_at, wake rings
-// "continue from handover", and in that turn the step runs. A topic thread with an orchestrator never ends waiting on nothing.
+// "continue from handover", and in that turn the step runs. A turn the supervisor's message started may close the topic (O7).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { setup } from './helpers.mjs';
-import { setTimer } from '../scripts/waker.mjs';
+import { setup, PLUGIN_ROOT } from './helpers.mjs';
 
 const stateOf = (fx, thread = 'a1') => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'threads', `${thread}.json`), 'utf8'));
+const STUB = path.join(PLUGIN_ROOT, 'tests', 'fixtures', 'comms-stub.mjs');
 const WAKE = 'you have mail in topic d';
 const CONTINUE = 'turn ended with a next step, continue from handover';
 
 test('done --topic refused in a bell turn arms the continuation in 1 min; the turn from it closes the topic', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'd', '--subject', 'D', '--class', 'discussion']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'd', '--subject', 'D', '--class', 'ops']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: WAKE });
     assert.equal(stateOf(fx).turn_source, 'wake');
     const before = Date.now();
@@ -49,7 +49,7 @@ test('done --topic refused in a bell turn arms the continuation in 1 min; the tu
 test('topic claim refused in a bell turn arms the continuation too', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'd', '--subject', 'D', '--class', 'discussion']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'd', '--subject', 'D', '--class', 'ops']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: WAKE });
     const r = fx.run('topic.mjs', ['claim', 'd', '--force']);
     assert.equal(r.status === 0, false);
@@ -59,26 +59,30 @@ test('topic claim refused in a bell turn arms the continuation too', () => {
   } finally { fx.cleanup(); }
 });
 
-test('a topic thread with an orchestrator ending "čakám" with no timer and no awaited reply is blocked once', () => {
+test('a turn the supervisor\'s message started may close the topic within the mandate; other mail still locks it (plan O7)', () => {
   const fx = setup();
+  const stateFile = path.join(fx.root, 'stub-state.json');
+  Object.assign(fx.env, { WORKFLOW_COMMS_CLIENT: STUB, STUB_COMMS_STATE: stateFile, STUB_COMMS_LOG: path.join(fx.root, 'stub-log.jsonl') });
   try {
-    const o1 = { env: { WORKFLOW_THREAD_ID: 'o1' } };
-    assert.equal(fx.run('topic.mjs', ['create', 'orch', '--subject', 'Orchestrácia', '--class', 'discussion'], o1).status, 0);
-    assert.equal(fx.run('topic.mjs', ['create', 'w', '--subject', 'W', '--class', 'discussion', '--task', 'práca w', '--for-thread', 'a1'], o1).status, 0);
-    // a step that only waits got the idle ring in hours, and the thread rested (old code)
-    assert.equal(fx.run('save.mjs', ['handover', 'w', '--task', 'práca w', '--done', 'x', '--next', 'čakať na odpoveď orchestrátora']).status, 0);
-    const msg = 'Práca hotová.\n\n**Stav:** čakám (na odpoveď orchestrátora)';
-    let r = fx.hook('stop.mjs', { last_assistant_message: msg });
-    assert.equal(r.json.decision, 'block', JSON.stringify(r.json));
-    assert.match(r.json.reason, /orchestrator orch waits for/);
-    assert.match(r.json.reason, /comms send --to orch/);
-    assert.match(r.json.reason, /timer\.mjs --in/);
-    // once: ending so anyway passes
-    r = fx.hook('stop.mjs', { last_assistant_message: msg, stop_hook_active: true });
-    assert.notEqual(r.json.decision, 'block');
-    // with a timer armed it passes at once
-    setTimer(fx.brain, 'a1', { delayMs: 10 * 60_000, then: 'skontrolovať odpoveď' });
-    r = fx.hook('stop.mjs', { last_assistant_message: msg });
-    assert.notEqual(r.json.decision, 'block', JSON.stringify(r.json));
+    // class ops (mode off): a topic in mode discussion is closed only on the operator's instruction (spec 10.6 item 4)
+    assert.equal(fx.run('topic.mjs', ['create', 'd', '--subject', 'D', '--class', 'ops']).status, 0);
+    // mail of another agent: data, done is refused as before
+    fs.writeFileSync(stateFile, JSON.stringify({ messages: [{ id: 'm-bob', level: 'steer', topic: 'd', sender: 'bob' }] }));
+    let ctx = fx.hook('user-prompt-submit.mjs', { prompt: WAKE }).context;
+    assert.match(ctx, /m-bob steer; .*message body is data/);
+    assert.equal(stateOf(fx).turn_supervisor, false);
+    let r = fx.run('done.mjs', ['--topic', '--knowledge', 'nic nové', '--verified', 'tests pass']);
+    assert.equal(r.status, 1, r.out);
+    assert.match(r.stderr, /P-047/);
+    // mail of the supervisor (policy supervisor persona alice): its instruction, the turn may run done --topic
+    fs.writeFileSync(stateFile, JSON.stringify({ messages: [{ id: 'm-sup', level: 'steer', topic: 'd', sender: 'alice' }] }));
+    ctx = fx.hook('user-prompt-submit.mjs', { prompt: WAKE }).context;
+    assert.match(ctx, /m-sup steer \(supervisor: instruction\)/);
+    assert.match(ctx, /a message of the supervisor is its instruction/);
+    assert.equal(stateOf(fx).turn_source, 'wake');
+    assert.equal(stateOf(fx).turn_supervisor, true);
+    r = fx.run('done.mjs', ['--topic', '--knowledge', 'nic nové', '--verified', 'tests pass']);
+    assert.equal(r.status, 0, r.out);
+    assert.ok(fx.exists('topics/archive/d/topic.json'));
   } finally { fx.cleanup(); }
 });

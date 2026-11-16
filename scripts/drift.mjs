@@ -39,17 +39,15 @@ export function ownWords(prompt) {
 
 /**
  * Judge input for the topics a thread holds (`heldWork`, first = the judged topic) among the open `topics`
- * (flow-public#87): the topic's own task goes with its subject, and the topic of the orchestrator that assigned the topic
- * is not offered as "belongs to": its subject covers the work it handed to this topic.
+ * (flow-public#87): the topic's own task goes with its subject.
  */
 export function driftJob(heldWork, topics) {
   const [topic, ...rest] = heldWork;
   const heldIds = new Set(heldWork.map((t) => t.id));
-  const assigner = topic.orchestrator?.topic || null;
   return {
     topic: topic.id, subject: topic.subject, topicTask: topic.task || null, state: topic.state, next: topic.next, handover: topic.handover,
     held: rest.map((t) => ({ id: t.id, subject: t.subject })),
-    others: (topics || []).filter((t) => t && t.subject && !heldIds.has(t.id) && t.id !== assigner).map((t) => ({ id: t.id, subject: t.subject })),
+    others: (topics || []).filter((t) => t && t.subject && !heldIds.has(t.id)).map((t) => ({ id: t.id, subject: t.subject })),
   };
 }
 

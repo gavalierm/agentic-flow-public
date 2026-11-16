@@ -10,7 +10,7 @@ import { initProject } from './helpers.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV } from '../scripts/config.mjs';
 import { dataLayoutVersion } from '../scripts/layout.mjs';
 
-const HANDOVER = (task) => `## Zadanie\n${task}\n## Hotové\n-\n## Ďalší krok\n-\n## Súbory\n-\n## Otvorené otázky\n-\n`;
+const HANDOVER = (task) => `## Zadanie\n${task}\n## Hotové\n-\n## Ďalší krok\n-\n## Súbory\n-\n## Otvorené otázky\n-\n## Úlohy pre operátora\n-\n`;
 
 /** Write files into a repo and commit them as the brain script does. */
 function commitFiles(dir, files, message = 'fixture', { noVerify = false } = {}) {
@@ -117,9 +117,9 @@ test('apply: layout 2 in one commit, merged .tema.json, closed topic in place, p
     const c = fx.run('migrate.mjs', [fx.brain, '--check']);
     assert.equal(c.status, 0, c.out);
     // Workflow of layout 2 over the moved brain.
-    let w = fx.run('save.mjs', ['memory', 'operator', 'operator', '--content', 'name: Example']);
+    let w = fx.run('save.mjs', ['memory', 'tool', 'example', '--content', 'name: Example']);
     assert.equal(w.status, 0, w.out);
-    assert.ok(fx.exists('.brain/memory/operator-operator.md'));
+    assert.ok(fx.exists('.brain/memory/tool-example.md'));
     w = fx.run('topic.mjs', ['create', 'gamma', '--subject', 'Gamma', '--class', 'discussion']);
     assert.equal(w.status, 0, w.out);
     assert.ok(fx.exists('temy/gamma/.tema.json'));

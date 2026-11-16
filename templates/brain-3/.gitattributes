@@ -1,0 +1,2 @@
+* text=auto eol=lf
+logs/*.log merge=union

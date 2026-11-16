@@ -159,3 +159,138 @@ test('the answer to a sender whose topic is closed settles the original and says
     assert.match(x.statusA(), /^obligations: nothing owed, nothing awaited$/m);
   } finally { await x.done(); }
 });
+
+// --- Stop hook: the reply protocol of spec 10.3 (skeleton, state against facts, dialog, one block per turn) ---------------
+// The text of the result is never read (10.4); a state comes from the handover and the alarms, not from the state line.
+const topicRecord = (fx, id) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'topics', id, 'topic.json'), 'utf8'));
+const stopRaw = (fx, msg, extra = {}) => fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg, rawHandover: true, ...extra }).json;
+const turnOf = (fx, source) => { const st = readState(fx.brain, 'a1'); fs.writeFileSync(stateFile(fx.brain, 'a1'), JSON.stringify({ ...st, turn_source: source, turn_started_at: new Date().toISOString() })); };
+
+test('Stop 10.3 item 1: skeleton — state line, Handover line of every held topic (also "→ žiadny"), blocks as many items as the handover sections', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'ops']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'pracuj' });
+    assert.match(stopRaw(fx, 'Hotové.').reason, /no state line/);
+    assert.match(stopRaw(fx, 'Hotové.\n\n**Stav:** hotovo').reason, /no \*\*Handover:\*\* section.*alpha/);
+    assert.match(stopRaw(fx, 'Hotové.\n\nHandover: alpha – nič\nStav: hotovo').reason, /old form of the protocol/);
+    assert.equal(stopRaw(fx, 'Hotové.\n\n**Handover:**\n1. alpha → žiadny\n\n**Stav:** hotovo').decision, undefined);
+    // a block item the handover does not hold is refused; saved in Otvorené otázky it passes (the operator started the turn)
+    const ask = 'Návrh je hotový.\n\n**Otázky na operátora:**\n1. Nasadiť variant A?\n\n**Handover:**\n1. alpha → žiadny\n\n**Stav:** otázka';
+    assert.match(stopRaw(fx, ask).reason, /\*\*Otázky na operátora:\*\* has 1 item\(s\) and the section Otvorené otázky of the held topics 0/);
+    assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--task', 'T', '--questions', 'Nasadiť variant A?']).status, 0);
+    assert.equal(stopRaw(fx, ask).decision, undefined);
+    const st = readState(fx.brain, 'a1');
+    assert.ok(!st.timer && !(st.timers || []).length, 'otázka arms no timer (spec 10.2: otázka has no alarm)');
+    assert.equal(topicRecord(fx, 'alpha').turn.state, 'otázka');
+    assert.equal(topicRecord(fx, 'alpha').turn.alarm_at, null);
+    // a thread without a held topic has neither block (10.1)
+    const fy = setup({ thread: 'z9' });
+    try {
+      fy.hook('user-prompt-submit.mjs', { prompt: 'ahoj' });
+      assert.match(fy.hook('stop.mjs', { last_assistant_message: '**Otázky na operátora:**\n1. Aká téma?\n\n**Handover:** žiadny\n\n**Stav:** otázka', rawHandover: true }).json.reason, /needs a held topic/);
+    } finally { fy.cleanup(); }
+  } finally { fx.cleanup(); }
+});
+
+test('Stop 10.3 item 2: the state against the facts; a next step is "čakám (na pokračovanie)", the turn closes with the step and resume_at (O2)', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'ops']).status, 0);
+    assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--task', 'T', '--next', 'dopísať testy', '--questions', 'Zlúčiť do main?']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'pracuj' });
+    const end = (state) => `Hotová časť.\n\n**Otázky na operátora:**\n1. Zlúčiť do main?\n\n**Handover:**\n1. alpha → dopísať testy\n\n**Stav:** ${state}`;
+    assert.match(stopRaw(fx, end('hotovo')).reason, /declares "\*\*Stav:\*\* hotovo" but the facts give "čakám" \(topic alpha: 1 next step\(s\), 1 open question\(s\)/);
+    assert.match(stopRaw(fx, end('otázka')).reason, /the facts give "čakám"/, 'a question does not stop the work: the step continues');
+    const before = Date.now();
+    assert.equal(stopRaw(fx, end('čakám (na pokračovanie)')).decision, undefined);
+    const close = readState(fx.brain, 'a1').last_close;
+    assert.equal(close.next, 'dopísať testy');
+    const due = Date.parse(close.resume_at) - before;
+    assert.ok(due >= 55_000 && due <= 70_000, `resume_at in ${due} ms`);
+    const turn = topicRecord(fx, 'alpha').turn;
+    assert.equal(turn.state, 'čakám');
+    assert.ok(Date.parse(turn.alarm_at) >= before, 'the continuation alarm is the end of the turn');
+    // the second attempt of a turn passes (at most one block per turn)
+    assert.equal(stopRaw(fx, end('hotovo'), { stop_hook_active: true }).decision, undefined);
+  } finally { fx.cleanup(); }
+});
+
+test('Stop 10.3: a last message of only the skeleton is blocked on the first attempt; the second attempt passes (one block per turn, O3)', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'ops']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'pracuj' });
+    const skeleton = '**Handover:**\n1. alpha → žiadny\n\n**Stav:** hotovo';
+    assert.match(stopRaw(fx, skeleton).reason, /only its skeleton/);
+    // after the block the agent ends again with only the skeleton: no second block in this turn, the turn closes
+    assert.equal(stopRaw(fx, skeleton, { stop_hook_active: true }).decision, undefined);
+    assert.equal(topicRecord(fx, 'alpha').turn.state, 'hotovo');
+    assert.equal(readState(fx.brain, 'a1').state_only_blocked_at, undefined, 'no per-turn mark of a second block');
+    // a second attempt that breaks the skeleton otherwise passes too
+    fx.hook('user-prompt-submit.mjs', { prompt: 'pracuj' });
+    assert.equal(stopRaw(fx, 'Hotové.', { stop_hook_active: true }).decision, undefined);
+  } finally { fx.cleanup(); }
+});
+
+test('Stop: state written only when it changed (risk 4.7), in the commit of the logs', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'ops']).status, 0);
+    assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--task', 'T', '--questions', 'A?']).status, 0);
+    const msg = '**Otázky na operátora:**\n1. A?\n\n**Handover:**\n1. alpha → žiadny\n\n**Stav:** otázka';
+    fx.hook('user-prompt-submit.mjs', { prompt: 'pracuj' });
+    fs.mkdirSync(path.join(fx.brain, 'local', 'log-buffer'), { recursive: true });
+    fx.hook('post-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'touch a' }, tool_response: { stdout: '' } });
+    fx.hook('post-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: 'touch b' }, tool_response: { stdout: '' } });
+    const head0 = fx.git(fx.brain, 'rev-parse', 'HEAD');
+    assert.equal(stopRaw(fx, msg).decision, undefined);
+    const log = fx.git(fx.brain, 'log', '--format=%s', `${head0}..HEAD`).split('\n').filter(Boolean);
+    assert.equal(log.length, 1, log.join('\n'));
+    assert.match(log[0], /turn alpha otázka; logs flush s1/);
+    assert.match(fx.git(fx.brain, 'show', '--name-only', '--format=', 'HEAD'), /topics\/alpha\/topic\.json/);
+    assert.equal(fx.git(fx.brain, 'rev-parse', 'HEAD'), fx.git(fx.brain, 'rev-parse', 'origin/main'), 'pushed');
+    // the same state again: no write
+    fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
+    const head1 = fx.git(fx.brain, 'rev-parse', 'HEAD');
+    assert.equal(stopRaw(fx, msg).decision, undefined);
+    assert.equal(fx.git(fx.brain, 'rev-parse', 'HEAD'), head1);
+  } finally { fx.cleanup(); }
+});
+
+test('Stop 10.3 item 3: the dialog only in a turn the operator did not start, at otázka, outside mode discussion', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'ops']).status, 0);
+    assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--task', 'T', '--questions', 'Variant A alebo B?']).status, 0);
+    const ask = 'Porovnanie hotové.\n\n**Otázky na operátora:**\n1. Variant A alebo B?\n\n**Handover:**\n1. alpha → žiadny\n\n**Stav:** otázka';
+    fx.hook('user-prompt-submit.mjs', { prompt: 'porovnaj varianty' });
+    assert.equal(stopRaw(fx, ask).decision, undefined, 'the operator reads the reply: no dialog');
+    turnOf(fx, 'wake');
+    assert.match(stopRaw(fx, ask).reason, /ask the first item of \*\*Otázky na operátora:\*\* with AskUserQuestion now/);
+    const st = readState(fx.brain, 'a1');
+    fs.writeFileSync(stateFile(fx.brain, 'a1'), JSON.stringify({ ...st, dialog_at: new Date(Date.now() + 1000).toISOString() }));
+    assert.equal(stopRaw(fx, ask).decision, undefined, 'a dialog asked in the turn: only that it was asked counts');
+  } finally { fx.cleanup(); }
+});
+
+// Spec 10.8: the three false findings of 1.7/1.8.
+test('Stop 10.8: "Ostáva:" in the text is no step; "pokračovať v diskusii" cannot be saved and hotovo passes; otázka in discussion needs no dialog', () => {
+  const fx = setup();
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'ops']).status, 0);
+    fx.hook('user-prompt-submit.mjs', { prompt: 'zhrň obsah' });
+    assert.equal(stopRaw(fx, 'Obsah:\n- kapitola 1\n\nOstáva: príloha B, ktorú dokument už nemá.\n\n**Handover:**\n1. alpha → žiadny\n\n**Stav:** hotovo').decision, undefined, '1: a label in the text is no step (10.4)');
+
+    assert.equal(fx.run('topic.mjs', ['create', 'talk', '--subject', 'Talk', '--class', 'discussion', '--here']).status, 0);
+    const refused = fx.run('save.mjs', ['handover', 'talk', '--task', 'T', '--next', 'pokračovať v diskusii']);
+    assert.notEqual(refused.status, 0, '2: a step in mode discussion is not saved (10.6)');
+    fx.hook('user-prompt-submit.mjs', { prompt: 'len diskutujeme' });
+    const both = (state, q = '') => `Bod 1 ostáva otvorený.\n\n${q}**Handover:**\n1. alpha → žiadny\n2. talk → žiadny\n\n**Stav:** ${state}`;
+    assert.equal(stopRaw(fx, both('hotovo')).decision, undefined, '2: hotovo passes, no step was saved');
+
+    assert.equal(fx.run('save.mjs', ['handover', 'talk', '--task', 'T', '--questions', 'Ideme cestou A?']).status, 0);
+    turnOf(fx, 'wake');
+    assert.equal(stopRaw(fx, both('otázka', '**Otázky na operátora:**\n1. Ideme cestou A?\n\n')).decision, undefined, '3: otázka in mode discussion without a dialog passes');
+  } finally { fx.cleanup(); }
+});

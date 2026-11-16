@@ -1,17 +1,19 @@
 // Files of one topic in a brain, by the brain's data layout (layout.mjs, D-0048). Layout 1: topics/<id>/topic.json and
 // holder.json, a closed topic moves to topics/archive/<id>/. Layout 2: one temy/<id>/.tema.json = the fields of the topic
-// plus `holder` (a free topic `holder: {}`), a closed topic stays in temy/<id>/ with `state: "closed"`.
+// plus `holder` (a free topic `holder: {}`), a closed topic stays in temy/<id>/ with `state: "closed"`. Layout 3: the same
+// .tema.json in topics/<id>/, without the hidden archive. The branches test the map (one file for topic and holder, a
+// hidden archive), not the version.
 // A leaf module next to layout.mjs (imports util, config and layout only), so brain.mjs, records.mjs, topic.mjs, comms.mjs
 // and the hooks read and write topics through it without an import cycle.
 import fs from 'node:fs';
 import path from 'node:path';
 import { readJson } from './util.mjs';
 import { sameMachine } from './config.mjs';
-import { dataPath, dataRel, dataLayoutVersion, layoutOf, workDirFor, topicHome } from './layout.mjs';
+import { dataPath, dataRel, layoutOf, workDirFor, topicHome, hasData, hasScratch } from './layout.mjs';
 
 const MAIN = 'main';
-/** The brain keeps topic and holder in one file (layout 2). */
-export const oneTopicFile = (brainDir) => dataLayoutVersion(brainDir) !== 1;
+/** The brain keeps topic and holder in one file (.tema.json: layouts 2 and 3). */
+export const oneTopicFile = (brainDir) => { const L = layoutOf(brainDir); return L.topicFile === L.holderFile; };
 const json = (v) => JSON.stringify(v, null, 2) + '\n';
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 
@@ -26,7 +28,7 @@ function readTema(brainDir, id, dir = dataPath(brainDir, 'topics', id)) {
 
 /** Layout 2: folder of a topic in the hidden archive (.brain/archive/topics/<id>, D-0060), or null when it is not there. */
 export function hiddenTopicDir(brainDir, id) {
-  if (!oneTopicFile(brainDir) || !id) return null;
+  if (!oneTopicFile(brainDir) || !id || !hasData(brainDir, 'topicHidden')) return null;
   const dir = dataPath(brainDir, 'topicHidden', id);
   return fs.existsSync(path.join(dir, layoutOf(brainDir).topicFile)) ? dir : null;
 }
@@ -118,7 +120,7 @@ export function listTopicRecords(brainDir, { closed = false } = {}) {
     }
   }
   // Layout 2: the closed topics include those of the hidden archive (D-0060), unless one of the id is closed in temy/.
-  if (two && closed) {
+  if (two && closed && hasData(brainDir, 'topicHidden')) {
     const hidden = dataPath(brainDir, 'topicHidden');
     let more = [];
     try { more = fs.readdirSync(hidden, { withFileTypes: true }); } catch { more = []; }
@@ -154,26 +156,78 @@ export function holderOp(brainDir, id, holder) {
 }
 
 /**
- * Layout 2: ops of a topic record and of its holder (`tema`) for one .tema.json become one op, its content from the file on
- * disk at write time with the given parts replaced, so a holder write keeps the topic fields and a topic write the holder.
- * Other ops and layout 1 stay as they are.
+ * Fields of flow v2 in the topic record (plan O1): `turn` (`state`, `alarm_at`, `stuck`, `continues`: the state of the
+ * protocol, spec 10.2), `mode` (`discussion` | `off`, 10.6) and `repos` (`{ main, list }`, 4.5) at the top level; the
+ * field `state` (working | paused | closed) is another one and stays.
+ */
+export const V2_FIELDS = ['turn', 'mode', 'repos'];
+export const TURN_FIELDS = ['state', 'alarm_at', 'stuck', 'continues'];
+export const MODES = ['discussion', 'off'];
+
+/**
+ * The record with `fields` set (null removes a field); `turn` merges key by key into the record's turn, a key set to null
+ * stays null (`alarm_at: null` = no alarm, `stuck: null` = not stuck).
+ */
+export function withFields(topic, fields) {
+  const out = { ...obj(topic) };
+  for (const [k, v] of Object.entries(obj(fields))) {
+    if (v === null || v === undefined) { delete out[k]; continue; }
+    if (k !== 'turn') { out[k] = v; continue; }
+    const turn = { ...obj(out.turn) };
+    for (const [tk, tv] of Object.entries(obj(v))) if (tv !== undefined) turn[tk] = tv;
+    out.turn = turn;
+  }
+  return out;
+}
+
+/**
+ * Write op of fields of flow v2 (V2_FIELDS, `turn` key by key) into the topic record, merged with the record on disk at
+ * write time (mergeTopicOps), so it goes in one op with a holder op of the same write (layout 2: one .tema.json) and
+ * keeps every other field (withFields). A field or turn key outside the lists is refused (a typo would write a field nobody reads).
+ */
+export function fieldsOp(brainDir, id, fields) {
+  const f = obj(fields);
+  const bad = Object.keys(f).filter((k) => !V2_FIELDS.includes(k));
+  if (bad.length) throw new Error(`unknown topic field ${bad.join(', ')} (fields of flow v2: ${V2_FIELDS.join(', ')})`);
+  const badTurn = Object.keys(obj(f.turn)).filter((k) => !TURN_FIELDS.includes(k));
+  if (badTurn.length) throw new Error(`unknown turn field ${badTurn.join(', ')} (turn: ${TURN_FIELDS.join(', ')})`);
+  if (f.mode !== undefined && f.mode !== null && !MODES.includes(f.mode)) throw new Error(`mode ${f.mode}: expected ${MODES.join(' or ')}`);
+  const rel = topicFileRel(brainDir, id);
+  const two = oneTopicFile(brainDir);
+  const now = two ? splitTema(readTema(brainDir, id)).topic : obj(readJson(path.join(brainDir, rel), null));
+  const topic = withFields(now, f);
+  return { path: rel, content: json(two ? { ...topic, holder: readHolderRecord(brainDir, id) } : topic), tema: { fields: f } };
+}
+
+/**
+ * Ops of a topic record, of its holder and of fields of flow v2 (`tema`) for one file become one op, its content from the
+ * file on disk at write time with the given parts replaced in the order of the ops, so a holder write keeps the topic
+ * fields, a topic write the holder and a fields write every other field. Layout 2 one .tema.json (topic and holder);
+ * layout 1 topic.json of a fields op, a plain topic op of the same file (layout 1 topicOp) counts as its topic part.
+ * Other ops stay as they are.
  */
 export function mergeTopicOps(brainDir, ops) {
   if (!ops.some((op) => op && op.tema)) return ops;
+  const two = oneTopicFile(brainDir);
+  const temaPaths = new Set(ops.filter((op) => op && op.tema).map((op) => op.path));
+  const part = (op) => op && temaPaths.has(op.path) && (op.tema || (!two && typeof op.content === 'string'));
   const groups = new Map();
-  for (const op of ops) if (op.tema) groups.set(op.path, [...(groups.get(op.path) || []), op]);
+  for (const op of ops) if (part(op)) groups.set(op.path, [...(groups.get(op.path) || []), op]);
   const out = [];
   for (const op of ops) {
-    if (!op.tema) { out.push(op); continue; }
+    if (!part(op)) { out.push(op); continue; }
     const group = groups.get(op.path);
     if (!group) continue;
     groups.delete(op.path);
-    let { topic, holder } = splitTema(readJson(path.join(brainDir, op.path), null));
+    const disk = readJson(path.join(brainDir, op.path), null);
+    let { topic, holder } = two ? splitTema(disk) : { topic: obj(disk), holder: null };
     for (const g of group) {
+      if (!g.tema) { topic = splitTema(JSON.parse(g.content)).topic; continue; }
       if (g.tema.topic) topic = obj(g.tema.topic);
+      if (g.tema.fields) topic = withFields(topic, g.tema.fields);
       if (g.tema.holder) holder = obj(g.tema.holder);
     }
-    out.push({ path: op.path, content: json({ ...topic, holder }) });
+    out.push({ path: op.path, content: json(two ? { ...topic, holder } : topic) });
   }
   return out;
 }
@@ -199,7 +253,7 @@ export function workTopic(ctx) {
 export function workDir(ctx) {
   if (!ctx?.projectDir) return null;
   const home = topicHome(ctx.brainDir, ctx.projectDir);
-  return workDirFor(home, dataLayoutVersion(home) === 1 ? null : workTopic(ctx));
+  return workDirFor(home, hasScratch(home) ? null : workTopic(ctx));
 }
 
 /**
@@ -211,7 +265,7 @@ export function heldWorkDirs(ctx) {
   const first = workDir(ctx);
   if (!first) return [];
   const home = topicHome(ctx.brainDir, ctx.projectDir);
-  if (!ctx.brainDir || !ctx.thread || dataLayoutVersion(home) === 1) return [first];
+  if (!ctx.brainDir || !ctx.thread || hasScratch(home)) return [first];
   const held = listTopicRecords(ctx.brainDir).filter((t) => t.holder?.thread === ctx.thread && sameMachine(t.holder.machine) && t.id !== MAIN && t.topic?.kind !== 'main');
   return [...new Set([first, ...held.map((t) => workDirFor(home, t.id))])];
 }

@@ -4,9 +4,11 @@
 //   error.mjs check <tool-or-work>      -> existing brain skill to extend, or "none"
 //   error.mjs resolve <id> [<id> ...]   -> remove the listed failures (stable id from list, not the number) after the lesson was saved
 //   error.mjs restore <brain commit>    -> bring back the failure(s) a wrong resolve commit dropped
-//   error.mjs report --title "..." --text "..."   -> report to the maintainer: mail, else public issue, else draft (P-003)
+//   error.mjs report --title "..." --text "..."   -> report to the maintainer, sent once by mail; mail unavailable: a draft in the
+//                                                held topic and a task for the operator; never an issue (spec 7.3 to 7.5, P-003)
 //   error.mjs report --to <[project/]topic> --title "..." --text "..." -> to the thread that did the work; maintainer only if unreachable
-//   error.mjs report --from <message id>         -> a mailed report without pickup (no reply / undelivered): again as blocker to the maintainer topic, never an issue (D-0067)
+//   error.mjs report --from <message id>         -> a mailed report without pickup (no reply / undelivered): a task for the
+//                                                operator (Úlohy pre operátora), never sent again (spec 7.4)
 //   error.mjs confirm <issue url> --text "..."    -> the fix works in the reported scenario: comment, the watch ends (3c)
 //   error.mjs reopen <issue url> --text "..."     -> the fix does not work: reopen with the evidence, the watch goes on
 //   error.mjs watch [--force]                     -> check the watched issues now; prints the rings without a mail address

@@ -7,18 +7,19 @@ import { readHookInput, emit, isMain, contextOutput } from '../scripts/hooks-io.
 import { loadContext, readThreadState, writeThreadState, SCRATCH_DIR } from '../scripts/config.mjs';
 import { isInside } from '../scripts/util.mjs';
 import { isSessionWorkPath } from '../scripts/layout.mjs';
-import { withAnswered } from '../scripts/protocol.mjs';
+import { markProgress } from '../scripts/topic-turn.mjs';
 import { withLift } from '../scripts/bypass.mjs';
 import { bufferAppend, normalizeCommand } from '../scripts/logs.mjs';
 import { mailCount, recordWaitingOperator } from '../scripts/comms.mjs';
 import { mailboxTopics } from '../scripts/topic.mjs';
 import path from 'node:path';
+import { heldTopics, topicCopyPath, taskCopyPaths } from '../scripts/topic.mjs';
+import { pushFailureLines } from '../scripts/push-hook.mjs';
 import { settleOwn, settleShell, recordScratch, inWorkScratch } from '../scripts/own-files.mjs';
 import { bashTargets, bashEdits } from './pre-tool-use.mjs';
 import { wakerFromTool, recordWaker } from '../scripts/waker.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 import { recordPublish } from '../scripts/artifacts.mjs';
-import { handoffChanges } from '../scripts/handoff.mjs';
 
 export const HOOK_META = { event: 'PostToolUse|PostToolUseFailure', class: 'log+c', limit: '1 line (once per waiting message; once per read step)', principles: ['P-001', 'P-018', 'P-030', 'P-028', 'P-003', 'P-041', 'P-042', 'P-061', 'P-021'] };
 
@@ -84,22 +85,6 @@ export function watch(ctx, input, now = Date.now()) {
   return lines.length ? lines.join('\n') : null;
 }
 
-/**
- * agent-alice/D-0082 (point 4): a change in a topic this thread handed off, once per change after a tool (the keys shown are
- * kept in the thread state, handoff_seen); the prompt hook repeats it until the giver saves its handover.
- */
-export function handoffWatch(ctx, input) {
-  if (input.agent_id || input.agent_type || !ctx.brainDir || !ctx.thread) return null;
-  const changes = handoffChanges(ctx);
-  if (!changes.length) return null;
-  const state = readThreadState(ctx.brainDir, ctx.thread);
-  const seen = Array.isArray(state.handoff_seen) ? state.handoff_seen : [];
-  const fresh = changes.filter((c) => !seen.includes(c.key));
-  if (!fresh.length) return null;
-  writeThreadState(ctx.brainDir, ctx.thread, { ...state, handoff_seen: [...seen, ...fresh.map((c) => c.key)].slice(-100) });
-  return fresh.map((c) => c.line).join('\n');
-}
-
 /** Characters a tool result adds to the context; an image counts as IMAGE_CHARS, not its base64 data. */
 export function outputChars(response) {
   if (response == null) return 0;
@@ -153,18 +138,22 @@ export function changedFiles(input) {
   return [];
 }
 
-// P-050 (pilot 2026-11-12): the operator chose to go on without a topic in the topic dialog.
-const NO_TOPIC_ANSWER = /^\s*(bez\s+t[ée]my|no topic|without (a )?topic)\b/i;
-// Pilot 2026-11-13: the status block says to copy it verbatim, so the reply after "Bez témy" asked the topic question again and Stop refused it.
-export const NO_TOPIC_CHOSEN_LINE = (project) => `the operator chose "Bez témy": start the final reply with the line "${project} / bez témy" alone, without the list of topics and without "Aká bude téma?" (the operator answered it), and set the state by what remains (P-050, D-0010)`;
+/**
+ * Spec 10.2: a save of any type except the handover (save.mjs <type>, save.mjs source and result included) is progress of the held
+ * topic: the next continuation count starts from zero. Only a call of the main thread that succeeded.
+ */
+export function progressCommand(command) {
+  const c = String(command || '');
+  const save = /(?:^|[\s/\\"'])save\.mjs["']?\s+([a-z][\w-]*)/.exec(c);
+  return !!save && save[1] !== 'handover';
+}
 
 export function run(input, now = Date.now()) {
   const ctx = loadContext({ requireBrain: false });
   if (!ctx.brainDir) return {};
-  let noTopicLine = null;
   // P-061 (V1): the operator answered (or dismissed) the dialog: the open turn no longer waits for the operator.
   if ((input.tool_name === 'AskUserQuestion') && !input.agent_id && ctx.thread) recordWaitingOperator(ctx, false, readThreadState(ctx.brainDir, ctx.thread).turn_opened_at ?? null);
-  // P-059: the answered dialog question stands for further steps of its kind (the input's questions, else those PreToolUse kept).
+  // The answered dialog: its questions and answers (flow-public#46 lifts, D-0011 done --topic, P-063 turn intent).
   if (input.tool_name === 'AskUserQuestion' && !input.agent_id && ctx.thread) {
     const st = readThreadState(ctx.brainDir, ctx.thread);
     const given = (Array.isArray(input.tool_input?.questions) ? input.tool_input.questions : []).map((x) => (typeof x === 'string' ? x : x?.question)).filter(Boolean);
@@ -177,11 +166,8 @@ export function run(input, now = Date.now()) {
     const answeredNow = items.length ? { dialog_answered_at: new Date(now).toISOString(), turn_intent: null } : {};
     // flow-public#46: an answer that allows a target the question names opens it for the rest of the turn (P-054).
     const answerOf = (q) => (answers && typeof answers === 'object' ? String(answers[q] ?? '') : '');
-    const lifted = items.reduce((s, q) => withLift(s, q, answerOf(q), new Date(now).toISOString()), withAnswered(st, items));
-    // P-050: "Bez témy" chosen in the dialog is the operator's decision; Stop does not ask for the topic again (D-0010).
-    const noTopic = items.some((q) => NO_TOPIC_ANSWER.test(answerOf(q))) ? { no_topic_chosen_at: new Date(now).toISOString() } : {};
-    writeThreadState(ctx.brainDir, ctx.thread, { ...lifted, dialog_questions: [], ...answeredNow, ...noTopic });
-    if (noTopic.no_topic_chosen_at) noTopicLine = NO_TOPIC_CHOSEN_LINE(ctx.projectName || '<project>');
+    const lifted = items.reduce((s, q) => withLift(s, q, answerOf(q), new Date(now).toISOString()), st);
+    writeThreadState(ctx.brainDir, ctx.thread, { ...lifted, dialog_questions: [], ...answeredNow });
   }
   // report-80357d47: the address of a published artifact outlives the context (scripts/artifacts.mjs).
   if (!input.agent_id) { try { recordPublish(ctx, input, now); } catch { /* the record never fails the hook */ } }
@@ -192,18 +178,33 @@ export function run(input, now = Date.now()) {
   if (input.tool_name === 'Bash' || input.tool_name === 'PowerShell') settleShell(ctx, input.tool_use_id);
   const entry = toEntry(input, ctx.policy);
   if (entry) bufferAppend(ctx.brainDir, input.session_id, entry);
+  if (entry?.kind === 'cmd' && !input.agent_id && ctx.thread && progressCommand(input.tool_input?.command)) markProgress(ctx.brainDir, ctx.thread, now);
   // P-061: a waker armed by this call (background task or agent, scheduler, mail) lets the turn end waiting.
   if (!input.agent_id && ctx.thread) recordWaker(ctx.brainDir, ctx.thread, wakerFromTool(input, now));
-  let handoffLine = null;
-  try { handoffLine = handoffWatch(ctx, input); } catch { /* never fails the hook */ }
-  const lines = [noTopicLine, readBudget(ctx, input), watch(ctx, input, now), handoffLine].filter(Boolean);
+  const lines = [readBudget(ctx, input), watch(ctx, input, now)].filter(Boolean);
   return lines.length ? contextOutput('PostToolUse', lines.join('\n')) : {};
+}
+
+/**
+ * Plan O16 (spec 3.7): one line per commit of a topic or task worktree of this thread that its post-commit hook could not
+ * push, once, after a git command that commits. Null when nothing failed.
+ */
+export function pushFailureLine(input) {
+  if (!['Bash', 'PowerShell'].includes(input.tool_name) || !/\b(commit|merge|cherry-pick|revert|rebase|am)\b/.test(String(input.tool_input?.command || ''))) return null;
+  const ctx = loadContext({ requireBrain: false });
+  if (!ctx.brainDir || !ctx.thread) return null;
+  const dirs = heldTopics(ctx.brainDir, ctx.thread).flatMap((t) => [topicCopyPath(ctx, t), ...taskCopyPaths(ctx, t)]).filter(Boolean);
+  const lines = pushFailureLines(dirs);
+  return lines.length ? lines.join('\n') : null;
 }
 
 if (isMain(import.meta.url)) {
   let out = {};
   try {
-    out = run(readHookInput());
+    const input = readHookInput();
+    out = run(input);
+    const push = pushFailureLine(input);
+    if (push) out = { ...out, ...contextOutput('PostToolUse', [out.hookSpecificOutput?.additionalContext, push].filter(Boolean).join('\n')) };
   } catch (err) {
     process.stderr.write(`post-tool-use: ${err.message}\n`);
   }

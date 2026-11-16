@@ -9,7 +9,12 @@
 //                                                    model, copy, branch), the worker rules (only the copy, no commit), and on
 //                                                    stderr the Agent call with model = subagent_model of the class (P-053);
 //                                                    {at, class, model} goes into topics/<id>/topic.json (implementations)
-//   delegate.mjs check (--file <result> | --stdin) -> verifies "Failures" section and the size limit
+//   delegate.mjs prepare --implement ... --task-copy <task>
+//                                                 -> the same in the worktree of one task (topic.mjs task-copy, branch
+//                                                    topic/<topic>--<task>, spec 3.7): the brief names that worktree; there
+//                                                    the worker commits itself (each commit pushed by the post-commit hook),
+//                                                    the topic thread merges it with topic.mjs task-merge
+//   delegate.mjs check (--file <result> | --stdin) -> verifies the "Failures" section (its length is the brief's, P-027)
 // Bundling (issue #28): a skill's full text goes into the brief only when at least STRONG_MATCHES meaningful task words
 // match its trigger, and only while the bundled text stays under the size limit. Weaker matches are listed by name and path.
 // Implementation class: a web, code or ops topic implements in its own class; a discussion topic names the class of the work
@@ -19,7 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, fail, readStdin, readText } from '../scripts/util.mjs';
 import { loadContext, inSubagent } from '../scripts/config.mjs';
-import { heldTopics, hasCodeCopy, isDiscussionTopic, implementationClass, ensureCodeCopy, recordImplementation, implementMarker, IMPLEMENT_CLASSES, IMPLEMENT_HELP } from '../scripts/topic.mjs';
+import { heldTopics, hasCodeCopy, isDiscussionTopic, implementationClass, ensureCodeCopy, taskCopy, recordImplementation, implementMarker, IMPLEMENT_CLASSES, IMPLEMENT_HELP } from '../scripts/topic.mjs';
 import { isMainTopic } from '../scripts/comms.mjs';
 import { readSkills } from '../scripts/records.mjs';
 import { personaSkillPrefix, prefixSkillText } from '../scripts/skills-sync.mjs';
@@ -71,10 +76,9 @@ export function bundleSkills(brainDir, skills, task, { minMatches = STRONG_MATCH
   return { bundled, listed };
 }
 
-export function checkResult(text, limit) {
+export function checkResult(text) {
   const errors = [];
   if (!/(^|\n)\s*(#+\s*|\*\*)?failures\b/i.test(text)) errors.push('missing "Failures" section (P-028)');
-  if (text.length > limit) errors.push(`result ${text.length} chars > ${limit} (P-027)`);
   return errors;
 }
 
@@ -165,16 +169,20 @@ export function implementTopic(ctx, asked) {
 }
 
 /** Implementation of a brief (D-0020): topic, class, model, code copy; evidence recorded. Throws on every refusal. */
-export function prepareImplementation(ctx, { implement, topic: askedTopic }) {
+// The code copy comes from the topic record (its repo, scripts/topic.mjs topicRepoDir), so a persona whose session runs in
+// its brain delegates into the copy of the repo, not of its brain. taskCopyName (--task-copy <task>, spec 3.7): the brief
+// names the worktree of that task (topic.mjs task-copy), made when missing; several workers run only in separate ones.
+export function prepareImplementation(ctx, { implement, topic: askedTopic, taskCopy: taskCopyName = null }) {
   const topic = implementTopic(ctx, askedTopic);
   if (!hasCodeCopy(topic)) {
     const approved = isDiscussionTopic(topic);
     throw new Error(`topic ${topic.id} (${topic.class ? `class ${topic.class}` : topic.kind}) has no code copy: ${approved ? `its implementation is approved by the operator (D-0020); after the operator's explicit yes: topic.mjs copy ${topic.id} --operator-approved` : `make it: topic.mjs copy ${topic.id}`}, then rerun delegate.mjs prepare --implement${IMPLEMENT_CLASSES.includes(topic.class) ? '' : ' <class>'} --task-file <file> (classes: ${IMPLEMENT_HELP})`);
   }
+  if (taskCopyName === true || (taskCopyName !== null && !String(taskCopyName).trim())) throw new Error('--task-copy needs a task name (the worktree topic/<topic>--<task>)');
   const { cls, model } = implementationClass(ctx, topic, typeof implement === 'string' ? implement : null);
-  const copy = ensureCodeCopy(ctx, topic.id);
+  const copy = taskCopyName ? taskCopy(ctx, String(taskCopyName).trim(), { topic: topic.id }) : ensureCodeCopy(ctx, topic.id);
   recordImplementation(ctx, topic.id, { cls, model });
-  return { id: topic.id, cls, model, copy: copy.path, branch: copy.branch, marker: implementMarker({ id: topic.id, cls, model, copy: copy.path, branch: copy.branch }) };
+  return { id: topic.id, cls, model, copy: copy.path, branch: copy.branch, task: taskCopyName ? String(taskCopyName).trim() : null, marker: implementMarker({ id: topic.id, cls, model, copy: copy.path, branch: copy.branch }) };
 }
 
 if (process.argv[1]?.endsWith('delegate.mjs')) try {
@@ -194,8 +202,8 @@ if (process.argv[1]?.endsWith('delegate.mjs')) try {
       if (!agentDef) fail(`agent type ${args.agent} not found (workflow:<name> in the plugin, <plugin>:<name> under ~/.claude/plugins, <name> in .claude/agents): prepare checks the tools of the type the brief goes to (report-dd4ad700)`);
       if (needsWrite(task) && !writeToolsOf(agentDef).length) fail(`agent type ${args.agent} has no Write, Edit or Bash (${toPosixPath(agentDef.file)}: tools ${agentDef.tools ? agentDef.tools.join(', ') : 'all'}${agentDef.disallowed.length ? `, disallowed ${agentDef.disallowed.join(', ')}` : ''}) and the brief asks it to store files: give the writing part to workflow:worker, or have the agent return the data and store it in the parent (report-dd4ad700)`);
     }
-    const impl = args.implement ? prepareImplementation(ctx, { implement: args.implement, topic: args.topic }) : null;
-    const limit = ctx.policy.limits.worker_result_chars;
+    if (args['task-copy'] !== undefined && !args.implement) fail('--task-copy goes with --implement: the worktree of a task is where an implementation worker changes the code (spec 3.7)');
+    const impl = args.implement ? prepareImplementation(ctx, { implement: args.implement, topic: args.topic, taskCopy: args['task-copy'] ?? null }) : null;
     const { bundled, listed } = bundleSkills(ctx.brainDir, readSkills(ctx.brainDir), String(task), {
       minMatches: ctx.policy.limits.worker_skill_min_matches ?? STRONG_MATCHES,
       limit: ctx.policy.limits.worker_skill_chars ?? BUNDLE_CHARS,
@@ -206,7 +214,9 @@ if (process.argv[1]?.endsWith('delegate.mjs')) try {
       const copy = toPosixPath(impl.copy);
       parts.push('## Implementácia (D-0020)', impl.marker,
         `- Meň iba súbory v kópii kódu ${copy} (vetva ${impl.branch}); mimo nej nezapisuj nič okrem pracovných súborov.`,
-        '- Necommituj, nepushuj, nezlučuj (merge, rebase) ani netaguj: hook to v kópii odmietne; commit, zlúčenie a vydanie robí vlákno témy po kontrole (D-0020).',
+        impl.task
+          ? '- Zmeny commituj sám v tomto worktree tasku (`git commit`; každý commit pushne hook post-commit). Nepushuj, nezlučuj (merge, rebase), netaguj ani neresetuj: hook to odmietne; zlúčenie do vetvy témy (`topic.mjs task-merge`) a vydanie robí vlákno témy po kontrole (spec 3.7, D-0020).'
+          : '- Necommituj, nepushuj, nezlučuj (merge, rebase) ani netaguj: hook to v kópii odmietne; commit, zlúčenie a vydanie robí vlákno témy po kontrole (D-0020).',
         '- Spúšťaj iba testy, ktorých sa zmena týka (`node --test <súbor>`, `pytest <súbor>`), nie celú sadu: hook ju odmietne a vlákno témy ju spustí raz pred zlúčením (P-071).',
         '- Nezapisuj do brain (P-013, P-025).',
         '- Vráť súhrn zmien (súbor a jedna veta ku každému) a spustené testy s výsledkom (počty prešlo/zlyhalo).', '');
@@ -216,7 +226,7 @@ if (process.argv[1]?.endsWith('delegate.mjs')) try {
       parts.push('## Nástroje agenta', `- Typ ${args.agent}: ${agentDef.tools ? agentDef.tools.join(', ') : 'všetky nástroje'}${agentDef.disallowed.length ? ` (bez ${agentDef.disallowed.join(', ')})` : ''}.`,
         w.length ? `- Zápis súborov: ${w.join(', ')}.` : '- Súbory zapisovať nevie: dáta vráť vo výsledku, uloží ich rodič.', '');
     }
-    parts.push('## Pravidlá výsledku', `- Vráť záver so zdrojmi, najviac ${limit} znakov; nie surový obsah.`, '- Nezapisuj do brain, nedrž tému, nekomunikuj s operátorom; výsledok vráť rodičovi (P-025).', '- Kód meň iba v kópii témy, ak ju zadanie uvádza.', '- Zdroj, ktorý zlyhá (403, timeout, blokovanie), nie je koniec úlohy: skús ho raz inou cestou, ktorú zadanie nezakazuje (iná adresa zdroja, `curl -sL` cez Bash), potom ho uveď vo Failures a pokračuj ďalšími zdrojmi. Prehliadač, ktorý sa nespustil a nahradil ho curl, patrí do Failures aj s vrátenou stránkou: curl nespúšťa JavaScript, obsah načítaný skriptom (tabuľky, EAN) v ňom chýba.', `- Pracovné súbory (pokusy, klon, medzivýsledky) iba do ${toPosixPath(workDir(ctx))}/, nikdy /tmp ani ~ (P-052).`, '- Výsledok MUSÍ končiť časťou "Failures: čo zlyhalo a čo nakoniec fungovalo" (alebo "Failures: none").', '');
+    parts.push('## Pravidlá výsledku', '- Vráť záver so zdrojmi; nie surový obsah (dĺžku môže určiť zadanie, P-027).', '- Nezapisuj do brain, nedrž tému, nekomunikuj s operátorom; výsledok vráť rodičovi (P-025).', '- Kód meň iba v kópii témy, ak ju zadanie uvádza.', '- Zdroj, ktorý zlyhá (403, timeout, blokovanie), nie je koniec úlohy: skús ho raz inou cestou, ktorú zadanie nezakazuje (iná adresa zdroja, `curl -sL` cez Bash), potom ho uveď vo Failures a pokračuj ďalšími zdrojmi. Prehliadač, ktorý sa nespustil a nahradil ho curl, patrí do Failures aj s vrátenou stránkou: curl nespúšťa JavaScript, obsah načítaný skriptom (tabuľky, EAN) v ňom chýba.', `- Pracovné súbory (pokusy, klon, medzivýsledky) iba do ${toPosixPath(workDir(ctx))}/, nikdy /tmp ani ~ (P-052).`, '- Výsledok MUSÍ končiť časťou "Failures: čo zlyhalo a čo nakoniec fungovalo" (alebo "Failures: none").', '');
     if (bundled.length) {
       parts.push('## Pribalené skilly');
       // D-0065: in a persona the deployed copies are <persona>-<name>; the bundled text calls their scripts the same way.
@@ -234,10 +244,10 @@ if (process.argv[1]?.endsWith('delegate.mjs')) try {
     out(parts.join('\n'));
     const names = (list) => (list.length ? list.map((s) => s.skillName).join(', ') : 'none');
     process.stderr.write(`bundled skills: ${names(bundled.map((b) => b.skill))}; listed: ${names(listed)}\n`);
-    if (impl) process.stderr.write(`agent: Agent tool (subagent_type workflow:worker) with model: "${impl.model}" and this block as the prompt (class ${impl.cls} of topic ${impl.id}, P-053); commit, merge and release stay in this thread (D-0020)\n`);
+    if (impl) process.stderr.write(`agent: Agent tool (subagent_type workflow:worker) with model: "${impl.model}" and this block as the prompt (class ${impl.cls} of topic ${impl.id}, P-053); ${impl.task ? `the worker commits in the task worktree, the merge (topic.mjs task-merge ${impl.task}) and release stay in this thread (spec 3.7)` : 'commit, merge and release stay in this thread'} (D-0020)\n`);
   } else if (cmd === 'check') {
     const text = args.file ? fs.readFileSync(args.file, 'utf8') : readStdin();
-    const errors = checkResult(text, ctx.policy.limits.worker_result_chars);
+    const errors = checkResult(text);
     if (errors.length) fail(`worker result rejected:\n- ${errors.join('\n- ')}`, 2);
     out(`worker result ok (${text.length} chars); process its Failures via workflow:error`);
   } else {

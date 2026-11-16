@@ -342,11 +342,12 @@ export function discussionOpen(state) {
 }
 
 /**
- * Discussion of a turn that starts now (prompt hook, D-0015): the operator started it or the last turn ended `Stav: otázka`;
- * an interrupted turn resumed by keepalive keeps its own. The AskUserQuestion dialog is the mail's `waiting_operator`.
+ * Discussion of a turn that starts now (prompt hook, D-0015): the operator started it; an interrupted turn resumed by
+ * keepalive keeps its own. A turn that ended `Stav: otázka` keeps no discussion open: delivered mail wakes the thread in
+ * every state (spec 2.2, plan B7). The AskUserQuestion dialog is the mail's `waiting_operator`.
  */
 export function turnDiscussion(turnSource, prior = null, kind = null) {
-  if (turnSource === 'operator' || prior?.last_end_state === 'otázka') return true;
+  if (turnSource === 'operator') return true;
   return kind === 'keepalive' && prior?.discussion === true;
 }
 
@@ -372,18 +373,47 @@ export function formatMail(mail) {
   return s;
 }
 
-/** Mechanical lines of waiting mail for the prompt: `<id> <category>`, never a body (P-044). */
-export function mailLines(items = []) {
-  return items.map((it) => `${it.id} ${categoryLabel(it)}`);
+/**
+ * The supervisor (spec 1, 2.2; plan O5): policy `supervisor` {persona, comms} of the workflow, a brain policy overrides it
+ * key by key (like `maintainer`). `persona` is the sender of its mail (the mail key it sends with), `comms` its address
+ * for questions (3.3.2). Null fields when none is set.
+ */
+export function supervisorOf(policy = {}) {
+  const s = policy && typeof policy.supervisor === 'object' && policy.supervisor ? policy.supervisor : {};
+  const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  return { persona: str(s.persona), comms: str(s.comms) };
+}
+
+/** A message (or a listing item) the supervisor sent: its instruction (2.2); mail of anyone else stays data (P-047). */
+export function fromSupervisor(m, sup) {
+  return !!sup?.persona && !!m && m.sender === sup.persona;
+}
+
+/**
+ * Senders of waiting mail by message id (the `count` listing names them; the inbox of `obligations` does not): asked only
+ * when a bell turn must tell the supervisor's mail apart (plan B7). A failed call leaves its ids out.
+ */
+export function mailSenders(ctx, held = []) {
+  const senders = new Map();
+  for (const q of mailQueries(ctx, held)) {
+    const res = runClient(ctx, ['count', ...queryArgs(q)]);
+    if (res.ok) for (const it of res.data?.items || []) if (it?.id && it.sender) senders.set(it.id, it.sender);
+  }
+  return senders;
+}
+
+/** Mechanical lines of waiting mail for the prompt: `<id> <category>`, never a body (P-044); the supervisor's marked. */
+export function mailLines(items = [], sup = null) {
+  return items.map((it) => `${it.id} ${categoryLabel(it)}${fromSupervisor(it, sup) ? ' (supervisor: instruction)' : ''}`);
 }
 
 /**
  * One prompt line with the waiting mail (2026-11-02: the triage subagent is removed, the main agent reads the ids itself):
  * `mail: <n> waiting: <id> <category>, ...` (at most `max` ids). Empty when nothing waits; without listing items only the count.
  */
-export function mailNoticeLine(mail, max = 10) {
+export function mailNoticeLine(mail, max = 10, sup = null) {
   if (!mail || !mail.count) return '';
-  const lines = mailLines(mail.items || []);
+  const lines = mailLines(mail.items || [], sup);
   if (!lines.length) return `mail: ${mail.count} waiting`;
   const shown = lines.slice(0, max);
   const more = lines.length > max ? ` (+${lines.length - max} more)` : '';
@@ -514,7 +544,7 @@ export function closeArchivedTopics(ctx) {
   return out;
 }
 
-/** Topic `main` (kind `main`): the persona's main thread, permanent, outside the topic limit (P-045, P-050). */
+/** Topic `main` (kind `main`): the persona's main thread, permanent, outside the topic limit (P-045). */
 export const MAIN_TOPIC = 'main';
 export function isMainTopic(t) {
   return !!t && t.id === MAIN_TOPIC && t.kind === 'main';

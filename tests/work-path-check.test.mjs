@@ -39,3 +39,9 @@ test('fixedWorkPaths: a real fixed path still fails', () => {
   // A body line is not a script: a leading # or a case-like word does not hide the path there.
   assert.deepEqual(fixedWorkPaths('# Klon do scratch/repo'), ['scratch/']);
 });
+
+test('fixedWorkPaths: layout 3 topics/<concrete topic>/tmp fails, the placeholder passes', () => {
+  assert.deepEqual(fixedWorkPaths('cp a.txt topics/dev/tmp/a.txt'), ['topics/dev/tmp']);
+  assert.deepEqual(fixedWorkPaths('Výsledok je v topics/<téma>/tmp/.'), []);
+  assert.deepEqual(fixedWorkPaths(`topics/dev/tmp opisuje cestu (${WORK_PATH_OK})`), []);
+});

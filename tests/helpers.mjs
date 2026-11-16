@@ -85,6 +85,8 @@ export const NO_GITHUB = { WORKFLOW_GITHUB_TOKEN_FILE: '/nonexistent-machine-dir
 
 export function cleanEnv(extra = {}) {
   const env = { ...process.env, WORKFLOW_PLUGIN_ROOT: PLUGIN_ROOT, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', WORKFLOW_TEMP_DIRS: '/nonexistent-temp-dir', WORKFLOW_SERVICES_DIR: '/nonexistent-services-dir', WORKFLOW_RULE_JUDGE: 'off', WORKFLOW_OVERLAP_JUDGE: 'off', WORKFLOW_MACHINE_FILE: '/nonexistent-machine-dir/machine-id', WORKFLOW_PIN_FILE: '/nonexistent-machine-dir/pin.json', WORKFLOW_ROOT_FILE: '/nonexistent-machine-dir/projects-root', WORKFLOW_ISSUE_WATCH_INDEX: '/nonexistent-machine-dir/issue-watch-index.json', WORKFLOW_WAKE_FILE: '/nonexistent-machine-dir/wake.json', WORKFLOW_TIMER_INDEX: '/nonexistent-machine-dir/timer-index.json', ...NO_T3, ...NO_GITHUB };
+  // The configuration of the installation (operator repo, plan O9): never the real ~/.config/agentic-flow/config.json.
+  env.WORKFLOW_INSTALL_CONFIG = '/nonexistent-machine-dir/config.json';
   for (const k of ['CLAUDE_PROJECT_DIR', 'WORKFLOW_PROJECT_DIR', 'WORKFLOW_THREAD_ID', 'T3CODE_THREAD_ID', 'WORKFLOW_AGENT_ID', 'CLAUDE_AGENT_ID', 'CLAUDE_PLUGIN_ROOT']) delete env[k];
   return { ...env, ...extra };
 }
@@ -108,9 +110,10 @@ export function initProject(dir, { brainRel = '../brain', remote = null } = {}) 
 
 /**
  * Fixture: <root>/origin.git (bare), <root>/project, <root>/brain (pushed to origin).
- * Optional second clone: <root>/project-b + <root>/brain-b.
+ * Optional second clone: <root>/project-b + <root>/brain-b. The brain is in data layout `layout` (1 unless given; a new
+ * brain without --layout is layout 3, tests/layout-2-helpers.mjs setup3).
  */
-export function setup({ thread = 'a1', remote = true, second = false, brainName = 'brain' } = {}) {
+export function setup({ thread = 'a1', remote = true, second = false, brainName = 'brain', layout = 1 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-test-'));
   const origin = path.join(root, 'origin.git');
   if (remote) gitq(root, 'init', '-q', '--bare', '-b', 'main', origin);
@@ -118,7 +121,7 @@ export function setup({ thread = 'a1', remote = true, second = false, brainName 
   const brain = path.join(root, brainName);
   initProject(project, { brainRel: `../${brainName}` });
   const env = cleanEnv({ WORKFLOW_THREAD_ID: thread });
-  const r = spawnSync(process.execPath, [BIN('brain-init.mjs'), brain, ...(remote ? ['--remote', origin] : []), '--project', project], { env, encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [BIN('brain-init.mjs'), brain, ...(remote ? ['--remote', origin] : []), '--project', project, '--layout', String(layout)], { env, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`brain-init failed: ${r.stderr}`);
   for (const b of [brain]) { gitq(b, 'config', 'user.name', 't'); gitq(b, 'config', 'user.email', 't@t'); }
   const fx = {

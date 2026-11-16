@@ -1,8 +1,8 @@
 // ttl: 2026-12-15
 // P-076 (agent-alice/D-0094): skills and rules lead the work, a hook is only the safety net. The refusals that cost repeated
-// work on 2026-11-15 are loosened: the handover has no line limit (1), a copied state of another topic is a warning judged
-// per point of the step (2), a question turn refuses nothing (3), the rule judge reads the project exceptions (4), a bell
-// turn runs done --topic and promote its own handover orders (5), the operator's yes pairs with the call by the target of
+// work on 2026-11-15 are loosened: the handover has no line limit (1), a step that names another topic is written without
+// a warning (2; the copied-state check of the handoff tracking is removed, flow v2 plan O6), a question turn refuses nothing (3), the rule judge reads the project exceptions (4), a bell
+// turn runs done --topic its own handover orders (5; save.mjs promote is gone with the triage of layout 2, plan B12), the operator's yes pairs with the call by the target of
 // the dialog, also before the first call, once (6), a brief names the work folder of any held topic (7), every hook
 // refusal is counted by kind and consolidate lists the most frequent (8), and a refusal names the way that passes (9).
 import { test } from 'node:test';
@@ -20,7 +20,7 @@ const pre = (fx, tool_name, tool_input) => fx.hook('pre-tool-use.mjs', { tool_na
 test('point 1: a handover over 15 lines is written; only a missing section is refused', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'ho', '--subject', 'Ho', '--class', 'discussion']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'ho', '--subject', 'Ho', '--class', 'ops']).status, 0);
     const r = fx.run('save.mjs', ['handover', 'ho', '--task', 'T', '--done', 'a; b; c; d; e; f; g; h; i', '--next', 'n', '--files', 'f1; f2', '--questions', 'q1; q2']);
     assert.equal(r.status, 0, r.out);
     assert.doesNotMatch(r.out, /lines, limit/);
@@ -30,11 +30,11 @@ test('point 1: a handover over 15 lines is written; only a missing section is re
   } finally { fx.cleanup(); }
 });
 
-test('point 2: a state word in another point than the topic passes silently; a copied state is a warning, the handover is written', () => {
+test('point 2: a step naming another topic, also with its state, is written without a warning (plan O6)', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'own', '--subject', 'Own', '--class', 'discussion']).status, 0);
-    assert.equal(fx.run('topic.mjs', ['create', 'other-x', '--subject', 'Iná práca', '--class', 'discussion', '--no-claim']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'own', '--subject', 'Own', '--class', 'ops']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'other-x', '--subject', 'Iná práca', '--class', 'ops', '--no-claim']).status, 0);
     // the false refusal of the day: "done" (a command) in point 2, the topic in point 1
     let r = fx.run('save.mjs', ['handover', 'own', '--task', 'T', '--done', 'x', '--next', '1) dohľad nad other-x 2) done --topic']);
     assert.equal(r.status, 0, r.out);
@@ -44,10 +44,10 @@ test('point 2: a state word in another point than the topic passes silently; a c
     r = fx.run('save.mjs', ['handover', 'own', '--task', 'T', '--done', 'x', '--next', 'dohľad nad other-x; potom ďalší krok']);
     assert.equal(r.status, 0, r.out);
     assert.doesNotMatch(r.out, /warning:/);
-    // one point holds both: a warning, never a refusal
+    // one point holds both: written, no warning (the handoff tracking with its copied-state warning is gone, O6)
     r = fx.run('save.mjs', ['handover', 'own', '--task', 'T', '--done', 'x', '--next', '1) other-x zostáva otvorená 2) dohľad']);
     assert.equal(r.status, 0, r.out);
-    assert.match(r.stdout, /warning: --next "other-x zostáva otvorená" describes the state of topic other-x/);
+    assert.doesNotMatch(r.out, /warning:/);
     assert.match(fx.read('topics/own/handover.md'), /other-x zostáva otvorená/);
   } finally { fx.cleanup(); }
 });
@@ -88,7 +88,7 @@ test('point 4: the rule judge reads the project exceptions: a conflict with a pr
 test('point 5: a bell turn runs done --topic its own handover orders; a handover without the step still refuses', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'd', '--subject', 'D', '--class', 'discussion']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'd', '--subject', 'D', '--class', 'ops']).status, 0);
     assert.equal(fx.run('save.mjs', ['handover', 'd', '--task', 'T', '--done', 'x', '--next', 'po kontrole done --topic']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic d' });
     assert.equal(stateOf(fx.brain).turn_source, 'wake');
@@ -99,7 +99,7 @@ test('point 5: a bell turn runs done --topic its own handover orders; a handover
   } finally { fx.cleanup(); }
   const fx2 = setup();
   try {
-    assert.equal(fx2.run('topic.mjs', ['create', 'e', '--subject', 'E', '--class', 'discussion']).status, 0);
+    assert.equal(fx2.run('topic.mjs', ['create', 'e', '--subject', 'E', '--class', 'ops']).status, 0);
     assert.equal(fx2.run('save.mjs', ['handover', 'e', '--task', 'T', '--done', 'x', '--next', 'čakať na odpoveď']).status, 0);
     fx2.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic e' });
     assert.equal(stateOf(fx2.brain).turn_source, 'wake');
@@ -107,29 +107,6 @@ test('point 5: a bell turn runs done --topic its own handover orders; a handover
     assert.equal(r.status, 1, r.out);
     assert.match(r.stderr, /P-047/);
   } finally { fx2.cleanup(); }
-});
-
-test('point 5: a bell turn runs save.mjs promote its own handover orders (layout 2)', () => {
-  const p = persona2();
-  try {
-    const stub = path.join(PLUGIN_ROOT, 'tests', 'fixtures', 'comms-stub.mjs');
-    const stubState = path.join(p.root, 'stub-state.json');
-    fs.writeFileSync(stubState, '{}');
-    Object.assign(p.env, { WORKFLOW_COMMS_CLIENT: stub, STUB_COMMS_STATE: stubState, STUB_COMMS_LOG: path.join(p.root, 'stub-log.jsonl') });
-    assert.equal(p.run('topic.mjs', ['create', 't1', '--subject', 'Topic one', '--class', 'discussion']).status, 0);
-    fs.writeFileSync(path.join(p.dir, 'temy', 't1', 'analyza.md'), '# Analyza\n\ntext\n');
-    p.git(p.dir, 'add', '-A'); p.git(p.dir, 'commit', '-q', '--no-verify', '-m', 'topic file');
-    const h = p.run('save.mjs', ['handover', 't1', '--task', 'T', '--done', 'analyza', '--next', 'save.mjs promote analyza.md']);
-    assert.equal(h.status, 0, h.out);
-    const file = path.join(p.dir, 'local', 'threads', 'p1.json');
-    let st = {};
-    try { st = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* no state yet */ }
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ ...st, turn_source: 'wake', turn_started_at: new Date(Date.now() - 60_000).toISOString() }));
-    const r = p.run('save.mjs', ['promote', 'analyza.md']);
-    assert.equal(r.status, 0, r.out);
-    assert.ok(fs.existsSync(path.join(p.dir, 'vystupy', 'dokumenty', 'analyza.md')));
-  } finally { p.cleanup(); }
 });
 
 test('point 6: the yes of a dialog naming the branch lets git branch -d pass once, also when the dialog came first', () => {
@@ -156,8 +133,8 @@ test('point 6: the yes of a dialog naming the branch lets git branch -d pass onc
 test('point 7: a worker brief of a thread with two topics may name the work folder of the second topic', () => {
   const fx = setup2();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 't1', '--subject', 'Prvá', '--class', 'discussion']).status, 0);
-    assert.equal(fx.run('topic.mjs', ['create', 't2', '--subject', 'Druhá', '--class', 'discussion']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 't1', '--subject', 'Prvá', '--class', 'ops']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 't2', '--subject', 'Druhá', '--class', 'ops']).status, 0);
     const second = path.join(fx.brain, 'temy', 't2', 'tmp').split(path.sep).join('/');
     let r = fx.hook('pre-tool-use.mjs', { tool_name: 'Agent', tool_input: { subagent_type: 'general-purpose', description: 'x', prompt: `Zisti x. Pracovné súbory iba do ${second}/, nie /tmp.` } });
     assert.notEqual(r.decision, 'deny', r.reason);

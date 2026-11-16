@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setup, initProject, cleanEnv } from './helpers.mjs';
+import { setup3 } from './layout-2-helpers.mjs';
 import { BOOT_MARKERS, RULES_PART_CHARS, rulesParts, changedRules, rulesSections, stampBootPull, waitBootPull } from '../scripts/boot.mjs';
 import { readThreadState, writeThreadState } from '../scripts/config.mjs';
 
@@ -40,10 +41,24 @@ test('startup: items 3-7 in order under 9 500 chars; item 1 from the rules hook 
   } finally { fx.cleanup(); }
 });
 
+// Spec 10.7, plan B3: no status block at the start; the first line with the topic's name stays.
+test('no status block: no "bez témy", no topic list or topic question; a held topic gives only the first line of the reply', () => {
+  const fx = setup();
+  try {
+    let r = fx.hook('session-start.mjs', { source: 'startup' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.doesNotMatch(r.context, /status block|bez témy|Dostupné témy|Aká bude téma|first reply in this session/);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'ops']).status, 0);
+    r = fx.hook('session-start.mjs', { source: 'startup' });
+    assert.match(r.context, /\nyour first reply in this session starts with the line "project \/ alpha" \(spec 10\.7\)\n/);
+    assert.doesNotMatch(r.context, /status block|verbatim/);
+  } finally { fx.cleanup(); }
+});
+
 test('resume and clear keep the same thread id; compact adds the handover of the held topic', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'work', '--subject', 'Work', '--class', 'discussion']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'work', '--subject', 'Work', '--class', 'ops']).status, 0);
     assert.equal(fx.run('save.mjs', ['handover', 'work', '--task', 'Do the thing', '--done', 'step 1', '--next', 'step 2', '--files', 'src/app.js', '--questions', '']).status, 0);
     for (const source of ['resume', 'clear']) {
       const r = fx.hook('session-start.mjs', { source });
@@ -93,5 +108,53 @@ test('session start fast-forwards the brain to origin; a clone with own changes 
     assert.match(r.context, /brain: 1 commit\(s\) behind origin, not updated \(uncommitted changes: \.gitattributes\)/);
     assert.equal(fx.git(fx.brain, 'rev-parse', 'HEAD'), head);
     assert.match(fx.read('.gitattributes'), /# local edit/);
+  } finally { fx.cleanup(); }
+});
+
+test('layout 3: the block "Tvar dát tohto repa" names topics/ of the brain and vystupy/<typ>/ of the project; a layout that does not fit stops the start (pull)', () => {
+  const fx = setup3({ thread: 'ss3' });
+  try {
+    const r = fx.hook('session-start.mjs', { source: 'startup' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.context, /Tvar dát tohto repa \(verzia 3;/);
+    assert.match(r.context, /- práca témy \(handover, \.tema\.json, výsledky práce\): brain topics\/<téma>\//);
+    assert.match(r.context, /- zdroje \(súbory zvonka, nemenia sa\): projekt zdroje\/<téma>\//);
+    assert.match(r.context, /- výstupy: rozhodnutia brain decisions\/, výstupy podľa typu projekt vystupy\/<typ>\//);
+    assert.match(r.context, /- fakt o subjekte \(pamäť agenta\): brain memory\//);
+    assert.doesNotMatch(r.context, /STOP/);
+  } finally { fx.cleanup(); }
+  const bad = setup3({ thread: 'ss4', projectLayout: 2 });
+  try {
+    const r = bad.hook('session-start.mjs', { source: 'startup' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.context, /STOP, work refused: data layout of repo .* is 2, the brain of its domain .* has 3 .*pull/);
+    assert.doesNotMatch(r.context, /Tvar dát tohto repa/);
+  } finally { bad.cleanup(); }
+});
+
+// Spec 4 and 6.1, plan B9/O9: profile.md of the operator repo (configuration of the installation) -> osoby/<operator>.md at every start.
+test('session start loads the operator profile from the operator repo; without one it says what to configure', () => {
+  const fx = setup();
+  try {
+    let r = fx.hook('session-start.mjs', { source: 'startup' });
+    assert.match(r.context, /\noperator profile: not configured \(\/nonexistent-machine-dir\/config\.json: operator_repo, profile; skill workflow:people\)/);
+    const op = path.join(fx.root, 'operator');
+    fs.mkdirSync(path.join(op, 'osoby'), { recursive: true });
+    fx.git(fx.root, 'init', '-q', op);
+    fs.writeFileSync(path.join(op, 'profile.md'), '# Profil\n\nOperátor: [Alice](osoby/alice.md)\n');
+    fs.writeFileSync(path.join(op, 'osoby', 'alice.md'), '---\nname: Alice Example\naliases: [ali]\ndomains: []\n---\nOperator; prefers short answers in Slovak.\n');
+    const config = path.join(fx.root, 'install-config.json');
+    fs.writeFileSync(config, JSON.stringify({ operator_repo: op, profile: 'profile.md' }));
+    for (const source of ['startup', 'resume']) {
+      r = fx.hook('session-start.mjs', { source }, { env: { WORKFLOW_INSTALL_CONFIG: config } });
+      assert.deepEqual(headings(r.context), ITEMS);
+      const status = r.context.split(BOOT_MARKERS[2])[0];
+      assert.match(status, /\noperator \(profile\.md → osoby\/alice\.md\): Alice Example, aliases ali; the writer in this thread is this operator/, source);
+      assert.match(status, /\nOperator; prefers short answers in Slovak\./);
+      assert.doesNotMatch(r.context, /operator profile:/);
+    }
+    fs.writeFileSync(path.join(op, 'profile.md'), 'Operátor: osoby/nobody.md\n');
+    r = fx.hook('session-start.mjs', { source: 'startup' }, { env: { WORKFLOW_INSTALL_CONFIG: config } });
+    assert.match(r.context, /operator profile: .*profile\.md names osoby\/nobody\.md, which does not exist/);
   } finally { fx.cleanup(); }
 });

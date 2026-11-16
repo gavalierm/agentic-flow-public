@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readHookInput, emit, contextOutput, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { buildBootContext, stampBootPull } from '../scripts/boot.mjs';
+import { buildBootContext, stampBootPull, layoutGuard } from '../scripts/boot.mjs';
 import { readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { installedWorkflow } from '../scripts/update-notice.mjs';
 import { handleT3Session } from '../scripts/t3-clear.mjs';
@@ -21,7 +21,7 @@ import { artifactsNote } from '../scripts/artifacts.mjs';
 import { dataRel } from '../scripts/layout.mjs';
 import { indexBootLine } from '../scripts/data-index.mjs';
 
-export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '9500 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038', 'P-050'] };
+export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '9500 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038'] };
 
 export function run(input) {
   let ctx;
@@ -40,6 +40,10 @@ export function run(input) {
   // foreign project rules through the stamp, so the start costs one git log for both.
   const authors = ctx.brainDir ? recordAuthors(ctx.brainDir) : null;
   stampBootPull(ctx.brainDir, input.session_id, Date.now(), { foreign_rules: foreignRecords(authors, dataRel(ctx.brainDir, 'rules', '')) });
+  // Spec 11.10, plan O18: after the brain pull, a project repo whose layout does not fit its brain stops the session
+  // start (no boot, no topics): the clone of the other machine is pulled first.
+  const refusal = layoutGuard(ctx);
+  if (refusal) return contextOutput('SessionStart', `## Workflow\nworkflow: STOP, work refused: ${refusal}\nTell the operator this line and do nothing else in this repo.`);
   const notes = [brainPullNote(pull), pinWorkflow(ctx), projectLineEndings(ctx), t3Session(ctx, input), projectMcpEnv(ctx)].filter(Boolean);
   // Catalog of project data: scan within its budget before the boot text; it never fails the boot and does nothing without a source.
   const catalog = catalogBoot(ctx, { source: input.source || 'startup', state: ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : null });

@@ -1,58 +1,45 @@
 #!/usr/bin/env node
-// Stop: closes the turn record for keepalive (P-043, with the turn's opened_at); one brain write per turn for buffered logs
-// (P-030); signals are queued for the next prompt (P-023 c), each skill proposal once per thread. A missing reply is found by the message TTL in the mail service (P-042, P-046), not here.
-// Picked mail (P-042, P-072): what the thread owes is the mail's `owed` (one `obligations` call): a message picked up in its
-// mailboxes without an answer (`picked`) is one queued line at the stop, not a block: the answer is due, the turn may still
-// end. One answered `otázka` or `čakám` (`waiting`) is not reminded: its sender knows the state, the final `hotovo` follows.
-// Mail this thread sent that the mail still waits on (`awaiting` with `wait_due_at`) is its waker: the mail rings it (1e).
-// Reply protocol (P-061, operator 2026-11-08, form D-0040): the final reply declares its state on the last line, `**Stav:** hotovo|otázka|čakám`;
-// the hook reads only that line and checks it against facts, in every turn (bell turns too), never the wording of the reply:
-// no state, a step written as prose ("Ostáva: …", operator 2026-11-09), items under **Otázky na operátora:** / **Úlohy pre operátora:** with a state other than
-// `otázka`, the old **Operátor:** heading or an empty section (once), `otázka` without such an item or asked as text and not in the dialog (AskUserQuestion, so T3 shows "Awaiting Input",
-// operator 2026-11-08), `čakám` without what it waits for (`Stav: čakám (na <čo>)`,
-// operator 2026-11-08) or without a waker armed by code, or `hotovo` while the
-// held work topic's handover has a next step, or the section before the state line is not `**Handover:**` with a numbered line
-// `<topic> → <next step>` for every held work topic (`**Handover:** žiadny` without one), or the old form (`Stav:` not bold,
-// `- [ ]` items, the line `Handover: <topic> – <step>`), blocks the stop once. Ending anyway keeps the loop alive: `otázka` and `čakám`
-// get the thread timer (operator wait in hours, a job in minutes), an unfinished step the continue ring (P-026).
-// Mistake (P-003, operator 2026-11-03): a reply that says something happened by mistake ("omylom", "by mistake") names an
-// error; the stop is blocked once, also in bell turns: handle it with workflow:error (fix, skill or rule, report).
+// Stop: the end of a turn (flow v2 spec 10). The hook never reads the text of the result (10.3, 10.4); it checks only:
+// 1. the skeleton: the state line `**Stav:** hotovo|otázka|čakám (na <čo>)`, the headings and numbered items of the blocks
+//    **Otázky na operátora:** / **Úlohy pre operátora:** (old forms and an empty heading are skeleton errors, plan O3), the
+//    section **Handover:** with a line `<téma> → <krok>` (or `<téma> → žiadny`) for every held topic, else
+//    `**Handover:** žiadny`, and as many block items as the handover sections Otvorené otázky and Úlohy pre operátora hold;
+// 2. the state against the facts (10.2): a next step in a handover or an alarm armed by code -> čakám, else an item in those
+//    sections -> otázka, else hotovo (scripts/topic-state.mjs, scripts/topic-turn.mjs);
+// 3. the dialog: in a turn the operator did not start (bell, mail, continuation) with the state otázka, the first question
+//    of a topic outside mode discussion is asked with AskUserQuestion (10.3 item 3, 10.6);
+// 4. a forged harness notification (a <task-notification> block in the reply).
+// A last message that is only the skeleton (no result before **Handover:**) is a skeleton error (the answer stayed folded away,
+// flow-public#37; plan O3). At most one block per turn (10.3): the second attempt passes (stop_hook_active), whatever it holds.
+// A released turn writes the state and the alarm time of each held topic into `.tema.json` (only when they changed, in the
+// commit of the buffered logs, plan risk 4.7), after the pull that checks the lock (4.2.4; a lost topic is not written), and
+// closes the turn record (P-043): with a timer its step and time; with a next step the continuation (resume_at = end of the
+// turn + CONTINUE_RESUME_MS, plan O2), not while a timer or background task runs and not for a stuck topic (B4); the mail's
+// wait for an answer does not hold the continuation back (3.3.3). An interrupted turn has no Stop and writes nothing (10.5).
+// Picked mail without an answer (P-042, P-072) is one queued line, not a block.
 import { readHookInput, emit, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
-import { pendingT3Line } from '../scripts/wizard.mjs';
 import { logDecision } from '../scripts/denials.mjs';
 import { flushBuffer, proposalKey } from '../scripts/logs.mjs';
 import { unpushedCount, brainSync, oldestUnpushedAgeMs } from '../scripts/brain.mjs';
 import { recordTurn, isMainTopic, readObligations, ageText, OWED_PREFIX, OWED_LINE, unansweredOwed } from '../scripts/comms.mjs';
-import { heldTopics, threadOrchestrator, ORCHESTRATOR_QUESTION_REASON, endedProgrammaticThread, PROGRAMMATIC_END_REASON } from '../scripts/topic.mjs';
-import { parseReply, repeatsAnswered, REPEATED_QUESTION_REASON, HANDOVER_LINE, HANDOVER_NONE_LINE, PROTOCOL_EXAMPLE, handoverMatches } from '../scripts/protocol.mjs';
-export { REPEATED_QUESTION_REASON };
-import { TOPIC_QUESTION } from '../scripts/boot.mjs';
-import { waitOnlyStep, validWaker, awaitingWaker, activeTimer, setTimer, clearTimer, threadTimers, timersPatch, sameTimer, finishedTasks, withoutFinished, resumeAtFor, AUTO_TIMER_MS, AUTO_TIMER_MAX_MS, OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS, IDLE_RING_MS } from '../scripts/waker.mjs';
+import { heldTopics, isDiscussionMode } from '../scripts/topic.mjs';
+import { fieldsOp } from '../scripts/topic-files.mjs';
+import { parseReply, HANDOVER_LINE, HANDOVER_NONE_LINE, PROTOCOL_EXAMPLE, handoverMatches } from '../scripts/protocol.mjs';
+import { summaryState, WAITING, DONE } from '../scripts/topic-state.mjs';
+import { threadAlarms, topicFacts, turnUpdate, stuckNow, verifyLocks, LOCK_LOST_LINE, CONTINUE_RESUME_MS } from '../scripts/topic-turn.mjs';
+import { validWaker, awaitingWaker, clearTimer, threadTimers, timersPatch, sameTimer, finishedTasks, withoutFinished, resumeAtFor } from '../scripts/waker.mjs';
 import { transcriptTail } from '../scripts/bypass.mjs';
 
-export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to next prompt); 1 block reason', principles: ['P-003', 'P-026', 'P-030', 'P-040', 'P-042', 'P-043', 'P-061'] };
-
-// A recommended option is chosen only inside the asked work: an offered change the operator did not ask for waits for them (flow-public#25).
-export const AUTO_TIMER_THEN = 'the last turn ended waiting without a timer: continue the asked work now; decide with your recommended option, except an offered change the operator did not ask for: that waits for their answer (P-061, P-002)';
-// "Stav: čakám" without a waker is blocked once (pilot nudge-why 2026-11-14: the thread reported waiting with nothing armed);
-// ending so anyway gets the code timer carrying what the turn waits for, the thread is never left idle.
-export const NO_WAKER_REASON = (what) => `the reply declares "**Stav:** čakám (${String(what || '').replace(/\s+/g, ' ').trim().slice(0, 120)})" but no waker is armed: arm one for that event (<plugin>/bin/timer.mjs --in <min>m --then "<step>" [--until "<check>" --deadline <2h> | --topic <id>], mail with a deadline, run_in_background, schedule_task), or do the work now and end with the true state (P-061)`;
-// A topic thread with an orchestrator waiting with no timer and no awaited reply: a waiting-only handover step got only the
-// idle ring in hours, so the topic stood and the orchestrator waited for a close that could not come (2026-11-15).
-export const ORCHESTRATOR_WAIT_REASON = (o, what) => `the reply declares "**Stav:** čakám (${String(what || '').replace(/\s+/g, ' ').trim().slice(0, 120)})" in the thread of topic ${o.of}, which the orchestrator ${o.to} waits for, but no timer is armed and no reply is awaited: this thread must not wait for anything that does not come by itself. Arm a timer (<plugin>/bin/timer.mjs --in <min>m --then "<step>" [--until "<check>" --deadline <2h> | --topic <id>]) or send the orchestrator the question or the exact state (comms send --to ${o.to} --level blocker|assist, with your recommendation), or do the work now (P-061, P-064)`;
-export const WAIT_TIMER_THEN = (what) => `the last turn ended "**Stav:** čakám (${String(what).replace(/\s+/g, ' ').trim().slice(0, 120)})" without a waker: check it now; if it came, continue the work; if not, end with your **Handover:** section and the same state, the timer comes back later (P-061)`;
+export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to next prompt); 1 block reason', principles: ['P-026', 'P-030', 'P-037', 'P-040', 'P-042', 'P-043', 'P-061'] };
 
 // T3 shows the operator only the last message of a turn and folds the earlier ones under "Worked for …": a note written
 // after a block hid the answer (operator 2026-11-03: "the payload I want is hidden, I get the operational message").
 export const FINAL_REPLY = 'The operator sees only your last message of this turn (earlier ones are folded away): end with the complete answer (the result, links, items for the operator; corrected where it changed), its **Handover:** section and its state line, never with only the state line. Never write about this hook, a timer, a waker or IDs (P-061)';
 // flow-public#37: after a block the reply was only its state line and the result stayed in an earlier, folded message.
-export const STATE_ONLY_REASON = 'the last message of this turn is only its state line: the answer stayed in an earlier message the operator does not see (P-061, flow-public#37)';
+export const STATE_ONLY_REASON = 'the last message of this turn is only its skeleton (the **Handover:** section and the state line): the answer stays in an earlier message the operator does not see; write the complete answer above the skeleton in this last message (spec 10.3 item 1, P-061, flow-public#37)';
 
-// flow-public#25 (2026-11-10): the operator asked how to hand a task to another agent; "do it now" made the agent create and
-// deploy a skill nobody asked for. Every "do it" here is bound to the work the operator asked for; a proposal stays an offer.
-export const OFFER = 'Only work the operator asked for is done now; a change they did not ask for (their prompt asked a question, for advice, a proposal or to find something out) is never done: offer it as a numbered item "1. <…>" under **Otázky na operátora:** with "**Stav:** otázka" (P-002, P-063)';
-const STATES_HELP = 'hotovo = nothing is left, neither for you nor for the operator (the handover has no next step, no item for the operator); otázka = what only the operator decides or confirms is a numbered item "1. <…>" under **Otázky na operátora:**, what only the operator does (login, install, a click) an item under **Úlohy pre operátora:** (omit a heading with no item), and the first asked with AskUserQuestion (your recommended option first) so T3 shows it; čakám = an event with a waker armed by code, written "**Stav:** čakám (na <what>)" (<plugin>/bin/timer.mjs --in <min>m --then "<step>", mail with a deadline, run_in_background, schedule_task). A promise ("I will do it later", "at your next message") is no state: do the asked work now. ' + OFFER;
+const STATES_HELP = 'The state comes from the facts, not from the text (spec 10.2): čakám = a held topic\'s handover has a next step ("**Stav:** čakám (na pokračovanie)") or an alarm armed by code runs (timer.mjs, a background task, mail you sent that waits for an answer); otázka = no step and no alarm, and an item in the handover sections Otvorené otázky or Úlohy pre operátora (the blocks **Otázky na operátora:** and **Úlohy pre operátora:** are their content); hotovo = none of that. A step is only the handover\'s Ďalší krok (save.mjs handover --next), a step that waits for the operator\'s answer is a question';
 export const NO_STATE_REASON = `the final reply has no state line: end it with exactly one line "**Stav:** hotovo", "**Stav:** otázka" or "**Stav:** čakám (na <what>)", after the section ${HANDOVER_LINE} (P-061), e.g. ${PROTOCOL_EXAMPLE}. ${STATES_HELP}`;
 // D-0040 (operator 2026-11-13): items and steps are numbered, the handover is its own section, the state line is bold.
 const OLD_FORM_PARTS = {
@@ -61,64 +48,20 @@ const OLD_FORM_PARTS = {
   handover: `the handover is its own section, not the line "Handover: <topic> – <step>": the heading **Handover:** and under it one numbered line per held topic "1. <topic> → <next step>", or "${HANDOVER_NONE_LINE}" when the thread holds none`,
   'handover-items': 'the lines under **Handover:** are numbered: "1. <topic> → <next step>"',
 };
-export const OLD_FORM_REASON = (parts) => `the reply ends in the old form of the protocol: ${parts.map((p) => OLD_FORM_PARTS[p]).join('; ')}. Rewrite the end of the reply in this form, e.g. ${PROTOCOL_EXAMPLE}; steps in the reply are numbered too (P-061, D-0040)`;
-export const NO_QUESTION_REASON = `the reply declares "**Stav:** otázka" but has no item under **Otázky na operátora:** or **Úlohy pre operátora:**: list there what only the operator decides or confirms (questions) or does (tasks) (numbered "1. <…>", a choice with your recommended option), or declare the state that is true (P-061). ${STATES_HELP}`;
-// Operator 2026-11-09: carol ended "Ostáva: … zmažem ho až na tvoje potvrdenie" with "Stav: hotovo"; a step is protocol,
-// never a sentence.
-export const STEP_REASON = (step) => `the reply writes a step as prose ("${step}"), outside the protocol: a step of the asked work is done now, or saved with save handover --next and the state "**Stav:** čakám (na <what>)" with a waker; what the operator decides or confirms is a numbered item "1. <…>" under **Otázky na operátora:**, what only the operator does an item under **Úlohy pre operátora:**, with "**Stav:** otázka" (P-061). ${STATES_HELP}`;
-export const OPERATOR_STATE_REASON = (state, item) => `the reply lists for the operator "${item}" under **Otázky na operátora:** / **Úlohy pre operátora:** but declares "**Stav:** ${state}": what waits on the operator is "**Stav:** otázka", asked with AskUserQuestion, or "**Stav:** čakám (na <event>)" with a waker when the turn waits on an event and the item can wait (D-0011); if it is part of the asked work and you can do it yourself, do it and drop the item (P-061, P-058); a change the operator did not ask for stays an item, with "**Stav:** otázka". ${STATES_HELP}`;
-export const LEGACY_HEADING_REASON = `the reply uses the old heading **Operátor:**: split it into **Otázky na operátora:** (decisions and confirmations only the operator has, also asked with AskUserQuestion) and **Úlohy pre operátora:** (steps only the operator does: login, install, a click in a UI); omit the heading that has no item (P-061)`;
+export const OLD_FORM_REASON = (parts) => `the reply ends in the old form of the protocol: ${parts.map((p) => OLD_FORM_PARTS[p]).join('; ')}. Rewrite the end of the reply in this form, e.g. ${PROTOCOL_EXAMPLE} (P-061, D-0040)`;
+export const LEGACY_HEADING_REASON = 'the reply uses the old heading **Operátor:**: split it into **Otázky na operátora:** (decisions and confirmations only the operator has) and **Úlohy pre operátora:** (steps only the operator does: login, install, a click in a UI); omit the heading that has no item (P-061)';
 export const EMPTY_SECTION_REASON = (heading) => `the reply has the heading ${heading} with no item: omit a section that has nothing in it, and write it only with numbered items "1. <…>" (P-061)`;
-// flow-public#35: PreToolUse refused the dialog of this turn as a repeat and the agent asked in text: a repeat of the dialog passes.
-export const DIALOG_AFTER_REPEAT = 'the dialog was refused in this turn as a repeat of an answered question: when his decision does not cover this step (a serious step, another scope), ask the same dialog again now, the repeat passes; when it covers the step, act on it and end without the question (P-059)';
-export const DIALOG_REASON = `the reply asks the operator in text, which is lost in the thread among other turns: ask the one decision only the operator has with AskUserQuestion now (your recommended option first, what it decides about in the dialog: the open dialog covers the text of the turn), so T3 shows the thread as "Awaiting Input"; after the answer continue the work. The items under the operator headings stay in the reply; the dialog asks the first one, the further ones in the same dialog (up to 4 questions): a second dialog right after the answer covers the thread again (P-061, operator 2026-11-08, flow-public#45). ${STATES_HELP}`;
-// P-050 (operator 2026-11-08): "Chcem riešiť tému predaja pneumatík" got "<project> / bez témy" as the first reply and the work
-// went on without a topic; the status block of a thread without a topic is only for a topic that stays unknown.
-export const STALE_STATUS_REASON = (project, id) => `the reply shows "${project} / bez témy", but this thread holds topic ${id}: start the reply with "${project} / ${id}", without the list of topics and without the topic question (P-050)`;
-export const NO_TOPIC_REASON = (project) => `the reply shows "${project} / bez témy" and goes on without a topic: if the operator's prompt names the topic or starts work, claim it or create it now (topic.mjs create <id> --subject "<subject>" --class web|code|ops|discussion claims it, skill workflow:topic) and start the reply with "${project} / <id>"; if the topic is unknown or you only propose one (the prompt asks for a proposal or says to change nothing), do not create it: end with "**Otázky na operátora:**" and under it "1. Aká bude téma? (návrh: <id>)", the same question in AskUserQuestion, "${HANDOVER_NONE_LINE}" and "**Stav:** otázka" (P-050)`;
-export const NO_WAIT_TARGET_REASON = `the reply declares "**Stav:** čakám" but not what it waits for: write the state line as "**Stav:** čakám (na <what>)", e.g. "**Stav:** čakám (na výsledok pracovníka)" (P-061, operator 2026-11-08)`;
+export const NO_WAIT_TARGET_REASON = 'the reply declares "**Stav:** čakám" but not what it waits for: write the state line as "**Stav:** čakám (na <what>)", e.g. "**Stav:** čakám (na pokračovanie)" (P-061)';
 // Operator: he could not tell what continues after /clear or in a new session. The section before the state line names every topic the thread holds, or says it holds none (D-0040).
-export const HANDOVER_REASON = (topics, said) => `the final reply has ${said ? `a wrong **Handover:** section ("${said.text.slice(0, 80)}"${said.items.length ? `, lines: ${said.items.map((i) => i.topic ? `${i.topic} → …` : `"${String(i.text).slice(0, 60)}" (not "<topic> → <step>")`).join(', ')}` : ''})` : 'no **Handover:** section'}: right before the state line comes the section ${HANDOVER_LINE} (what continues after /clear or in a new session), ${topics.length ? `and it must have a line for every topic this thread holds: ${topics.map((t) => `${t.id} (saved next step: ${t.next ? `"${String(t.next).slice(0, 160)}"` : 'none'})`).join('; ')}` : `this thread holds no topic, so write exactly "${HANDOVER_NONE_LINE}"`} (P-061, D-0040)`;
-export const NEXT_STEP_REASON = (topic, next) => `the reply declares "**Stav:** hotovo", but the handover of topic ${topic} has a next step: "${next}". Do it now in this turn. If it waits for an event, arm a waker and declare "**Stav:** čakám (na <what>)"; if it needs the operator, ask with AskUserQuestion; if it is done, save the handover without it (P-061, P-026)`;
-
-// D-0043 (operator 2026-11-14): "Akú tému má toto vlákno viesť ďalej?" ended a thread code started; a question about a next topic.
-export const NEXT_TOPIC_QUESTION = /(?<!\p{L})(ak[úáa]|ktor[úáa])\s+(\p{L}+\s+){0,3}tém\p{L}*[^?\n]*\?/iu;
-
-// Words that admit a mistake (sk, cs, en). `\b` is ASCII-only, so letter boundaries use \p{L}.
-const MISTAKE = /(?<!\p{L})(omylom|omylem|nedopatrením|nechtiac|by mistake|accidentally|mistakenly|inadvertently|unintentionally)(?!\p{L})/iu;
-
-// A word next to the hit that makes it a guard or a negation, not an admission (alice 2026-11-07: "či sa skill
-// nespúšťa omylom" in a design was blocked): sk/cs negated verb (ne-), nie, aby, či, not, never, avoid, prevent, without.
-const GUARD = /^(ne\p{L}{2,}|nie|aby|či|zda|nič|nic|not|never|nothing|no|avoid\p{L}*|prevent\p{L}*|without|doesn't|don't|won't|isn't)$/iu;
-const NOT_NEGATION = /^(nedávno|nejak\p{L}*|neskôr|nedeľ\p{L}*|nech|než|nedopatrením|nechtiac)$/iu;
-
-function admits(plain, m) {
-  const words = (s) => s.split(/[^\p{L}']+/u).filter(Boolean);
-  // Only within the clause: "omylom, nie zámerne" is still an admission.
-  const before = plain.slice(Math.max(0, m.index - 40), m.index).split(/[,.;:!?\n]/).pop();
-  const after = plain.slice(m.index + m[0].length, m.index + m[0].length + 40).split(/[,.;:!?\n]/)[0];
-  const near = [...words(before).slice(-2), ...words(after).slice(0, 2)];
-  return !near.some((w) => GUARD.test(w) && !NOT_NEGATION.test(w));
-}
-
-/** The sentence of the reply that admits a mistake, or null. */
-export function mistakeClaim(text) {
-  if (typeof text !== 'string') return null;
-  // A quoted word is a mention, not an admission (alice 2026-11-03: the reply describing this hook was blocked).
-  const plain = text.replace(/„[^“\n]*“|"[^"\n]*"|`[^`\n]*`/g, (q) => ' '.repeat(q.length));
-  const re = new RegExp(MISTAKE.source, 'giu');
-  let m;
-  while ((m = re.exec(plain)) && !admits(plain, m)) { /* a guarded or negated use: look further */ }
-  if (!m) return null;
-  const from = Math.max(text.lastIndexOf('\n', m.index), ...['. ', '! ', '? '].map((d) => text.lastIndexOf(d, m.index))) + 1;
-  const ends = ['. ', '! ', '? ', '\n'].map((d) => text.indexOf(d, m.index)).filter((i) => i >= 0);
-  const to = ends.length ? Math.min(...ends) + 1 : text.length;
-  return text.slice(from, to).replace(/[*_`]/g, '').trim().slice(0, 160);
-}
-
-// A queued signal for the next turn, not a block: the word list cannot tell an admitted mistake from a quoted or
-// hypothetical one, and a wrong block cost a whole extra turn (operator 2026-11-08, hooks review).
-export const MISTAKE_REASON = (sentence) => `mistake named in the last reply: "${sentence.slice(0, 120)}"; if it was one, handle it with skill workflow:error (fix, clean up, save a skill or rule, report it) and say what you saved (P-003)`;
+export const HANDOVER_REASON = (topics, said) => `the final reply has ${said ? `a wrong **Handover:** section ("${said.text.slice(0, 80)}"${said.items.length ? `, lines: ${said.items.map((i) => i.topic ? `${i.topic} → …` : `"${String(i.text).slice(0, 60)}" (not "<topic> → <step>")`).join(', ')}` : ''})` : 'no **Handover:** section'}: right before the state line comes the section ${HANDOVER_LINE} (what continues after /clear or in a new session), ${topics.length ? `and it must have a line for every topic this thread holds: ${topics.map((t) => `${t.id} (saved next step: ${t.next ? `"${String(t.next).slice(0, 160)}"` : 'none, "→ žiadny"'})`).join('; ')}` : `this thread holds no topic, so write exactly "${HANDOVER_NONE_LINE}"`} (spec 10.2, D-0040)`;
+export const HANDOVER_SECTIONS_REASON = (id) => `the handover of topic ${id} lacks the section "## Otvorené otázky" or "## Úlohy pre operátora": save it again with save.mjs handover (six sections, P-011); the state of the topic is computed from them (spec 10.2)`;
+export const COUNT_REASON = (said, saved, topics) => `the blocks of the reply do not match the handover: **Otázky na operátora:** has ${said.questions} item(s) and the section Otvorené otázky ${topics ? `of the held topics ${saved.questions}` : '0 (this thread holds no topic)'}; **Úlohy pre operátora:** has ${said.tasks} item(s) and the section Úlohy pre operátora ${topics ? saved.tasks : 0}. The blocks are the content of these sections, so they survive a takeover and a new session: save the handover with the items (save.mjs handover <topic> --questions "<a>; <b>" --tasks "<c>") or write the blocks as saved; ${topics ? 'an item that is answered or done leaves both' : 'a question or task for the operator needs a held topic (spec 10.1)'} (spec 10.2, 10.3 item 1)`;
+const factsText = (facts, alarms) => [
+  ...facts.map(({ topic, facts: f }) => `topic ${topic.id}: ${f.next.length} next step(s), ${f.questions ?? 0} open question(s), ${f.tasks ?? 0} task(s) for the operator${f.alarms.length ? `, alarm ${f.alarms.map((a) => a.kind).join('+')}` : ''}`),
+  ...(facts.length ? [] : [`no held topic, ${alarms.timers.length + alarms.background.length + alarms.awaiting.length ? 'an alarm runs' : 'no alarm'}`]),
+].join('; ');
+export const STATE_FACTS_REASON = (declared, actual, facts, alarms) => `the reply declares "**Stav:** ${declared}" but the facts give "${actual}" (${factsText(facts, alarms)}): end with "**Stav:** ${actual === WAITING ? 'čakám (na <what>)' : actual}", or change the facts first (save.mjs handover --next / --questions / --tasks, timer.mjs for an alarm) (spec 10.2, 10.3 item 2). ${STATES_HELP}`;
+export const DIALOG_REASON = 'the state is "otázka" and this turn was not started by the operator\'s message (a bell, mail or the continuation started it): the operator is not in the thread, so ask the first item of **Otázky na operátora:** with AskUserQuestion now (your recommended option first, readable without the thread, D-0039); the items stay in the reply. A topic in mode discussion needs no dialog (spec 10.3 item 3, 10.6)';
 
 // flow-public#85: a reply wrote a <task-notification> block (completed, exit 0) for a job still running and went on as if it
 // had ended. Only the harness writes that block, so the reply that carries one is refused; a mention inside a code fence or
@@ -128,97 +71,74 @@ export const FAKE_NOTIFICATION_REASON = 'the reply contains a <task-notification
 
 export { OWED_PREFIX, OWED_LINE, unansweredOwed };
 
+const count = (items) => (Array.isArray(items) ? items.length : 0);
+
+/** The first skeleton or fact violation of the reply (spec 10.3 points 1 to 4), or null. */
+export function violationOf({ msg, reply, work, facts, alarms, factsState, turnSource, dialog }) {
+  if (fakeNotification(msg)) return FAKE_NOTIFICATION_REASON;
+  if (!reply.state) return NO_STATE_REASON;
+  if (reply.onlyProtocol) return STATE_ONLY_REASON;
+  if (reply.oldForm.length) return OLD_FORM_REASON(reply.oldForm);
+  if (reply.legacyOperator) return LEGACY_HEADING_REASON;
+  if (reply.emptySection) return EMPTY_SECTION_REASON(reply.emptySection);
+  if (reply.state === WAITING && !reply.waitFor) return NO_WAIT_TARGET_REASON;
+  if (!handoverMatches(reply.handover, work.map((t) => t.id))) return HANDOVER_REASON(work, reply.handover);
+  const broken = facts.find((f) => f.facts.questions === null || f.facts.tasks === null);
+  if (broken) return HANDOVER_SECTIONS_REASON(broken.topic.id);
+  const saved = { questions: facts.reduce((n, f) => n + f.facts.questions, 0), tasks: facts.reduce((n, f) => n + f.facts.tasks, 0) };
+  const said = { questions: count(reply.questions), tasks: count(reply.tasks) };
+  if (said.questions !== saved.questions || said.tasks !== saved.tasks) return COUNT_REASON(said, saved, facts.length > 0);
+  if (reply.state !== factsState) return STATE_FACTS_REASON(reply.state, factsState, facts, alarms);
+  const asks = facts.some((f) => f.facts.questions > 0 && !isDiscussionMode(f.topic));
+  if (turnSource !== 'operator' && factsState === 'otázka' && asks && !dialog) return DIALOG_REASON;
+  return null;
+}
+
 export function run(input) {
   const ctx = loadContext({ requireBrain: false });
-  // Turn record for keepalive (P-043); an outage never fails the hook.
-  // `opened_at` of this turn's record (from the prompt hook) keeps a late Stop from closing a newer turn.
-  let held = [];
-  let work = null;
-  let idleWait = null;
-  let closeTurn = () => {};
-  // The mail's view of this thread (P-072), read once below: `owed` for the reminder, `awaiting` as the mail's waker (1e).
-  let mail = null;
-  let mailWaker = null;
-  // P-061: the declared state. A question to the operator makes the handover step the operator's move, not a continuation;
-  // only a timer (resume_at) rings the thread (bob 2026-11-03: rung 76 s after a question, before the operator could read it).
   const reply = parseReply(input.last_assistant_message);
-  // Items under the operator headings wait on the operator whatever state the reply declares (operator 2026-11-09).
-  const toOperator = reply.state === 'otázka' || !!reply.operator?.length;
-  if (ctx.thread) {
-    try { held = ctx.brainDir ? heldTopics(ctx.brainDir, ctx.thread) : []; } catch { held = []; }
-    const openedAt = ctx.brainDir ? readThreadState(ctx.brainDir, ctx.thread).turn_opened_at ?? null : null;
-    // P-026: the next step travels with the closed turn; wake (code, not the agent) rings the thread to continue it.
-    // A paused topic (snooze) is no work: no continue bell, no next-step block; its end rings the thread once.
-    work = held.find((t) => !isMainTopic(t) && t.next && t.state !== 'paused');
-    // A next step that only waits (bob 2026-11-03: "Čakať na hlásenie témy …" rang 11 times in 4 h) is rung in hours, at most
-    // IDLE_RING_MS.length times per step; then the thread rests until mail or the operator wakes it.
-    idleWait = work ? waitOnlyStep(work.next) : null;
-    const snooze = !work && held.find((t) => t.state === 'paused' && t.paused_until && Date.parse(t.paused_until) > Date.now());
-    // The prompt hook ends a turn that is only protocol without a model call (wake without mail, a timer whose condition does
-    // not hold yet) and closes it again with the step and time this Stop sent last (P-061).
-    const close = ({ next, resumeAt }) => {
-      if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_close: { next: next || null, resume_at: resumeAt || null } });
-      // D-0015, D-0022: a turn ending `otázka` keeps the discussion with the operator open (steer/assist still wait);
-      // `hotovo` or `čakám` closes it and the mail rings what it held back.
-      return recordTurn(ctx, 'closed', held, { openedAt, next, resumeAt, discussion: reply.state === 'otázka' });
-    };
-    closeTurn = () => {
-      // The state this turn ended with: `comms send --reply-to --state hotovo` refuses it in a turn the operator did not start
-      // when the previous turn ended `otázka` (P-061, phase 2).
-      if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_end_state: reply.state || null, last_end_at: new Date().toISOString(), last_questions: reply.state === 'otázka' ? (reply.questions || []).slice(0, 5).map((q) => q.replace(/\s+/g, ' ').trim().slice(0, 300)) : [] });
-      const st = ctx.brainDir ? readThreadState(ctx.brainDir, ctx.thread) : {};
-      // The earliest timer, also one already due: it came due while this turn ran (wake does not ring a running thread), so the
-      // closed turn carries it and wake rings it at once (pilot nudge-why 2026-11-14: timers of 02:21, 07:53 and 08:37 rang only
-      // at 11:51, with the next new timer).
-      const timer = threadTimers(st)[0] || null;
-      if (!timer && snooze) return close({ next: `pause of topic ${snooze.id} ended: run topic.mjs resume ${snooze.id}, then continue from handover`, resumeAt: snooze.paused_until });
-      // An armed waker (schedule, background task, the mail's wait for an answer) rings the thread itself: no continue bell
-      // on top of it (2026-11-03: rung 2 min after arming the check for 06:00, only to say there is nothing to do).
-      const armed = !timer && (validWaker(st) || mailWaker);
-      if (!timer && idleWait && !armed) {
-        const key = `${work.id}\n${work.next}`;
-        const n = st.idle_ring?.key === key && st.turn_source !== 'operator' ? Number(st.idle_ring.n || 0) : 0;
-        if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), idle_ring: { key, n: n + 1 } });
-        const due = IDLE_RING_MS[n];
-        return close({ next: due ? work.next : null, resumeAt: due ? new Date(Date.now() + due).toISOString() : null });
-      }
-      close({ next: timer?.then || (toOperator || armed ? null : work?.next) || null, resumeAt: timer ? resumeAtFor(timer) : null });
-    };
-  }
-  // The turn is closed only when the stop really ends it: a blocked stop keeps the agent working, so the record stays open
-  // (wake dedupes against open turns and does not ring a running thread, P-043).
-  const end = (out) => {
-    if (!out.decision) closeTurn();
-    else out.reason = `${out.reason}\n${FINAL_REPLY}`;
-    return out;
+  const msg = input.last_assistant_message;
+  let held = [];
+  if (ctx.thread && ctx.brainDir) { try { held = heldTopics(ctx.brainDir, ctx.thread); } catch { held = []; } }
+  const work = held.filter((t) => !isMainTopic(t));
+  // `opened_at` of this turn's record (from the prompt hook) keeps a late Stop from closing a newer turn (P-043).
+  const openedAt = ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread).turn_opened_at ?? null : null;
+  // The prompt hook ends a turn that is only protocol without a model call and closes it again with the step and time this
+  // Stop sent last (`last_close`). `last_end_state`: comms send --reply-to --state hotovo refuses it in a turn the operator
+  // did not start when the previous turn ended otázka (P-061).
+  const close = ({ next = null, resumeAt = null } = {}) => {
+    if (!ctx.thread) return null;
+    if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_close: { next, resume_at: resumeAt }, last_end_state: reply.state || null, last_end_at: new Date().toISOString() });
+    // Spec 2.2 (plan B7): delivered mail wakes the thread in every state: the end of a turn closes the discussion.
+    return recordTurn(ctx, 'closed', held, { openedAt, next, resumeAt, discussion: false });
   };
-  if (!ctx.brainDir) return end({});
+  if (!ctx.brainDir) { close(); return {}; }
   const signals = [];
-  try {
-    const res = flushBuffer(ctx, input.session_id, { sync: false });
-    signals.push(...res.signals);
-  } catch (err) {
-    signals.push(`logs not written: ${err.message.split('\n')[0]}`);
-  }
-  let unpushed = unpushedCount(ctx.brainDir);
-  // The log commit stays local: it goes out with the next brain write (brainSync pushes all commits) or here once the oldest
-  // unpushed commit is logs.stop_push_minutes old (audit 2.3a: 756 push-per-Stop commits, ~27 min of waiting).
-  if (unpushed > 0 && oldestUnpushedAgeMs(ctx.brainDir) >= (ctx.policy.logs?.stop_push_minutes ?? 30) * 6e4) {
-    const sync = brainSync(ctx.brainDir);
-    unpushed = sync.unpushed ?? unpushedCount(ctx.brainDir);
-    if (sync.conflict) signals.push(`conflict: ${sync.conflict.join(', ')} (brain not merged, P-040)`);
-    else if (unpushed > 0) signals.push(`unpushed: ${unpushed}${sync.error && sync.error !== 'no remote origin' ? ` (${sync.error})` : ''}`);
-  }
-  if (ctx.thread) {
+  // One brain write per turn for the buffered logs (P-030); `ops` (the topic state) go into the same commit and are pushed.
+  const flush = (ops = [], message = null) => {
+    try {
+      const res = flushBuffer(ctx, input.session_id, { sync: ops.length > 0, ops, message });
+      signals.push(...res.signals);
+      if (res.sync?.conflict) signals.push(`conflict: ${res.sync.conflict.join(', ')} (brain not merged, P-040)`);
+      else if (res.sync?.error && res.sync.error !== 'no remote origin') signals.push(`unpushed: ${res.sync.unpushed ?? unpushedCount(ctx.brainDir)} (${res.sync.error})`);
+      if (ops.length) return;
+    } catch (err) {
+      signals.push(`${ops.length ? 'logs and topic state' : 'logs'} not written: ${err.message.split('\n')[0]}`);
+    }
+    // The log commit stays local: it goes out with the next brain write or here once the oldest unpushed commit is
+    // logs.stop_push_minutes old (audit 2.3a: 756 push-per-Stop commits, ~27 min of waiting).
+    let unpushed = unpushedCount(ctx.brainDir);
+    if (unpushed > 0 && oldestUnpushedAgeMs(ctx.brainDir) >= (ctx.policy.logs?.stop_push_minutes ?? 30) * 6e4) {
+      const sync = brainSync(ctx.brainDir);
+      unpushed = sync.unpushed ?? unpushedCount(ctx.brainDir);
+      if (sync.conflict) signals.push(`conflict: ${sync.conflict.join(', ')} (brain not merged, P-040)`);
+      else if (unpushed > 0) signals.push(`unpushed: ${unpushed}${sync.error && sync.error !== 'no remote origin' ? ` (${sync.error})` : ''}`);
+    }
+  };
+  // Signals are queued for the next prompt (P-023 c); each skill proposal once per thread (P-030).
+  const queue = () => {
+    if (!ctx.thread || !signals.length) return;
     const state = readThreadState(ctx.brainDir, ctx.thread);
-    // One obligations call (section 2); an outage gives the client's backup (offline), another model nothing (4a).
-    const res = readObligations(ctx, { held });
-    mail = res.ok && !(res.data?.offline && !res.data?.cached) ? res.data : null;
-    mailWaker = awaitingWaker(mail);
-    const picked = unansweredOwed(mail);
-    // Once per queued line: a stop that finds the same reminder still waiting does not queue it again.
-    if (picked.length && !(state.pending_signals || []).some((sig) => sig.startsWith(OWED_PREFIX))) signals.push(OWED_LINE(picked, mail.offline ? ageText(mail.age_s) : null));
-    // P-030: each proposal (sequence -> skill) once per thread, not at every Stop that sees the count again.
     const proposed = Array.isArray(state.proposed) ? state.proposed : [];
     const added = [];
     const fresh = signals.filter((sig) => {
@@ -228,97 +148,70 @@ export function run(input) {
       added.push(key);
       return true;
     });
-    if (fresh.length) {
-      const pending = [...(state.pending_signals || []), ...fresh].slice(-(ctx.policy.limits?.hook_signal_lines ?? 2));
-      writeThreadState(ctx.brainDir, ctx.thread, { ...state, pending_signals: pending, proposed: [...proposed, ...added].slice(-200) });
-    }
-    // P-061: the declared state against the facts, in every turn (a message never ends the loop of work).
-    const msg = input.last_assistant_message;
-    const mistake = input.stop_hook_active ? null : mistakeClaim(msg);
-    if (mistake) {
-      const st = readThreadState(ctx.brainDir, ctx.thread);
-      const line = MISTAKE_REASON(mistake);
-      const queued = st.pending_signals || [];
-      if (!queued.includes(line)) writeThreadState(ctx.brainDir, ctx.thread, { ...st, pending_signals: [...queued, line].slice(-(ctx.policy.limits?.hook_signal_lines ?? 2)) });
-    }
-    // A timer outlives an operator prompt (12 of 59 timers were dropped by one, audit 2026-11-11) and is spent here, when that
-    // turn ends without "čakám"; an auto timer of code is always spent then, the turn arms its own wait.
-    // A task whose end the harness already notified (in this turn, or as the prompt of an earlier one) rings nobody: its
-    // waker is spent, else it kept "hotovo" with a next step from blocking for 2 h (operator 2026-11-13).
-    const recorded = readThreadState(ctx.brainDir, ctx.thread);
-    const live = (recorded.wakers || []).some((w) => w.tasks?.length) ? withoutFinished(recorded.wakers, finishedTasks(transcriptTail(input.transcript_path))) : recorded.wakers;
-    if (live !== recorded.wakers && live.length !== recorded.wakers.length) writeThreadState(ctx.brainDir, ctx.thread, { ...recorded, wakers: live });
-    const before = readThreadState(ctx.brainDir, ctx.thread);
-    // A stall check (D-0084) watches a handed-off topic, not a step of this turn: an operator prompt never spends it.
-    const spent = !!before.timer && !before.timer.stall && before.turn_source === 'operator' && !(before.turn_started_at && before.timer.set_at >= before.turn_started_at) && (before.timer.auto || reply.state !== 'čakám');
-    // Only that timer (the earliest) is spent; later ones of the thread stay (2026-11-13).
-    // The mail's wait for an answer to mail this thread sent rings it too (1e): a waker of code, not of this thread's state.
-    const waker = validWaker(spent ? { ...before, ...timersPatch(threadTimers(before).filter((t) => !sameTimer(t, before.timer))) } : before) || mailWaker;
-    const paused = held.some((t) => t.state === 'paused') && !work;
-    // A dialog asked in this turn (PreToolUse keeps the time) that failed or was declined leaves the text question as fallback; one
-    // the operator answered does not (flow-public#35 pilot: a consent answered, the next consent asked in text ended the turn).
-    const turnState = readThreadState(ctx.brainDir, ctx.thread);
-    const dialog = !!turnState.dialog_at && (!turnState.turn_started_at || turnState.dialog_at >= turnState.turn_started_at) && !(turnState.dialog_answered_at && turnState.dialog_answered_at >= turnState.dialog_at);
-    // The start question of a thread without a topic comes from the status block of the session start (boot.mjs).
-    const topicStart = !held.length && toOperator && reply.question === TOPIC_QUESTION;
-    const noTopicBlock = typeof msg === 'string' && ctx.projectName && msg.split('\n').some((l) => l.replace(/[*_`]/g, '').trim() === `${ctx.projectName} / bez témy`);
-    // P-059: a question item that repeats one the operator answered earlier in the thread (an answer of this very turn is no earlier one).
-    const earlier = (turnState.answered_questions || []).filter((a) => !turnState.turn_started_at || a.at < turnState.turn_started_at);
-    let repeated = null;
-    // PreToolUse refused a dialog of this turn as a repeat (its key: the turn start, else 'turn'): not challenged again here.
-    const repeatDenied = !!turnState.repeat_denied_at && turnState.repeat_denied_at === (turnState.turn_started_at || 'turn');
-    if (reply.state === 'otázka' && !repeatDenied) for (const item of reply.questions || []) { const old = repeatsAnswered(item, earlier); if (old) { repeated = REPEATED_QUESTION_REASON(old, item.replace(/\s+/g, ' ').trim()); break; } }
-    let violation = null;
-    let orchestrator = null;
-    let ended = null;
-    // A harness that sends no reply text (field missing) cannot be checked; an empty reply is no state.
-    if (typeof msg !== 'string') violation = null;
-    else if (fakeNotification(msg)) violation = FAKE_NOTIFICATION_REASON;
-    // D-0043: a thread code started for a topic that done --topic closed ends settled: no question, no wait without a waker.
-    else if ((ended = endedProgrammaticThread(ctx.brainDir, ctx.thread)) && (reply.state === 'otázka' || reply.questions?.length || reply.operator?.length || noTopicBlock || NEXT_TOPIC_QUESTION.test(msg) || (!!turnState.dialog_at && (!turnState.turn_started_at || turnState.dialog_at >= turnState.turn_started_at)) || (reply.state === 'čakám' && (!reply.waitFor || !waker)))) violation = PROGRAMMATIC_END_REASON(ended);
-    else if (noTopicBlock && held.length) violation = STALE_STATUS_REASON(ctx.projectName, held[0].id);
-    // Pilot 2026-11-12: the operator chose "Bez témy" in the topic dialog and the hook asked for the topic again (D-0010).
-    else if (noTopicBlock && !topicStart && !turnState.no_topic_chosen_at) violation = NO_TOPIC_REASON(ctx.projectName);
-    // P-064: a thread of a topic another thread created never asks the operator; its question goes to the orchestrator by mail.
-    else if ((reply.state === 'otázka' || reply.questions?.length) && (orchestrator = threadOrchestrator(ctx.brainDir, ctx.thread))) violation = ORCHESTRATOR_QUESTION_REASON(orchestrator);
-    else if (!reply.state) violation = NO_STATE_REASON;
-    else if (reply.oldForm.length) violation = OLD_FORM_REASON(reply.oldForm);
-    else if (reply.legacyOperator) violation = LEGACY_HEADING_REASON;
-    else if (reply.emptySection) violation = EMPTY_SECTION_REASON(reply.emptySection);
-    else if (reply.step) violation = STEP_REASON(reply.step);
-    else if (reply.operator?.length && reply.state !== 'otázka' && reply.state !== 'čakám') violation = OPERATOR_STATE_REASON(reply.state, reply.operator[0].slice(0, 120));
-    else if (reply.state === 'otázka' && !dialog && !topicStart) violation = repeatDenied ? `${DIALOG_AFTER_REPEAT}; ${DIALOG_REASON}` : DIALOG_REASON;
-    else if (reply.state === 'otázka' && !reply.question) violation = NO_QUESTION_REASON;
-    else if (repeated) violation = repeated;
-    else if (reply.state === 'čakám' && !reply.waitFor) violation = NO_WAIT_TARGET_REASON;
-    // A thread of a topic with an orchestrator: the idle ring (hours) is no waker for it, someone waits for its result.
-    else if (reply.state === 'čakám' && !waker && !paused && (orchestrator = threadOrchestrator(ctx.brainDir, ctx.thread))) violation = ORCHESTRATOR_WAIT_REASON(orchestrator, reply.waitFor);
-    // The idle ring of a step that only waits is a waker armed by code (closeTurn, operator 2026-11-03).
-    else if (reply.state === 'čakám' && !waker && !paused && !idleWait) violation = NO_WAKER_REASON(reply.waitFor);
-    else if (reply.state === 'hotovo' && work && !idleWait && !waker) violation = NEXT_STEP_REASON(work.id, work.next);
-    else if (!handoverMatches(reply.handover, held.filter((t) => !isMainTopic(t)).map((t) => t.id))) violation = HANDOVER_REASON(held.filter((t) => !isMainTopic(t)), reply.handover);
-    // Trust, T3 project and welcome thread that project.mjs could not do without the `t3` CLI (skipped by hand, 2026-11-08).
-    const t3Left = input.stop_hook_active ? null : pendingT3Line(readThreadState(ctx.brainDir, ctx.thread).t3_pending);
-    // After a block of this turn a reply of only the state line is returned once per turn (its key: the turn start, else 'turn').
-    const turnKey = turnState.turn_started_at || 'turn';
-    const stateOnly = !!input.stop_hook_active && typeof msg === 'string' && !!reply.state && reply.onlyProtocol && turnState.state_only_blocked_at !== turnKey;
-    if (stateOnly) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), state_only_blocked_at: turnKey });
-    const reasons = [!input.stop_hook_active && violation, stateOnly && STATE_ONLY_REASON, t3Left].filter(Boolean);
-    if (reasons.length) return end({ decision: 'block', reason: reasons.join('\n') });
-    if (spent) clearTimer(ctx.brainDir, ctx.thread, (t) => sameTimer(t, before.timer));
-    // Ending waiting without a waker, or without a true state, keeps the loop alive: code arms the thread timer, no note about it (P-061). The start
-    // question of a thread without a topic (which topic?) gets none: a timer turn told to "decide with your recommended option"
-    // would pick the topic itself (flow-public#1). An unfinished step under "hotovo" gets the continue ring in closeTurn.
-    if (!topicStart && !waker && !paused && !idleWait && (reply.state !== 'hotovo' || toOperator)) {
-      const st = readThreadState(ctx.brainDir, ctx.thread);
-      const n = Number(st.auto_timer_n || 0);
-      // Waiting on the operator rings in hours (operator 2026-11-03), waiting on a job in minutes.
-      const [base, max] = toOperator ? [OPERATOR_TIMER_MS, OPERATOR_TIMER_MAX_MS] : [AUTO_TIMER_MS, AUTO_TIMER_MAX_MS];
-      setTimer(ctx.brainDir, ctx.thread, { delayMs: Math.min(base * 2 ** n, max), then: reply.state === 'čakám' && reply.waitFor ? WAIT_TIMER_THEN(reply.waitFor) : AUTO_TIMER_THEN, auto: true });
-      writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), auto_timer_n: n + 1 });
-    }
+    if (fresh.length) writeThreadState(ctx.brainDir, ctx.thread, { ...state, pending_signals: [...(state.pending_signals || []), ...fresh].slice(-(ctx.policy.limits?.hook_signal_lines ?? 2)), proposed: [...proposed, ...added].slice(-200) });
+  };
+  if (!ctx.thread) { flush(); return {}; }
+
+  // One obligations call; an outage gives the client's backup (offline), another model nothing.
+  const res = readObligations(ctx, { held });
+  const mail = res.ok && !(res.data?.offline && !res.data?.cached) ? res.data : null;
+  const picked = unansweredOwed(mail);
+  // Once per queued line: a stop that finds the same reminder still waiting does not queue it again.
+  if (picked.length && !(readThreadState(ctx.brainDir, ctx.thread).pending_signals || []).some((sig) => sig.startsWith(OWED_PREFIX))) signals.push(OWED_LINE(picked, mail.offline ? ageText(mail.age_s) : null));
+  // A task whose end the harness already notified rings nobody: its waker is spent (operator 2026-11-13).
+  const recorded = readThreadState(ctx.brainDir, ctx.thread);
+  const live = (recorded.wakers || []).some((w) => w.tasks?.length) ? withoutFinished(recorded.wakers, finishedTasks(transcriptTail(input.transcript_path))) : recorded.wakers;
+  if (live !== recorded.wakers && live.length !== recorded.wakers.length) writeThreadState(ctx.brainDir, ctx.thread, { ...recorded, wakers: live });
+  const before = readThreadState(ctx.brainDir, ctx.thread);
+  // A timer outlives an operator prompt (audit 2026-11-11) and is spent when that turn ends without "čakám"; only that timer
+  // (the earliest), later ones of the thread stay.
+  const spent = !!before.timer && before.turn_source === 'operator' && !(before.turn_started_at && before.timer.set_at >= before.turn_started_at) && reply.state !== WAITING;
+  const alarmState = spent ? { ...before, ...timersPatch(threadTimers(before).filter((t) => !sameTimer(t, before.timer))) } : before;
+  const now = Date.now();
+  const alarms = threadAlarms(alarmState, mail, now);
+  const facts = work.map((topic) => ({ topic, facts: topicFacts(topic, alarms, { turnEnd: now, now }) }));
+  const factsState = facts.length ? summaryState(facts.map((f) => f.facts)) : (alarms.timers.length || alarms.background.length || awaitingWaker(mail) ? WAITING : DONE);
+  const turnSource = before.turn_source || 'operator';
+  // Only whether a dialog was asked in this turn (PreToolUse keeps its time), not its content (10.3 item 3).
+  const dialog = !!before.dialog_at && (!before.turn_started_at || before.dialog_at >= before.turn_started_at);
+  // A harness that sends no reply text (field missing) cannot be checked; the second attempt of a turn passes (10.3).
+  const violation = typeof msg === 'string' && !input.stop_hook_active ? violationOf({ msg, reply, work, facts, alarms, factsState, turnSource, dialog }) : null;
+  if (violation) {
+    // A blocked stop keeps the agent working: the turn record stays open and nothing of the state is written.
+    flush();
+    queue();
+    return { decision: 'block', reason: `${violation}\n${FINAL_REPLY}` };
   }
-  return end({});
+  if (spent) clearTimer(ctx.brainDir, ctx.thread, (t) => sameTimer(t, before.timer));
+  // Spec 10.2: the state and the alarm time of each held topic, from the facts (not from the state line), only when they
+  // changed; after the pull the lock decides (4.2.4): a topic this thread lost is not written and gets no continuation.
+  const updates = facts.map((f) => ({ id: f.topic.id, patch: turnUpdate(ctx, f.topic, f.facts, before) })).filter((u) => u.patch);
+  const lost = new Set();
+  if (updates.length) {
+    const locks = verifyLocks(ctx, updates.map((u) => u.id));
+    for (const l of locks.lost) lost.add(l.id);
+    if (locks.lost.length) signals.push(LOCK_LOST_LINE(locks.lost));
+    const write = updates.filter((u) => !lost.has(u.id));
+    let ops = [];
+    try { ops = write.map((u) => fieldsOp(ctx.brainDir, u.id, { turn: u.patch })); } catch (err) { signals.push(`topic state not written: ${err.message.split('\n')[0]}`); }
+    flush(ops, ops.length ? `turn ${write.map((u) => `${u.id} ${u.patch.state || 'state'}`).join(', ')}` : null);
+  } else flush();
+  queue();
+  const st = readThreadState(ctx.brainDir, ctx.thread);
+  // The earliest timer, also one already due: it came due while this turn ran, so the closed turn carries it and wake rings
+  // it at once (pilot nudge-why 2026-11-14).
+  const timer = threadTimers(st)[0] || null;
+  if (timer) return (close({ next: timer.then, resumeAt: resumeAtFor(timer) }), {});
+  const running = work.filter((t) => !lost.has(t.id));
+  const snooze = !running.some((t) => t.state !== 'paused' && t.next) && running.find((t) => t.state === 'paused' && t.paused_until && Date.parse(t.paused_until) > Date.now());
+  if (snooze) return (close({ next: `pause of topic ${snooze.id} ended: run topic.mjs resume ${snooze.id}, then continue from handover`, resumeAt: snooze.paused_until }), {});
+  // A background task or a schedule rings the thread itself; the step runs after it (10.2 point 1).
+  if (validWaker(st)) return (close(), {});
+  // P-026: the next step travels with the closed turn and wake rings "continue from handover"; resume_at makes it ring also
+  // with the same step (plan O2), the cap of continue_max is counted at the wake; a stuck topic has no continuation.
+  const cont = running.find((t) => t.state !== 'paused' && t.next && !stuckNow(ctx, t, st));
+  close(cont ? { next: cont.next, resumeAt: new Date(Date.now() + CONTINUE_RESUME_MS).toISOString() } : {});
+  return {};
 }
 
 if (isMain(import.meta.url)) {

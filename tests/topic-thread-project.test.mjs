@@ -38,7 +38,7 @@ test('thread <id> of a topic created with --project starts the thread in the rep
     r = fx.run('topic.mjs', ['release', 'gamma']);
     assert.equal(r.status, 0, r.out);
     // From the persona brain (cwd and session project bob), without --project.
-    r = fx.run('topic.mjs', ['thread', 'gamma', '--task', 'do it']);
+    r = fx.run('topic.mjs', ['thread', 'gamma', '--requested-by', 'operator', '--task', 'do it']);
     assert.equal(r.status, 0, r.out);
     const started = fs.readFileSync(fx.log, 'utf8');
     assert.match(started, new RegExp(`${fx.srv.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} -\\s*$`), `thread started in the repo project: ${started}`);

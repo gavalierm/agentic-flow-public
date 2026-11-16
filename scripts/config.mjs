@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PLUGIN_ROOT, readJson, writeJson, gitToplevel, git, isInside, realPathLoose, toPosix } from './util.mjs';
 import { tightenPolicy } from './policy-layers.mjs';
-import { LAYOUT, dataPath, dataRel, dataLayoutVersion, layoutFor, isWorkPath, topicWorkLabel } from './layout.mjs';
+import { LAYOUT, dataPath, dataRel, dataLayoutVersion, layoutFor, isWorkPath, topicWorkLabel, hasData, hasScratch } from './layout.mjs';
 
 export const WORKFLOW_CONFIG = '.workflow.json';
 // Operator's local config of a repository: the local folder has the same path in layout 1 and 2.
@@ -29,14 +29,15 @@ export const PERSONA_BRAIN = '.';
 const REPO_FILES = ['.githooks/**', '.gitattributes', '.gitignore', '.workflow.json', 'README.md'];
 /**
  * Template entries of a brain in layout `version`; in a persona they are protected like `<brain>/**` (P-013, P-024).
- * Layout 2 protects the workflow data (.brain/, decisions) and of a topic only its record and handover: the other files of
- * temy/<id>/ are the topic's work files, which the agent writes itself.
+ * A layout without scratch/ (2, 3) protects the workflow data (layout 2 .brain/ and decisions, layout 3 the record folders
+ * and policy.json in the root) and of a topic only its record and handover: the other files of the topic folder are its
+ * work files, which the agent writes itself.
  */
 export function brainEntriesFor(version = 1) {
   const L = layoutFor(version);
-  if (version === 1) return [...['memory', 'decisions', 'rules', 'skills', 'topics', 'exceptions', 'logs'].map((n) => `${L[n]}/**`), L.policy, ...REPO_FILES];
-  const data = L.policy.split('/')[0];
-  return [`${data}/**`, `${L.decisions}/**`, `${L.topics}/*/${L.topicFile}`, `${L.topics}/*/${L.handover}`, ...REPO_FILES];
+  if (L.scratch !== null) return [...['memory', 'decisions', 'rules', 'skills', 'topics', 'exceptions', 'logs'].map((n) => `${L[n]}/**`), L.policy, ...REPO_FILES];
+  const data = L.policy.includes('/') ? [`${L.policy.split('/')[0]}/**`, `${L.decisions}/**`] : [...['memory', 'decisions', 'rules', 'skills', 'exceptions', 'logs'].map((n) => `${L[n]}/**`), L.policy];
+  return [...data, `${L.topics}/*/${L.topicFile}`, `${L.topics}/*/${L.handover}`, ...REPO_FILES];
 }
 /** Template entries of the brain at root, by its layout. */
 export const brainEntries = (root) => brainEntriesFor(dataLayoutVersion(root));
@@ -124,7 +125,7 @@ export function sessionRoot(projectDir, brainDir) {
 }
 // docs/: lasting documents of a persona (research, reports); written directly, committed by save.mjs docs (alice 2026-11-03).
 export const PERSONA_DOCS = LAYOUT.docs;
-// materialy/: what came from outside and the results of a topic (skill materialy), committed by save.mjs docs like docs/
+// materialy/: what came from outside and the results of a topic (save.mjs source, save.mjs result), committed by save.mjs docs like docs/
 // (D-0011: 2 refusals on 11-11, the result stayed outside git).
 export const PERSONA_MATERIALS = LAYOUT.materialy;
 export const PERSONA_WRITABLE = [SCRATCH_DIR, LAYOUT.local, PERSONA_DOCS, PERSONA_MATERIALS];
@@ -133,9 +134,9 @@ export const PERSONA_WRITABLE = [SCRATCH_DIR, LAYOUT.local, PERSONA_DOCS, PERSON
  * materialy/; layout 2 local/, vystupy/dokumenty/, zdroje/ and the work files of the topics (isWorkPath).
  */
 export function personaWritableDirs(root) {
-  const v = dataLayoutVersion(root);
-  if (v === 1) return [...PERSONA_WRITABLE];
-  return ['local', 'docs', 'materialy'].map((n) => dataRel(root, n));
+  if (hasScratch(root)) return [...PERSONA_WRITABLE];
+  // Layout 3: a brain has no documents and sources (spec 4), local/ only.
+  return ['local', 'docs', 'materialy'].filter((n) => hasData(root, n)).map((n) => dataRel(root, n));
 }
 
 /** Main checkout of the repository containing dir (never a worktree), P-024 persona. */
@@ -156,14 +157,14 @@ export function expandBrainPath(p, brainRel, version = 1) {
   if (!brainRel) return [];
   const entries = brainEntriesFor(version);
   if (brainRel === PERSONA_BRAIN) return p === '<brain>/**' ? [...entries] : [p.slice('<brain>/'.length)];
-  if (version !== 1 && p === '<brain>/**') return entries.map((e) => `${brainRel}/${e}`);
+  if (layoutFor(version).scratch === null && p === '<brain>/**') return entries.map((e) => `${brainRel}/${e}`);
   return [`${brainRel}${p.slice('<brain>'.length)}`];
 }
 
 /** True when abs lies in a directory a persona agent may write directly (scratch/, local/; layout 2 also topic work files). */
 export function personaWritable(ctx, abs) {
   if (!ctx.brainInfo?.persona) return false;
-  return personaWritableDirs(ctx.projectDir).some((d) => isInside(path.join(ctx.projectDir, ...d.split('/')), abs)) || (dataLayoutVersion(ctx.projectDir) !== 1 && isWorkPath(ctx.projectDir, abs));
+  return personaWritableDirs(ctx.projectDir).some((d) => isInside(path.join(ctx.projectDir, ...d.split('/')), abs)) || (!hasScratch(ctx.projectDir) && isWorkPath(ctx.projectDir, abs));
 }
 
 /**
@@ -174,8 +175,8 @@ export function personaWritable(ctx, abs) {
 export function brainWritable(ctx, abs) {
   if (personaWritable(ctx, abs)) return true;
   const b = ctx.brainDir;
-  if (!b || dataLayoutVersion(b) === 1) return false;
-  return isWorkPath(b, abs) || isInside(dataPath(b, 'docs'), abs);
+  if (!b || hasScratch(b)) return false;
+  return isWorkPath(b, abs) || (hasData(b, 'docs') && isInside(dataPath(b, 'docs'), abs));
 }
 
 export const BRAIN_COMMIT_TAG = '[brain-script]';
@@ -417,6 +418,16 @@ export function writeThreadState(brainDir, id, state) {
 
 export function isWakeTurn(brainDir, id) {
   return readThreadState(brainDir, id).turn_source === 'wake';
+}
+
+/**
+ * The turn was started by a bell for mail that all came from the supervisor (policy supervisor, plan O7): its message is
+ * an instruction (spec 2.2), so done --topic may run in it within the mandate; the other P-047 locks (takeover, rules)
+ * stay. The prompt hook records it as turn_supervisor of a wake turn.
+ */
+export function supervisorTurn(brainDir, id) {
+  const st = readThreadState(brainDir, id);
+  return st.turn_source === 'wake' && st.turn_supervisor === true;
 }
 
 /** The operator answered a dialog (AskUserQuestion) in the running turn (PostToolUse sets dialog_answered_at, D-0011). */

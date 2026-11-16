@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
-import { setup2 } from './layout-2-helpers.mjs';
+import { setup2, setup3 } from './layout-2-helpers.mjs';
 
 const SKILL = (body) => ['skill', 'wd-demo', '--description', 'Použi, keď skúšaš priečinok pracovných súborov.', '--origin', 'routine', '--content', body];
 
@@ -59,5 +59,21 @@ test('save skill and skill-check refuse a fixed work files path in layout 2', ()
     r = fx.run('skill-check.mjs', ['hand-made']);
     assert.equal(r.status, 1, r.out);
     assert.match(r.out, /fixed work files path scratch\//);
+  } finally { fx.cleanup(); }
+});
+
+test('work-dir.mjs and the fixed work path check in layout 3: topics/<topic>/tmp of the brain', () => {
+  const fx = setup3({ thread: 'wd4' });
+  try {
+    let r = fx.run('work-dir.mjs');
+    assert.equal(r.stdout.trim(), path.join(fx.brain, 'topics', 'main', 'tmp'), r.out);
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
+    fx.run('topic.mjs', ['claim', 'alpha']);
+    assert.equal(fx.run('work-dir.mjs').stdout.trim(), path.join(fx.brain, 'topics', 'alpha', 'tmp'));
+    r = fx.run('save.mjs', SKILL('Výsledok zapíš do topics/alpha/tmp/out.md.'));
+    assert.notEqual(r.status, 0, r.out);
+    assert.match(r.out, /fixed work files path topics\/alpha\/tmp/);
+    r = fx.run('save.mjs', SKILL('Výsledok je v topics/<téma>/tmp/.'));
+    assert.equal(r.status, 0, r.out);
   } finally { fx.cleanup(); }
 });

@@ -77,7 +77,8 @@ export function readTopics(brainDir, { archived = false } = {}) {
   const L = layoutOf(brainDir);
   return listTopicRecords(brainDir, { closed: archived }).map(({ id, dir, topic, holder }) => {
     const handover = readText(path.join(dir, L.handover), '');
-    return { id, ...topic, holder, next: handoverNextStep(handover), handover };
+    // `next`: the items of Ďalší krok as one text ('' without a step); the items themselves: handoverNextStep(handover).
+    return { id, ...topic, holder, next: (handoverNextStep(handover) || []).join('; '), handover };
   });
 }
 

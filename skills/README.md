@@ -11,6 +11,7 @@ Popis skillu je trigger (najviac 300 znakov, P-022). Skilly projektu patria do b
 | `consolidate` | P-010 |
 | `delegate` | P-027, P-028 |
 | `find` | P-031 |
+| `people` | spec kap. 6 |
 | `topic` | P-036, P-037, P-045 |
 | `comms` | P-041, P-042, P-044 |
 | `check` | P-020, P-021 |
@@ -20,6 +21,5 @@ Popis skillu je trigger (najviac 300 znakov, P-022). Skilly projektu patria do b
 | `secrets` | P-018, P-003 |
 | `skill-check` | P-003, P-032, P-052 |
 | `catalog` | P-031, P-001 |
-| `materialy` | P-062, P-052 |
 
 Po pilote: `promote`, `user-context`.

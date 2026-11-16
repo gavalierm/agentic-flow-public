@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { spawnTarget } from './topic.mjs';
-import { ensureIssueWatchJob, ensureTimerCheckJob } from './wake-job.mjs';
+import { ensureIssueWatchJob, ensureTimerCheckJob, ensureOverviewJob } from './wake-job.mjs';
 export { pendingT3Line } from './wizard.mjs';
 
 export const WELCOME_TITLE = 'vitaj';
@@ -44,8 +44,6 @@ export function trustFolder(dir, { file = claudeConfigFile(), platform = process
   return { ok: true, line: `trust: accepted for ${key} (backup ${path.basename(file)}.workflow-bak)` };
 }
 
-// Same text as TOPIC_QUESTION in boot.mjs: keep them equal.
-export const WELCOME_TOPIC_QUESTION = 'Aká bude téma?';
 
 // An adopted project: the adoption topic tidies the older setup (CLAUDE.md, an older brain); the welcome thread proposed
 // the same work and both threads deleted CLAUDE.md and edited the same skills (alice 2026-11-11).
@@ -55,10 +53,10 @@ export function welcomeMessage(name, repo, { adopted = false } = {}) {
   return [
     `Vitaj v projekte ${name} (repo ${repo}).`,
     ...(adopted ? [ADOPTED_NOTE] : []),
-    'Toto je uvítacie vlákno projektu: over stavový blok session (brain, pravidlá, témy) a v jednej odpovedi zhrň účel projektu, čo je v repe a v brain, a navrhni prvú tému práce. Nič nemeň.',
-    // The Stop hook lets a reply without a topic end only with the start question (stop.mjs topicStart); any other
-    // question got NO_TOPIC_REASON and the welcome thread created the proposed topic itself (Alice 2026-11-09).
-    `Tému nezakladaj ani nezaberaj: voľbu má operátor. Odpoveď skonči blokom "**Otázky na operátora:**" s položkou "1. ${WELCOME_TOPIC_QUESTION} (návrh: <id> – <predmet>)", tú istú otázku polož dialógom AskUserQuestion s navrhnutou témou ako prvou voľbou, a riadkami "**Handover:** žiadny" a "**Stav:** otázka".`,
+    'Toto je uvítacie vlákno projektu: over kontext session (brain, pravidlá, témy) a v jednej odpovedi zhrň účel projektu, čo je v repe a v brain, a navrhni prvú tému práce. Nič nemeň.',
+    // Spec 10.1: a thread without a held topic has no blocks Otázky and Úlohy; the proposal is part of the result text and
+    // the operator chooses the topic with his next message (Alice 2026-11-09: the welcome thread created the topic itself).
+    'Tému nezakladaj ani nezaberaj: voľbu má operátor. Návrh témy (<id> – <predmet>) napíš do textu odpovede, bez bloku "**Otázky na operátora:**" (vlákno nedrží tému), a odpoveď skonči riadkami "**Handover:** žiadny" a "**Stav:** hotovo".',
   ].join('\n');
 }
 
@@ -81,6 +79,7 @@ export function setupT3(dir, { name, repo = path.basename(dir), policy = {}, wel
   // The reporter's issue check (D-0024): job issue-watch in this machine's wake.json (opt-in: `wakeJob` = the project ctx).
   if (wakeJob) { try { lines.push(ensureIssueWatchJob(wakeJob).line); } catch (err) { lines.push(`wake job issue-watch not written (${err.message})`); } }
   if (wakeJob) { try { lines.push(ensureTimerCheckJob(wakeJob).line); } catch (err) { lines.push(`wake job timer-check not written (${err.message})`); } }
+  if (wakeJob) { try { lines.push(ensureOverviewJob(wakeJob).line); } catch (err) { lines.push(`wake job overview not written (${err.message})`); } }
   const pending = [];
   const addCmd = policy?.project?.t3_project_add_command ?? 't3 project add';
   const add = runCli(addCmd, ['--title', repo, dir], { run, platform });

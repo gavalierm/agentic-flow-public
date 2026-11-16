@@ -5,7 +5,7 @@
 // INDEX.md: every function here does nothing there.
 //
 // Data of a source (description, origin, date) is kept in one hidden file beside the policy, .brain/sources.json (key =
-// path in zdroje/, sorted by path), so zdroje/ holds only files from outside (materialy.mjs record --description).
+// path in zdroje/, sorted by path), so zdroje/ holds only files from outside (save.mjs source --record --description).
 // Description: frontmatter `description` (a decision has none: its `title`), else the first heading of a .md (when it is a
 // template heading such as Zadanie or Hotové, the first line of text under it), else the `description` of the source in
 // sources.json, else empty. A topic's handover: the subject of the topic (.tema.json), else the first line under Zadanie.
@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { dataLayoutVersion, layoutFor } from './layout.mjs';
+import { layoutOf } from './layout.mjs';
 import { parseFrontmatter, asList } from './frontmatter.mjs';
 import { HANDOVER_SECTIONS, HANDOVER_FREE_TEXT, REPORTS_SECTION } from './brain-checks.mjs';
 
@@ -32,9 +32,10 @@ const HEADER = [
   '| --- | --- | --- | --- | --- |',
 ];
 
-const version = (root) => { try { return dataLayoutVersion(root); } catch { return null; } };
+// Map of the repository (layout.mjs, by its version and role); null when the workflow does not know its version.
+const mapOf = (root) => { try { return layoutOf(root); } catch { return null; } };
 /** Path (posix, relative) of the data of the sources: beside the policy of the layout (.brain/sources.json). */
-export const sourcesFileRel = (root) => path.posix.join(path.posix.dirname(layoutFor(version(root)).policy), 'sources.json');
+export const sourcesFileRel = (root) => path.posix.join(path.posix.dirname(mapOf(root).policy), 'sources.json');
 
 /** Data of the sources as on disk: { <path in zdroje/>: { description?, from?, date? } }. */
 export function readSources(root) {
@@ -53,13 +54,13 @@ export function sourcesWith(root, rel, fields) {
   const sorted = Object.fromEntries(Object.keys(all).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map((k) => [k, all[k]]));
   return `${JSON.stringify(sorted, null, 2)}\n`;
 }
-/** The repository keeps an INDEX.md (data layout 2). */
-export const hasDataIndex = (root) => !!root && version(root) === 2;
+/** The repository keeps an INDEX.md (its map names one: layouts 2 and 3). */
+export const hasDataIndex = (root) => !!root && !!mapOf(root)?.index;
 
-/** Top folders the index lists, by the map of the layout (zdroje, temy, vystupy). */
+/** Top folders the index lists, by the map of the layout (zdroje, temy, vystupy; a brain of layout 3 topics, decisions). */
 function folders(root) {
-  const L = layoutFor(version(root));
-  return [...new Set([L.materialy, L.topics, L.decisions, L.docs].map((p) => p.split('/')[0]))];
+  const L = mapOf(root);
+  return [...new Set([L.materialy, L.topics, L.decisions, L.docs].filter(Boolean).map((p) => p.split('/')[0]))];
 }
 
 const run = (root, args, input) => spawnSync('git', args, { cwd: root, input, maxBuffer: 1 << 28, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
@@ -166,7 +167,7 @@ function describe(rel, text, { topicsRel, sourcesRel }) {
  */
 export function indexRows(root) {
   if (!hasDataIndex(root)) return null;
-  const L = layoutFor(version(root));
+  const L = mapOf(root);
   const files = stagedFiles(root);
   if (!files) return null;
   const tops = folders(root);
@@ -259,7 +260,7 @@ export const DEPLOY_IGNORES = ['.assetsignore', '.vercelignore', '.netlifyignore
 
 /** Entries of layout 2 a deploy must not publish: the data folders and INDEX.md (only those the staged files have). */
 function internalEntries(root, staged) {
-  const L = layoutFor(version(root));
+  const L = mapOf(root);
   const tops = [...new Set([...folders(root), L.policy.split('/')[0]])].filter((t) => t && t !== '.');
   const have = new Set(staged.map((f) => f.path.split('/')[0]));
   return [...tops.filter((t) => have.has(t)), ...(have.has(INDEX_FILE) ? [INDEX_FILE] : [])];
@@ -379,7 +380,7 @@ export function indexSummary(root) {
   const file = path.join(root, INDEX_FILE);
   let text;
   try { text = fs.readFileSync(file, 'utf8'); } catch { return { file, missing: true, total: 0, byFolder: [], undescribed: 0, openTopics: [] }; }
-  const L = layoutFor(version(root));
+  const L = mapOf(root);
   const rows = text.split('\n').slice(HEADER.length).filter((l) => l.startsWith('| '))
     .map((l) => l.slice(2, -2).split(/(?<!\\) \| /));
   const byFolder = new Map(folders(root).map((f) => [f, 0]));

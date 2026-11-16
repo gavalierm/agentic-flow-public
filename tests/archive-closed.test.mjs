@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import { setup2, gitq } from './layout-2-helpers.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV } from '../scripts/config.mjs';
 
-const HANDOVER = (task) => `## Zadanie\n${task}\n## Hotové\n-\n## Ďalší krok\n-\n## Súbory\n-\n## Otvorené otázky\n-\n`;
+const HANDOVER = (task) => `## Zadanie\n${task}\n## Hotové\n-\n## Ďalší krok\n-\n## Súbory\n-\n## Otvorené otázky\n-\n## Úlohy pre operátora\n-\n`;
 const TEMA = (id, state) => JSON.stringify({ id, subject: id, state, holder: {} }, null, 2) + '\n';
 
 function commitFiles(dir, files) {

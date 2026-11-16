@@ -10,22 +10,25 @@ import { createHash } from 'node:crypto';
 import { lfBytes } from './eol.mjs';
 import { readThreadState, writeThreadState, SCRATCH_DIR } from './config.mjs';
 import { git } from './util.mjs';
-import { dataPath, dataLayoutVersion, layoutFor } from './layout.mjs';
+import { dataPath, layoutOf, layoutFor, layoutVersions, hasScratch, ROLE_BRAIN, ROLE_REPO } from './layout.mjs';
 
 const OWN_LIMIT = 500;
 const PENDING = 'pending';
 
 /**
  * abs lies under `<repo>/scratch/` and the repo ignores scratch/ (the scratch dir itself is not a work file); in a repo of
- * data layout 2 under `<repo>/temy/<topic>/tmp/`, which the repo ignores.
+ * a layout without scratch/ (2, 3) under the tmp/ of a topic (`<repo>/temy/<topic>/tmp/`, `<repo>/topics/<topic>/tmp/`),
+ * which the repo ignores.
  */
+const TOPIC_TMP_NAMES = new Set(layoutVersions().flatMap((v) => [layoutFor(v, ROLE_BRAIN), layoutFor(v, ROLE_REPO)]).map((L) => L.topicTmp).filter(Boolean));
 export function inWorkScratch(abs) {
-  const L2 = layoutFor(2);
   for (let p = path.dirname(path.resolve(abs)); p !== path.dirname(p); p = path.dirname(p)) {
-    if (path.basename(p) === L2.topicTmp && path.basename(path.dirname(path.dirname(p))) === L2.topics) {
-      const repo = path.dirname(path.dirname(path.dirname(p)));
-      if (fs.existsSync(path.join(repo, '.git')) && dataLayoutVersion(repo) === 2) {
-        return git(['check-ignore', '-q', '--', path.relative(repo, p).split(path.sep).join('/') + '/'], { cwd: repo }).ok;
+    if (TOPIC_TMP_NAMES.has(path.basename(p))) {
+      const top = path.dirname(path.dirname(path.dirname(p)));
+      let L = null;
+      try { L = fs.existsSync(path.join(top, '.git')) && !hasScratch(top) ? layoutOf(top) : null; } catch { L = null; }
+      if (L && path.basename(p) === L.topicTmp && path.relative(top, path.dirname(path.dirname(p))).split(path.sep).join('/') === L.topics) {
+        return git(['check-ignore', '-q', '--', path.relative(top, p).split(path.sep).join('/') + '/'], { cwd: top }).ok;
       }
     }
     if (path.basename(p) !== SCRATCH_DIR) continue;

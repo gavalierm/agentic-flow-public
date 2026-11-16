@@ -18,6 +18,7 @@ import { assembleRules } from '../scripts/rules.mjs';
 import { checkProject } from '../scripts/skill-check.mjs';
 import { readDenials, topDenials, denialsLine } from '../scripts/denials.mjs';
 import { isDecisionLink, linkProblem, linkFix, FORMS, sourceProblem, scratchPaths, SOURCE_FORMS } from '../scripts/links.mjs';
+import { operatorRepo, readPeople, peopleProblems } from '../scripts/people.mjs';
 import { machineStores, sessionStores, machineRecords, storeRecords, sameStore, subjectMatch, subjectNames, recordType, decisionRefs, refProblem, removedDecisions, refFiles, displayPath, isTombstone, SUBJECT_TYPES, ID_LINE } from '../scripts/stores.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -137,6 +138,17 @@ export function identityReport(ctx) {
   return { duplicates, tombstones, refs: [...new Set(refs)], removed: [...new Set(history)], links, ids, sources, scratch };
 }
 
+/**
+ * People of the operator repo (spec 6.5): duplicates (two persons of one name) and alias collisions (a name, id or alias
+ * of one person is the alias of another), between persons a find of one domain sees both. null: no operator repo here.
+ */
+export function peopleReport(env = process.env) {
+  const repo = operatorRepo(env);
+  if (!repo) return null;
+  if (repo.error) return { error: repo.error, duplicates: [], collisions: [] };
+  return peopleProblems(readPeople(repo.dir));
+}
+
 export function report(ctx) {
   const idx = buildIndexes(ctx.brainDir, ctx.policy);
   const memory = readMemory(ctx.brainDir);
@@ -167,7 +179,7 @@ export function report(ctx) {
   // P-076 (agent-alice/D-0094): the hook refusals of the last week by kind, a refusal that keeps coming back is a skill or a
   // rule to fix (the hook is only the safety net).
   const denials = topDenials(readDenials(ctx.brainDir, { days: DENIAL_DAYS }), { top: 5 });
-  return { limits: [...idx.warnings, ...assembled.overLimit, ...repos.limits], counts: idx.counts, stale: [...stale, ...repos.stale], duplicates, mergeable, byOrigin, rules, health, repos, identity: identityReport(ctx), untracked: untrackedReport(ctx), denials };
+  return { limits: [...idx.warnings, ...assembled.overLimit, ...repos.limits], counts: idx.counts, stale: [...stale, ...repos.stale], duplicates, mergeable, byOrigin, rules, health, repos, identity: identityReport(ctx), untracked: untrackedReport(ctx), denials, people: peopleReport() };
 }
 
 /** Untracked docs/ and materialy/ in the project and the domain repos (D-0032 C1): content there is not in git. */
@@ -208,6 +220,9 @@ try {
     const keep = topicResultsLabel(ctx.brainDir, ctx.projectDir, '<topic>');
     const sources = `${L.materialy}/<topic>/`;
     out(`work files named in a body (${topicWorkLabel(ctx.brainDir, ctx.projectDir)} is cleaned: save what matters to ${keep === sources ? sources : `${sources} (from outside) or ${keep} (a result of the work)`} and name that, or drop the path):${r.identity.scratch.length ? r.identity.scratch.join('; ') : 'none'}`);
+    const pp = r.people;
+    const pairs = (xs) => xs.map((x) => `${x.names.join(', ')}: ${x.paths.join(' + ')}`).join('; ') || 'none';
+    out(!pp ? 'people (osoby/ of the operator repo): operator repo not configured (skill workflow:people)' : pp.error ? `people: ${pp.error}` : `people (osoby/ of the operator repo; propose the fix to the operator: merge a duplicate, change or drop the alias with people.mjs change): duplicates ${pairs(pp.duplicates)}; alias collisions ${pairs(pp.collisions)}`);
     out(`agentic skills sharing a tool/work token (merge only same tool): ${r.mergeable.length ? r.mergeable.map((m) => `${m.token}: ${m.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`skill health (skill-check.mjs <name> for details, skill workflow:skill-check): ${r.health.length ? r.health.map((h) => `${h.name} ${h.errors}e/${h.warns}w`).join(', ') : 'all ok'}`);
     out(`untracked ${L.docs}/ and ${L.materialy}/ (not in git, lost with the disk: commit them in that repo, keep one version of a document): ${r.untracked.length ? r.untracked.map((u) => `\n  ${u.repo}: ${u.files.slice(0, 5).join(', ')}${u.files.length > 5 ? `, … (+${u.files.length - 5})` : ''}\n    git -C ${u.dir} add ${dataRel(u.dir, 'docs')} ${dataRel(u.dir, 'materialy')} && git -C ${u.dir} commit -m "docs: track project knowledge"`).join('') : 'none'}`);

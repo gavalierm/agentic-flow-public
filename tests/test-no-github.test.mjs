@@ -19,5 +19,5 @@ test('test env has no GitHub access, a report with failed mail is not an issue',
   fs.writeFileSync(client, "process.stderr.write('mail down\\n'); process.exit(1);\n");
   const r = fx.run('error.mjs', ['report', '--title', 'test report', '--text', 'chyba: test'], { env: { WORKFLOW_COMMS_CLIENT: client } });
   assert.doesNotMatch(r.out, /reported: issue|github\.com\/\S+\/issues\/\d+/, r.out);
-  assert.match(r.out, /no GitHub access/, r.out);
+  assert.match(r.out, /NOT reported: mail mail down\. task for the operator \(Úlohy pre operátora\)/, r.out);
 });

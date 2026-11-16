@@ -1,19 +1,15 @@
-// Work never stops (P-061, operator 2026-11-03/08): no message, question or event stops the work; it may only be deferred
-// to a set time. A turn that declares "Stav: čakám" is rung again by a waker armed by code: the thread timer (bin/timer.mjs,
-// rung by the wake module through the closed turn's resume_at), a background task or agent (the harness re-invokes the
-// thread), a harness scheduler (schedule_task, CronCreate, ScheduleWakeup), or the mail's wait for an answer to mail the
-// thread sent (`obligations.awaiting` with `wait_due_at`, mail design 1e: the mail rings, nothing is armed here). Without one
-// the Stop hook arms the timer itself with the wait target, no block: 7 of 8 such blocks only led to timer.mjs (audit
-// 2026-11-11). A timer with a condition (--until) is checked before its ring by the wake job timer-check (preRing), the
-// prompt hook only as a backup.
-// The reply is never read as prose here (scripts/protocol.mjs reads its state line); only the handover's next step is.
+// Alarms of a thread (spec 10.2, 13 budík), armed by code: the thread timer (bin/timer.mjs, rung by the wake module through
+// the closed turn's resume_at), a background task or agent (the harness re-invokes the thread), a harness scheduler
+// (schedule_task, CronCreate, ScheduleWakeup), or the mail's wait for an answer to mail the thread sent
+// (`obligations.awaiting` with `wait_due_at`, mail design 1e: the mail rings, nothing is armed here). The Stop hook arms
+// nothing itself: `otázka` has no alarm, and the state comes from the facts (scripts/topic-turn.mjs). A timer with a
+// condition (--until) is checked before its ring by the wake job timer-check (preRing), the prompt hook only as a backup.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { readThreadState, writeThreadState } from './config.mjs';
-import { PLUGIN_ROOT, localTime } from './util.mjs';
-import { listTopicRecords } from './topic-files.mjs';
+import { PLUGIN_ROOT } from './util.mjs';
 
 export const TIMER_CMD = `node ${path.join(PLUGIN_ROOT, 'bin', 'timer.mjs')}`;
 
@@ -21,54 +17,8 @@ export const TIMER_MIN_MS = 60_000;
 export const TIMER_MAX_MS = 24 * 3600_000;
 /** Background work notifies the thread when done; it counts as a waker until that notification, at most this long. */
 export const BACKGROUND_WAKER_MS = 2 * 3600_000;
-/** Timer the Stop hook arms itself when the agent ended waiting without one (doubles per repeat, up to the max). */
+/** Interval of a timer condition (--until) re-armed without its own interval. */
 export const AUTO_TIMER_MS = 15 * 60_000;
-export const AUTO_TIMER_MAX_MS = 2 * 3600_000;
-/** Waiting on the operator rings in hours, not minutes (operator 2026-11-03: "the interval must be far longer, in hours"). */
-export const OPERATOR_TIMER_MS = 4 * 3600_000;
-export const OPERATOR_TIMER_MAX_MS = 24 * 3600_000;
-/** Rings of a next step that only waits (no own work): then the thread rests until mail or the operator wakes it. */
-export const IDLE_RING_MS = [4 * 3600_000, 12 * 3600_000, 24 * 3600_000];
-
-const L = '\\p{L}';
-// "čakám", "počkám", "čakáme", "cakam", "čakať", "čaká na …", "waiting for", "I'll wait" (sk without diacritics too).
-const WAIT_PATTERNS = [
-  new RegExp(`(^|[^${L}])(po)?[čc]ak(ám|am|áme|ame|ať|at)(?![${L}])`, 'iu'),
-  new RegExp(`(^|[^${L}])(po)?[čc]ak(á|a|ajú|aju|ú|u)\\s+na(?![${L}])`, 'iu'),
-  new RegExp(`(^|[^${L}])po[čc]k(ám|am|áme|ame|ať|at)(?![${L}])`, 'iu'),
-  /\b(waiting|wait|awaiting)\s+(for|on|until)\b/i,
-  /\bI('ll| will| am|'m)\s+(wait|waiting)\b/i,
-  // bob 2026-11-03: "Zostáva len čakanie na teba", "Potrebujem od teba, čo …" ended a turn waiting, unseen.
-  new RegExp(`(^|[^${L}])(zost[áa]va|ost[áa]va|nasleduje)\\s+(len\\s+|iba\\s+|u[žz]\\s+)?[čc]akanie\\s+na(?![${L}])`, 'iu'),
-  new RegExp(`(^|[^${L}])potrebujem\\s+od\\s+(teba|vás|vas)(?![${L}])`, 'iu'),
-  new RegExp(`(^|[^${L}])bez\\s+tvojho\\s+pokynu(?![${L}])`, 'iu'),
-];
-
-const CONDITIONAL = new RegExp(`^\\s*([-*•]\\s*)?(\\*\\*)?(keď|ked|ak|kým|kym|pokiaľ|pokial|až|if|when|whenever|once)(?![${L}])`, 'iu');
-
-/** The waiting phrase of a handover step ("čakám na …"), or null. Quoted and code text is left out (it is data, not a claim). */
-export function waitingClaim(text) {
-  if (typeof text !== 'string' || !text) return null;
-  const quoted = text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ').replace(/[„"“][^„"“”\n]*[”"“]/g, ' ');
-  // A conditional clause describes a case, not this reply's state (alice 2026-11-03: "Keď krok čaká na neskoršiu udalosť,
-  // hook …" was blocked as waiting).
-  const prose = quoted.split(/(?<=[,.;:!?\n])/).filter((c) => !CONDITIONAL.test(c)).join(' ');
-  for (const re of WAIT_PATTERNS) {
-    const m = re.exec(prose);
-    if (m) {
-      const at = m.index + (m[1] ? m[1].length : 0);
-      return prose.slice(at, at + 60).split('\n')[0].trim();
-    }
-  }
-  return null;
-}
-
-/** The next step only waits (for the operator, another topic, a reply): the topic has no own work to continue. */
-export function waitOnlyStep(next) {
-  if (typeof next !== 'string' || !next.trim()) return null;
-  const head = next.trim().split(/[;.\n]/)[0];
-  return waitingClaim(head) || (new RegExp(`^(oper[áa]tor|operator)\\s+(rozhodne|odpovie|potvrd[íi]|schv[áa]li|decides|answers|confirms)(?![${L}])`, 'iu').test(head) ? head.slice(0, 60) : null);
-}
 
 /** ms of "30m", "2h", "90s", "15" (minutes). Null when invalid. */
 export function parseDelay(s) {
@@ -147,31 +97,6 @@ export function wakerFromTool(input, now = Date.now()) {
   return null;
 }
 
-// A reminder or a step bound to a clock time or date lives in a harness schedule (schedule_task in T3), not as text in the
-// handover: the text rang nobody and the reminder was closed instead of moved (operator 2026-11-11, claude CLI re-auth).
-const REMINDER_WORD = /(?<![\p{L}])(pripom[ie]n\p{L}*|pripomeň\p{L}*|budík\p{L}*|budik\p{L}*|remind\p{L}*|alarm\p{L}*|expir\p{L}*)/iu;
-const AT_TIME = /(?<![\p{L}\d])(?:o|do|pred|po|okolo|at|by|before|after|~)\s*\d{1,2}:\d{2}(?!\d)/iu;
-const ON_DATE = /(?<![\p{L}\d])(?:o|do|pred|by|before|on|dňa|dna)\s+(?:\d{4}-\d{2}-\d{2}|\d{1,2}\.\s?\d{1,2}\.)(?!\d)/iu;
-const IN_HOURS = /(?<![\p{L}\d])(?:o|za|in)\s+\d+\s*(?:h|hod\p{L}*|hours?|d|dní|dni|dňa|days?)(?![\p{L}])/iu;
-const TOMORROW = /(?<![\p{L}])(zajtra|pozajtra|tomorrow)(?![\p{L}])/iu;
-
-/** The phrase of a handover step that names a reminder or a time it is bound to, or null. */
-export function reminderStep(next) {
-  const s = String(next || '');
-  for (const re of [REMINDER_WORD, AT_TIME, ON_DATE, IN_HOURS, TOMORROW]) {
-    const m = re.exec(s);
-    if (m) return m[0].trim();
-  }
-  return null;
-}
-
-/** A harness schedule (schedule_task, CronCreate, ScheduleWakeup) recorded for this thread and still armed, or null. */
-export function armedSchedule(state, now = Date.now()) {
-  return (state?.wakers || []).find((w) => w.kind === 'scheduler' && !w.remove && (w.recurring || (w.until && Date.parse(w.until) > now))) || null;
-}
-
-export const REMINDER_REFUSAL = (phrase) => `handover not saved: the next step names a reminder or a time ("${phrase}"), and no schedule is armed in this thread. A reminder is a T3 timer, not text in the handover or memory (operator 2026-11-11): arm it first with schedule_task (or CronCreate), at a time before the event, then save the handover again. A reminder that is due is moved to the next time, never closed without a new timer`;
-
 /** Every timer of the thread, earliest first. `timer` is the next one (the Stop hook sends its time as resume_at, the prompt
  * hook rings its step), `timers` holds the later ones: one slot let the reply window of an assist replace an earlier
  * timer.mjs step unseen (2026-11-13). */
@@ -215,7 +140,7 @@ export function recordWaker(brainDir, thread, waker) {
   if (!brainDir || !thread || !waker) return;
   const state = readThreadState(brainDir, thread);
   const now = Date.now();
-  // A removed schedule drops its waker (by id; without an id every recurring one, the safe side: auto timers return).
+  // A removed schedule drops its waker (by id; without an id every recurring one, the safe side).
   const removed = (w) => waker.remove && w.recurring && (!waker.id || !w.id || w.id === waker.id);
   const keep = (state.wakers || []).filter((w) => !removed(w) && (w.recurring || (w.until && Date.parse(w.until) > now))).slice(-20);
   if (waker.ended) return writeThreadState(brainDir, thread, { ...state, wakers: withoutFinished(keep, new Set(waker.ended)) });
@@ -223,22 +148,16 @@ export function recordWaker(brainDir, thread, waker) {
 }
 
 /** Add a thread timer: the wake module rings the thread at `at` with the step `then` (via the closed turn, P-061). Other
- * timers stay, none is lost (2026-11-13); it replaces only its own earlier entry: the same step of a plain timer, the timer
- * of the same topic (`topic`, timer.mjs --topic: 3 of 4 backup timers of one thread were for closed topics, 2026-11-14), or
- * the auto timer of code (any own timer of the agent replaces that one, it only stood in for a waker). `topicSince` keeps
- * the first set time of a topic timer across the re-arms of its check. No timer is bound to a message: the mail rings for
- * an answer (1e, P-072). */
-export function setTimer(brainDir, thread, { delayMs, then, reason = null, auto = false, until = null, deadline = null, everyMs = null, topic = null, topicSince = null, stall = null }, now = Date.now()) {
+ * timers stay, none is lost (2026-11-13); it replaces only its own earlier entry (the same step). No timer is bound to a
+ * message: the mail rings for an answer (1e, P-072). */
+export function setTimer(brainDir, thread, { delayMs, then, reason = null, until = null, deadline = null, everyMs = null }, now = Date.now()) {
   const ms = Math.min(Math.max(delayMs, TIMER_MIN_MS), TIMER_MAX_MS);
   const state = readThreadState(brainDir, thread);
   // A condition (--until): the prompt hook runs it at `at` and rings the model only when it holds or `deadline` passed.
   const cond = until ? { until: String(until).slice(0, 300), deadline, every_ms: everyMs || ms } : {};
   const setAt = new Date(now).toISOString();
-  const bound = topic ? { topic: String(topic), topic_since: topicSince || setAt } : stall ? { stall: String(stall) } : {};
-  const timer = { at: new Date(now + ms).toISOString(), then: String(then || '').slice(0, 300), set_at: setAt, ...(reason ? { reason } : {}), ...(auto ? { auto: true } : {}), ...cond, ...bound };
-  // A stall check (setStallCheck) is one per handed-off topic: a new one replaces the earlier one of that topic.
-  const replaced = (t) => t.auto || (topic && timerTopic(t) === topic) || (stall && t.stall === stall) || t.then === timer.then;
-  writeThreadState(brainDir, thread, { ...state, ...timersPatch([...threadTimers(state).filter((t) => !replaced(t)), timer]), ...(auto ? {} : { auto_timer_n: 0 }) });
+  const timer = { at: new Date(now + ms).toISOString(), then: String(then || '').slice(0, 300), set_at: setAt, ...(reason ? { reason } : {}), ...cond };
+  writeThreadState(brainDir, thread, { ...state, ...timersPatch([...threadTimers(state).filter((t) => t.then !== timer.then), timer]) });
   return timer;
 }
 
@@ -262,18 +181,6 @@ export function bellContinuation(brainDir, thread, step = refusedCommand()) {
   if (!brainDir || !thread || !step) return '';
   setTimer(brainDir, thread, { delayMs: BELL_CONTINUE_MS, then: `${step} (odmietnutý v ťahu zo zvončeka, P-047)` });
   return `; the continuation is set in 1 min (a thread timer with this step): end the turn now with your **Handover:** section and "**Stav:** čakám (na pokračovanie z handoveru)"; the next turn continues from handover, where P-047 does not lock, and runs the step there`;
-}
-
-/** The topic a timer waits for (timer.mjs --topic), also of a timer set before the `topic` field (its check names it). */
-export function timerTopic(t) {
-  return t?.topic || String(t?.until || '').match(/topic\.mjs"? closed (\S+)$/)?.[1] || null;
-}
-
-/** A topic timer whose result already came: this thread took mail from that topic (comms receive) since the timer was set. */
-export function topicResultCame(state, t) {
-  const topic = timerTopic(t);
-  const got = Date.parse(state?.topic_mail?.[topic] || '');
-  return !!topic && Number.isFinite(got) && got >= Date.parse(t.topic_since || t.set_at || '');
 }
 
 /** The prompt hook runs the condition within its 15 s (hooks.json); a slower check counts as not met yet. */
@@ -305,14 +212,12 @@ export function clearTimer(brainDir, thread, which = () => true) {
 // check in the prompt hook stays as a backup for a bell this job did not reach.
 /** The job checks the timers due within this window: the wake module rings a closed turn about once a minute. */
 export const TIMER_CHECK_LEAD_MS = 150_000;
-/** A topic a timer waits on stands after this long without a commit, mail or turn (policy timer.topic_stall_h). */
-export const TOPIC_STALL_MS = 2 * 3600_000;
 
 /** resume_at the Stop hook sends for `timer`: a condition gets at least the lead of the check, so the wake job (every
  * 60 s) runs it before the ring; a timer due right after the turn rang first and the hook blocked it (pilot 2026-11-14). */
 export function resumeAtFor(timer, now = Date.now()) {
   if (!timer?.at) return null;
-  if (!timer.until || timer.ring_reason) return timer.at;
+  if (!timer.until) return timer.at;
   return new Date(Math.max(Date.parse(timer.at), now + TIMER_CHECK_LEAD_MS)).toISOString();
 }
 
@@ -322,148 +227,30 @@ export function turnRunning(state) {
   return started > (Date.parse(state?.last_end_at || '') || 0);
 }
 
-/** Time of the last commit on the topic's branch (topic/<id>) in its copy, or 0. */
-export function topicCommitAt(brainDir, topic) {
-  if (!topic?.copy) return 0;
-  const r = spawnSync('git', ['-C', path.resolve(brainDir, topic.copy), 'log', '-1', '--format=%cI', `topic/${topic.id}`], { encoding: 'utf8', timeout: 5000 });
-  return r.status === 0 ? Date.parse(r.stdout.trim()) || 0 : 0;
-}
-
-/**
- * Why open topic `id` stands, or null: its thread has no running turn and its last turn ended with a question for the
- * operator or waiting on the operator, or the topic shows no activity (commit, a turn of its thread: mail rings one) for
- * `stallMs`. Topic index-name 2026-11-14 waited on the operator while a timer for it would have moved silently for 24 h.
- */
-export function topicStall(brainDir, id, { stallMs = TOPIC_STALL_MS, now = Date.now(), commitAt = topicCommitAt } = {}) {
-  const rec = listTopicRecords(brainDir).find((t) => t.id === id);
-  if (!rec) return null;
-  const topic = { ...rec.topic, id, holder: rec.holder || null };
-  const th = topic.holder?.thread || null;
-  const st = th ? readThreadState(brainDir, th) : {};
-  if (turnRunning(st)) return null;
-  const ended = Date.parse(st.last_end_at || '') || 0;
-  const onOperator = st.last_end_state === 'otázka' || (st.last_end_state === 'čakám' && /oper[áa]tor/iu.test(waitOnlyStep(st.last_close?.next) || ''));
-  if (ended && onOperator) return { since: st.last_end_at, reason: `its thread's last turn ended ${localTime(ended)} ${st.last_end_state === 'otázka' ? 'with a question for the operator' : 'waiting on the operator'}` };
-  const last = Math.max(ended, Date.parse(st.turn_started_at || '') || 0, commitAt(brainDir, topic) || 0, Date.parse(topic.holder?.since || topic.created || '') || 0);
-  if (last && now - last >= stallMs) return { since: new Date(last).toISOString(), reason: `no activity (commit, mail, turn) since ${localTime(last)}` };
-  return null;
-}
-
 /**
  * Decide the bell of a closed thread before the wake module rings it: { action, timer?, reason?, resume? }.
  * - 'rearm': the first due timer has a condition that does not hold before its deadline: moved (`timer`), the turn's
  *   resume_at must go to `resume` ({ next, at }) so no prompt reaches the thread;
- * - 'stall': its topic stands (topicStall): the timer rings now with the model, `reason` names the topic and why
- *   (once per stall: a new one needs new activity of the topic);
  * - 'ring' (the bell goes as it is: no condition, it holds, it cannot run here, deadline), 'none' (nothing due soon),
  *   'running' (an open turn: its Stop sends the time).
  */
-export function preRing(brainDir, thread, { now = Date.now(), cwd = process.cwd(), run = untilMet, stallMs = TOPIC_STALL_MS, commitAt = topicCommitAt, lead = TIMER_CHECK_LEAD_MS, skip = () => false } = {}) {
+export function preRing(brainDir, thread, { now = Date.now(), cwd = process.cwd(), run = untilMet, lead = TIMER_CHECK_LEAD_MS, skip = () => false } = {}) {
   const state = readThreadState(brainDir, thread);
   if (turnRunning(state)) return { action: 'running' };
   // `skip`: timers moved earlier in the same run (bin/timer-check.mjs checks every due timer of the thread).
   const timer = threadTimers(state).find((t) => Date.parse(t.at) <= now + lead && !skip(t));
   if (!timer) return { action: 'none' };
-  if (!timer.until || timer.ring_reason) return { action: 'ring', timer };
-  if (timer.stall) return stallRing(brainDir, thread, timer, { now, cwd, run });
+  if (!timer.until) return { action: 'ring', timer };
   const dl = Date.parse(timer.deadline || '') || 0;
   if (now >= dl) return { action: 'ring', timer, reason: 'deadline' };
   const met = run(timer.until, cwd);
-  // A topic timer is a backup: the topic is closed and this thread took its mail since the timer was set, so it goes
-  // without a prompt (the prompt hook blocked that bell too, maintainer/workflow-dev 2026-11-14 22:34, wake-picked-check).
-  if (met === true && topicResultCame(state, timer)) {
-    const left = threadTimers(state).filter((t) => !sameTimer(t, timer));
-    writeThreadState(brainDir, thread, { ...state, ...timersPatch(left) });
-    return { action: 'drop', timer, resume: { next: left[0]?.then ?? null, at: left[0]?.at ?? null } };
-  }
   if (met !== false) return { action: 'ring', timer, reason: met ? 'met' : 'cannot-run' };
-  const topic = timerTopic(timer);
-  const stall = topic ? topicStall(brainDir, topic, { stallMs, now, commitAt }) : null;
-  if (stall && state.topic_stall_rung?.[topic] !== stall.since) {
-    const reason = `topic ${topic} stands: ${stall.reason}`;
-    const rung = { ...timer, at: new Date(now).toISOString(), ring_reason: reason };
-    const list = threadTimers(state).map((t) => (sameTimer(t, timer) ? rung : t));
-    writeThreadState(brainDir, thread, { ...state, ...timersPatch(list), topic_stall_rung: { ...(state.topic_stall_rung || {}), [topic]: stall.since } });
-    return { action: 'stall', timer: rung, reason, resume: { next: state.last_close?.next || rung.then, at: rung.at } };
-  }
-  const moved = setTimer(brainDir, thread, { delayMs: Math.min(timer.every_ms || AUTO_TIMER_MS, dl - now), then: timer.then, reason: timer.reason || null, until: timer.until, deadline: timer.deadline, everyMs: timer.every_ms, topic: timer.topic || null, topicSince: timer.topic_since || null }, now);
+  const moved = setTimer(brainDir, thread, { delayMs: Math.min(timer.every_ms || AUTO_TIMER_MS, dl - now), then: timer.then, reason: timer.reason || null, until: timer.until, deadline: timer.deadline, everyMs: timer.every_ms }, now);
   const first = threadTimers(readThreadState(brainDir, thread))[0] || moved;
   return { action: 'rearm', timer: moved, resume: { next: state.last_close?.next || first.then, at: first.at } };
 }
 
-// Stall check of a handed-off topic (agent-alice/D-0084, operator 2026-11-15): a topic given to another thread (handoff
-// record, scripts/handoff.mjs) could stand (its thread had no turn, nothing waited, nothing wrote) and the giver did not
-// know: its backup timers had a guessed time (30 min) and too wide a window. The giver gets a timer with a condition
-// (`topic.mjs stalled <id>`, code without a model turn) every policy topics.stall_check_minutes (default 5), one per
-// topic, without a deadline while the topic is open; it rings once per stall (a new ring needs a new turn of the topic)
-// and drops itself once the topic is closed.
-export const STALL_CHECK_MS = 5 * 60_000;
-/** Minutes of the policy (topics.stall_check_minutes) as ms; 5 min when unset or invalid. */
-export const stallCheckMs = (policy) => { const m = Number(policy?.topics?.stall_check_minutes); return m > 0 ? m * 60_000 : STALL_CHECK_MS; };
-export const stallCommand = (id) => `node "${path.join(PLUGIN_ROOT, 'bin', 'topic.mjs')}" stalled ${id}`;
-
-/** Arm (or re-arm) the stall check of topic `id` in `thread`: it replaces the earlier one of that topic. */
-export function setStallCheck(brainDir, thread, id, { everyMs = STALL_CHECK_MS } = {}, now = Date.now()) {
-  return setTimer(brainDir, thread, { delayMs: everyMs, then: `kontrola zastavenia témy ${id} (D-0084)`, until: stallCommand(id), deadline: null, everyMs, stall: id }, now);
-}
-
-/**
- * Does open topic `id` stand? { stalled: true, since, next } or { stalled: false, why }. It stands when its holder's thread
- * has no running turn and its last turn ended at least `quietMs` ago, it has no timer and no continuation ahead (resume_at,
- * a background task or a schedule), it waits for no reply (`awaitingReply(id, now)`: mail the topic sent has the mail's
- * next check ahead, D-0084 with P-072) and no mail waits for the topic (`mailWaiting(id)`). A paused topic does not stand;
- * a topic nobody holds stands since it was created or released.
- */
-export function topicStalled(brainDir, id, { quietMs = STALL_CHECK_MS, now = Date.now(), mailWaiting = () => false, awaitingReply = () => false } = {}) {
-  const rec = listTopicRecords(brainDir).find((t) => t.id === id);
-  if (!rec) return { stalled: false, why: 'closed' };
-  if (rec.topic?.state === 'paused') return { stalled: false, why: 'paused' };
-  const th = rec.holder?.thread || null;
-  const st = th ? readThreadState(brainDir, th) : {};
-  if (turnRunning(st)) return { stalled: false, why: 'turn running' };
-  // Since its last turn ended; a thread without a turn yet since it took the topic (or the topic was created).
-  const last = Date.parse(st.last_end_at || '') || Math.max(Date.parse(rec.holder?.since || '') || 0, Date.parse(rec.topic?.created || '') || 0);
-  if (last && now - last < quietMs) return { stalled: false, why: `last turn ended ${localTime(last)}, under ${Math.round(quietMs / 60_000)} min ago` };
-  const ahead = (iso) => (Date.parse(iso || '') || 0) > now;
-  if (threadTimers(st).some((t) => ahead(t.at))) return { stalled: false, why: 'timer set' };
-  if (ahead(st.last_close?.resume_at)) return { stalled: false, why: 'continuation set (resume_at)' };
-  if ((st.wakers || []).some((w) => w.recurring || ahead(w.until))) return { stalled: false, why: 'background task or schedule' };
-  if (awaitingReply(id, now)) return { stalled: false, why: 'waits for a reply' };
-  if (mailWaiting(id)) return { stalled: false, why: 'mail waits for the topic' };
-  return { stalled: true, since: new Date(last || now).toISOString(), next: st.last_close?.next || null };
-}
-
-/**
- * The stall check before its ring (preRing; the prompt hook as a backup): 'drop' (the topic is closed: the timer goes
- * without a ring), 'rearm' (it does not stand, or this stall already rang: the next check in every_ms), or 'stall' (a plain
- * timer with the step rings now, the check is armed again).
- */
-export function stallRing(brainDir, thread, timer, { now = Date.now(), cwd = process.cwd(), run = untilMet } = {}) {
-  const id = timer.stall;
-  const state = readThreadState(brainDir, thread);
-  const others = threadTimers(state).filter((t) => !sameTimer(t, timer));
-  if (!listTopicRecords(brainDir).some((t) => t.id === id)) {
-    writeThreadState(brainDir, thread, { ...state, ...timersPatch(others) });
-    return { action: 'drop', timer, resume: { next: others[0]?.then ?? null, at: others[0]?.at ?? null } };
-  }
-  const everyMs = timer.every_ms || STALL_CHECK_MS;
-  const rearm = () => {
-    const moved = setStallCheck(brainDir, thread, id, { everyMs }, now);
-    const first = threadTimers(readThreadState(brainDir, thread))[0] || moved;
-    return { action: 'rearm', timer: moved, resume: { next: state.last_close?.next || first.then, at: first.at } };
-  };
-  if (run(timer.until, cwd) !== true) return rearm();
-  // `topic.mjs stalled` checked it all (also its mail); here only since when and with which step, once per stall.
-  const info = topicStalled(brainDir, id, { quietMs: 0, now });
-  if (!info.stalled || state.stall_rung?.[id] === info.since) return rearm();
-  const step = `téma ${id} stojí od ${localTime(info.since)}: ${info.next || '-'}; zisti prečo a pohni ju (D-0084)`;
-  const rung = { at: new Date(now).toISOString(), then: step.slice(0, 300), set_at: new Date(now).toISOString() };
-  writeThreadState(brainDir, thread, { ...state, ...timersPatch([...others, rung]), stall_rung: { ...(state.stall_rung || {}), [id]: info.since } });
-  setStallCheck(brainDir, thread, id, { everyMs }, now);
-  return { action: 'stall', timer: rung, reason: `topic ${id} stands since ${localTime(info.since)}`, resume: { next: rung.then, at: rung.at } };
-}
-
-/** Threads of this machine with a timer under a condition (timer.mjs --until | --topic): the wake job checks them all. */
+/** Threads of this machine with a timer under a condition (timer.mjs --until): the wake job checks them all. */
 export function timerIndexFile(env = process.env) {
   return env.WORKFLOW_TIMER_INDEX || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'timer-index.json');
 }

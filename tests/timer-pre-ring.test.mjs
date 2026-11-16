@@ -1,8 +1,8 @@
 // ttl: 2026-12-14
 // A timer with a condition is checked before its ring (wake job timer-check, preRing in scripts/waker.mjs): a condition that
 // does not hold moves the timer without a prompt to the thread (the prompt hook blocked such a bell, T3 showed an error and
-// the next message started a fresh session, maintainer/workflow-dev 2026-11-14); a timer for a standing topic rings the model with
-// the topic and the reason; nudge-why names a prompt the hook blocked in the thread's previous session.
+// the next message started a fresh session, maintainer/workflow-dev 2026-11-14); nudge-why names a prompt the hook blocked in the
+// thread's previous session. (Timers bound to a topic, timer.mjs --topic, are removed: flow v2 plan O6.)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -57,53 +57,6 @@ test('a condition that does not hold moves the timer before the ring, no prompt 
     // A condition that holds: the bell goes as it is.
     clearTimer(fx.brain, fx.thread);
     setTimer(fx.brain, fx.thread, { delayMs: 60_000, then: 'other step', until: 'true', deadline: new Date(Date.now() + 6 * 3600_000).toISOString() });
-    assert.equal(preRing(fx.brain, fx.thread, { cwd: fx.project }).action, 'ring');
-  } finally { fx.cleanup(); }
-});
-
-test('a timer for a standing topic rings the model before its condition holds, naming the topic and why', () => {
-  const fx = setup();
-  try {
-    assert.equal(fx.run('topic.mjs', ['create', 'other', '--subject', 'Other', '--class', 'discussion'], { env: { WORKFLOW_THREAD_ID: 'tb' } }).status, 0);
-    closedThread(fx, 'tb', { last_end_state: 'otázka' });
-    closedThread(fx, fx.thread);
-    setTimer(fx.brain, fx.thread, { delayMs: 60_000, then: 'merge topic other', until: 'false', deadline: new Date(Date.now() + 24 * 3600_000).toISOString(), topic: 'other' });
-    const r = preRing(fx.brain, fx.thread, { cwd: fx.project, commitAt: () => 0 });
-    assert.equal(r.action, 'stall');
-    assert.match(r.reason, /topic other stands: .*question for the operator/);
-    // The same stall rings once: the next check moves the timer again.
-    setTimer(fx.brain, fx.thread, { delayMs: 60_000, then: 'merge topic other', until: 'false', deadline: new Date(Date.now() + 24 * 3600_000).toISOString(), topic: 'other' });
-    assert.equal(preRing(fx.brain, fx.thread, { cwd: fx.project, commitAt: () => 0 }).action, 'rearm');
-    // A running turn of the topic's thread is no stall; no activity longer than the policy value is.
-    closedThread(fx, 'tb', { last_end_state: 'čakám', turn_started_at: new Date().toISOString() });
-    setTimer(fx.brain, fx.thread, { delayMs: 60_000, then: 'merge topic other', until: 'false', deadline: new Date(Date.now() + 24 * 3600_000).toISOString(), topic: 'other' });
-    assert.equal(preRing(fx.brain, fx.thread, { cwd: fx.project, commitAt: () => 0 }).action, 'rearm');
-    closedThread(fx, 'tb', { last_end_state: 'čakám' });
-    setTimer(fx.brain, fx.thread, { delayMs: 60_000, then: 'merge topic other', until: 'false', deadline: new Date(Date.now() + 24 * 3600_000).toISOString(), topic: 'other' });
-    const idle = preRing(fx.brain, fx.thread, { cwd: fx.project, commitAt: () => 0, stallMs: 1 });
-    assert.equal(idle.action, 'stall');
-    assert.match(idle.reason, /topic other stands: no activity/);
-    // The prompt hook rings the model with that reason instead of blocking the bell.
-    const h = fx.hook('user-prompt-submit.mjs', { prompt: CONTINUE });
-    assert.notEqual(h.json.decision, 'block', JSON.stringify(h.json));
-    assert.match(h.context, /timer rang before its condition holds .*topic other stands: no activity/);
-  } finally { fx.cleanup(); }
-});
-
-test('a topic timer whose topic is closed and whose mail came is dropped before the ring, no prompt to the thread', () => {
-  const fx = setup();
-  try {
-    closedThread(fx, fx.thread);
-    setTimer(fx.brain, fx.thread, { delayMs: 60_000, then: 'merge topic gone', until: 'true', deadline: new Date(Date.now() + 24 * 3600_000).toISOString(), topic: 'gone' });
-    setTimer(fx.brain, fx.thread, { delayMs: 3 * 3600_000, then: 'later step' });
-    const st = readThreadState(fx.brain, fx.thread);
-    writeThreadState(fx.brain, fx.thread, { ...st, topic_mail: { gone: new Date(Date.now() + 1000).toISOString() } });
-    const r = preRing(fx.brain, fx.thread, { cwd: fx.project });
-    assert.equal(r.action, 'drop');
-    assert.equal(r.resume.next, 'later step');
-    assert.deepEqual(threadTimers(readThreadState(fx.brain, fx.thread)).map((t) => t.then), ['later step']);
-    // Without its mail the closed topic rings (the result did not come).
-    setTimer(fx.brain, fx.thread, { delayMs: 60_000, then: 'merge topic other', until: 'true', deadline: new Date(Date.now() + 24 * 3600_000).toISOString(), topic: 'other' });
     assert.equal(preRing(fx.brain, fx.thread, { cwd: fx.project }).action, 'ring');
   } finally { fx.cleanup(); }
 });

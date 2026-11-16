@@ -7,7 +7,7 @@ import { WORKFLOW_CONFIG, SCRATCH_DIR, readThreadState, writeThreadState } from 
 import { assembleRules } from './rules.mjs';
 import { buildIndexes, shownIndexes, topicLine } from './index.mjs';
 import { recordAuthors, foreignAuthor } from './authors.mjs';
-import { heldTopics, mailboxTopics, endedProgrammaticThread, PROGRAMMATIC_END_REASON } from './topic.mjs';
+import { heldTopics, mailboxTopics } from './topic.mjs';
 import { mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics, isMainTopic, noticesCount, discussionMail } from './comms.mjs';
 import { syncBrainSkills } from './skills-sync.mjs';
 import { policyIgnoredLine } from './policy-layers.mjs';
@@ -15,11 +15,11 @@ import { gitAccessProblem } from './brain.mjs';
 import { readTopics } from './records.mjs';
 import { undeliveredIssues } from './issue-watch.mjs';
 import { sessionKnowledgeSources, skillSources, knowledgeKinds } from './repo-knowledge.mjs';
-import { HANDOVER_NONE_LINE } from './protocol.mjs';
-import { dataPath, dataRel, dataLayoutVersion, layoutFor, topicHome, topicWorkLabel } from './layout.mjs';
+import { dataPath, dataRel, dataLayoutVersion, layoutOf, topicHome, topicWorkLabel, hasData, hasScratch, layoutRefusal } from './layout.mjs';
 import { workDir, workTopic } from './topic-files.mjs';
-import { bootHandoffLines } from './handoff.mjs';
+import { overview, overviewLines, obligationLines, isSupervisorSession } from './overview.mjs';
 import { migrateLocalMail } from './comms-migrate.mjs';
+import { operatorProfile } from './people.mjs';
 export const BOOT_MARKERS = ['## Pravidlá', '## Stav vlákna', '## Index pamäte', '## Index rozhodnutí', '## Otvorené témy', '## Workflow'];
 
 /**
@@ -176,15 +176,15 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   if (ctx.brainDir && ctx.thread) { try { migrateLocalMail(ctx); } catch { /* retried at the next prompt */ } }
   // 3. status line (+ the waiting mail as mechanical lines, P-044; + handover of the held topic after compaction, P-026)
   const info = statusInfo(ctx);
-  info.ended = ctx.brainDir && !info.held.length ? endedProgrammaticThread(ctx.brainDir, ctx.thread) : null;
   let status = info.line;
   const mailLine = mailNoticeLine(info.mail);
   // A brain git refuses (dubious ownership) fails every save, log and topic write: say it with the fix at start (#23).
   const gitProblem = ctx.brainDir ? gitAccessProblem(ctx.brainDir, who.git) : null;
   if (gitProblem) status += `\n${gitProblem}`;
   if (mailLine) status += `\n${mailLine}`;
-  if (ctx.thread) status += `\n${statusBlockInstruction(operatorStatus(ctx, info), !info.held.length && !info.ended, ctx.projectName)}`;
-  if (info.ended) status += `\n${PROGRAMMATIC_END_REASON(info.ended)}`;
+  // Spec 10.7: no status block; the first reply of a thread that holds a topic starts with the line of the topic's name.
+  const named = info.held.find((t) => !isMainTopic(t)) || info.held[0];
+  if (ctx.thread && named) status += `\nyour first reply in this session starts with the line "${ctx.projectName} / ${named.id}" (spec 10.7)`;
   if (ctx.brainDir && ctx.thread) {
     const state = readThreadState(ctx.brainDir, ctx.thread);
     writeThreadState(ctx.brainDir, ctx.thread, { ...state, turn_source: 'operator', session_source: source, mail_signaled: info.mail.count, last_status: info.line, rules_hash: recordRules ? rulesHash(rules.text) : state.rules_hash ?? null, rules_sections: recordRules ? rulesSections(rules.text) : state.rules_sections ?? null, rules_hook: rulesHook });
@@ -197,12 +197,20 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
     const held = info.held;
     if (held.length && held[0].handover) status += `\nHandover (primárny podklad, P-026):\n${held[0].handover.trim().replace(/^## /gm, '### ')}`;
   }
-  // agent-alice/D-0082: the topics this thread's topics handed off, their state read live from the topics themselves.
-  if (ctx.brainDir && ctx.thread) { try { for (const line of bootHandoffLines(ctx.brainDir, ctx.thread)) status += `\n${line}`; } catch { /* never fails the boot */ } }
+  // Spec 3.9 and 10.5 (plan B6): the supervisor's session starts with the overview of the topics of this machine and its
+  // open obligations of the mail (what it owes and awaits); the overview is the same as overview.mjs prints.
+  if (isSupervisorSession(ctx)) {
+    try { for (const line of overviewLines(overview({ ctx, owed: info.mail.obligations?.owed || [] }))) status += `\n${line}`; } catch (err) { status += `\noverview: not read (${err.message})`; }
+    for (const line of obligationLines(info.mail.available ? info.mail.obligations : null)) status += `\n${line}`;
+  }
   // repo knowledge of the session repo and held code topics (D-0002): one line each, the HANDOVER of a topic's repo in full.
   for (const line of repoKnowledgeLines(ctx)) status += `\n${line}`;
   // catalog of project data (scripts/catalog/hooks.mjs): 1 line per source, computed by session-start after its scan.
   for (const line of catalogLines) status += `\n${line}`;
+  // spec 4 and 6.1: profile.md of the operator repo -> osoby/<operator>.md, at every start (plan B9, O9).
+  const profile = operatorProfile();
+  if (profile.lines) status += `\n${profile.lines.join('\n')}`;
+  else notices.push(profile.notice);
   // T3-WORKAROUND(t3-clear-cursor) T3 (claudeAgent) keeps resuming the session id it opened with (t3code#24152); session-start redirects it (t3-clear.mjs).
   if (t3Note) status += `\n${t3Note}`;
   parts.push(`${BOOT_MARKERS[1]}\n${status}`);
@@ -247,7 +255,7 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   if (harness === 'claude-code') {
     // Layout 2 (D-0048): the work files belong to the held topic (temy/<topic>/tmp, main without one), outside git; a
     // brain in layout 2 holds them (D-0056), else the project repo.
-    const v1 = dataLayoutVersion(topicHome(ctx.brainDir, ctx.projectDir)) === 1;
+    const v1 = hasScratch(topicHome(ctx.brainDir, ctx.projectDir));
     const here = toPosix(workDir(ctx));
     version.push(`work files: ${here}/ (gitignored${v1 ? '' : `; per topic ${topicWorkLabel(ctx.brainDir, ctx.projectDir)}, the topic this thread holds or main`}); the harness "scratchpad directory" in the system temp dir is not used here: Write/Edit there go to ${v1 ? 'this scratch/' : 'this folder'} (read the file there), other writes outside the project are refused (P-052)`);
   }
@@ -258,14 +266,25 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   const limit = limits.boot_context_chars ?? 9500;
   const overLimit = text.length > limit;
   if (overLimit) text += `\nlimit: boot context ${text.length} chars > ${limit}; nothing was trimmed (the harness shows a hook output over 10 000 chars only as a 2 KB preview), shorten rules or run consolidate (P-022)\n`;
-  return { text, chars: text.length, overLimit, notices, rules, source, status: operatorStatus(ctx, info) };
+  return { text, chars: text.length, overLimit, notices, rules, source };
+}
+
+/**
+ * Layout guard of a session (spec 11.10, plan O18): the refusal when the project repo of the session does not carry the
+ * layout of its brain (layoutRefusal), else null. The session start shows it in place of the boot, save refuses with it.
+ */
+export function layoutGuard(ctx) {
+  if (!ctx?.brainDir || !ctx.projectDir) return null;
+  try { return layoutRefusal(ctx.brainDir, ctx.projectDir); } catch (err) { return `data layout not readable (${err.message}); no work in this repo until it is (spec 11.10)`; }
 }
 
 /**
  * Start block "Tvar dát tohto repa" (D-0048): the paths of the logical names rules and skills use (zdroje, práca témy,
  * pracovné súbory, výstupy, fakt o subjekte, INDEX.md) for the layout version of this project and its brain, so no rule
  * or skill spells a folder of one layout. Topics, decisions and memory live in the brain, sources and documents in the
- * project repo; the work of a topic and its work files in the brain in layout 2 (D-0056), else in the project repo (P-052, P-024).
+ * project repo; the work of a topic and its work files in a brain without scratch/ (layouts 2 and 3, D-0056), else in the
+ * project repo (P-052, P-024). Layout 3 (spec 4): outputs by type in vystupy/<typ>/ and sources of the project repo; a
+ * brain without them says where they go. Every branch tests the map (hasData, hasScratch), not the version.
  */
 export function dataMapLines(ctx) {
   const proj = ctx?.projectDir;
@@ -273,24 +292,31 @@ export function dataMapLines(ctx) {
   const brain = ctx.brainDir || null;
   let pv;
   let bv = null;
-  try { pv = dataLayoutVersion(proj); layoutFor(pv); if (brain) { bv = dataLayoutVersion(brain); layoutFor(bv); } } catch { return []; }
+  try { pv = dataLayoutVersion(proj); layoutOf(proj); if (brain) { bv = dataLayoutVersion(brain); layoutOf(brain); } } catch { return []; }
   const same = brain && path.resolve(brain) === path.resolve(proj);
   const P = same ? 'brain' : 'projekt';
   const at = (who, root, name, ...rest) => `${who} ${[dataRel(root, name), ...rest].filter(Boolean).join('/')}/`;
   const topic = workTopic(ctx);
   const t = topic && topic !== 'main' ? topic : '<téma>';
   const head = `Tvar dát tohto repa (verzia ${pv}${brain && !same && bv !== pv ? `, brain verzia ${bv}` : ''}; ${same ? `brain = projekt = repo ${toPosix(proj)}` : `projekt = repo ${toPosix(proj)}${brain ? `, brain = repo ${toPosix(brain)}` : ''}`}; cesta nižšie je od koreňa repa, ktoré riadok menuje):`;
-  const index = [[P, proj, pv], ...(brain && !same ? [['brain', brain, bv]] : [])].filter(([, , v]) => v === 2).map(([who]) => `${who} INDEX.md (generuje workflow pri zápise, ručne nie)`);
-  // D-0056: a brain in layout 2 holds the whole topic (work, conclusions, tmp/), also beside a project repo in layout 1.
-  const inBrain = !!brain && bv === 2;
+  const index = [[P, proj], ...(brain && !same ? [['brain', brain]] : [])].filter(([, root]) => hasData(root, 'index')).map(([who]) => `${who} INDEX.md (generuje workflow pri zápise, ručne nie)`);
+  // D-0056: a brain without scratch/ holds the whole topic (work, tmp/), also beside a project repo in layout 1.
+  const inBrain = !!brain && !hasScratch(brain);
+  const home = brain && inBrain ? brain : proj;
+  // Worker conclusions in zavery/ exist only where the topic home keeps documents (layout 2); layout 3 has none.
+  const work = hasData(home, 'docs') ? 'handover, .tema.json, súbory práce, závery pracovníkov v zavery/' : 'handover, .tema.json, výsledky práce';
+  const triaged = inBrain && !same ? ' (hotové výsledky témy sem presunie triáž pri done --topic)' : '';
+  const outputs = hasData(proj, 'outputs')
+    ? `výstupy podľa typu ${at(P, proj, 'outputs', '<typ>')} (téma v hlavičke súboru)${triaged}`
+    : hasData(proj, 'docs') ? `dokumenty ${at(P, proj, 'docs')}${triaged}` : 'dokumenty: brain ich nemá, idú do cieľového repa témy';
   return [
     head,
-    `- zdroje (súbory zvonka, nemenia sa): ${at(P, proj, 'materialy', '<téma>')}`,
-    pv === 1 && !inBrain
+    `- zdroje (súbory zvonka, nemenia sa): ${hasData(proj, 'materialy') ? at(P, proj, 'materialy', '<téma>') : 'brain ich nemá, idú do cieľového repa témy'}`,
+    hasScratch(proj) && !inBrain
       ? `- práca témy: handover ${brain ? at('brain', brain, 'topics', t) : 'bez brainu'}, výsledky práce ${at(P, proj, 'materialy', t)}`
-      : `- práca témy (handover, .tema.json, súbory práce, závery pracovníkov v zavery/): ${brain ? at('brain', brain, 'topics', t) : at(P, proj, 'topics', t)}`,
+      : `- práca témy (${work}): ${brain ? at('brain', brain, 'topics', t) : at(P, proj, 'topics', t)}`,
     `- pracovné súbory (mimo gitu, ${same || inBrain ? 'v brainu' : 'v repe projektu'}): ${toPosix(workDir(ctx))}/`,
-    `- výstupy: rozhodnutia ${brain ? at('brain', brain, 'decisions') : 'bez brainu'}, dokumenty ${at(P, proj, 'docs')}${inBrain && !same ? ' (hotové výsledky témy sem presunie triáž pri done --topic)' : ''}`,
+    `- výstupy: rozhodnutia ${brain ? at('brain', brain, 'decisions') : 'bez brainu'}, ${outputs}`,
     `- fakt o subjekte (pamäť agenta): ${brain ? at('brain', brain, 'memory') : 'bez brainu'}`,
     // Layout 1 has no INDEX.md: the block does not name it there.
     ...(index.length ? [`- INDEX.md: ${index.join(', ')}`] : []),
@@ -321,44 +347,6 @@ export function repoKnowledgeLines(ctx) {
     if (has && src.topic) lines.push(`HANDOVER ${src.repo} (stav projektu):\n${fs.readFileSync(handover, 'utf8').trim().replace(/^## /gm, '### ')}`);
   }
   return lines;
-}
-
-/** The start question of a thread without a topic (P-050, as a P-061 question); Stop arms no auto timer after it. */
-export const TOPIC_QUESTION = 'Aká bude téma?';
-
-/** Status block shown to the operator at start (P-050): topic, free topics and the question when none is held, waiting mail. */
-export function operatorStatus(ctx, info) {
-  const lines = [];
-  // The project leads the line (operator 2026-11-04: "skarper-web / bez témy", "skarper-web / <téma>").
-  if (info.held.length) {
-    lines.push(`${ctx.projectName} / ${info.held[0].id}`);
-  } else if (info.ended) {
-    // D-0043: a thread code started for a topic that is closed shows neither "bez témy" nor the topic question.
-    lines.push(`${ctx.projectName} / ${info.ended} (uzavretá)`);
-  } else {
-    lines.push(`${ctx.projectName} / bez témy`, '', 'Dostupné témy:');
-    const free = freeTopics(ctx);
-    lines.push(...(free.length ? free.map((t) => `- ${t.id}${t.subject && t.subject !== t.id ? ` – ${t.subject}` : ''}`) : ['- žiadne']));
-    lines.push('', '**Otázky na operátora:**', `1. ${TOPIC_QUESTION}`);
-  }
-  if (info.notices) lines.splice(1, 0, `Otvorené oznamy: ${info.notices}`);
-  if (info.mail.count) lines.splice(1, 0, `Pošta: ${info.mail.count}${info.mail.blockers ? ` (${info.mail.blockers} blocker)` : ''}${info.mail.steers ? ` (${info.mail.steers} steer)` : ''}`);
-  return lines.join('\n');
-}
-
-function freeTopics(ctx) {
-  return ctx.brainDir ? readTopics(ctx.brainDir).filter((t) => t.kind !== 'main' && (t.state === 'free' || !t.holder?.thread)) : [];
-}
-
-/**
- * T3-WORKAROUND(hook-message-hidden) The harness UI (T3) does not show hook messages, so the agent shows the block (P-050): verbatim, as the start of its
- * first reply only; without a held topic the operator's answer to the question decides the topic.
- */
-export function statusBlockInstruction(block, unknown = false, project = '<project>') {
-  const n = block.split('\n').length;
-  // The question is only for an unknown topic: a prompt that names the topic (claimed before the reply) is not asked again.
-  const known = unknown ? `\nThis block is only for a topic that stays unknown. If the operator's prompt names the topic or starts new work, claim that topic or create it (\`topic.mjs create <id> --subject "<subject>" --class web|code|ops|discussion\` claims it, skill workflow:topic) before your first reply, and start that reply instead with \`${project} / <id>\` (and the \`Pošta:\` line if shown above), without the list and without \`Aká bude téma?\`; asking for a topic that is known is wrong (P-050).` : '';
-  return `status block (P-050): your first reply in this session MUST start with exactly the next ${n} lines, verbatim, before anything else (no tags, no code fence)${unknown ? ', unless the topic is known (below)' : ''}; later replies MUST NOT repeat them:\n${block}\n(end of status block)${known}${unknown ? `\nA reply that leaves the topic question open ends with the lines \`${HANDOVER_NONE_LINE}\` and \`Stav: otázka\` (P-061).` : ''}`;
 }
 
 /** All open topics, one line each (P-021 item 6); the limit is reported through index warnings. */

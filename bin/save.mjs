@@ -14,23 +14,32 @@
 //   save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local] [--title "..."]
 //   save.mjs exception P-XXX --remove --reason "..." [--layer project|harness|machine|local]   removes its section (one commit; an empty file goes)
 //   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]' ...] (existing skill: --script or --description alone keeps the body; an edit needs --origin error|routine|operator, operator with --reason "operator <date>: ...") [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
-//   save.mjs handover <topic> (--task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>)
+//   save.mjs handover <topic> (--task ".." --done "a; b" --next "a; b" --files "a; b" --questions "a; b" --tasks "a; b" | --file <path>)
+//                        six sections (P-011); --next (a step in Ďalší krok) is refused in a topic in mode discussion (spec 10.6)
 //   save.mjs docs [--message "..."]   persona only: commits the files written directly into docs/ (P-024)
+//   save.mjs person <alias|id> [--domain [<d>]] --content "..." | <id> --name "<name>" --content "..." [--aliases] [--domains] [--new]
+//                        a fact about a person: osoby/ of the operator repo (spec 4.3, 6; memory person|operator is refused)
+//   every save of a thread that holds a topic first pulls and verifies its locks; a lost lock writes nothing (spec 4.2.4)
+//   --repo writes go through the own clone of the workflow: pull, write, push on the knowledge branch (spec 4.1)
 //   memory, decision, rule, skill: --repo [<name>] writes into <repo>/agentic/ of the domain (bare: the session repo); --brain "<why>" keeps a repo's record in brain
 //   save.mjs handover --repo [<name>] (--file <path> | --content "...")   state of the repo: <repo>/agentic/HANDOVER.md
 //   save.mjs move <brain path> --repo <name> [--dry-run]   moves a brain record (memory, decision, agentic skill) into the repo
-//   save.mjs promote <file of the held topic> [--as dokument|zdroj] [--in-brain] [--topic <id>]   layout 2: a file whose
-//                        class is clear goes at once (D-0060): a document to vystupy/dokumenty/, a source to zdroje/<topic>/
-//                        (of the project repo beside the brain, else of the brain, D-0056; --in-brain: of several projects
-//                        or of the agent); not in a turn from a bell (P-047)
+//   save.mjs source <file|folder> [--topic <id>] [--description "..."] [--from <where>] [--as <name|subpath>] [--repo <name>]
+//                        a source from outside, at once (spec 5, plan O15): zdroje/<topic>/ of the main target repo of the
+//                        topic (layout 3: own clone, target branch or topic/<topic>--obsah when protected, 4.6), else of the
+//                        project repo; a folder in one commit with names by the rule of names (the mapping is printed)
+//   save.mjs source --record <file> --from <where> [--topic <id>] [--description "..."]   a file over the limit: its record
+//   save.mjs source --check [--repo <name>]   files in the sources over the limit (exit 1)
+//   save.mjs result <file> [--topic <id>] [--as <name>] [--replace]   a result of the topic's work worth keeping, into
+//                        topics/<topic>/ of the brain (spec 5; the SubagentStop hook writes none, O13)
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { lfBytes } from '../scripts/eol.mjs';
 import { spawnSync } from 'node:child_process';
 import { parseArgs, fail, today, readText, listFiles, relPosix } from '../scripts/util.mjs';
-import { loadContext, isWakeTurn, dialogAnsweredInTurn, machineName, foreignProjectCwd, readThreadState, resolveBrain, brainExists, projectPolicy } from '../scripts/config.mjs';
-import { brainWrite, formatWriteResult, syncAndCheckHolder, checkHolder, withBrainLock, hasRemote, brainSync } from '../scripts/brain.mjs';
+import { loadContext, isWakeTurn, dialogAnsweredInTurn, machineName, foreignProjectCwd, resolveBrain, brainExists, projectPolicy, inSubagent } from '../scripts/config.mjs';
+import { brainWrite, formatWriteResult, syncAndCheckHolder, checkHolder, withBrainLock, hasRemote, brainSync, verifyHeldLocks, lockLostText } from '../scripts/brain.mjs';
 import { parseFrontmatter, serializeFrontmatter, asList } from '../scripts/frontmatter.mjs';
 import { makeKey, normalizeKey, hasDiacritics, isValidId, KEY_TYPES } from '../scripts/keys.mjs';
 import { find, findSimilar } from '../scripts/find.mjs';
@@ -41,18 +50,19 @@ import { recordAuthors, foreignAuthor } from '../scripts/authors.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { ruleCorpus, judgeRule, unanswered, onlyCondenses } from '../scripts/rule-gate.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
-import { renderHandover, checkHandover, handoverNextStep, withReports, withHandoffs } from '../scripts/brain-checks.mjs';
-import { handoffView, handoffsOp, copiedState, COPIED_STATE_WARNING } from '../scripts/handoff.mjs';
+import { renderHandover, checkHandover, handoverNextStep, withReports } from '../scripts/brain-checks.mjs';
 import { openReportLines, baseOf } from '../scripts/issue-watch.mjs';
-import { reminderStep, armedSchedule, REMINDER_REFUSAL } from '../scripts/waker.mjs';
 import { removeNames } from '../scripts/logs.mjs';
-import { setTopicState, readTopic, topicRel, heldTopics } from '../scripts/topic.mjs';
-import { hasTriage, topicFiles, topicFileRel, triageOps, recordOps, bellRefusal, outputRepo, exportOutputs } from '../scripts/triage.mjs';
-import { dataPath, dataRel, layoutOf, dataLayoutVersion } from '../scripts/layout.mjs';
+import { setTopicState, readTopic, topicRel, heldTopics, isDiscussionMode, DISCUSSION_NEXT_REFUSAL } from '../scripts/topic.mjs';
+import { dataPath, dataRel, layoutOf, hasData, layoutRefusal, topicHome, topicWorkLabel } from '../scripts/layout.mjs';
+import { hasTypeTriage, targetRepoDir, mainTargetRepo, contentWrite, contentWhere } from '../scripts/target.mjs';
+import { oversized, maxBytes, materialyDir, sourceAddOp, sourceAddDirOps, resultAddOp, recordBigFileOp } from '../scripts/materialy.mjs';
+import { hasDataIndex, sourcesFileRel, sourcesWith } from '../scripts/data-index.mjs';
 import { workflowSkillNames, PROJECT_SKILLS_DIR, syncBrainSkills, deployedSkillName } from '../scripts/skills-sync.mjs';
 import { skillSources, PROJECT_KNOWLEDGE, domainRepos, knowledgeDirs, repoByName, sessionRepo, singleRepoOf, nextRepoDecisionId, repoWrite, formatRepoWrite, heldRepoTopic, repoPublic } from '../scripts/repo-knowledge.mjs';
 import { isInside } from '../scripts/util.mjs';
 import { checkSkill, meaningDiff, workLayout } from '../scripts/skill-check.mjs';
+import { personRedirect, requireOperatorRepo, readPeople, findPeople, newPerson, changePerson } from '../scripts/people.mjs';
 import { machineStores, machineRecords, targetStore, sameStore, checkDecisionRefs, decisionRefs, rewriteDecisionRefs, subjectMatch, saveHint, displayPath, refFiles, isTombstone, SUBJECT_TYPES, ID_LINE, lc } from '../scripts/stores.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -184,7 +194,7 @@ function knowledgeRel(ctx, recPath) {
   const abs = path.resolve(ctx.brainDir, recPath);
   // Layout 2: the knowledge root is the repo (or its topic worktree) itself; the path relative to it.
   const roots = domainRepos(ctx.domain, ctx.brainDir).flatMap((r) => knowledgeDirs(ctx.domain, r.name))
-    .filter((k) => dataLayoutVersion(k.dir) !== 1 && isInside(k.dir, abs)).sort((a, b) => b.dir.length - a.dir.length);
+    .filter((k) => layoutOf(k.dir).projectKnowledge === '' && isInside(k.dir, abs)).sort((a, b) => b.dir.length - a.dir.length);
   if (roots.length) return toPosixPath(path.relative(roots[0].dir, abs));
   const parts = toPosixPath(path.relative(ctx.domain.root, abs)).split('/');
   const i = parts.indexOf(PROJECT_KNOWLEDGE);
@@ -211,6 +221,8 @@ function saveMemory(ctx) {
   const name = nameParts.join(' ');
   if (!type || !name) fail(`usage: save.mjs memory <type> <name> --content "..." | --remove --reason "..." (types: ${KEY_TYPES.join(', ')})`);
   if (args.remove) return removeMemory(ctx, type, name);
+  // spec 4.3, 11.4: a person or the operator is written to osoby/ of the operator repo; memory keeps them for reading only.
+  if (BRAIN_ONLY_TYPES.includes(type)) fail(personRedirect(type, name));
   // --relates-to or --unrelate alone changes the links of an existing record; body, origin and sources stay (D-0029:
   // the fix consolidate prints must not make the agent retype the content).
   const linksOnly = args.content === undefined && (args['relates-to'] !== undefined || args.unrelate !== undefined);
@@ -223,7 +235,6 @@ function saveMemory(ctx) {
   // An operator record is what the operator said: it has no source to check, and --sources was dropped silently (D-0036).
   if (!linksOnly && origin === 'operator' && sources.length) fail('--sources belong to a derived or observed record (what it was derived from or checked against); an operator record has none (D-0036)');
   const repo = repoTarget(ctx);
-  if (repo && BRAIN_ONLY_TYPES.includes(type)) fail(`${type} records stay in brain: knowledge about the operator and people is not knowledge of one repo (D-0002, P-007)`);
   if (!repo) brainGuard(ctx, key, [...asList(args['relates-to']), ...sources]);
   const matches = find(ctx.brainDir, key, ctx.domain).filter((m) => m.kind === 'memory');
   const byAlias = matches.length ? matches : find(ctx.brainDir, name, ctx.domain).filter((m) => m.kind === 'memory' && m.key.startsWith(type + '-'));
@@ -245,10 +256,9 @@ function saveMemory(ctx) {
   if (byAlias.length) {
     rel = repo ? knowledgeRel(ctx, byAlias[0].path) : byAlias[0].path;
     existing = parseFrontmatter(readText(path.resolve(ctx.brainDir, byAlias[0].path), ''));
-    // Author = who added the file (scripts/authors.mjs). Operator memory holds one operator's preferences: another operator's
-    // is not overwritten (brain shared by several operators); a shared record of another type is, and the output names its author.
+    // Author = who added the file (scripts/authors.mjs): a shared record is overwritten and the output names its author.
+    // (Operator and person records are no memory type any more, spec 4.3: refused above.)
     by = repo ? null : foreignAuthor(recordAuthors(ctx.brainDir, { paths: [rel] }), rel);
-    if (by && (type === 'operator' || existing.data.type === 'operator')) fail(`${byAlias[0].key} is the operator memory of ${by} (their preferences, not yours): not overwritten; save your own under another name, e.g. save memory operator <your-name> (P-013)`);
   } else {
     const similar = findSimilar(ctx.brainDir, key, ctx.domain);
     if (similar.length && !args.new) {
@@ -449,7 +459,7 @@ function saveDecision(ctx) {
       const parsed = parseFrontmatter(readText(path.join(ctx.brainDir, old.path), ''));
       ops.push({ path: old.path, content: serializeFrontmatter({ ...parsed.data, status: `superseded-by ${id}`, updated: today() }, parsed.body) });
     }
-    // agent-alice/D-0082: the topic this thread works on, so the giver of that topic sees the new decision (handoff line).
+    // The topic this thread works on (frontmatter `topic`): the decision names the topic it was made in.
     const topic = heldTopics(ctx.brainDir, ctx.thread).find((t) => t.kind !== 'main')?.id;
     const data = { key: id, id, title, status: 'valid', ...meta, relates_to: relates, aliases: asList(args.aliases), supersedes: args.supersedes || undefined, ...(topic ? { topic } : {}), created: today() };
     const body = `**Rozhodnuté:** ${args.what}\n\n**Zamietnuté alternatívy:** ${args.alternatives || '-'}\n\n**Dôvod:** ${args.reason}\n`;
@@ -1079,7 +1089,7 @@ function sourceLines(file, base, abs) {
   return hits.map((s) => `${toPosixPath(file)}:${Math.max(1, lines.findIndex((l) => l.includes(s)) + 1)}`);
 }
 
-const HANDOVER_FIELDS = ['task', 'done', 'next', 'files', 'questions'];
+const HANDOVER_FIELDS = ['task', 'done', 'next', 'files', 'questions', 'tasks'];
 const HANDOVER_OPTIONS = [...HANDOVER_FIELDS, 'file', 'project', 'repo'];
 
 function saveHandover(ctx) {
@@ -1091,39 +1101,48 @@ function saveHandover(ctx) {
   // `--topic <id>` from memory got only the usage line: name the replacement, as comms send does (report-d718bc1f).
   const unknown = Object.keys(args).filter((k) => k !== '_' && !HANDOVER_OPTIONS.includes(k));
   const hint = (k) => (k === 'topic' ? ` (the topic is the first argument: save.mjs handover ${typeof args.topic === 'string' ? args.topic : '<topic>'} ...)` : '');
-  if (!topic && !unknown.length) fail('usage: save.mjs handover <topic> --task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>');
-  if (unknown.length) fail(`save.mjs handover: unknown option ${unknown.map((k) => `--${k}${hint(k)}`).join(', ')}; nothing written, the current handover stays (usage: save.mjs handover <topic> --task ".." --done "a; b" --next ".." --files "a; b" --questions "a; b" | --file <path>)`);
-  if (!args.file && !HANDOVER_FIELDS.some((k) => typeof args[k] === 'string' && args[k].trim())) fail('save.mjs handover: no content (--task, --done, --next, --files, --questions or --file); nothing written, the current handover stays');
-  // The structure check and the reminder need no remote state: refuse before the first fetch.
-  const written = args.file ? fs.readFileSync(args.file, 'utf8') : renderHandover({ task: args.task, done: args.done, next: args.next, files: args.files, questions: args.questions });
+  if (!topic && !unknown.length) fail('usage: save.mjs handover <topic> --task ".." --done "a; b" --next "a; b" --files "a; b" --questions "a; b" --tasks "a; b" | --file <path>');
+  if (unknown.length) fail(`save.mjs handover: unknown option ${unknown.map((k) => `--${k}${hint(k)}`).join(', ')}; nothing written, the current handover stays (usage: save.mjs handover <topic> --task ".." --done "a; b" --next "a; b" --files "a; b" --questions "a; b" --tasks "a; b" | --file <path>)`);
+  if (!args.file && !HANDOVER_FIELDS.some((k) => typeof args[k] === 'string' && args[k].trim())) fail('save.mjs handover: no content (--task, --done, --next, --files, --questions, --tasks or --file); nothing written, the current handover stays');
+  // The structure check and the mode need no remote state: refuse before the first fetch.
+  const written = args.file ? fs.readFileSync(args.file, 'utf8') : renderHandover({ task: args.task, done: args.done, next: args.next, files: args.files, questions: args.questions, tasks: args.tasks });
   const refs = checkDecisionRefs(ctx, targetStore(ctx), [written]);
   if (refs) fail(refs);
-  // agent-alice/D-0082: the state of another open topic is not copied into this handover (it goes stale unseen); it is in
-  // the section "## Odovzdané", which code writes below from the topics themselves. A warning, not a refusal (P-076,
-  // agent-alice/D-0094: four false refusals in a day, the state word was in another point of the step than the topic).
-  const copied = copiedState(ctx.brainDir, topic, written);
   // The open issues of this topic (3c.3) come from the local records, also over --file: the agent neither writes nor drops them.
-  // The handoffs of this topic (D-0082) too: the live state of each target, a section the agent wrote is replaced.
-  const handoffs = handoffView(ctx.brainDir, topic);
-  const content = withHandoffs(withReports(written, openReportLines(baseOf(ctx), topic)), handoffs.lines);
-  // P-011: the five sections; no line limit (agent-alice/D-0094): brevity is led by skill save, not by a refusal.
+  const content = withReports(written, openReportLines(baseOf(ctx), topic));
+  // P-011: the six sections; no line limit (agent-alice/D-0094): brevity is led by skill save, not by a refusal.
   const errors = checkHandover(content);
   if (errors.length) fail([...errors, 'nothing written, the current handover stays'].join('\n'));
-  const reminder = ctx.thread ? reminderStep(handoverNextStep(content)) : null;
-  if (reminder && !armedSchedule(readThreadState(ctx.brainDir, ctx.thread))) fail(REMINDER_REFUSAL(reminder));
+  // Spec 10.6: in mode discussion the handover has no next step; only the field `mode` decides, never class or kind.
+  const steps = handoverNextStep(content) || [];
+  if (steps.length && isDiscussionMode(readTopic(ctx.brainDir, topic))) fail(DISCUSSION_NEXT_REFUSAL(topic, steps));
   const handoverRel = topicRel(ctx.brainDir, topic, 'handover');
-  const holderError = syncAndCheckHolder(ctx.brainDir, handoverRel, ctx.thread);
+  const holderError = ctx.presynced ? checkHolder(ctx.brainDir, handoverRel, ctx.thread) : syncAndCheckHolder(ctx.brainDir, handoverRel, ctx.thread);
   if (holderError) fail(holderError);
   const ops = [{ path: handoverRel, content }, setTopicState(ctx, topic, readTopic(ctx.brainDir, topic)?.state === 'paused' ? 'paused' : 'working')];
-  // The snapshot of each target is refreshed (the base of the handoff lines, point 4); a closed one is marked shown.
-  if (handoffs.changed) ops.push(handoffsOp(ctx.brainDir, topic, handoffs.records));
   const res = brainWrite(ctx, { ops, message: `handover ${topic}`, presynced: true });
   out(formatWriteResult(res, [handoverRel]));
-  if (copied) out(COPIED_STATE_WARNING(copied));
+}
+
+/**
+ * A fact about a person (spec 4.3, 6, plan B8): written to osoby/ of the operator repo (scripts/people.mjs, its own clone),
+ * never to memory/. The one person the alias names is changed; with --name and no match a new person <id> is made. No or
+ * several matches without --name are refused: the operator says who it is first (spec 6.2).
+ */
+function savePerson(ctx) {
+  const alias = rest.join(' ');
+  if (!alias) fail('usage: save.mjs person <alias|id> [--domain [<domain>]] (--content "<the whole record>" | --name | --aliases a,b | --domains d1,d2) | save.mjs person <id> --name "<name>" --content "..." [--aliases a,b] [--domains d1,d2] [--new]   (a new person)');
+  const repo = requireOperatorRepo();
+  const domain = args.domain === undefined ? null : args.domain !== true ? String(args.domain) : ctx.domain?.root ? path.basename(ctx.domain.root) : fail('--domain without a name: this session has no domain; name it: --domain <domain>');
+  const fields = { name: args.name, aliases: args.aliases, domains: args.domains, content: args.content, another: !!args.new };
+  const create = args.name !== undefined && !findPeople(readPeople(repo.dir), alias, domain).length;
+  for (const line of create ? newPerson(repo, { id: alias, ...fields }) : changePerson(repo, { alias, domain, ...fields })) out(line);
 }
 
 /** Persona docs/ (P-024): files written directly are committed and pushed in one script commit. */
 function saveDocs(ctx) {
+  // Data layout 3 (spec 4): a brain keeps no documents and no sources; they go to the target repo of the topic.
+  if (!hasData(ctx.brainDir, 'docs')) fail('save.mjs docs: a brain of data layout 3 keeps no documents (spec 4): a result of the topic goes to topics/<topic>/ (save.mjs result), data from outside to the target repo (save.mjs source), and done --topic sorts the topic files into vystupy/<typ>/ of the target repo; nothing written');
   if (!ctx.brainInfo?.persona) fail(`save.mjs docs: only a persona keeps documents in brain (${dataRel(ctx.brainDir, 'docs')}/, ${dataRel(ctx.brainDir, 'materialy')}/); in a project they belong to the project repo (P-024)`);
   // materialy/ like docs/ (D-0011). A file is committed byte for byte (PDF, image); only .md is read as text for its checks.
   const docs = dataRel(ctx.brainDir, 'docs');
@@ -1137,55 +1156,153 @@ function saveDocs(ctx) {
   finish(ctx, res, rels);
 }
 
+/** Topic of a source or a result: --topic, else the one work topic this thread holds. */
+function sourceTopic(ctx, what) {
+  if (typeof args.topic === 'string') return args.topic;
+  const held = ctx.brainDir ? heldTopics(ctx.brainDir, ctx.thread).filter((t) => t.kind !== 'main') : [];
+  if (held.length === 1) return held[0].id;
+  return fail(held.length ? `${what}: this thread holds several topics (${held.map((t) => t.id).join(', ')}); pass --topic <id>` : `${what}: this thread holds no topic; pass --topic <id> (the topic the file came for)`);
+}
+
 /**
- * A file of the held topic whose class is clear is sorted at once (D-0060, layout 2): a document (--as dokument, default)
- * to vystupy/dokumenty/, a source (--as zdroj) to zdroje/<topic>/ (a rename in git, INDEX.md in the same commit; with a
- * project repo beside the brain into that repo, committed there first, then removed from the brain, D-0056; --in-brain
- * keeps it in the brain). Not in a turn from a bell (P-047). A file whose class is unclear stays for the triage at
- * done --topic; a fact goes to memory with save memory instead.
+ * Repo the sources of a topic go to: --repo <name>; in data layout 3 the main target repo of the topic (spec 4.5, written
+ * through the own clone on its target branch or topic/<id>--obsah, 4.6); in an older layout the project repo of the
+ * session (as materialy.mjs did). Returns { name, dir, clone }.
  */
-function savePromote(ctx) {
-  if (!hasTriage(ctx.brainDir)) fail('save.mjs promote: only data layout 2 has vystupy/ and topic files (D-0044)');
-  const file = rest[0];
-  if (!file) fail('usage: save.mjs promote <file of the topic> [--topic <id>]');
-  const held = heldTopics(ctx.brainDir, ctx.thread).filter((t) => t.kind !== 'main');
-  const id = typeof args.topic === 'string' ? args.topic : held.length === 1 ? held[0].id : fail(held.length ? `this thread holds several topics (${held.map((t) => t.id).join(', ')}); pass --topic <id>` : 'this thread holds no topic: promote moves a file of a held topic (P-037)');
-  if (!held.some((t) => t.id === id)) fail(`topic ${id} is not held by this thread (P-037)`);
-  const rel = topicFileRel(ctx.brainDir, id, file);
-  const files = topicFiles(ctx.brainDir, id);
-  if (!files.includes(rel)) fail(`${file}: not a file of topic ${id} (files: ${files.join(', ') || 'none'}; not the handover, .tema.json or tmp/)`);
-  const from = `${topicRel(ctx.brainDir, id)}/${rel}`;
-  const cls = args.as === undefined ? 'dokument' : String(args.as);
-  if (!['dokument', 'zdroj'].includes(cls)) fail(`save.mjs promote --as ${cls}: a file of the topic is promoted as dokument or zdroj; knowledge goes with save memory|decision|skill|rule, a work file of one use to tmp/, an unclear one stays for the triage at done --topic (D-0059)`);
-  // D-0056: a topic with a project repo beside the brain promotes into that repo, unless --in-brain.
-  const repo = outputRepo(ctx);
-  const plan = { dokument: [], zdroj: [], stav: [], pomocne: [] };
-  plan[cls].push({ rel, brain: !!args['in-brain'] });
-  const { ops, exports, moved, errors } = triageOps(ctx.brainDir, id, plan, repo);
-  if (errors.length) fail(errors.join('\n'));
-  const to = moved[0].where;
-  const refusal = bellRefusal(ctx.brainDir, ctx.thread, 'save.mjs promote', { topic: id, step: 'promote' });
-  if (refusal) fail(`not moved: ${refusal}`);
-  // The project repo gets the file first (with its INDEX.md); a refused write there leaves the brain as it is.
-  if (exports.length) {
-    let exp;
-    try { exp = exportOutputs(ctx, exports[0].repo, exports, `promote: ${from} from brain (${cls})`); }
-    catch (err) { fail(`save.mjs promote: writing ${to} failed, nothing written into brain (${from} stays): ${err.message}`); }
-    out(`project ${path.basename(exports[0].repo)}: ${formatWriteResult(exp, [exports[0].to, ...(dataLayoutVersion(exports[0].repo) === 2 ? ['INDEX.md'] : [])])}`);
+function sourceRepo(ctx, id) {
+  if (typeof args.repo === 'string') {
+    const dir = targetRepoDir(ctx, args.repo);
+    if (!dir) fail(`--repo ${args.repo}: no such repo of ${ctx.domain ? 'the domain' : 'this session'}`);
+    return { name: args.repo, dir, clone: hasData(dir, 'outputs') };
   }
-  const record = recordOps(ctx.brainDir, [from]);
-  if (record.length) brainWrite(ctx, { ops: record, internal: true, message: `promote: ${from} recorded before the move` });
-  const res = brainWrite(ctx, { ops, internal: true, message: `promote: ${from} -> ${to} (${cls})` });
-  finish(ctx, res, [from, to]);
+  if (hasTypeTriage(ctx.brainDir)) {
+    const topic = readTopic(ctx.brainDir, id);
+    if (!topic) fail(`topic ${id} does not exist`);
+    const m = mainTargetRepo(ctx, topic);
+    if (m.error) fail(`save.mjs source: ${m.error}`);
+    return { ...m, clone: hasData(m.dir, 'outputs') };
+  }
+  const dir = ctx.projectDir;
+  return { name: path.basename(dir), dir, clone: false };
+}
+
+/**
+ * Write ops of sources into their repo: through the own clone in a repo of data layout 3 (the clone must not have the file
+ * yet, sources.json from the clone), else a write of that repo as before (layout 1 and 2).
+ */
+function writeSources(ctx, repo, id, files, { message, describe = null }) {
+  const rels = files.map((f) => f.rel);
+  if (repo.clone) {
+    const res = contentWrite(ctx, repo.dir, id, {
+      message,
+      ops: (clone) => {
+        const exists = rels.filter((r) => fs.existsSync(path.join(clone, ...r.split('/'))));
+        if (exists.length) throw new Error(`${exists.join(', ')} exists already in ${repo.name}: a source is not changed, choose another name (--as <name>); nothing written`);
+        const ops = files.map((f) => ({ path: f.rel, content: f.content }));
+        if (describe && hasDataIndex(clone)) ops.push({ path: sourcesFileRel(clone), content: sourcesWith(clone, describe.rels || rels, describe.fields) });
+        return ops;
+      },
+    });
+    return { line: `${res.committed ? 'written' : 'unchanged'}: ${rels.slice(0, 5).join(', ')}${rels.length > 5 ? `, … (+${rels.length - 5})` : ''}${res.sha ? ` (${repo.name} ${res.sha})` : ''} [${contentWhere(res)}]${(res.notes || []).length ? `\n${res.notes.join('\n')}` : ''}` };
+  }
+  const ops = files.map((f) => ({ path: f.rel, content: f.content }));
+  const paths = [...rels];
+  if (describe && hasDataIndex(repo.dir)) {
+    const sourcesRel = sourcesFileRel(repo.dir);
+    ops.push({ path: sourcesRel, content: sourcesWith(repo.dir, describe.rels || rels, describe.fields) });
+    paths.push(sourcesRel, 'INDEX.md');
+  }
+  const isBrain = ctx.brainDir && path.resolve(ctx.brainDir) === path.resolve(repo.dir);
+  const res = brainWrite({ brainDir: repo.dir, thread: ctx.thread, policy: ctx.policy }, { ops, message, sync: !!isBrain });
+  return { line: formatWriteResult(res, paths) };
+}
+
+/** The longest folder all paths are under. */
+function commonDir(rels) {
+  const parts = rels.map((r) => r.split('/').slice(0, -1));
+  const dirs = [];
+  for (let i = 0; parts.every((p) => i < p.length && p[i] === parts[0][i]); i++) dirs.push(parts[0][i]);
+  return dirs.join('/');
+}
+
+/**
+ * A source from outside (spec 5: saved at once; plan O15, the former materialy.mjs add|record|check):
+ *   save.mjs source <file|folder> [--topic <id>] [--description "..."] [--from <where>] [--as <name|subpath>] [--repo <name>]
+ *   save.mjs source --record <file> --from <where> [--topic <id>] [--description "..."]   a file over the limit: its record only
+ *   save.mjs source --check [--repo <name>]   files in the sources over the limit (exit 1 when there are some)
+ * Into zdroje/<topic>/ of the main target repo of the topic (layout 3, own clone), else of the project repo.
+ */
+function saveSource(ctx) {
+  if (args.check) {
+    const repo = typeof args.repo === 'string' || hasTypeTriage(ctx.brainDir) ? sourceRepo(ctx, sourceTopic(ctx, 'save.mjs source --check')) : { dir: ctx.projectDir };
+    const big = oversized(repo.dir, ctx.policy);
+    if (!big.length) { out(`ok: v ${materialyDir(repo.dir)}/ nič nad ${maxBytes(ctx.policy) / 1048576} MB`); return; }
+    for (const b of big) out(`nad limitom: ${b.path} (${(b.size / 1048576).toFixed(0)} MB)`);
+    fail(`${big.length} súbor(ov) nad ${maxBytes(ctx.policy) / 1048576} MB: presuň ich mimo gitu (stiahnuté do ${topicWorkLabel(ctx.brainDir, ctx.projectDir)}) a zaznamenaj cez save.mjs source --record`);
+  }
+  const record = typeof args.record === 'string' ? args.record : null;
+  const file = record || rest[0];
+  if (!file) fail('usage: save.mjs source <file|folder> [--topic <id>] [--description "..."] [--from <where>] [--as <name|subpath>] [--repo <name>] | source --record <file> --from <where> [--topic <id>] [--description "..."] | source --check');
+  const id = sourceTopic(ctx, 'save.mjs source');
+  const repo = sourceRepo(ctx, id);
+  if (!hasData(repo.dir, 'materialy')) fail(`save.mjs source: repo ${repo.name} has no sources folder in its data layout`);
+  const from = typeof args.from === 'string' ? args.from : '';
+  const description = typeof args.description === 'string' ? args.description : '';
+  if (record) {
+    const { rel, content, record: rec } = recordBigFileOp(repo.dir, id, record, { from: from || null, brainDir: ctx.brainDir });
+    const res = writeSources(ctx, repo, id, [{ rel, content }], { message: `save source --record ${rel}`, describe: { rels: rel.replace(/\.zaznam\.json$/, ''), fields: { description, from, date: rec.date } } });
+    out(`záznam: ${rel}\n${rec.size} B, sha256 ${rec.sha256.slice(0, 12)}…; súbor ostal ${rec.stored_at}; do gitu patrí iba záznam`);
+    out(res.line);
+    return;
+  }
+  const name = typeof args.as === 'string' ? args.as : null;
+  const folder = fs.existsSync(file) && fs.statSync(file).isDirectory();
+  const added = folder ? sourceAddDirOps(repo.dir, id, file, { name, policy: ctx.policy }) : null;
+  const one = folder ? null : sourceAddOp(repo.dir, id, file, { name, policy: ctx.policy });
+  const files = folder ? added.ops : [one];
+  const rels = files.map((f) => f.rel);
+  if (!hasDataIndex(repo.dir) && (description || from)) out('--description a --from: iba v repe s INDEX.md; tu sa nezapíšu');
+  const res = writeSources(ctx, repo, id, files, { message: folder ? `save source ${commonDir(rels)}/ (${rels.length} file(s))` : `save source ${rels[0]}`, describe: { fields: { description, from, date: folder ? added.date : one.date } } });
+  out(res.line);
+  if (added?.mapping.length) {
+    out(`mená podľa pravidla mien (${added.mapping.length}):`);
+    for (const [a, b] of added.mapping) out(`  ${a} -> ${b}`);
+  }
+}
+
+/**
+ * A result of the topic's work worth keeping (spec 5: topics/<topic>/ in the brain, the manager decides; plan O13: the
+ * SubagentStop hook no longer writes it): save.mjs result <file> [--topic <id>] [--as <name>] [--replace]. Into the topic
+ * home (a brain without scratch/ topics/<id>/, layout 1 the sources of the project as before).
+ */
+function saveResult(ctx) {
+  const file = rest[0];
+  if (!file) fail('usage: save.mjs result <file> [--topic <id>] [--as <name>] [--replace]');
+  const id = sourceTopic(ctx, 'save.mjs result');
+  const home = topicHome(ctx.brainDir, ctx.projectDir);
+  const { rel, content } = resultAddOp(home, id, file, { name: typeof args.as === 'string' ? args.as : null, policy: ctx.policy, replace: args.replace === true });
+  const inBrain = !!ctx.brainDir && path.resolve(ctx.brainDir) === path.resolve(home);
+  const res = brainWrite(inBrain ? ctx : { brainDir: home, thread: ctx.thread, policy: ctx.policy }, { ops: [{ path: rel, content }], message: `save result ${rel}`, sync: inBrain, presynced: !!ctx.presynced });
+  const shown = inBrain && path.resolve(home) !== path.resolve(ctx.projectDir) ? `brain ${rel}` : rel;
+  out(formatWriteResult(res, [shown, ...(hasDataIndex(home) ? ['INDEX.md'] : [])]));
 }
 
 try {
   const ctx = loadContext({ project: args.project });
   const foreign = foreignProjectCwd(ctx, args.project);
   if (foreign) fail(foreign);
-  const handlers = { memory: saveMemory, decision: saveDecision, rule: saveRule, exception: saveException, skill: saveSkill, handover: saveHandover, docs: saveDocs, move: saveMove, promote: savePromote };
-  if (!handlers[category]) fail('usage: save.mjs memory|decision|rule|exception|skill|handover|docs|move ...');
-  if (args.repo !== undefined && !['memory', 'decision', 'rule', 'skill', 'handover', 'move'].includes(category)) fail(`--repo: ${category} lives in brain only (memory, decision, rule, skill, handover and move take --repo)`);
+  // Spec 11.10, plan O18: the guard of the session start, again before a write (a session started before the migration).
+  if (ctx.brainDir && ctx.projectDir) { const refusal = layoutRefusal(ctx.brainDir, ctx.projectDir); if (refusal) fail(`save.mjs refused, nothing written: ${refusal}`); }
+  const handlers = { memory: saveMemory, decision: saveDecision, rule: saveRule, exception: saveException, skill: saveSkill, handover: saveHandover, docs: saveDocs, move: saveMove, person: savePerson, source: saveSource, result: saveResult };
+  if (!handlers[category]) fail('usage: save.mjs memory|decision|rule|exception|skill|handover|docs|move|person|source|result ...');
+  if (args.repo !== undefined && !['memory', 'decision', 'rule', 'skill', 'handover', 'move', 'source'].includes(category)) fail(`--repo: ${category} lives in brain only (memory, decision, rule, skill, handover, move and source take --repo)`);
+  // Spec 4.2.4 (plan B5): a thread that holds a topic pulls and verifies its locks before any write; a lost one stops the
+  // save with nothing written, whatever it writes (not only the files of the topic).
+  if (ctx.brainDir && ctx.thread && !inSubagent()) {
+    const locks = verifyHeldLocks(ctx.brainDir, ctx.thread);
+    if (locks.lost.length) fail(lockLostText(locks.lost));
+    if (locks.sync) ctx.presynced = true;
+  }
   handlers[category](ctx);
 } catch (err) {
   fail(err.message);

@@ -8,7 +8,7 @@ import { setup } from './helpers.mjs';
 test('handover --topic: refused with the replacement named, the current handover stays', () => {
   const fx = setup();
   try {
-    assert.equal(fx.run('topic.mjs', ['create', 'ho', '--subject', 'Ho', '--class', 'discussion']).status, 0);
+    assert.equal(fx.run('topic.mjs', ['create', 'ho', '--subject', 'Ho', '--class', 'ops']).status, 0);
     assert.equal(fx.run('save.mjs', ['handover', 'ho', '--task', 'T', '--done', 'a', '--next', 'old']).status, 0);
     const before = fx.read('topics/ho/handover.md');
     for (const argv of [['handover', '--topic', 'ho', '--next', 'new'], ['handover', 'ho', '--topic', 'ho', '--next', 'new']]) {

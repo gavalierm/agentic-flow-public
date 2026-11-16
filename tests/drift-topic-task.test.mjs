@@ -1,6 +1,6 @@
 // ttl: 2026-12-15
 // flow-public#87: the drift judge refused the assigned work of a code topic: it got only the topic subject (the task was
-// not kept with the topic) and offered the orchestrator topic that assigned the work as "belongs to".
+// not kept with the topic). The judge gets the topic task; every other open topic is offered as "belongs to".
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setup } from './helpers.mjs';
@@ -16,12 +16,12 @@ test('topic create keeps --task with the topic', () => {
   } finally { fx.cleanup(); }
 });
 
-test('drift judge gets the topic task and not the assigning orchestrator topic', () => {
-  const held = [{ id: 'gaps', subject: 'Gaps of the migration', task: 'point 2: archive closed topics', orchestrator: { topic: 'dev' }, state: 'working' }];
-  const job = driftJob(held, [{ id: 'dev', subject: 'Workflow development' }, { id: 'other', subject: 'Another job' }]);
-  assert.deepEqual(job.others.map((t) => t.id), ['other']);
+test('drift judge gets the topic task; the other open topics are offered, the held one is not', () => {
+  const held = [{ id: 'gaps', subject: 'Gaps of the migration', task: 'point 2: archive closed topics', state: 'working' }];
+  const job = driftJob(held, [{ id: 'gaps', subject: 'Gaps of the migration' }, { id: 'dev', subject: 'Workflow development' }, { id: 'other', subject: 'Another job' }]);
+  assert.deepEqual(job.others.map((t) => t.id), ['dev', 'other']);
   const prompt = driftPrompt({ ...job, task: 'do point 2' });
   assert.match(prompt, /# Topic task[^\n]*\npoint 2: archive closed topics/);
   assert.match(prompt, /part of it/);
-  assert.doesNotMatch(prompt, /dev: Workflow development/);
+  assert.match(prompt, /dev: Workflow development/);
 });

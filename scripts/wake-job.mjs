@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { commsSettings } from './comms.mjs';
 import { JOB_NAME } from './issue-watch.mjs';
+import { overviewIntervalMs } from './overview.mjs';
 import { PLUGIN_ROOT, readJson, toPosix } from './util.mjs';
 
 const DEFAULT_INTERVAL_S = 900;
@@ -96,6 +97,15 @@ export function ensureTimerCheckJob(ctx, { env = process.env, pluginRoot = PLUGI
   const intervalS = Number(ctx.policy?.timer?.check_interval_s) || 60;
   const command = `"${toPosix(process.execPath)}" "${toPosix(path.join(pluginRoot, 'bin', 'timer-check.mjs'))}"`;
   return ensureJob(ctx, { name: TIMER_CHECK_JOB, command, interval_ms: intervalS * 1000 }, { env, platform });
+}
+
+/** Job `overview` (bin/overview.mjs wake, flow v2 spec 3.9, plan B6): the supervisor's overview without an agent, every
+ * policy overview.interval_min (default 30 min); it mails the supervisor only when a finding is new. One job for the
+ * machine: the project that installs it first sends the mail (its key), another clone's job of that name stays. */
+export const OVERVIEW_JOB = 'overview';
+export function ensureOverviewJob(ctx, { env = process.env, pluginRoot = PLUGIN_ROOT, platform = process.platform } = {}) {
+  const command = `"${toPosix(process.execPath)}" "${toPosix(path.join(pluginRoot, 'bin', 'overview.mjs'))}" wake --project "${toPosix(ctx.projectDir)}"`;
+  return ensureJob(ctx, { name: OVERVIEW_JOB, command, interval_ms: overviewIntervalMs(ctx.policy) }, { env, platform });
 }
 
 /** Merge `job` into the wake configuration of this machine (see ensureIssueWatchJob). */

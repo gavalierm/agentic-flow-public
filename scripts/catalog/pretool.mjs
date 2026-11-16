@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { catalogConfig, sourceOf } from './config.mjs';
-import { dataLayoutVersion, dataRel, workLabel, topicHome, separateProject } from '../layout.mjs';
+import { dataRel, workLabel, topicHome, separateProject, hasScratch } from '../layout.mjs';
 
 const READERS = new Set(['ls', 'find', 'grep', 'egrep', 'fgrep', 'rg', 'cat']);
 const SPLIT = /\s*(?:&&|\|\||;|\n|\|)\s*/;
@@ -18,7 +18,7 @@ export function readOnlySourceDeny(cfg, absPaths, projectDir = null, brainDir = 
     if (projectDir) {
       const home = topicHome(brainDir, projectDir);
       const repo = separateProject(brainDir, projectDir) && path.resolve(home) === path.resolve(brainDir) ? 'brainu' : 'repa projektu';
-      where = `výsledky patria do ${dataLayoutVersion(home) === 1 ? dataRel(home, 'materialy') : dataRel(home, 'topics')}/<téma>/ a medzivýsledky do ${workLabel(home)} ${repo}`;
+      where = `výsledky patria do ${hasScratch(home) ? dataRel(home, 'materialy') : dataRel(home, 'topics')}/<téma>/ a medzivýsledky do ${workLabel(home)} ${repo}`;
     }
   } catch { /* unknown layout: the logical names */ }
   for (const p of absPaths) {

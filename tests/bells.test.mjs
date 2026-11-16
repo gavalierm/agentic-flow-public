@@ -2,6 +2,7 @@
 // P-042, P-043, P-044, P-046, P-047, P-030: bells are recognised only as the exact whole prompt; a wake without new mail ends
 // the turn; no-reply/undelivered give one line from `comms message --id` (no triage); the turn record carries opened_at
 // from open to closed; a skill proposal is signalled once per thread. Comms client is a stub (tests/fixtures/comms-stub.mjs).
+// Spec 10.2 (plan B4): only the continuation bell is counted in .tema.json (continue-stall.core.test.mjs has the cap).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -116,4 +117,19 @@ test('message bells of mail model 2: recipient closed, code answer busy / otázk
   assert.match(messageBellLine('no-reply', 'm10', { ...base, status: 'held' }), /no reply, held: no thread receives project\/beta/);
   // No version branch: a field of model 1 (answer_origin code) is no code answer.
   assert.doesNotMatch(messageBellLine('no-reply', 'm11', { ...base, answer_state: 'busy', answer_origin: 'code' }), /busy/);
+});
+
+test('continuation bell: counted in .tema.json for the topic with a next step; a wake bell is not', () => {
+  const fx = stubbed({ messages: [] });
+  try {
+    assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'ops']).status, 0);
+    assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--task', 'T', '--next', 'krok']).status, 0);
+    const turn = () => JSON.parse(fs.readFileSync(path.join(fx.brain, 'topics', 'alpha', 'topic.json'), 'utf8')).turn || {};
+    fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
+    assert.equal(turn().continues ?? null, null);
+    const r = fx.hook('user-prompt-submit.mjs', { prompt: 'turn ended with a next step, continue from handover' });
+    assert.match(r.context, /turn ended with a next step in the handover: do that step now/);
+    assert.equal(turn().continues.n, 1);
+    assert.equal(fx.state().turn_source, 'keepalive');
+  } finally { fx.cleanup(); }
 });

@@ -6,10 +6,14 @@
 // Layout version of a repository: key `data_layout` in its policy file. Looked up in fixed places that do not depend on
 // the version (VERSION_FILES), first `.brain/policy.json` (where layout 2 keeps policy), then `policy.json` (a brain in
 // layout 1) and `agentic/policy.json` (a project repo in layout 1). A missing key means layout 1, so no repository written
-// before this module changes. Two layouts exist: 1 (topics/, scratch/, agentic/ in a project repo) and 2 (.brain/, temy/,
-// vystupy/, the knowledge of a project repo in its root). A name a layout does not have is null there (topicArchive,
-// scratch in layout 2): relPath and dataPath of it throw, so a caller that forgot the version fails in a test. Code that
-// reads a version's map at import (patterns, messages) builds it per version (memoized), never from LAYOUT alone.
+// before this module changes. Three layouts exist: 1 (topics/, scratch/, agentic/ in a project repo), 2 (.brain/, temy/,
+// vystupy/, the knowledge of a project repo in its root) and 3 (flow v2, spec 4: a brain with topics/, memory/,
+// decisions/ ... in its root and no outputs or sources; a project repo with .brain/ as in layout 2 and vystupy/<typ>/,
+// zdroje/<téma>/). Layout 3 has two maps, one per role (layoutRole: the brain keeps its policy in its root, a project repo
+// in .brain/); layouts 1 and 2 have one map for both. A name a layout does not have is null there (topicArchive, scratch
+// in layout 2): relPath and dataPath of it throw, so a caller that forgot the version fails in a test. Code that branches
+// on the layout tests a capability of the map (hasScratch, oneTopicFile in topic-files.mjs, a name that is not null), not
+// the version number. Code that reads a version's map at import (patterns, messages) builds it per version (memoized).
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -30,8 +34,10 @@ const LAYOUT_1 = Object.freeze({
   holderFile: 'holder.json',
   handover: 'handover.md',
   results: 'results.md',
-  // Work files, outside material and documents of a project (P-052, skill materialy).
+  // Work files, outside material and documents of a project (P-052, save.mjs source and result).
   scratch: 'scratch',
+  topicTmp: null,
+  topicHidden: null,
   materialy: 'materialy',
   docs: 'docs',
   // Operator's local files (P-018) and the catalog of client data inside them.
@@ -41,6 +47,10 @@ const LAYOUT_1 = Object.freeze({
   projectKnowledge: 'agentic',
   runbooks: 'runbooks',
   repoHandover: 'HANDOVER.md',
+  // INDEX.md of the repository (scripts/data-index.mjs): none in layout 1.
+  index: null,
+  // Outputs sorted by type, vystupy/<typ>/<vec> (spec 4): a project repo of layout 3 only.
+  outputs: null,
 });
 
 
@@ -76,57 +86,138 @@ const LAYOUT_2 = Object.freeze({
   projectKnowledge: '',
   runbooks: '.brain/runbooks',
   repoHandover: '.brain/HANDOVER.md',
+  index: 'INDEX.md',
+  outputs: null,
 });
 
-/** Maps by layout version. A name a layout does not have is null there (topicArchive, scratch in layout 2). */
-export const LAYOUTS = Object.freeze({ 1: LAYOUT_1, 2: LAYOUT_2 });
-const KNOWN_VERSIONS = Object.freeze([1, 2]);
+/**
+ * Layout 3, the brain (flow v2, spec 4; plan O11): records in the root as in layout 1 (memory/, decisions/, rules/,
+ * skills/, exceptions/, logs/, policy.json), topics in topics/<topic>/ with one .tema.json, handover.md, the results of
+ * the work and tmp/ (outside git). No outputs and no sources (they go to the target repo of the topic, spec 4.5), no
+ * archive of topics (a closed topic ends, spec 5) and no scratch folder.
+ */
+const LAYOUT_3 = Object.freeze({
+  memory: 'memory',
+  decisions: 'decisions',
+  rules: 'rules',
+  skills: 'skills',
+  exceptions: 'exceptions',
+  logs: 'logs',
+  policy: 'policy.json',
+  topics: 'topics',
+  topicArchive: null,
+  topicFile: '.tema.json',
+  holderFile: '.tema.json',
+  handover: 'handover.md',
+  results: 'results.md',
+  scratch: null,
+  topicTmp: 'tmp',
+  topicHidden: null,
+  materialy: null,
+  docs: null,
+  local: 'local',
+  catalog: 'local/catalog',
+  projectKnowledge: '',
+  runbooks: 'runbooks',
+  repoHandover: 'HANDOVER.md',
+  index: 'INDEX.md',
+  outputs: null,
+});
+
+/**
+ * Layout 3, a project repo (plan O11): .brain/ as in layout 2 (policy, sources.json, the knowledge of the repo), outputs by
+ * type in vystupy/<typ>/ (outputs; the documents of layout 2 and the decisions of the repo are the types dokumenty and
+ * rozhodnutia) and outside material in zdroje/<téma>/. Topics live in the brain; topics/ here only names where a topic
+ * home would be.
+ */
+const LAYOUT_3_REPO = Object.freeze({
+  ...LAYOUT_2,
+  topics: 'topics',
+  topicHidden: null,
+  outputs: 'vystupy',
+});
+
+/** Maps by layout version (the brain's map where a layout has two). A name a layout does not have is null there. */
+export const LAYOUTS = Object.freeze({ 1: LAYOUT_1, 2: LAYOUT_2, 3: LAYOUT_3 });
+/** Maps of a project repo where they differ from the brain's (layout 3). */
+const REPO_LAYOUTS = Object.freeze({ 3: LAYOUT_3_REPO });
+const KNOWN_VERSIONS = Object.freeze([1, 2, 3]);
+/** Version of a repository whose policy names none (every repository written before layout 2). */
 export const DEFAULT_LAYOUT_VERSION = 1;
+/** Version of a brain brain-init creates without --layout (flow v2). */
+export const NEW_BRAIN_LAYOUT = 3;
+/** Roles of a repository in a layout with two maps. */
+export const ROLE_BRAIN = 'brain';
+export const ROLE_REPO = 'repo';
 /** Key of the layout version in a repository's policy file. */
 export const LAYOUT_KEY = 'data_layout';
 /** Where the version is read, in order; fixed paths readable before any other path of the repository is known. */
 export const VERSION_FILES = Object.freeze(['.brain/policy.json', 'policy.json', 'agentic/policy.json']);
 
-/** Logical names of the map (layout 1; layout 2 adds topicTmp and topicHidden). */
+/** Logical names of the map (every layout has all of them, null where it lacks one). */
 export const LAYOUT_NAMES = Object.freeze(Object.keys(LAYOUT_1));
 
 /** Versions this workflow knows. */
 export const layoutVersions = () => [...KNOWN_VERSIONS];
 
-/** Map of one layout version; an unknown version is an error (a newer workflow wrote the repository). */
-export function layoutFor(version = DEFAULT_LAYOUT_VERSION) {
-  const map = KNOWN_VERSIONS.includes(Number(version)) ? LAYOUTS[Number(version)] : null;
+/**
+ * Map of one layout version (role: ROLE_BRAIN or ROLE_REPO, which differ only in layout 3); an unknown version is an
+ * error (a newer workflow wrote the repository).
+ */
+export function layoutFor(version = DEFAULT_LAYOUT_VERSION, role = ROLE_BRAIN) {
+  const v = Number(version);
+  const map = KNOWN_VERSIONS.includes(v) ? (role === ROLE_REPO && REPO_LAYOUTS[v]) || LAYOUTS[v] : null;
   if (!map) throw new Error(`data layout ${version} is not known to this workflow (known: ${KNOWN_VERSIONS.join(', ')}); update the workflow`);
   return map;
 }
 
-/** Layout version of a repository (brain or project repo); 1 when no policy file names one. */
-export function dataLayoutVersion(root) {
-  if (!root) return DEFAULT_LAYOUT_VERSION;
+/** The layout keeps two maps, one for the brain and one for a project repo (layout 3): both must carry the same version (plan O18). */
+export const splitRoles = (version) => layoutFor(version, ROLE_BRAIN) !== layoutFor(version, ROLE_REPO);
+
+/** Where the version of a repository is written: { version, file } (file null when no policy file names one). */
+function versionSource(root) {
+  if (!root) return { version: DEFAULT_LAYOUT_VERSION, file: null };
   for (const rel of VERSION_FILES) {
     let json;
     try { json = JSON.parse(fs.readFileSync(path.join(root, ...rel.split('/')), 'utf8')); } catch { continue; }
-    if (json && Object.prototype.hasOwnProperty.call(json, LAYOUT_KEY)) return json[LAYOUT_KEY];
+    if (json && Object.prototype.hasOwnProperty.call(json, LAYOUT_KEY)) return { version: json[LAYOUT_KEY], file: rel };
   }
-  return DEFAULT_LAYOUT_VERSION;
+  return { version: DEFAULT_LAYOUT_VERSION, file: null };
 }
 
-/** Map of a repository by its layout version. */
-export const layoutOf = (root) => layoutFor(dataLayoutVersion(root));
+/** Layout version of a repository (brain or project repo); 1 when no policy file names one. */
+export const dataLayoutVersion = (root) => versionSource(root).version;
 
-/** Relative path (posix) of a logical name in a layout version; '' for the root itself (projectKnowledge in layout 2). */
-export function relPath(name, version = DEFAULT_LAYOUT_VERSION) {
-  const rel = layoutFor(version)[name];
+/** Role of a repository: a project repo keeps its policy in .brain/ (layouts 2 and 3), a brain of layout 3 in its root. */
+export function layoutRole(root) {
+  const { version, file } = versionSource(root);
+  return file && path.posix.dirname(file) === path.posix.dirname(layoutFor(version, ROLE_REPO).policy) && splitRoles(version) ? ROLE_REPO : ROLE_BRAIN;
+}
+
+/** Map of a repository by its layout version and role. */
+export function layoutOf(root) {
+  const { version } = versionSource(root);
+  return layoutFor(version, layoutRole(root));
+}
+
+const pathIn = (map, name, version) => {
+  const rel = map[name];
   if (rel === undefined) throw new Error(`unknown data path ${name}`);
   if (rel === null) throw new Error(`data path ${name} does not exist in data layout ${version}`);
   return rel;
+};
+
+/** Relative path (posix) of a logical name in a layout version; '' for the root itself (projectKnowledge in layout 2). */
+export function relPath(name, version = DEFAULT_LAYOUT_VERSION, role = ROLE_BRAIN) {
+  return pathIn(layoutFor(version, role), name, version);
 }
 
 const parts = (rel) => (rel ? rel.split('/') : []);
+const relOf = (root, name) => pathIn(layoutOf(root), name, dataLayoutVersion(root));
 
 /** Absolute path of a logical name in a repository, with optional parts under it: dataPath(brain, 'topics', id, ...). */
 export function dataPath(root, name, ...rest) {
-  return path.join(root, ...parts(relPath(name, dataLayoutVersion(root))), ...rest);
+  return path.join(root, ...parts(relOf(root, name)), ...rest);
 }
 
 /**
@@ -134,7 +225,39 @@ export function dataPath(root, name, ...rest) {
  * Empty parts are left out (the knowledge of a layout 2 repo is its root): never a leading `/` or a `//`.
  */
 export function dataRel(root, name, ...rest) {
-  return [relPath(name, dataLayoutVersion(root)), ...rest].filter((p) => p !== '' && p !== undefined && p !== null).join('/');
+  return [relOf(root, name), ...rest].filter((p) => p !== '' && p !== undefined && p !== null).join('/');
+}
+
+/** The repository has the logical name (a capability of its map: docs in a brain of layout 3 has none). */
+export const hasData = (root, name) => layoutOf(root)[name] !== null && layoutOf(root)[name] !== undefined;
+
+/** Work files in one scratch/ of the repository and the work of a topic beside them (layout 1), not per topic in tmp/. */
+export const hasScratch = (root) => layoutOf(root).scratch !== null;
+
+/**
+ * The layouts of a brain and of a repo of its domain do not fit together (spec 11.10, plan O18): a layout with two maps
+ * (3) needs the same version on both sides. A brain in layout 2 beside a project repo in layout 1 still fits (the repo
+ * is moved with its domain). Returns null or { brain, repo } (the versions).
+ */
+export function layoutMismatch(brainDir, repoDir) {
+  if (!brainDir || !repoDir || path.resolve(brainDir) === path.resolve(repoDir)) return null;
+  const brain = dataLayoutVersion(brainDir);
+  const repo = dataLayoutVersion(repoDir);
+  if (brain === repo) return null;
+  let split;
+  try { split = splitRoles(brain) || splitRoles(repo); } catch { split = true; }
+  return split ? { brain, repo } : null;
+}
+
+/**
+ * Refusal of work in a repo whose layout does not fit the brain of its domain (layoutMismatch), or null: a clone that
+ * was not pulled after the migration of the domain (spec 11.10). The older side is pulled; nothing is moved here.
+ */
+export function layoutRefusal(brainDir, repoDir) {
+  const m = layoutMismatch(brainDir, repoDir);
+  if (!m) return null;
+  const older = Number(m.repo) < Number(m.brain) ? repoDir : brainDir;
+  return `data layout of repo ${repoDir} is ${m.repo}, the brain of its domain ${brainDir} has ${m.brain} (${LAYOUT_KEY} in its policy): one clone is not current; run git -C ${older} pull and start the session again; no work in this repo until both have the same layout (spec 11.10)`;
 }
 
 /** Relative path (posix) of a logical name, layout 1 (kept for the tests and messages of layout 1; code reads layoutOf(root)). */
@@ -153,7 +276,7 @@ const inside = (parent, child) => {
  * material (zdroje/) and outputs (vystupy/) stay in the project repo by its own layout (dataPath/dataRel).
  */
 export function topicHome(brainDir, projectDir) {
-  if (brainDir && dataLayoutVersion(brainDir) !== 1) return brainDir;
+  if (brainDir && !hasScratch(brainDir)) return brainDir;
   return projectDir || brainDir || null;
 }
 
@@ -172,9 +295,8 @@ export function topicWorkDir(brainDir, projectDir, topic = null) {
  * (topicHome): callers that know the brain pass topicHome(brainDir, projectDir), not the project repo alone.
  */
 export function workDirFor(projectDir, topic = null) {
-  const v = dataLayoutVersion(projectDir);
-  if (v === 1) return dataPath(projectDir, 'scratch');
-  return path.join(projectDir, ...parts(relPath('topics', v)), topic || MAIN, ...parts(relPath('topicTmp', v)));
+  if (hasScratch(projectDir)) return dataPath(projectDir, 'scratch');
+  return dataPath(projectDir, 'topics', topic || MAIN, ...parts(relOf(projectDir, 'topicTmp')));
 }
 
 /**
@@ -183,9 +305,8 @@ export function workDirFor(projectDir, topic = null) {
  */
 export function isWorkPath(root, abs) {
   if (!root || !abs) return false;
-  const v = dataLayoutVersion(root);
-  if (v === 1) return inside(dataPath(root, 'scratch'), abs);
-  const L = layoutFor(v);
+  if (hasScratch(root)) return inside(dataPath(root, 'scratch'), abs);
+  const L = layoutOf(root);
   const topics = dataPath(root, 'topics');
   if (!inside(topics, abs)) return false;
   const rel = path.relative(path.resolve(topics), path.resolve(abs)).split(path.sep);
@@ -201,28 +322,25 @@ export function isWorkPath(root, abs) {
 export function isSessionWorkPath(brainDir, projectDir, abs) {
   const home = topicHome(brainDir, projectDir);
   if (home && isWorkPath(home, abs)) return true;
-  return !!projectDir && dataLayoutVersion(projectDir) === 1 && isWorkPath(projectDir, abs);
+  return !!projectDir && hasScratch(projectDir) && isWorkPath(projectDir, abs);
 }
 
 /** Folders of the work files of a repository, for listings and git ignore: layout 1 scratch/, layout 2 temy/<id>/tmp of every topic. */
 export function workDirs(root) {
-  const v = dataLayoutVersion(root);
-  if (v === 1) return [dataPath(root, 'scratch')];
+  if (hasScratch(root)) return [dataPath(root, 'scratch')];
   let ids = [];
   try { ids = fs.readdirSync(dataPath(root, 'topics'), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); } catch { /* none */ }
   return ids.map((id) => workDirFor(root, id));
 }
 
-/** The gitignore line of the work files: layout 1 `scratch/`, layout 2 `temy/*\/tmp/`. */
+/** The gitignore line of the work files: layout 1 `scratch/`, layout 2 `temy/*\/tmp/`, layout 3 `topics/*\/tmp/`. */
 export function workIgnoreLine(root) {
-  const v = dataLayoutVersion(root);
-  return v === 1 ? `${relPath('scratch', v)}/` : `${relPath('topics', v)}/*/${relPath('topicTmp', v)}/`;
+  return hasScratch(root) ? `${relOf(root, 'scratch')}/` : `${relOf(root, 'topics')}/*/${relOf(root, 'topicTmp')}/`;
 }
 
-/** How a message names the work files of a repository: `scratch/` or `temy/<topic>/tmp/`. */
+/** How a message names the work files of a repository: `scratch/`, `temy/<topic>/tmp/` or `topics/<topic>/tmp/`. */
 export function workLabel(root, topic = null) {
-  const v = dataLayoutVersion(root);
-  return v === 1 ? `${relPath('scratch', v)}/` : `${relPath('topics', v)}/${topic || '<téma>'}/${relPath('topicTmp', v)}/`;
+  return hasScratch(root) ? `${relOf(root, 'scratch')}/` : `${relOf(root, 'topics')}/${topic || '<téma>'}/${relOf(root, 'topicTmp')}/`;
 }
 
 /**

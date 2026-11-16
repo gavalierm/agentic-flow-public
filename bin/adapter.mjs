@@ -12,7 +12,7 @@ import { commitPersonaFiles } from '../scripts/persona.mjs';
 import { syncBrainSkills, ensureGitignore, crontabSkillNotes } from '../scripts/skills-sync.mjs';
 import { adapterSkillSources } from '../scripts/repo-knowledge.mjs';
 import { generateCodex } from '../adapters/codex/generate.mjs';
-import { ensureIssueWatchJob, ensureTimerCheckJob } from '../scripts/wake-job.mjs';
+import { ensureIssueWatchJob, ensureTimerCheckJob, ensureOverviewJob } from '../scripts/wake-job.mjs';
 import { dataPath, dataRel, workIgnoreLine } from '../scripts/layout.mjs';
 import { workDir } from '../scripts/topic-files.mjs';
 import { threadId } from '../scripts/config.mjs';
@@ -136,6 +136,8 @@ if (process.argv[1]?.endsWith('adapter.mjs')) {
       try { process.stdout.write(`note: ${ensureIssueWatchJob(loadContext({ project: projectDir, requireBrain: false })).line}\n`); } catch (err) { process.stdout.write(`note: wake job issue-watch not written (${err.message})\n`); }
       // Conditional thread timers checked before their ring (P-061): job timer-check.
       try { process.stdout.write(`note: ${ensureTimerCheckJob(loadContext({ project: projectDir, requireBrain: false })).line}\n`); } catch (err) { process.stdout.write(`note: wake job timer-check not written (${err.message})\n`); }
+      // The supervisor's overview without an agent (spec 3.9, plan B6): job overview, one for the machine.
+      try { process.stdout.write(`note: ${ensureOverviewJob(loadContext({ project: projectDir, requireBrain: false })).line}\n`); } catch (err) { process.stdout.write(`note: wake job overview not written (${err.message})\n`); }
       process.stdout.write(res.brainRel === '.' ? 'restart the session so the plugin loads\n' : `commit .claude/settings.json${res.brainRel ? ' and .workflow.json' : ''}; restart the session so the plugin loads\n`);
     } else if (harness === 'codex') {
       const projectDir = resolveTargetProject(args.project);

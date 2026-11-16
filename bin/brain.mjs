@@ -6,15 +6,18 @@
 //   brain.mjs pin <vX.Y.Z|N|latest> [--all]   set policy workflow_version (N: newest release of major N, the deliberate
 //                                            upgrade, P-066; one install per machine: --all pins every brain it knows)
 //   brain.mjs maintainer [--comms <project>/<topic>|none] [--repo <github url>|none]   where error reports go (policy maintainer)
+//   brain.mjs supervisor [--persona <name>|none] [--comms <project>/<topic>|@<persona>/main|none]   who the supervisor is
+//                                            (the sender of its mail) and its mail address (policy supervisor, plan O5)
 //   brain.mjs resolve <file> --keep local|remote   settle a disagreement on one file (this machine's version or origin's)
 //   brain.mjs freeze [on --until <version> --reason "<why>" [--allow <topic>,..] [--repos <repo>,..] | off | allow <topic>,..]
 //                                            freeze of the workflow and the mail during a rebuild (policy freeze, P-074,
-//                                            agent-alice/D-0092): no topic from reports, no new code topic outside the allowed
+//                                            agent-alice/D-0092): no new code topic outside the allowed (reports are still taken in)
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, readStdin, fail } from '../scripts/util.mjs';
 import { loadContext, loadPolicy, foreignProjectCwd, isWakeTurn } from '../scripts/config.mjs';
 import { maintainerOf, repoSlug } from '../scripts/report.mjs';
+import { supervisorOf, parseAddress } from '../scripts/comms.mjs';
 import { pinValue, knownBrains } from '../scripts/update.mjs';
 import { brainWrite, brainSync, unpushedCount, formatWriteResult, conflictText } from '../scripts/brain.mjs';
 import { dataPath, dataRel } from '../scripts/layout.mjs';
@@ -85,7 +88,7 @@ try {
     if (failed) process.exit(1);
   } else if (cmd === 'maintainer') {
     // flow-public#21: policy.maintainer (where error.mjs report goes) had no writer; a hand edit of policy.json is refused
-    // (P-013, P-040). `none` turns a channel off (comms none: reports go straight to an issue).
+    // (P-013, P-040). `none` turns a channel off (comms none: a report is kept as a draft for the operator, spec 7.5).
     const file = dataPath(ctx.brainDir || '', 'policy');
     const rel = dataRel(ctx.brainDir || '', 'policy');
     if (!ctx.brainDir) fail('brain unavailable');
@@ -109,6 +112,31 @@ try {
       message: `maintainer: ${show(maintainerOf({ maintainer: next }))}`,
     });
     process.stdout.write(`${formatWriteResult(res, [rel])}\n${show(maintainerOf({ maintainer: next }))}\n`);
+  } else if (cmd === 'supervisor') {
+    // Plan O5: policy.supervisor {persona, comms}, written like the maintainer (a hand edit of policy.json is refused).
+    if (!ctx.brainDir) fail('brain unavailable');
+    const file = dataPath(ctx.brainDir, 'policy');
+    const rel = dataRel(ctx.brainDir, 'policy');
+    let policy = {};
+    try { if (fs.existsSync(file)) policy = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (err) { fail(`${rel} is not valid JSON (${err.message}); fix it first`); }
+    const show = (v) => `supervisor persona ${v.persona ?? 'none'}; comms ${v.comms ?? 'none'}`;
+    if (args.persona === undefined && args.comms === undefined) { process.stdout.write(`${show(supervisorOf(ctx.policy))}\n`); process.exit(0); }
+    if (ctx.thread && isWakeTurn(ctx.brainDir, ctx.thread)) fail('the supervisor setting cannot change in a turn started by a message (P-047)');
+    const next = { ...(typeof policy.supervisor === 'object' && policy.supervisor ? policy.supervisor : {}) };
+    for (const key of ['persona', 'comms']) {
+      const v = args[key];
+      if (v === undefined) continue;
+      if (v === true || v === '') fail('usage: brain.mjs supervisor [--persona <name>|none] [--comms <project>/<topic>|@<persona>/main|none]');
+      if (v === 'none') next[key] = null;
+      else if (key === 'persona' && !/^[a-z0-9][a-z0-9._-]*$/i.test(v)) fail(`--persona ${v}: expected the persona name the supervisor's mail is sent as, or none`);
+      else if (key === 'comms' && !(String(v).includes('/') && parseAddress(v, null)?.topic) && !parseAddress(v, null)?.persona) fail(`--comms ${v}: expected <project>/<topic> or @<persona>/main of the supervisor, or none`);
+      else next[key] = v;
+    }
+    const res = brainWrite({ brainDir: ctx.brainDir, thread: ctx.thread, policy: loadPolicy(ctx.brainDir) }, {
+      ops: [{ path: rel, content: `${JSON.stringify({ ...policy, supervisor: next }, null, 2)}\n` }],
+      message: `supervisor: ${show(supervisorOf({ supervisor: next }))}`,
+    });
+    process.stdout.write(`${formatWriteResult(res, [rel])}\n${show(supervisorOf(loadPolicy(ctx.brainDir)))}\n`);
   } else if (cmd === 'freeze') {
     // P-074 (agent-alice/D-0092): one command turns the freeze on or off; the policy key is what the code reads.
     if (!ctx.brainDir) fail('brain unavailable');
@@ -150,7 +178,7 @@ try {
     const frozen = freezeOf(ctx.policy);
     process.stdout.write(`brain ${ctx.brainDir}\nunpushed: ${unpushedCount(ctx.brainDir)}\n${frozen ? `${freezeLine(frozen)}\n` : ''}`);
   } else {
-    fail('usage: brain.mjs write|remove|sync|resolve|pin|maintainer|freeze|status');
+    fail('usage: brain.mjs write|remove|sync|resolve|pin|maintainer|supervisor|freeze|status');
   }
 } catch (err) {
   fail(err.message);

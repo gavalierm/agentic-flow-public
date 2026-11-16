@@ -96,6 +96,16 @@ export function machineStores(ctx) {
   return out;
 }
 
+/** The brains of every domain under `root` (the projects root of the machine), once each: the supervisor's overview reads their topics. */
+export function domainBrains(root) {
+  const out = [];
+  for (const d of subdirs(root)) {
+    if (!fs.existsSync(path.join(d, DOMAIN_MARKER))) continue;
+    for (const s of domainStores(d, markerBrain(d))) if (s.kind === 'brain' && !out.some((o) => same(o.dir, s.dir))) out.push(s);
+  }
+  return out;
+}
+
 /** Stores a consolidate of this session reports on: the session brain, the domain brain and the domain repos. */
 export function sessionStores(ctx) {
   return machineStores(ctx).filter((s) => s.session || (s.sessionDomain && (s.kind === 'repo' || same(s.dir, ctx.domain?.brain))));

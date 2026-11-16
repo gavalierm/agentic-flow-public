@@ -3,38 +3,48 @@
 //   done.mjs [--topic-id <id>] --verified "<observation>" [--procedures a,b] [--derivations k1,k2]
 //   done.mjs --list                       existing names in procedures.log / derivations.log
 //   done.mjs --topic [--topic-id <id>] --verified "<observation>" --knowledge "<what of the topic is written with save | nic nové>"
-//            [--keep-copy] [--triage <file> [--confirmed-by <id of the orchestrator's reply>]]
-//     layout 2: a topic with work files outside tmp/ (whoever gave it) is not closed without --triage: done lists the
-//     files; the agent gives each its class (dokument, zdroj, stav, pomocne; nejasne when it cannot), --triage applies the
-//     list. Unclear files are confirmed by the operator: a dialog of a thread that may ask, else the orchestrator's reply
-//     (--confirmed-by); without a confirmation nothing is removed and the topic stays open (D-0058, D-0059, D-0060).
-//     A topic left with only handover.md and .tema.json goes to the hidden archive .brain/archive/topics/<id>/.
-//   done.mjs --archive-closed [--project <brain>] [--dry-run]
+//            [--keep-copy] [--triage <file>]
+//     layout 3 (flow v2 spec 5, 4.1, 4.6): a topic with files in topics/<id>/ outside tmp/ is not closed without --triage:
+//     done lists them; each gets "<typ> <path>" (an output to vystupy/<typ>/ of the main target repo, the topic in its
+//     header), "novy:<typ> <path>" (a new type: the operator approves it in a dialog of the turn), "zanikne <path>" or
+//     "nejasne <path>" (a question to the operator; nothing moves). Then the topic branch is merged into the target branch
+//     of every target repo in turn (the own clone of the workflow); a failed one leaves the topic open with the step
+//     "dokončiť zlúčenie <repo>". A protected target branch is not merged: done asks for the merge of topic/<id> and
+//     topic/<id>--obsah (gh pull request, else the exact command), writes it into Úlohy pre operátora and the topic stays
+//     open until the merge; then done --topic again. Closed, topics/<id>/ ends (removed in git, no archive).
+//   done.mjs --topic --cancel [--topic-id <id>]   layout 3, only on the operator's instruction (spec 5.4): no triage, no
+//     merge; topics/<id>/ and the worktrees end, the topic branch stays on origin; sources only on topic/<id>--obsah get a
+//     merge request first (the topic stays open until it is merged)
+//   A topic in mode discussion is closed only on the operator's instruction (spec 10.6 item 4, 5.2).
+//   done.mjs --archive-closed [--project <brain>] [--dry-run]   (layout 2, the hidden archive)
 //     layout 2: topics closed before that (state closed in temy/<id>/, only handover.md and .tema.json, no file in tmp/)
 //     move to .brain/archive/topics/<id>/ in one commit with INDEX.md; closed topics with other work are only listed.
 //     --dry-run lists without moving; --project takes the brain itself (a domain brain) or a project of it.
 // A unit (no --topic) keeps the topic held by the thread; in a code topic it merges the topic branch into the main branch
-// and keeps the copy (D-0011). --topic in a turn started by a message needs an answer of the operator in a dialog of it.
+// and keeps the copy (D-0011). --topic in a turn started by a message needs an answer of the operator in a dialog of it,
+// unless the message was the supervisor's instruction (plan O7: done within the mandate, spec 5.2).
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseArgs, fail, git, nowIso } from '../scripts/util.mjs';
-import { loadContext, isWakeTurn, dialogAnsweredInTurn, inSubagent, foreignProjectCwd, readThreadState, resolveBrain, threadId, loadPolicy } from '../scripts/config.mjs';
+import { parseArgs, fail, nowIso, git, gitRemote } from '../scripts/util.mjs';
+import { loadContext, isWakeTurn, supervisorTurn, dialogAnsweredInTurn, inSubagent, foreignProjectCwd, resolveBrain, threadId, loadPolicy, brainScriptEnv } from '../scripts/config.mjs';
 import { brainWrite, brainSync, formatWriteResult, readHolder, isHolderOf } from '../scripts/brain.mjs';
-import { freeHandover, renderHandover } from '../scripts/brain-checks.mjs';
-import { mergeWithIndex, hasDataIndex, INDEX_FILE } from '../scripts/data-index.mjs';
+import { freeHandover, renderHandover, sectionItems, QUESTIONS_SECTION, TASKS_SECTION } from '../scripts/brain-checks.mjs';
+import { mergeWithIndex, INDEX_FILE, refreshIndex } from '../scripts/data-index.mjs';
 import { closedTopicsPlan, archiveClosed, formatClosedPlan } from '../scripts/archive-closed.mjs';
 import { recordNames, existingNames } from '../scripts/logs.mjs';
 import { rejectedProposal } from '../scripts/find.mjs';
-import { heldTopics, readTopic, freePointMail, hasCodeCopy, codeCopyPath, topicOrchestrator, markProgrammaticClosed, topicRel, topicOp, holderOp, closedTopicDir, topicRepoContext } from '../scripts/topic.mjs';
-import { dataPath, dataRel, layoutOf, topicHome, topicWorkLabel, dataLayoutVersion, layoutFor } from '../scripts/layout.mjs';
-import { registerTopic, runClient, commsProjectName } from '../scripts/comms.mjs';
-import { hiddenTopicDir } from '../scripts/topic-files.mjs';
+import { heldTopics, readTopic, freePointMail, hasCodeCopy, codeCopyPath, topicRel, topicOp, holderOp, closedTopicDir, topicRepoContext, isDiscussionMode, removeTaskCopies } from '../scripts/topic.mjs';
+import { dataPath, dataRel, layoutOf, topicHome, topicWorkLabel, hasData } from '../scripts/layout.mjs';
+import { registerTopic } from '../scripts/comms.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
 import { bellContinuation } from '../scripts/waker.mjs';
 import { asList } from '../scripts/frontmatter.mjs';
 import { PROJECT_KNOWLEDGE, REPO_HANDOVER } from '../scripts/repo-knowledge.mjs';
-import { scratchReminder, citedScratch, topicResultsLabel, RESULTS_FILE } from '../scripts/materialy.mjs';
-import { hasTriage, topicFiles, triageListing, parseTriage, triageOps, recordOps, triageSummary, handoverTask, confirmRefusal, bellRefusal, ownStepRequested, removeTopicTmp, outputRepo, exportOutputs, docsLabel, leavingFiles, UNCLEAR } from '../scripts/triage.mjs';
+import { scratchReminder, citedScratch, topicResultsLabel } from '../scripts/materialy.mjs';
+import { topicFiles, handoverTask, confirmRefusal, bellRefusal, ownStepRequested, removeTopicTmp, parseTypeTriage, typeTriageListing, UNCLEAR, NEW_TYPE } from '../scripts/triage.mjs';
+import { hasTypeTriage, targetRepos, targetRepoDir, targetBranch, targetProtected, topicBranch, contentBranch, contentWrite, contentWhere, outputTypes, withTopicHeader, onOrigin, mergedInto, mergeRequest } from '../scripts/target.mjs';
+import { cloneMerge } from '../scripts/own-clone.mjs';
+import { pushBranch } from '../scripts/push-hook.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const out = (s) => process.stdout.write(s + '\n');
@@ -76,7 +86,6 @@ function guardThread(ctx) {
 
 // P-036: the closed thread leaves the active list. `settle` applies when the turn ends; `archive` of the own thread
 // ends the provider stream at once and the turn fails (flow-public#6, seen on Windows and Linux).
-const PROGRAMMATIC_END =(id) => `thread: code started this thread for topic ${id} and it ends here (D-0043): end the reply with the result, "**Handover:** žiadny" and "**Stav:** hotovo", and as the last step of this turn settle this thread (tool t3_thread_organize, action settle, no threadId; do not archive it). No next step and no question to the operator, least of all about a next topic`;
 const SETTLE_THREAD = 'thread: as the last step of this turn settle this thread (tool t3_thread_organize, action settle, no threadId); do not archive it, archiving the own thread fails the running turn (P-036)';
 
 function doneUnit(ctx, id) {
@@ -126,7 +135,8 @@ function doneUnit(ctx, id) {
   notes.unshift(scratchReminder(ctx.projectDir, unitStart(ctx, id, topic), id, ctx.brainDir));
   // The verified code of the unit goes into the main branch before anything is written, so a failed merge writes nothing
   // (D-0011: 5 questions "may I merge?", each answered with the recommended option, 5 887 s of waiting).
-  const merge = hasCodeCopy(topic) ? mergeCode(ctx, id, topic, { keepCopy: true, label: `done ${id}` }) : null;
+  // Layout 3 (spec 4.1): into the target branch of every target repo through the own clone; the copies stay.
+  const merge = !hasCodeCopy(topic) ? null : hasTypeTriage(ctx.brainDir) ? unitMerge3(ctx, id, topic) : mergeCode(ctx, id, topic, { keepCopy: true, label: `done ${id}` });
   if (topic) ops.push(topicOp(ctx.brainDir, id, { ...topic, last_done: nowIso() }));
   const res = brainWrite(ctx, { ops, message: `done ${id}: unit of work done (verified: ${String(args.verified).slice(0, 60)})` });
   out(formatWriteResult(res, [topicRel(ctx.brainDir, id, 'handover'), topicRel(ctx.brainDir, id, 'topicFile')]));
@@ -137,6 +147,13 @@ function doneUnit(ctx, id) {
   if (mail) out(mail);
   for (const n of notes.filter(Boolean)) out(n);
   for (const w of buildIndexes(ctx.brainDir, ctx.policy).warnings) out(`limit: ${w}`);
+}
+
+/** done (unit) of a code topic in layout 3: the topic branch of every target repo merged, the copies kept; a failure stops it. */
+function unitMerge3(ctx, id, topic) {
+  const settled = settleRepos(ctx, id, topic, targetRepos(ctx, topic).list, { unit: true });
+  if (settled.failures.length) fail(`done ${id}: nothing written into brain${settled.lines.length ? ` (${settled.lines.join('; ')})` : ''}: ${settled.failures.map((f) => `${f.repo}: ${f.error}`).join('; ')}; settle it and run done again`);
+  return { merged: true, note: settled.lines.join('\n') || 'nothing to merge' };
 }
 
 /**
@@ -230,6 +247,8 @@ function mergeCode(ctx, id, topic, { keepCopy = !!args['keep-copy'], label = `do
     pushNote = `; pushed ${mainBranch} to origin`;
   }
   if (!keepCopy) {
+    // The task worktrees and local task branches end with the topic (spec 3.7); pushed ones stay on origin.
+    for (const line of removeTaskCopies(worktree ? ctx.projectDir : copy, id)) out(line);
     // A worktree (v3) is removed through git, so the repo forgets it; its merged branch goes too. A legacy clone is a dir.
     if (worktree) {
       const rm = git(['worktree', 'remove', '--force', copy], { cwd: ctx.projectDir });
@@ -255,10 +274,11 @@ function citedResults(ctx, id) {
   if (!cited.length) return null;
   const shown = cited.slice(0, 5).join(', ') + (cited.length > 5 ? `, … (+${cited.length - 5})` : '');
   const work = topicWorkLabel(ctx.brainDir, ctx.projectDir, id);
-  const sources = `${dataRel(ctx.projectDir, 'materialy', id)}/`;
+  // A brain of layout 3 as its own project keeps no sources (spec 4): only the results of the topic.
+  const sources = hasData(ctx.projectDir, 'materialy') ? `${dataRel(ctx.projectDir, 'materialy', id)}/` : null;
   const results = topicResultsLabel(ctx.brainDir, ctx.projectDir, id);
-  const where = results === sources ? sources : `${sources} (data from outside, materialy.mjs add) or ${results} (a result of the work, materialy.mjs add --result)`;
-  return `results: ${cited.length} ${work} path(s) cited in worker results of ${id} exist only in ${work} (not in git): ${shown}. Move data that cannot be fetched again to ${where} (skill workflow:materialy); the rest may stay (D-0032)`;
+  const where = results === sources || !sources ? results : `${sources} (data from outside, save.mjs source) or ${results} (a result of the work, save.mjs result)`;
+  return `results: ${cited.length} ${work} path(s) cited in worker results of ${id} exist only in ${work} (not in git): ${shown}. Move data that cannot be fetched again to ${where} (skill workflow:save); the rest may stay (D-0032)`;
 }
 
 /**
@@ -280,89 +300,6 @@ function previousHolders(ctx, id, holder = {}) {
   return [...new Set(found)].filter((t) => t && t !== ctx.thread);
 }
 
-/**
- * The orchestrator's reply `msgId` confirms the unclear files of topic `id` (D-0058, D-0031): a final reply this thread
- * received (comms receive keeps its sender, mail_replies), sent by the orchestrator topic of the topic, to a request this
- * topic sent to that orchestrator. Returns null when it holds, else the reason.
- */
-function confirmedByRefusal(ctx, id, orch, msgId) {
-  const what = `--confirmed-by ${msgId}`;
-  const got = readThreadState(ctx.brainDir, ctx.thread).mail_replies?.[msgId];
-  if (!got) return `${what}: this thread did not receive that message as a reply (read it first with comms receive --id ${msgId}); nothing written, the topic stays open`;
-  if (got.reply_state && got.reply_state !== 'hotovo') return `${what}: the reply is interim (${got.reply_state}), not the confirmed list; wait for the final reply of the orchestrator`;
-  const orchProject = orch.project || commsProjectName(ctx);
-  const fromOrch = got.from_topic ? got.from_topic === orch.topic && (!got.from_project || got.from_project === orchProject) : !!orch.thread && got.thread_id === orch.thread;
-  if (!fromOrch) return `${what}: the reply is not from the orchestrator of topic ${id} (${orch.to}), it came from ${got.from_project && got.from_topic ? `${got.from_project}/${got.from_topic}` : got.thread_id ? `thread ${got.thread_id}` : got.sender || '?'}; nothing written, the topic stays open`;
-  if (got.topic && got.topic !== id) return `${what}: the reply came to topic ${got.topic}, not to ${id}; nothing written, the topic stays open`;
-  const req = runClient(ctx, ['message', '--id', String(got.reply_to)]);
-  if (!req.ok) return `${what}: the request ${got.reply_to} it answers cannot be checked (${req.error}); nothing written, the topic stays open, run it again when the mail answers`;
-  const q = req.data || {};
-  if (q.topic !== orch.topic || (q.project && q.project !== orchProject)) return `${what}: it answers ${got.reply_to}, which was not sent to the orchestrator ${orch.to}; nothing written, the topic stays open`;
-  return null;
-}
-
-/**
- * Who confirms the unclear files (D-0058): a thread whose topic has no orchestrator asks the operator in a dialog of this
- * turn; a topic from an orchestrator (or a thread code started) asks the orchestrator by mail (D-0031), and its reply is
- * the confirmation (--confirmed-by). Returns null when confirmed, else the reason.
- */
-function confirmation(ctx, id, topic) {
-  const orch = topicOrchestrator(ctx.brainDir, topic, ctx.thread);
-  if (!orch) return confirmRefusal(ctx.brainDir, ctx.thread, `done --topic --triage (${UNCLEAR}:<class>)`);
-  const msgId = args['confirmed-by'];
-  if (!msgId || msgId === true) return `done --topic --triage (${UNCLEAR}:<class>) refused: topic ${id} has the orchestrator ${orch.to}, this thread does not ask the operator (D-0031); the confirmation is the orchestrator's reply: pass --confirmed-by <id of its reply>`;
-  return confirmedByRefusal(ctx, id, orch, String(msgId));
-}
-
-/** How the agent gets the unclear files confirmed: the dialog, or mail to the orchestrator (nothing is written now). */
-function unclearRequest(ctx, id, topic, plan) {
-  const base = topicRel(ctx.brainDir, id);
-  const list = plan.unclear.map((r) => `${base}/${r}`).join(', ');
-  const orch = topicOrchestrator(ctx.brainDir, topic, ctx.thread);
-  const how = orch
-    ? `ask the orchestrator: comms send --to ${orch.to} --level assist with the unclear files, the class you propose for each and the classes of the other files; it asks the operator in its dialog and returns the confirmed list as a reply (--reply-to). Save the step (save handover --next "done --topic with the confirmed triage"), and in a later turn (not the turn of the bell, P-047) write each confirmed file as "${UNCLEAR}:<class> <path>" and run done --topic ... --triage <file> --confirmed-by <id of the reply>`
-    : `ask the operator with AskUserQuestion (the class you propose for each first), write each confirmed file as "${UNCLEAR}:<class> <path>" and run done --topic ... --triage <file> again in the turn of the answer`;
-  return `--triage: ${plan.unclear.length} file(s) marked ${UNCLEAR}, nothing written, the topic stays open: ${list}. The operator confirms them (D-0058): ${how}`;
-}
-
-/**
- * Triage at done --topic (layout 2, D-0059). null: no triage (layout 1). { listing }: the files to give a class, the topic
- * is not closed. { note, hide }: no work files. { plan, ops, record, hide }: the list applied. `hide`: after the triage
- * only handover.md and .tema.json are left, the topic goes to the hidden archive (D-0060).
- */
-function triagePlan(ctx, id, topic) {
-  if (!hasTriage(ctx.brainDir)) {
-    if (args.triage !== undefined) fail('--triage: this brain is in data layout 1, which has no triage (only layout 2)');
-    return null;
-  }
-  const files = topicFiles(ctx.brainDir, id);
-  const base = topicRel(ctx.brainDir, id);
-  if (!files.length) {
-    if (args.triage !== undefined) fail(`--triage: topic ${id} has no work files outside tmp/; run done --topic without --triage`);
-    return { note: 'triage: no work files outside tmp/, skipped', hide: true };
-  }
-  // D-0056: documents and sources of a topic with a project repo beside the brain go to that repo.
-  const repo = outputRepo(ctx);
-  if (args.triage === undefined) return { listing: triageListing(ctx.brainDir, id, files, repo) };
-  if (args.triage === true) fail('--triage needs the file with the list: --triage <file>');
-  const bell = bellRefusal(ctx.brainDir, ctx.thread, 'done --topic --triage', { topic: id, step: 'done' });
-  if (bell) fail(bell);
-  let text;
-  try { text = fs.readFileSync(path.resolve(String(args.triage)), 'utf8'); } catch (err) { fail(`--triage: cannot read ${args.triage}: ${err.message}`); }
-  const plan = parseTriage(text, files);
-  if (plan.errors.length) fail(`--triage: nothing written:\n${plan.errors.join('\n')}`);
-  if (plan.unclear.length) fail(unclearRequest(ctx, id, topic, plan));
-  // A triage without unclear files runs without a question (D-0060); confirmed ones need the operator's confirmation.
-  if (plan.confirmed.length) {
-    const refusal = confirmation(ctx, id, topic);
-    if (refusal) fail(`${refusal}\nnothing written, nothing removed; the topic stays open`);
-  }
-  const { ops, exports, moved, errors } = triageOps(ctx.brainDir, id, plan, repo);
-  if (errors.length) fail(`--triage: nothing written:\n${errors.join('\n')}`);
-  const record = recordOps(ctx.brainDir, leavingFiles(plan).map((r) => `${base}/${r}`));
-  return { plan, ops, exports, moved, repo, record, hide: !plan.stav.length };
-}
-
 /** --knowledge is required: what of the topic is written with save, or "nic nové" (D-0059, both layouts). */
 function knowledgeOf() {
   const k = args.knowledge;
@@ -370,82 +307,71 @@ function knowledgeOf() {
   return String(k).trim();
 }
 
+/**
+ * Spec 5.2, 5.4, 10.6 item 4: cancelling a topic and closing a topic in mode discussion need the operator's instruction: a turn
+ * the operator started, or an answer of the operator in a dialog of this turn. A message (also the supervisor's) is none.
+ */
+function operatorOnly(ctx, what) {
+  if (!isWakeTurn(ctx.brainDir, ctx.thread) || dialogAnsweredInTurn(ctx.brainDir, ctx.thread)) return null;
+  return `${what} refused: only on the operator's instruction (spec 5.2, 5.4, 10.6 item 4), and this turn was started by a message; ask the operator, nothing written${bellContinuation(ctx.brainDir, ctx.thread)}`;
+}
+
 function doneTopic(ctx, id) {
-  guard(ctx, id);
-  const knowledge = knowledgeOf();
-  // An answer of the operator in a dialog of this turn is the operator's instruction, the message never is (P-047; D-0011:
-  // the topic stayed open after 2 questions and 1 599 s). The close the held topic's own handover or task orders runs too
-  // (agent-alice/D-0094: the refusal armed a timer and a new turn for the same step).
-  if (isWakeTurn(ctx.brainDir, ctx.thread) && !dialogAnsweredInTurn(ctx.brainDir, ctx.thread) && !ownStepRequested(ctx.brainDir, ctx.thread, id, 'done')) fail(`done --topic refused: this turn was started by a message, not the operator, and the operator answered no dialog in it (P-047, D-0011)${bellContinuation(ctx.brainDir, ctx.thread)}`);
+  const cancel = !!args.cancel;
+  if (cancel) {
+    if (inSubagent()) fail('done refused in subagent (P-025)');
+    if (!ctx.thread) fail('done needs a stable thread id (P-038)');
+    brainSync(ctx.brainDir);
+    const holder = readHolder(ctx.brainDir, id);
+    if (!isHolderOf(holder, ctx.thread)) fail(`topic ${id} is held by ${holder.thread || 'nobody'}; only the holder cancels it (P-037)`);
+  } else guard(ctx, id);
+  const knowledge = cancel ? null : knowledgeOf();
   const topic = readTopic(ctx.brainDir, id);
   if (!topic) fail(`topic ${id} does not exist`);
   if (topic.kind === 'main') fail('topic main is the persona main thread: it is never closed or archived (P-045)');
-  // Layout 2 (D-0044): a topic the operator gave is triaged before it closes; nothing is merged or written before the
-  // operator confirmed the list. A technical topic and a topic without files close without triage (files stay).
-  const triage = triagePlan(ctx, id, topic);
-  if (triage?.listing) { out(triage.listing); return; }
+  if (cancel || isDiscussionMode(topic)) {
+    const refusal = operatorOnly(ctx, cancel ? `done --topic --cancel ${id}` : `done --topic ${id} (mode discussion)`);
+    if (refusal) fail(refusal);
+  }
+  // An answer of the operator in a dialog of this turn is the operator's instruction, the message never is (P-047; D-0011:
+  // the topic stayed open after 2 questions and 1 599 s). The close the held topic's own handover or task orders runs too
+  // (agent-alice/D-0094: the refusal armed a timer and a new turn for the same step). The supervisor's instruction is no
+  // message of another agent: its turn may close the topic within the mandate (plan O7, spec 5.2).
+  else if (isWakeTurn(ctx.brainDir, ctx.thread) && !supervisorTurn(ctx.brainDir, ctx.thread) && !dialogAnsweredInTurn(ctx.brainDir, ctx.thread) && !ownStepRequested(ctx.brainDir, ctx.thread, id, 'done')) fail(`done --topic refused: this turn was started by a message, not the operator, and the operator answered no dialog in it (P-047, D-0011)${bellContinuation(ctx.brainDir, ctx.thread)}`);
+  if (hasTypeTriage(ctx.brainDir)) return cancel ? cancelTopic3(ctx, id, topic) : doneTopic3(ctx, id, topic, knowledge);
+  if (cancel) fail('done --topic --cancel: a brain of data layout 3 only (spec 5.4); this brain is older, migrate it first');
+  if (args.triage !== undefined) fail('--triage: a brain of data layout 3 only (spec 5); this brain is older, migrate it first');
   const holder = readHolder(ctx.brainDir, id);
   let merge = { merged: false, note: 'discussion topic, no code' };
   if (hasCodeCopy(topic)) merge = mergeCode(ctx, id, topic, { push: true });
-  // D-0056: outputs for the project repo are committed there first (with its INDEX.md); a refused write leaves the brain
-  // as it is (no record, no close), so the topic stays open with its files.
-  if (triage?.exports?.length) {
-    let exp;
-    try { exp = exportOutputs(ctx, triage.repo, triage.exports, `done --topic ${id}: outputs of the topic from brain`); }
-    catch (err) { fail(`done --topic ${id}: writing the outputs into ${docsLabel(ctx.brainDir, triage.repo)} failed, nothing written into brain (topic stays open, its files stay): ${err.message}`); }
-    out(`project ${path.basename(triage.repo)}: ${formatWriteResult(exp, [...triage.exports.map((e) => e.to), ...(hasDataIndex(triage.repo) ? ['INDEX.md'] : [])])}`);
-  }
-  if (triage?.record?.length) {
-    const rec = brainWrite(ctx, { ops: triage.record, internal: true, message: `done --topic ${id}: topic files recorded before the triage` });
-    out(formatWriteResult(rec, triage.record.map((op) => op.path)));
-  }
   const closed = { ...topic, state: 'closed', closed: nowIso(), closed_by: ctx.thread, verified: String(args.verified), knowledge, merged: merge.merged };
   const L = layoutOf(ctx.brainDir);
   // Layout 1: the topic folder moves to the archive. Layout 2: the topic stays in temy/<id>/ with state closed and a free
-  // holder in its .tema.json (one op: topic and holder merge into one file); a topic left with only handover.md and
-  // .tema.json after the triage goes to the hidden archive .brain/archive/topics/<id>/ (outside INDEX.md, D-0060).
-  const hide = !!triage?.hide && !hiddenTopicDir(ctx.brainDir, id);
-  const inPlace = !L.topicArchive && !hide;
-  const archived = inPlace ? topicRel(ctx.brainDir, id) : hide ? dataRel(ctx.brainDir, 'topicHidden', id) : dataRel(ctx.brainDir, 'topicArchive', id);
+  // holder in its .tema.json (one op: topic and holder merge into one file).
+  const inPlace = !L.topicArchive;
+  const archived = inPlace ? topicRel(ctx.brainDir, id) : dataRel(ctx.brainDir, 'topicArchive', id);
   const ops = inPlace
     ? [topicOp(ctx.brainDir, id, closed), holderOp(ctx.brainDir, id, {})]
-    : hide
-      ? [
-        { from: topicRel(ctx.brainDir, id), to: archived },
-        { path: `${archived}/${L.topicFile}`, content: JSON.stringify({ ...closed, holder: {} }, null, 2) + '\n' },
-      ]
-      : [
-        { from: topicRel(ctx.brainDir, id), to: archived },
-        { path: `${archived}/${L.topicFile}`, content: JSON.stringify(closed, null, 2) + '\n' },
-        { path: `${archived}/${L.holderFile}`, content: '{}\n' },
-      ];
-  // tmp/ of the topic (outside git) is removed before a move of the topic folder, so it never goes into the archive.
-  const tmpRemoved = hide ? removeTopicTmp(ctx.brainDir, ctx.projectDir, id) : [];
-  if (triage?.plan) {
-    // The moves, removals, the closing handover (what went where) and INDEX.md in the commit of the close.
-    const handoverRel = topicRel(ctx.brainDir, id, 'handover');
-    let previous = '';
-    try { previous = fs.readFileSync(path.join(ctx.brainDir, ...handoverRel.split('/')), 'utf8'); } catch { /* none */ }
-    ops.unshift(...triage.ops);
-    const handover = { path: inPlace ? handoverRel : `${archived}/${L.handover}`, content: renderHandover({ task: handoverTask(previous), done: triageSummary(ctx.brainDir, id, triage.plan, triage.moved), next: '-', files: triage.moved.map((m) => m.where), questions: '' }) };
-    ops.push(handover);
-  }
-  const res = brainWrite(ctx, { ops, internal: true, message: `done --topic ${id}: ${triage?.plan ? 'triaged and ' : ''}${inPlace ? 'closed' : 'archived'} (verified: ${String(args.verified).slice(0, 60)})` });
+    : [
+      { from: topicRel(ctx.brainDir, id), to: archived },
+      { path: `${archived}/${L.topicFile}`, content: JSON.stringify(closed, null, 2) + '\n' },
+      { path: `${archived}/${L.holderFile}`, content: '{}\n' },
+    ];
+  const res = brainWrite(ctx, { ops, internal: true, message: `done --topic ${id}: ${inPlace ? 'closed' : 'archived'} (verified: ${String(args.verified).slice(0, 60)})` });
   out(formatWriteResult(res, [inPlace ? topicRel(ctx.brainDir, id, 'topicFile') : `${archived}/`]));
-  if (triage?.plan) for (const line of triageSummary(ctx.brainDir, id, triage.plan, triage.moved)) out(line);
-  else if (triage?.note) out(triage.note);
   out(`knowledge: ${knowledge}`);
-  // Layout 2: tmp/ of this topic is outside git and goes with the close; nothing else is removed (D-0044).
-  for (const dir of [...tmpRemoved, ...removeTopicTmp(ctx.brainDir, ctx.projectDir, id)]) out(`tmp: ${dir} removed (outside git, work files of the closed topic)`);
+  for (const dir of removeTopicTmp(ctx.brainDir, ctx.projectDir, id)) out(`tmp: ${dir} removed (outside git, work files of the closed topic)`);
   out(merge.note);
-  // D-0043: a topic code created for this thread (it has an orchestrator) ends the thread; no next topic is asked for.
-  const programmatic = !!topicOrchestrator(ctx.brainDir, topic, ctx.thread) && !heldTopics(ctx.brainDir, ctx.thread).length;
-  const how = inPlace ? `closed (stays in ${archived}/ with state closed)` : hide ? `closed and moved to the hidden archive ${archived}/ (only its handover was left; outside INDEX.md, find finds it)` : 'closed and archived';
-  out(programmatic ? `topic ${id} ${how}.` : `topic ${id} ${how}. Start a new session for the next topic (P-026).`);
+  out(`topic ${id} ${inPlace ? `closed (stays in ${archived}/ with state closed)` : 'closed and archived'}. Start a new session for the next topic (P-026).`);
   const scratch = scratchReminder(ctx.projectDir, unitStart(ctx, id, topic), id, ctx.brainDir);
   if (scratch) out(scratch);
   const cited = citedResults(ctx, id);
   if (cited) out(cited);
+  closedTail(ctx, id, holder);
+}
+
+/** After a topic closed: the mail service closes it, the thread is settled (P-036, P-045), the previous holders named. */
+function closedTail(ctx, id, holder) {
   // The mail closes the topic too: new mail gets 410 at once, waiting mail bounces to its senders (alice 2026-11-02).
   const comms = registerTopic(ctx, id, { close: true });
   if (comms.ok) out(`mail: topic ${id} closed in the mail service (new mail refused, waiting mail returned to the senders)`);
@@ -457,15 +383,260 @@ function doneTopic(ctx, id) {
   const holdsMain = held.some((t) => t.kind === 'main');
   if (holdsMain) out('thread: this thread holds the persona main topic, so it stays open: do not settle or archive it (P-045)');
   else if (held.length) out(`thread: this thread still holds topic ${held.map((t) => t.id).join(', ')}, so it stays open: do not settle or archive it (P-036)`);
-  else if (programmatic) {
-    // D-0043: code started this thread for the topic; it ends with it. The t3 CLI cannot settle a thread, so done names the step.
-    markProgrammaticClosed(ctx.brainDir, ctx.thread, id);
-    out(PROGRAMMATIC_END(id));
-  } else if (process.env.T3CODE_THREAD_ID) out(SETTLE_THREAD);
+  else if (process.env.T3CODE_THREAD_ID) out(SETTLE_THREAD);
   // A topic taken over (claim --force) leaves the previous holder's thread open in T3: settle it too. The t3 CLI has no
   // settle (t3 thread: list, start, send, show), so done names the step.
   for (const prev of previousHolders(ctx, id, holder)) out(`thread: settle the previous holder thread ${prev} (t3_thread_organize action settle threadId ${prev}; an archived thread first unarchive)`);
   for (const w of buildIndexes(ctx.brainDir, ctx.policy).warnings) out(`limit: ${w}`);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Data layout 3 (flow v2 spec 5, 4.1, 4.6; plan B12, O14)
+
+/** The worktree (or legacy clone) of the topic in target repo `name`, or null. */
+function copyIn(ctx, id, topic, name) {
+  let p = null;
+  if (ctx.domain) p = codeCopyPath(ctx, id, name);
+  else if (topic.copy && (!topic.repo || topic.repo === name)) p = path.resolve(ctx.projectDir, topic.copy);
+  return p && fs.existsSync(path.join(p, '.git')) ? p : null;
+}
+
+/** The topic branch of a repo is on origin with all its commits: pushed from its worktree (and from a legacy clone). */
+function pushTopicBranch(dir, copy, branch) {
+  if (copy) {
+    const dirty = git(['status', '--porcelain', '--untracked-files=no'], { cwd: copy }).stdout;
+    if (dirty) return `code copy ${copy} has uncommitted changes; commit or discard them in the copy first`;
+    if (!fs.statSync(path.join(copy, '.git')).isFile()) { const p = pushBranch(copy, branch); if (p) return p; }
+  }
+  if (!git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: dir }).ok) return null;
+  return pushBranch(dir, branch);
+}
+
+/**
+ * Per target repo in turn (spec 4.1): the topic branch merged into the target branch in the own clone of the workflow, or
+ * for a protected target branch a merge request for topic/<id> and topic/<id>--obsah (O14). contentOnly (cancel, 5.4):
+ * only topic/<id>--obsah is asked for, nothing merged. unit (done without --topic): merged where it may, nothing asked for. Returns { lines, failures: [{ repo, error }], requests:
+ * [{ repo, head, base, url, command, how }] }.
+ */
+function settleRepos(ctx, id, topic, names, { contentOnly = false, unit = false } = {}) {
+  const lines = [];
+  const failures = [];
+  const requests = [];
+  const branch = topicBranch(id);
+  for (const name of names) {
+    const dir = targetRepoDir(ctx, name);
+    if (!dir) { failures.push({ repo: name, error: 'the repo is not on this machine' }); continue; }
+    const copy = copyIn(ctx, id, topic, name);
+    const hasOrigin = git(['remote', 'get-url', 'origin'], { cwd: dir }).ok;
+    if (!hasOrigin) {
+      if (!contentOnly && (copy || git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: dir }).ok)) failures.push({ repo: name, error: `${name} has no remote origin: the topic branch is merged through the own clone of the workflow (spec 4.1); git -C ${dir} remote add origin <url>` });
+      continue;
+    }
+    if (!contentOnly) {
+      const pushed = pushTopicBranch(dir, copy, branch);
+      if (pushed) { failures.push({ repo: name, error: pushed }); continue; }
+    }
+    const fetch = gitRemote(['fetch', '--quiet', '--prune', 'origin'], { cwd: dir });
+    if (!fetch.ok) { failures.push({ repo: name, error: `fetch from origin failed: ${fetch.stderr.split('\n')[0]}` }); continue; }
+    const target = targetBranch(dir);
+    const heads = [...(contentOnly ? [] : [branch]), contentBranch(id)].filter((b) => onOrigin(dir, b) && !mergedInto(dir, b, target));
+    if (!heads.length) { lines.push(`${name}: nothing to merge into ${target}${onOrigin(dir, branch) ? ` (${branch} is in it)` : ''}`); continue; }
+    if (unit && targetProtected(dir)) { lines.push(`${name}: target branch ${target} is protected: done --topic asks for the merge of ${heads.join(', ')} (spec 4.1)`); continue; }
+    if (targetProtected(dir) || contentOnly) {
+      for (const head of heads) {
+        const req = mergeRequest(dir, { head, base: target, title: `${head} -> ${target} (topic ${id})`, body: `Topic ${id}: ${topic.subject || ''}\n\nMerge request of done --topic (flow v2, spec 4.1, 4.6).` });
+        requests.push({ repo: name, head, base: target, ...req });
+        lines.push(`${name}: ${head} -> ${target}: ${req.url ? `${req.how} ${req.url}` : `${req.how}; the operator runs: ${req.command}`}`);
+      }
+      continue;
+    }
+    try {
+      const env = brainScriptEnv();
+      const m = cloneMerge(dir, { branch: target, from: branch, message: `Merge ${branch} (done --topic ${id})`, env, indexFiles: [INDEX_FILE], index: (c) => refreshIndex(c, env) });
+      lines.push(`${name}: ${branch} merged into ${target} (${m.sha}), pushed from the own clone of the workflow${m.notes.length ? `; ${m.notes.join('; ')}` : ''}`);
+    } catch (err) { failures.push({ repo: name, error: err.message }); }
+  }
+  return { lines, failures, requests };
+}
+
+/** Items of the handover section, [] when none. */
+const itemsOf = (text, heading) => sectionItems(text, heading) || [];
+
+/**
+ * The handover of a topic that stays open after done (spec 4.1): Ďalší krok "dokončiť zlúčenie <repo>" per failed repo,
+ * the merge requests in Úlohy pre operátora (one item each, an earlier request of the same branch replaced).
+ */
+function openHandover(ctx, id, { done = [], files = [], failures = [], requests = [] }) {
+  let previous = '';
+  try { previous = fs.readFileSync(path.join(ctx.brainDir, ...topicRel(ctx.brainDir, id, 'handover').split('/')), 'utf8'); } catch { /* none */ }
+  const heads = new Set(requests.map((r) => `${r.repo} ${r.head}`));
+  const oldTasks = itemsOf(previous, TASKS_SECTION).filter((t) => !/^zlúčiť topic\//.test(t) || ![...heads].some((h) => t.includes(h.split(' ')[1]) && t.includes(h.split(' ')[0])));
+  const task = (r) => `zlúčiť ${r.head} do ${r.base} v repe ${r.repo}: ${r.url ? `žiadosť ${r.url}` : `žiadosť cez gh nevznikla (${r.how}), príkaz: ${r.command}`}; po zlúčení napíš do vlákna, téma dokončí done --topic`;
+  return renderHandover({
+    task: handoverTask(previous),
+    done: [...itemsOf(previous, '## Hotové'), ...done],
+    next: failures.map((f) => `dokončiť zlúčenie ${f.repo}: ${String(f.error).split('\n')[0].slice(0, 300)}; potom done --topic znova`),
+    files: [...itemsOf(previous, '## Súbory'), ...files],
+    questions: itemsOf(previous, QUESTIONS_SECTION),
+    tasks: [...oldTasks, ...requests.map(task)],
+  });
+}
+
+/**
+ * Remove the worktrees (and legacy clones) of the topic in its target repos, with its task worktrees and local task branches
+ * (spec 3.7); the branches stay on origin.
+ */
+function removeCopies(ctx, id, topic, names) {
+  const lines = [];
+  for (const name of names) {
+    const dir = targetRepoDir(ctx, name);
+    if (dir) lines.push(...removeTaskCopies(dir, id));
+    const copy = copyIn(ctx, id, topic, name);
+    if (!copy) continue;
+    if (fs.statSync(path.join(copy, '.git')).isFile() && dir) {
+      const rm = git(['worktree', 'remove', '--force', copy], { cwd: dir });
+      if (!rm.ok) { lines.push(`copy ${copy} not removed: ${rm.stderr.split('\n')[0]}${/EPERM|EBUSY|Permission denied|being used|Invalid argument/i.test(rm.stderr) ? ` (a process has its working directory in it: cd ${dir})` : ''}`); continue; }
+      git(['branch', '-D', topicBranch(id)], { cwd: dir });
+      try { fs.rmdirSync(path.dirname(copy)); } catch { /* other topics of the repo remain */ }
+    } else fs.rmSync(copy, { recursive: true, force: true });
+    lines.push(`copy ${copy} removed`);
+  }
+  return lines;
+}
+
+/** Triage of layout 3 (spec 5): { listing } | { plan, moves } | { none } ; refusals fail with nothing written. */
+function typeTriage(ctx, id, files, main) {
+  if (!files.length) {
+    if (args.triage !== undefined) fail(`--triage: topic ${id} has no files outside tmp/; run done --topic without --triage`);
+    return { none: true, moves: [], drop: [] };
+  }
+  if (main?.dir && git(['remote', 'get-url', 'origin'], { cwd: main.dir }).ok) gitRemote(['fetch', '--quiet', 'origin'], { cwd: main.dir });
+  const types = main?.dir ? outputTypes(main.dir) : [];
+  if (args.triage === undefined) return { listing: typeTriageListing(id, files, types, main?.name || null) };
+  if (args.triage === true) fail('--triage needs the file with the list: --triage <file>');
+  const bell = bellRefusal(ctx.brainDir, ctx.thread, 'done --topic --triage', { topic: id, step: 'done' }, { supervisor: true });
+  if (bell) fail(bell);
+  let text;
+  try { text = fs.readFileSync(path.resolve(String(args.triage)), 'utf8'); } catch (err) { fail(`--triage: cannot read ${args.triage}: ${err.message}`); }
+  const plan = parseTypeTriage(text, files, types);
+  if (plan.errors.length) fail(`--triage: nothing written:\n${plan.errors.join('\n')}`);
+  if (plan.unclear.length) fail(`--triage: ${plan.unclear.length} file(s) marked ${UNCLEAR}, nothing written, the topic stays open: ${plan.unclear.join(', ')}. Ask the operator where each goes (spec 5.3: AskUserQuestion, the type you propose first), write the answer as its line ("<typ> <path>", "${NEW_TYPE}:<typ> <path>" or "zanikne <path>") and run done --topic ... --triage <file> again in the turn of the answer`);
+  if (plan.outputs.length && !main?.dir) fail(`--triage: nothing written: ${main?.error || `topic ${id} has no target repo`}; its files can only end ("zanikne <path>")`);
+  if (plan.newTypes.length) {
+    const refusal = confirmRefusal(ctx.brainDir, ctx.thread, `done --topic --triage (new type ${plan.newTypes.join(', ')})`);
+    if (refusal) fail(`${refusal}\nA new type of outputs is the operator's choice (spec 5.3): propose ${plan.newTypes.map((t) => `vystupy/${t}/`).join(', ')} in the dialog; nothing written, nothing moved, the topic stays open`);
+  }
+  const base = topicRel(ctx.brainDir, id);
+  const root = dataRel(main?.dir || ctx.brainDir, 'outputs');
+  const targets = new Map();
+  const moves = [];
+  for (const o of plan.outputs) {
+    const to = `${root}/${o.type}/${path.posix.basename(o.rel)}`;
+    if (targets.has(to)) fail(`--triage: nothing written: ${o.rel} and ${targets.get(to)} both go to ${to}; rename one in the topic first`);
+    targets.set(to, o.rel);
+    const raw = fs.readFileSync(path.join(ctx.brainDir, ...base.split('/'), ...o.rel.split('/')));
+    const { content, header } = withTopicHeader(o.rel, raw, id);
+    moves.push({ rel: o.rel, from: `${base}/${o.rel}`, to, content, header, type: o.type, isNew: o.isNew });
+  }
+  return { plan, moves, drop: plan.drop };
+}
+
+/** Write the outputs of the triage into the main target repo (its target branch, or topic/<id>--obsah when protected). */
+function writeOutputs(ctx, id, main, moves) {
+  if (!moves.length) return null;
+  const res = contentWrite(ctx, main.dir, id, {
+    message: `done --topic ${id}: outputs of the topic (${moves.map((m) => m.to).join(', ').slice(0, 200)})`,
+    ops: (clone) => moves.flatMap((m) => {
+      const abs = path.join(clone, ...m.to.split('/'));
+      if (fs.existsSync(abs)) {
+        // A rerun (a merge failed before) finds its own output there: unchanged, nothing to write.
+        if (Buffer.compare(fs.readFileSync(abs), Buffer.from(m.content)) === 0) return [];
+        throw new Error(`${main.name}/${m.to} exists already with other content; rename ${m.from} in the topic, or ask the operator which version holds (a conflict in content, spec 4.1)`);
+      }
+      return [{ path: m.to, content: m.content }];
+    }),
+  });
+  return res;
+}
+
+function doneTopic3(ctx, id, topic, knowledge) {
+  const holder = readHolder(ctx.brainDir, id);
+  const targets = targetRepos(ctx, topic);
+  const mainDir = targets.main ? targetRepoDir(ctx, targets.main) : null;
+  const main = targets.main ? (mainDir ? { name: targets.main, dir: mainDir } : { name: targets.main, error: `target repo ${targets.main} is not on this machine` }) : { error: `topic ${id} has no target repo (no repos in .tema.json, no default_repo in the policy of the domain brain, spec 4.5)` };
+  const files = topicFiles(ctx.brainDir, id);
+  const triage = typeTriage(ctx, id, files, main);
+  if (triage.listing) { out(triage.listing); return; }
+  const base = topicRel(ctx.brainDir, id);
+  // 1. Outputs into the main target repo first: a refused write leaves the brain as it is (the files stay in the topic).
+  let written = null;
+  try { written = writeOutputs(ctx, id, main, triage.moves); }
+  catch (err) { fail(`done --topic ${id}: writing the outputs into ${main.name} failed, nothing written into brain (the topic stays open with its files): ${err.message}`); }
+  if (written) out(`outputs: ${triage.moves.map((m) => `${m.from} -> ${main.name}/${m.to}${m.header ? '' : ' (not markdown: no topic header)'}`).join(', ')} [${contentWhere(written)}]`);
+  const triageDone = [
+    ...triage.moves.map((m) => `triáž: ${m.from} -> ${main.name}/${m.to}${m.isNew ? ` (nový typ ${m.type}, schválil operátor)` : ''}`),
+    ...(triage.drop.length ? [`triáž: zanikne ${triage.drop.map((r) => `${base}/${r}`).join(', ')}`] : []),
+  ];
+  // 2. The topic branches per target repo (spec 4.1).
+  const settled = settleRepos(ctx, id, topic, targets.list);
+  for (const line of settled.lines) out(line);
+  const removals = [...triage.moves.map((m) => ({ path: m.from, remove: true })), ...triage.drop.map((r) => ({ path: `${base}/${r}`, remove: true }))];
+  if (settled.failures.length || settled.requests.length) {
+    // The topic stays open: the sorted files leave it (they are in the target repo or end), the handover says what is left.
+    const handover = { path: topicRel(ctx.brainDir, id, 'handover'), content: openHandover(ctx, id, { done: triageDone, files: triage.moves.map((m) => `${main.name}/${m.to}`), failures: settled.failures, requests: settled.requests }) };
+    const res = brainWrite(ctx, { ops: [...removals, handover], internal: true, message: `done --topic ${id}: stays open (${settled.failures.length ? `merge failed in ${settled.failures.map((f) => f.repo).join(', ')}` : `merge requested in ${[...new Set(settled.requests.map((r) => r.repo))].join(', ')}`})` });
+    out(formatWriteResult(res, [handover.path, ...removals.map((r) => r.path)]));
+    for (const f of settled.failures) out(`merge: ${f.repo} failed: ${f.error}`);
+    if (settled.requests.length) out(`topic ${id} stays open (state otázka): the merge request(s) are in Úlohy pre operátora of its handover; once the operator merged them and wrote into this thread, run done --topic again (spec 4.1)`);
+    if (settled.failures.length) fail(`done --topic ${id}: the topic stays open with the step "dokončiť zlúčenie ${settled.failures.map((f) => f.repo).join(', ')}" in its handover; the other repos are merged (spec 4.1)`);
+    return;
+  }
+  // 3. Closed: topics/<id>/ ends (removed in git, no archive, spec 5), the worktrees go, the branch stays on origin.
+  for (const line of args['keep-copy'] ? [] : removeCopies(ctx, id, topic, targets.list)) out(line);
+  const res = brainWrite(ctx, { ops: [{ path: base, remove: true }], internal: true, message: `done --topic ${id}: closed, topic removed (verified: ${String(args.verified).slice(0, 60)})` });
+  out(formatWriteResult(res, [`${base}/`]));
+  for (const line of triageDone) out(line);
+  out(`knowledge: ${knowledge}`);
+  for (const dir of removeTopicTmp(ctx.brainDir, ctx.projectDir, id)) out(`tmp: ${dir} removed (outside git, work files of the closed topic)`);
+  out(`topic ${id} closed: ${base}/ removed in git (its history keeps it). Start a new session for the next topic (P-026).`);
+  closedTail(ctx, id, holder);
+}
+
+/**
+ * done --topic --cancel (spec 5.4): no triage, no merge; the saved inputs and facts stay, topics/<id>/ and the worktrees end,
+ * the topic branch stays on origin. Sources only on topic/<id>--obsah of a target repo get a merge request first and the
+ * topic stays open until it is merged.
+ */
+function cancelTopic3(ctx, id, topic) {
+  const holder = readHolder(ctx.brainDir, id);
+  const targets = targetRepos(ctx, topic);
+  // The topic branch goes to origin before its worktree is removed (it stays there, 5.4).
+  for (const name of targets.list) {
+    const dir = targetRepoDir(ctx, name);
+    const copy = dir ? copyIn(ctx, id, topic, name) : null;
+    if (dir && git(['remote', 'get-url', 'origin'], { cwd: dir }).ok) {
+      const pushed = pushTopicBranch(dir, copy, topicBranch(id));
+      if (pushed) fail(`done --topic --cancel ${id}: ${name}: ${pushed}; nothing removed`);
+    }
+  }
+  const settled = settleRepos(ctx, id, topic, targets.list, { contentOnly: true });
+  for (const line of settled.lines.filter((l) => !/nothing to merge/.test(l))) out(line);
+  if (settled.failures.length || settled.requests.length) {
+    const handover = { path: topicRel(ctx.brainDir, id, 'handover'), content: openHandover(ctx, id, { done: ['zrušenie témy na pokyn operátora: čaká na zlúčenie zdrojov'], failures: settled.failures, requests: settled.requests }) };
+    const res = brainWrite(ctx, { ops: [handover], internal: true, message: `done --topic --cancel ${id}: waits for the merge of its sources` });
+    out(formatWriteResult(res, [handover.path]));
+    for (const f of settled.failures) out(`cancel: ${f.repo}: ${f.error}`);
+    out(`topic ${id} stays open until the sources on ${contentBranch(id)} are merged (spec 5.4); then done --topic --cancel again`);
+    if (settled.failures.length) process.exitCode = 1;
+    return;
+  }
+  for (const line of removeCopies(ctx, id, topic, targets.list)) out(line);
+  const base = topicRel(ctx.brainDir, id);
+  const res = brainWrite(ctx, { ops: [{ path: base, remove: true }], internal: true, message: `done --topic --cancel ${id}: cancelled on the operator's instruction, topic removed` });
+  out(formatWriteResult(res, [`${base}/`]));
+  for (const dir of removeTopicTmp(ctx.brainDir, ctx.projectDir, id)) out(`tmp: ${dir} removed`);
+  out(`topic ${id} cancelled (spec 5.4): no triage, no merge; ${base}/ removed in git, ${topicBranch(id)} stays on origin; saved sources and facts stay.`);
+  closedTail(ctx, id, holder);
 }
 
 /**
@@ -476,7 +647,7 @@ function archiveClosedTopics() {
   if (inSubagent()) fail('done refused in subagent (P-025)');
   let brainDir = null;
   const given = typeof args.project === 'string' ? path.resolve(args.project) : null;
-  if (given && !resolveBrain(given) && dataLayoutVersion(given) === 2 && fs.existsSync(path.join(given, layoutFor(2).topics))) brainDir = given;
+  if (given && !resolveBrain(given) && hasData(given, 'topicHidden') && fs.existsSync(dataPath(given, 'topics'))) brainDir = given;
   const ctx = brainDir ? { brainDir, thread: threadId(), policy: loadPolicy(brainDir) } : loadContext({ project: given || undefined });
   const plan = closedTopicsPlan(ctx.brainDir);
   const dry = !!args['dry-run'];

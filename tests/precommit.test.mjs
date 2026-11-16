@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { setup } from './helpers.mjs';
+import { setup3 } from './layout-2-helpers.mjs';
 
 function commit(fx, message, { script = false } = {}) {
   const env = { ...fx.env };
@@ -63,5 +64,24 @@ test('file in local/, handover without a section, exception without ID, agentic 
     stage(fx, 'skills/agentic/foo/SKILL.md', '---\nname: foo\ndescription: Použi, keď foo\norigin: error\n---\nx\n');
     r = commit(fx, '[brain-script] ok', { script: true });
     assert.equal(r.status, 0, r.out);
+  } finally { fx.cleanup(); }
+});
+
+test('layout 3: the same checks on the records in the brain root and the handover in topics/', () => {
+  const fx = setup3({ thread: 'pc3' });
+  try {
+    stage(fx, 'memory/x.md', '---\norigin: operator\n---\nx\n');
+    let r = commit(fx, '[brain-script] x', { script: true });
+    assert.equal(r.status, 1); assert.match(r.out, /record needs frontmatter key/);
+    spawnSync('git', ['reset', '-q'], { cwd: fx.brain });
+    stage(fx, 'topics/t/handover.md', '## Zadanie\na\n');
+    r = commit(fx, '[brain-script] x', { script: true });
+    assert.equal(r.status, 1); assert.match(r.out, /handover missing section/);
+    spawnSync('git', ['reset', '-q'], { cwd: fx.brain });
+    stage(fx, 'skills/agentic/foo/SKILL.md', '---\nname: foo\ndescription: Použi, keď foo\norigin: error\n---\nx\n');
+    r = commit(fx, '[brain-script] ok', { script: true });
+    assert.equal(r.status, 0, r.out);
+    r = commit(fx, 'manual');
+    assert.notEqual(r.status, 0);
   } finally { fx.cleanup(); }
 });

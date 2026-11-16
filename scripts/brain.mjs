@@ -5,7 +5,7 @@ import { git, gitRetry, gitRemote, remoteDiagnosis, readJson, toPosix, PLUGIN_RO
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv, inSubagent, machineName, sameMachine } from './config.mjs';
 import { checkBrainFile } from './brain-checks.mjs';
 import { dataRel, dataLayoutVersion, layoutFor } from './layout.mjs';
-import { readHolderRecord, mergeTopicOps, splitTema } from './topic-files.mjs';
+import { readHolderRecord, mergeTopicOps, splitTema, listTopicRecords } from './topic-files.mjs';
 import { INDEX_FILE, hasDataIndex, refreshIndex, commitIndexAfterMerge, indexWriteError, refreshDeployIgnores, formatDeployIgnores } from './data-index.mjs';
 
 /**
@@ -24,7 +24,14 @@ export function brainLockPath(brainDir) {
 
 export function withBrainLock(brainDir, fn) {
   if (!brainDir || !fs.existsSync(path.join(brainDir, '.git'))) return fn();
-  const lock = brainLockPath(brainDir);
+  return withLock(brainLockPath(brainDir), fn, 'brain is busy');
+}
+
+/**
+ * The same lock on any path (a directory created atomically): the own clone of a repo (spec 4.1, scripts/own-clone.mjs)
+ * serializes the writes of the threads of this machine with it. `busy` starts the error after LOCK_WAIT_MS.
+ */
+export function withLock(lock, fn, busy = 'busy') {
   const depth = lockDepth.get(lock) || 0;
   if (depth > 0) {
     lockDepth.set(lock, depth + 1);
@@ -41,7 +48,7 @@ export function withBrainLock(brainDir, fn) {
       let age = 0;
       try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch { continue; }
       if (age > LOCK_STALE_MS) { fs.rmSync(lock, { recursive: true, force: true }); continue; }
-      if (Date.now() - started > LOCK_WAIT_MS) throw new Error(`brain is busy (another workflow script holds ${lock} for ${Math.round(age / 1000)} s); retry`);
+      if (Date.now() - started > LOCK_WAIT_MS) throw new Error(`${busy} (another workflow script holds ${lock} for ${Math.round(age / 1000)} s); retry`);
       Atomics.wait(sleeper, 0, 0, 50 + Math.floor(Math.random() * 100));
     }
   }
@@ -396,6 +403,31 @@ export function syncAndCheckHolder(brainDir, rel, thread) {
   return checkHolder(brainDir, rel, thread);
 }
 
+/** Ids of the open topics the thread holds on this machine by the brain as it is now (no fetch). */
+export function topicsHeldBy(brainDir, thread) {
+  if (!brainDir || !thread) return [];
+  return listTopicRecords(brainDir).filter((t) => isHolderOf(t.holder, thread)).map((t) => t.id);
+}
+
+/**
+ * Spec 4.2.4 (plan B5): before any write of a thread that holds a topic, pull and verify the lock in the topic record. A
+ * thread whose topic another thread took over (or closed) meanwhile writes nothing and says so in its reply. Returns
+ * { lost: [{ id, holder }], checked: [ids], sync } (lost empty = every lock holds). A pull that fails leaves the local record
+ * to decide (sync.error tells why); the push of the write then fails as well when origin moved on.
+ */
+export function verifyHeldLocks(brainDir, thread) {
+  const checked = topicsHeldBy(brainDir, thread);
+  if (!checked.length) return { lost: [], checked, sync: null };
+  const sync = hasRemote(brainDir) ? brainSync(brainDir) : null;
+  const lost = checked.map((id) => ({ id, holder: readHolder(brainDir, id) })).filter((x) => !isHolderOf(x.holder, thread));
+  return { lost, checked, sync };
+}
+
+/** The refusal of a write after a lost lock (spec 4.2.4): who holds each topic now; nothing written. */
+export function lockLostText(lost) {
+  return lost.map(({ id, holder }) => `lock lost: topic ${id} is ${holder?.thread ? `now held by thread ${holder.thread}${holder.machine ? ` on ${holder.machine}` : ''}${holder.took_over_from ? ' (taken over)' : ''}` : 'no longer held by this thread (released or closed)'}; this thread does not hold it any more, nothing written (spec 4.2.4). Say in the reply that the lock of ${id} was lost; its work goes on with its holder, not here`).join('\n');
+}
+
 /**
  * Write files into brain and commit with the script tag; then sync.
  * ops: [{ path, content }, { path, remove: true }, { from, to }]
@@ -447,7 +479,8 @@ function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, 
   const errors = [];
   const touched = [];
   const rels = ops.flatMap((op) => (op.from ? [op.from, op.to] : [op.path])).map((t) => toPosix(t).replace(/^\.\//, ''));
-  if (!internal && !presynced && rels.some((r) => topicOfPath(r, brainDir)) && hasRemote(brainDir)) brainSync(brainDir);
+  // ctx.presynced: save pulled at its start to verify the held locks (verifyHeldLocks, spec 4.2.4).
+  if (!internal && !presynced && !ctx.presynced && rels.some((r) => topicOfPath(r, brainDir)) && hasRemote(brainDir)) brainSync(brainDir);
   // Layout 2: a topic op and a holder op of one .tema.json become one write, merged with the file as it is now (after the sync).
   ops = mergeTopicOps(brainDir, ops);
   for (const op of ops) {

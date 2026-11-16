@@ -880,7 +880,7 @@ export function adapterCommand(dir) {
 }
 
 /** The adapter of a repository with .workflow.json (generated .claude/) runs again on the new layout. */
-function regenerateAdapter(dir) {
+export function regenerateAdapter(dir) {
   const cfg = readJson(path.join(dir, '.workflow.json'), null);
   if (!cfg || !cfg.brain) return null;
   const r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'adapter.mjs'), 'claude-code', '--brain', cfg.brain], { cwd: dir, encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: dir, WORKFLOW_PROJECT_DIR: dir } });
