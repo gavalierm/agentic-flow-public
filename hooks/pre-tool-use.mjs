@@ -228,7 +228,7 @@ export function testLeftover(file) {
 const needsConsent = (reason) => permissionOutput('ask', reason);
 
 /** D-0042: the way a refused step that needs the operator's consent names, instead of a window that holds the thread. */
-export const NO_ASK_WAY = 'this step needs the operator\'s consent and the workflow never holds the thread with a confirmation window: if the work really needs it, ask with a question in the protocol (AskUserQuestion in the operator\'s turn naming the exact targets; after the yes the same call passes once), otherwise go on with other work (P-042, D-0042)';
+export const NO_ASK_WAY = 'this step needs the operator\'s consent and the workflow never holds the thread with a confirmation window: if the work really needs it, ask with a question in the protocol (AskUserQuestion in the operator\'s turn naming the exact targets, by path or file name: the dialog check lets them stay; after the yes the same call passes once), otherwise go on with other work (P-042, D-0042)';
 export const noAskReason = (why) => `${String(why || '').replace(/[\s.]+$/, '')}. ${NO_ASK_WAY}`;
 
 /**
@@ -1434,10 +1434,15 @@ export function dialogGaps(toolInput) {
   });
   return gaps;
 }
+/** Targets of the steps refused for the operator's consent in this turn (D-0042): the dialog names them (P-018). */
+export function turnConsentTargets(state = {}) {
+  const c = state.consent_targets;
+  return c && Array.isArray(c.targets) && (c.turn || '') === (state.turn_started_at || '') ? c.targets : [];
+}
 export const UNCLEAR_DIALOG_REASON = (marks, gaps) => `the operator reads this dialog without the thread, so it must stand on its own (D-0039): ${[
   ...(marks.length ? [`replace these internal marks with a description in words (what they are, not their ID): ${marks.map((m) => `${m.mark} (${m.kind})`).join(', ')}`] : []),
   ...gaps,
-].join('; ')}. A mark the operator wrote in their prompt may stay. Then ask again; a repeat in this turn passes (D-0039, P-061)`;
+].join('; ')}. A mark the operator wrote in their prompt may stay, so may the targets of a step refused for consent (P-018). Then ask again; a repeat in this turn passes (D-0039, P-061)`;
 
 // P-061 (flow-public#32): a turn that wrote this much text before the dialog, with a dialog that shows less than the minimum.
 export const LONG_TURN_TEXT = 1200;
@@ -1550,7 +1555,11 @@ export function run(input) {
     // turn (the agent then keeps the dialog it holds for right, it does not freeze); a repeat passes.
     if (before.question_marks_denied_at !== turnKey) {
       const topicIds = listTopics(ctx.brainDir).filter((t) => t?.id && !isMainTopic(t)).map((t) => t.id);
-      const marks = dialogMarks(toolInput, (before.operator_prompts || []).join('\n'), topicIds);
+      // report-dd7a8da4: P-018 asks for a dialog naming the exact targets, so a target of a step refused for
+      // consent in this turn is no internal mark (the dialog without paths got the yes, and then P-018 refused the step).
+      const consent = turnConsentTargets(before);
+      const marks = dialogMarks(toolInput, (before.operator_prompts || []).join('\n'), topicIds)
+        .filter((m) => !consent.some((t) => namesTarget(m.mark, t, cwd) || namesTarget(t, m.mark, cwd)));
       const gaps = dialogGaps(toolInput);
       if (marks.length || gaps.length) {
         writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), question_marks_denied_at: turnKey });
@@ -1695,6 +1704,11 @@ export function run(input) {
       if (lift) {
         writeThreadState(ctx.brainDir, ctx.thread, { ...st, consents_granted: [...granted, { key, lift: lift.at, at: new Date().toISOString() }].slice(-20) });
         return permissionOutput('allow', 'granted by the operator\'s answer in the dialog of this turn (D-0042)');
+      }
+      // The targets the dialog must name stay allowed in it for the rest of the turn (D-0039 vs P-018, report-dd7a8da4).
+      if (targets.length) {
+        const kept = turnConsentTargets(st).filter((t) => !targets.includes(t));
+        writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), consent_targets: { turn: since, targets: [...kept, ...targets].slice(-50) } });
       }
     }
     out = permissionOutput('deny', noAskReason(why), out.hookSpecificOutput.additionalContext || null);

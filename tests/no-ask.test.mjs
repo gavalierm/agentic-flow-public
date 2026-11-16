@@ -36,3 +36,36 @@ test('D-0042: a subagent gets the deny too and no consent path', () => {
     assert.equal(out.permissionDecision, 'deny');
   } finally { fx.cleanup(); }
 });
+
+// report-dd7a8da4: P-018 sent the agent to a dialog naming the exact targets, D-0039 refused the paths
+// in it as internal marks; the dialog without paths got the yes and P-018 then refused the step. A target of a step refused
+// for consent in this turn stays in the dialog, and the yes of that dialog lets the step pass.
+test('D-0042 with D-0039: the dialog may name the paths of a step refused for consent, its yes lets the step pass', () => {
+  const fx = setup();
+  try {
+    fx.hook('user-prompt-submit.mjs', { prompt: 'uprac to' });
+    fs.mkdirSync(path.join(fx.project, 'local', 'cache'), { recursive: true });
+    const a = path.join(fx.project, 'local', 'cache', 'stare.json');
+    const other = path.join(fx.project, 'local', 'cache', 'ine.json');
+    fs.writeFileSync(a, '{}\n');
+    fs.writeFileSync(other, '{}\n');
+    const cmd = 'rm local/cache/stare.json';
+    assert.equal(bash(fx, cmd).permissionDecision, 'deny');
+    const q = 'Upratujem staré súbory, ktoré vytvoril iný beh. Zmazať súbor local/cache/stare.json? Git ho neobnoví a nikto ho už nepoužíva.';
+    const ask = (question) => fx.hook('pre-tool-use.mjs', { tool_name: 'AskUserQuestion', cwd: fx.project, tool_input: { questions: [{ question, header: 'Zmazanie', options: [
+      { label: 'Zmazať (Recommended)', description: 'Súbor sa zmaže, lebo je to zvyšok starého behu.' },
+      { label: 'Nechať', description: 'Súbor ostane na disku.' }] }] } }).json?.hookSpecificOutput || {};
+    assert.notEqual(ask(q).permissionDecision, 'deny', 'the consent target is no internal mark');
+    // another path is still a mark (a new turn, so the once-per-turn repeat does not let it pass)
+    fx.hook('user-prompt-submit.mjs', { prompt: 'uprac aj toto' });
+    assert.equal(bash(fx, cmd).permissionDecision, 'deny');
+    const out = ask(q.replace('local/cache/stare.json', 'local/cache/ine.json'));
+    assert.equal(out.permissionDecision, 'deny');
+    assert.match(out.permissionDecisionReason, /local\/cache\/ine\.json \(file path\)/);
+    assert.match(out.permissionDecisionReason, /targets of a step refused for consent \(P-018\)/);
+    fx.hook('post-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: q, header: 'Zmazanie', options: [{ label: 'Zmazať (Recommended)' }, { label: 'Nechať' }] }] }, tool_response: { answers: { [q]: 'Zmazať (Recommended)' } } });
+    const granted = bash(fx, cmd);
+    assert.equal(granted.permissionDecision, 'allow', granted.permissionDecisionReason);
+    assert.ok(fs.existsSync(other), 'nothing else is touched');
+  } finally { fx.cleanup(); }
+});
