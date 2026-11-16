@@ -110,3 +110,5 @@ Zlyhaná doména zastaví poradie. Po spustení vlákien sa nevracia nič: chyba
 ## 6. Spustenie vlákien
 
 Po overení domény sa vlákna spustia nanovo a pokračujú z handoveru (krok alebo otázka). Ďalšia doména začína krokom 4.
+
+Domény zmigrované na dáta 2.1 pred opravou kontroly záznamu migrácie nemusia v braine nič meniť. Stačí `git -C <plugin> fetch --force --tags && git -C <plugin> checkout v2.0.0`. Témy uzavreté po migrácii potom `--check` vypíše ako poznámku „removed after the move by <commit>“, nie ako nález.
