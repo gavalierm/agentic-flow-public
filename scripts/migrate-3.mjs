@@ -696,7 +696,8 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
   for (const id of topicIds.concat(fs.existsSync(path.join(dom.brain, L2.topics)) ? fs.readdirSync(path.join(dom.brain, L2.topics)).filter((n) => !topicIds.includes(n)) : [])) {
     const from = `${L2.topics}/${id}/${L2.topicTmp}`;
     if (!fs.existsSync(path.join(dom.brain, from))) continue;
-    if (closed.has(id)) { brain.notes.push(`${from}/: work files of a closed topic, outside git, stay (remove them by hand)`); continue; }
+    // A closed topic ends; its work files outside git go to the work folder of main, never left in temy/ (operator 2026-11-16).
+    if (closed.has(id)) { brain.tmp.push({ fromAbs: path.join(dom.brain, from), to: `${B3.topics}/main/${B3.topicTmp}/${id}` }); continue; }
     const fin = finalOf(`${L2.topics}/${id}/${L2.handover}`) || { repo: dom.brain, to: `${B3.topics}/${id}/${L2.handover}` };
     const owner = same(fin.repo, dom.brain) ? brain : targetOf(fin.repo);
     owner.tmp.push({ fromAbs: path.join(dom.brain, from), to: `${path.posix.dirname(fin.to)}/${B3.topicTmp}` });
@@ -706,6 +707,16 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
   for (const r of plan.repos) {
     if (r.version !== FROM) continue;
     planRepo(r, { dom, rewrite, approve, blockers, lessonPlan });
+    // Work files of a project repo outside git (temy/<id>/tmp/, the scratch/ of data 1 moved there): data 2.1 keeps every
+    // topic in the brain, so they go to the brain's work folder of that topic (main, or main/<repo>-<id> for a topic the
+    // brain does not have); never left in a temy/ the repo has no more (doma-pc 2026-11-16).
+    const temy = path.join(r.dir, L2.topics);
+    for (const id of fs.existsSync(temy) ? fs.readdirSync(temy) : []) {
+      const fromAbs = path.join(temy, id, L2.topicTmp);
+      if (!fs.existsSync(fromAbs)) continue;
+      const live = id === 'main' || (topicIds.includes(id) && !closed.has(id));
+      brain.tmp.push({ fromAbs, to: live ? `${B3.topics}/${id}/${B3.topicTmp}` : `${B3.topics}/main/${B3.topicTmp}/${r.name}-${id}`, prune: r.dir });
+    }
   }
   // Incoming files of every target: clash with a file it tracks, sources.json, record rows.
   for (const t of [brain, ...plan.repos, ...plan.targets]) {
@@ -960,10 +971,23 @@ export function applyDomain(dir, { confirmedFile = null, approveFile = null, env
   for (const t of [plan.brain, ...plan.repos, ...plan.targets]) {
     for (const m of t.tmp) {
       const to = path.join(t.dir, m.to);
-      if (fs.existsSync(to)) { t.notes.push(`${posix(m.fromAbs)}: not moved, ${m.to} exists`); continue; }
-      fs.mkdirSync(path.dirname(to), { recursive: true });
-      fs.renameSync(m.fromAbs, to);
-      moved.push(`${posix(m.fromAbs)} -> ${t.name}:${m.to}`);
+      if (fs.existsSync(to)) {
+        // The work folder exists (a thread wrote into it already): the entries move into it; a name both have stays and is
+        // listed, nothing is overwritten.
+        let n = 0;
+        for (const e of fs.readdirSync(m.fromAbs)) {
+          if (fs.existsSync(path.join(to, e))) { t.notes.push(`${posix(path.join(m.fromAbs, e))}: not moved, ${m.to}/${e} exists`); continue; }
+          fs.renameSync(path.join(m.fromAbs, e), path.join(to, e));
+          n++;
+        }
+        try { if (!fs.readdirSync(m.fromAbs).length) fs.rmdirSync(m.fromAbs); } catch { /* stays */ }
+        moved.push(`${posix(m.fromAbs)} -> ${t.name}:${m.to}/ (${n} entr${n === 1 ? 'y' : 'ies'} merged)`);
+      } else {
+        fs.mkdirSync(path.dirname(to), { recursive: true });
+        fs.renameSync(m.fromAbs, to);
+        moved.push(`${posix(m.fromAbs)} -> ${t.name}:${m.to}`);
+      }
+      if (m.prune) pruneEmpty(m.prune, L2.topics);
     }
   }
   const pruned = [L2.topics, OUTPUTS, L2.materialy, KNOWLEDGE].flatMap((rel) => pruneEmpty(plan.brain.dir, rel));

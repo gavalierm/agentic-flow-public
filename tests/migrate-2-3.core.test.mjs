@@ -317,3 +317,32 @@ test('a domain folder without .agentic-domain: the preview finds the repos that 
     assert.match(p.stdout, /has no \.agentic-domain, though project, srv name this brain: write \S+\.agentic-domain with \{"brain": "brain"\}/);
   } finally { fx.cleanup(); }
 });
+
+test('work files outside git of a project repo (temy/<id>/tmp/) go to the brain, merged into a work folder that exists', () => {
+  const fx = domainV2();
+  try {
+    commitFiles(fx.srv, { '.gitignore': 'temy/*/tmp/\n' });
+    for (const [rel, text] of [['temy/main/tmp/a.md', 'a\n'], ['temy/main/tmp/both.md', 'srv\n'], ['temy/old/tmp/o.md', 'o\n']]) {
+      fs.mkdirSync(path.dirname(path.join(fx.srv, rel)), { recursive: true });
+      fs.writeFileSync(path.join(fx.srv, rel), text);
+    }
+    // The brain has a work folder of main already, with a file of the same name.
+    fs.mkdirSync(path.join(fx.brain, 'temy', 'main', 'tmp'), { recursive: true });
+    fs.writeFileSync(path.join(fx.brain, 'temy', 'main', 'tmp', 'both.md'), 'brain\n');
+    fs.writeFileSync(path.join(fx.brain, '.git', 'info', 'exclude'), 'temy/*/tmp/\n');
+    const confirmed = tsvFile(fx, 'confirmed.tsv', ['vystupy/dokumenty/spec.md\tsrv:vystupy/specifikacie/\talpha\t', 'zdroje/alpha/\tpomocne\t\t']);
+    const approve = approveFile(fx, ['.brain/skills/agentic/old-gate/\tzmazat', '.brain/memory/person-jana.md\tzmazat']);
+    const p = fx.run('migrate.mjs', [fx.brain, '--to', '2.1']);
+    assert.match(p.stdout, /outside git: \S*srv\/temy\/main\/tmp\/ -> topics\/main\/tmp\//);
+    assert.match(p.stdout, /outside git: \S*srv\/temy\/old\/tmp\/ -> topics\/main\/tmp\/srv-old\//);
+    const a = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--apply', '--confirmed', confirmed, '--approve', approve]);
+    assert.equal(a.status, 0, a.out);
+    const T = (rel) => fs.readFileSync(path.join(fx.brain, 'topics', 'main', 'tmp', rel), 'utf8');
+    assert.equal(T('a.md'), 'a\n');
+    assert.equal(T('both.md'), 'brain\n', 'nothing overwritten');
+    assert.equal(T('srv-old/o.md'), 'o\n');
+    assert.match(a.out, /srv\/temy\/main\/tmp\/both\.md: not moved, topics\/main\/tmp\/both\.md exists/);
+    assert.ok(fs.existsSync(path.join(fx.srv, 'temy', 'main', 'tmp', 'both.md')), 'the clash stays where it was');
+    assert.ok(!fs.existsSync(path.join(fx.srv, 'temy', 'old')), 'emptied folders of temy/ are removed');
+  } finally { fx.cleanup(); }
+});
