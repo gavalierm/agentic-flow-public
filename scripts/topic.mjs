@@ -364,7 +364,28 @@ export function topicThreadMessage(topic, { task = null, supervisor = null } = {
  * ENOENT (Windows instance 2026-11-07, agentic-flow-public#10): the name is resolved over PATH and PATHEXT, a .cmd/.bat runs
  * through the shell with quoted arguments.
  */
+/**
+ * The T3 CLI when `t3` is not in PATH (doma-pc 2026-11-16: connect said "t3 not found on this machine"): T3 gives its
+ * threads T3CODE_CLI_PATH and installs the CLI as ~/.t3/bin/t3 (Windows t3.cmd) without adding it to PATH; the mail's
+ * wake module finds it the same way. null when `t3` is in PATH or no fallback exists.
+ */
+export function t3Cli({ platform = process.platform, env = process.env, exists = fs.existsSync } = {}) {
+  const win = platform === 'win32';
+  const sep = win ? ';' : ':';
+  const exts = win ? String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean) : [''];
+  const join = win ? path.win32.join : path.posix.join;
+  for (const dir of String(env.PATH || env.Path || '').split(sep).filter(Boolean)) for (const ext of exts) if (exists(join(dir, `t3${ext}`))) return null;
+  const home = env.USERPROFILE || env.HOME || '';
+  return [env.T3CODE_CLI_PATH, home && join(home, '.t3', 'bin', win ? 't3.cmd' : 't3')].find((f) => f && exists(f)) || null;
+}
+
 export function spawnTarget(name, args, { platform = process.platform, env = process.env, exists = fs.existsSync } = {}) {
+  if (name === 't3') name = t3Cli({ platform, env, exists }) || name;
+  // A .cmd/.bat spawns only through a shell (EINVAL without one, CVE-2024-27980), also with its full path (t3.cmd).
+  if (platform === 'win32' && /\.(cmd|bat)$/i.test(name) && /[\\/]/.test(name)) {
+    const q = (a) => `"${String(a).replace(/"/g, '""')}"`;
+    return { file: [name, ...args].map(q).join(' '), args: [], shell: true };
+  }
   if (platform !== 'win32' || /[\\/]/.test(name) && path.extname(name)) return { file: name, args, shell: false };
   const exts = path.extname(name) ? [''] : String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
   const dirs = /[\\/]/.test(name) ? [''] : String(env.PATH || env.Path || '').split(';').filter(Boolean);

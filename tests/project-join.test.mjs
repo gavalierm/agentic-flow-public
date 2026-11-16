@@ -96,3 +96,16 @@ test('inventory: a tracked name with diacritics and spaces is read as it is (dom
     assert.ok(JSON.stringify(inv).includes('svetlý.png'), JSON.stringify(inv));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('t3 CLI outside PATH (doma-pc 2026-11-16): T3CODE_CLI_PATH or ~/.t3/bin, a .cmd through a shell', async () => {
+  const { spawnTarget, t3Cli } = await import('../scripts/topic.mjs');
+  const cmd = 'C:\\Users\\U\\.t3\\bin\\t3.cmd';
+  const win = { platform: 'win32', env: { PATH: 'C:\\Windows', USERPROFILE: 'C:\\Users\\U' }, exists: (f) => f === cmd };
+  const t = spawnTarget('t3', ['thread', 'start'], win);
+  assert.equal(t.shell, true);
+  assert.equal(t.file, `"${cmd}" "thread" "start"`);
+  assert.equal(t3Cli({ ...win, env: { ...win.env, T3CODE_CLI_PATH: 'D:\\t3.cmd' }, exists: (f) => f === 'D:\\t3.cmd' }), 'D:\\t3.cmd');
+  assert.equal(t3Cli({ platform: 'win32', env: { PATH: 'C:\\bin' }, exists: (f) => f === 'C:\\bin\\t3.CMD' || f === cmd }), null, 't3 in PATH wins');
+  const lin = spawnTarget('t3', ['x'], { platform: 'linux', env: { PATH: '/usr/bin', HOME: '/h/u' }, exists: (f) => f === '/h/u/.t3/bin/t3' });
+  assert.deepEqual(lin, { file: '/h/u/.t3/bin/t3', args: ['x'], shell: false });
+});

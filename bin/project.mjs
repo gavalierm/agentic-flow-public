@@ -22,7 +22,8 @@
 //   project.mjs wizard start <name> | end                           open (2 h) or close the window of the wizard (T3 setup left is named at the end)
 //   project.mjs t3 <dir> [--name <project>] [--no-welcome] [--adopt] | t3 <dir> --registered   trust, T3 project and welcome thread of a
 //     repository folder (restore, connect and create do it themselves; --no-t3 skips it); --registered: the steps left
-//     for the T3 tools (no `t3` CLI) were done; --adopt (connect --adopt too): the welcome thread starts at `wizard end`
+//     for the T3 tools (no `t3` CLI) were done; --adopt (connect --adopt too): the welcome thread starts at `wizard end`;
+//     --welcome: start the welcome thread of an adopted project now (an adoption outside a workflow thread)
 // Plan for tidy: { "remove": ["RULES.md", ...], "move": [{ "from": "artifacts/x", "to": "docs/x" }],
 //   "write": [{ "path": "decisions/D0001.md", "file": "<file with the new content>" }], "reason": "..." }
 // write: a record in the workflow format, e.g. an older decision rewritten (a decision with a key is never deleted,
@@ -115,6 +116,9 @@ function t3Step(dirs, name, previous = {}) {
       const state = readThreadState(ctx.brainDir, ctx.thread);
       state.welcome_deferred = { ...(state.welcome_deferred || {}), ...deferred };
       writeThreadState(ctx.brainDir, ctx.thread, state);
+    } else {
+      // Outside a workflow thread (doma-pc 2026-11-16) there is no thread state for `wizard end`: the command is named.
+      for (const dir of Object.keys(deferred)) lines.push(`${path.basename(dir)}: t3: welcome thread not recorded for wizard end (no workflow thread here): after the adoption start it with project.mjs t3 ${toPosix(dir)} --welcome`);
     }
   }
   return lines;
@@ -182,11 +186,17 @@ try {
       try { out(`projects root ${setMachineRoot(target)} saved for this machine (${rootFile()})`); } catch (err) { fail(err.message); }
     }
   } else if (cmd === 't3') {
-    if (!target) fail('usage: project.mjs t3 <dir> [--name <project>] [--no-welcome] [--adopt] | t3 <dir> --registered');
+    if (!target) fail('usage: project.mjs t3 <dir> [--name <project>] [--no-welcome] [--adopt] | t3 <dir> --registered | t3 <dir> --welcome');
     guardWrite();
     const dir = path.resolve(target);
     if (!fs.existsSync(path.join(dir, WORKFLOW_CONFIG))) fail(`${dir} is not a workflow project (no ${WORKFLOW_CONFIG})`);
     if (args.registered) { recordPending({ [dir]: null }); out(`t3: ${dir} recorded as set up in T3`); }
+    else if (args.welcome) {
+      // The welcome thread of an adopted project, started by hand after the adoption (no thread state recorded it).
+      const r = startWelcome(dir, { name: typeof args.name === 'string' ? args.name : path.basename(dir), policy: policyOf(dir), adopted: true });
+      if (r.pending.length) recordPending({ [dir]: r.pending });
+      out(list(r.lines));
+    }
     else out(list(t3Step([dir], typeof args.name === 'string' ? args.name : path.basename(path.dirname(dir)))));
   } else if (cmd === 'mail') {
     if (!target) fail('usage: project.mjs mail <dir>');
@@ -225,7 +235,8 @@ try {
       const left = pendingT3Line(readThreadState(ctx.brainDir, ctx.thread).t3_pending);
       if (left) fail(`wizard not closed: ${left}`);
       setWizard(ctx.brainDir, ctx.thread, null);
-      out(['wizard closed', ...startDeferredWelcome(ctx).map((l) => `- ${l}`)].join('\n'));
+      const welcome = startDeferredWelcome(ctx);
+      out(['wizard closed', ...(welcome.length ? welcome : ['no welcome thread waits in this thread (an adoption run outside a workflow thread starts it with project.mjs t3 <dir> --welcome)']).map((l) => `- ${l}`)].join('\n'));
     } else fail('usage: project.mjs wizard start <name> | end');
   } else {
     fail('usage: project.mjs probe|restore|connect|create|t3|mail|inventory|tidy|wizard ... (see the header of bin/project.mjs)');
