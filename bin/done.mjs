@@ -339,8 +339,8 @@ function doneTopic(ctx, id) {
   // message of another agent: its turn may close the topic within the mandate (plan O7, spec 5.2).
   else if (isWakeTurn(ctx.brainDir, ctx.thread) && !supervisorTurn(ctx.brainDir, ctx.thread) && !dialogAnsweredInTurn(ctx.brainDir, ctx.thread) && !ownStepRequested(ctx.brainDir, ctx.thread, id, 'done')) fail(`done --topic refused: this turn was started by a message, not the operator, and the operator answered no dialog in it (P-047, D-0011)${bellContinuation(ctx.brainDir, ctx.thread)}`);
   if (hasTypeTriage(ctx.brainDir)) return cancel ? cancelTopic3(ctx, id, topic) : doneTopic3(ctx, id, topic, knowledge);
-  if (cancel) fail('done --topic --cancel: a brain of data layout 3 only (spec 5.4); this brain is older, migrate it first');
-  if (args.triage !== undefined) fail('--triage: a brain of data layout 3 only (spec 5); this brain is older, migrate it first');
+  if (cancel) fail('done --topic --cancel: a brain of data 2.1 only (spec 5.4); this brain is older, migrate it first');
+  if (args.triage !== undefined) fail('--triage: a brain of data 2.1 only (spec 5); this brain is older, migrate it first');
   const holder = readHolder(ctx.brainDir, id);
   let merge = { merged: false, note: 'discussion topic, no code' };
   if (hasCodeCopy(topic)) merge = mergeCode(ctx, id, topic, { push: true });

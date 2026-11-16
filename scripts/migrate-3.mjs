@@ -25,7 +25,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { git, readJson, PLUGIN_ROOT } from './util.mjs';
 import { BRAIN_COMMIT_TAG, MIGRATE_MOVE_ENV, DOMAIN_MARKER, WORKFLOW_CONFIG, WORKTREES_DIR, brainScriptEnv } from './config.mjs';
-import { LAYOUTS, LAYOUT_KEY, ROLE_BRAIN, ROLE_REPO, layoutFor, dataLayoutVersion, layoutRole } from './layout.mjs';
+import { LAYOUTS, LAYOUT_KEY, ROLE_BRAIN, ROLE_REPO, layoutFor, dataLayoutVersion, layoutRole, dataName } from './layout.mjs';
 import { checkBrainFile, checkHandover, TASKS_SECTION, QUESTIONS_SECTION, handoverNextStep, handoverQuestions, handoverTasks } from './brain-checks.mjs';
 import { INDEX_FILE, refreshIndex, indexProblem, commitIndexAfterMerge } from './data-index.mjs';
 import { MODES } from './topic-files.mjs';
@@ -40,7 +40,9 @@ const B3 = layoutFor(3, ROLE_BRAIN);
 const R3 = layoutFor(3, ROLE_REPO);
 export const FROM = 2;
 export const TO = 3;
-export const COMMIT_SUBJECT = 'migrate data layout 2 -> 3';
+export const COMMIT_SUBJECT = 'migrate data 2.0 -> 2.1';
+// The subject of moves made before the data were named (2026-11-16): the check and the revert list find those too.
+const OLD_COMMIT_SUBJECT = 'migrate data layout 2 -> 3';
 /** The record of the move beside the policy of the layout: the brain's root, .brain/ of a project repo. */
 export const RECORD_NAME = 'migrate-2-3.tsv';
 export const recordRel = (role) => path.posix.join(path.posix.dirname(role === ROLE_REPO ? R3.policy : B3.policy), RECORD_NAME).replace(/^\.\//, '');
@@ -261,7 +263,7 @@ export function policy3(policy, { brain = null } = {}) {
       if (!Object.keys(p[a]).length) delete p[a];
     }
   }
-  p[LAYOUT_KEY] = TO;
+  p[LAYOUT_KEY] = dataName(TO);
   return { policy: p, removed };
 }
 
@@ -379,7 +381,7 @@ function migratedLabels(env) {
 /** The navrh of a TSV row: { remove } (pomocne), { repo, to } or { error }. */
 function parseTarget(row, dom) {
   const p = String(row?.proposal || '').trim();
-  if (!p || p === 'bez navrhu' || p === 'ostava') return { error: 'no confirmed target (layout 3 keeps no outputs or sources in the brain)' };
+  if (!p || p === 'bez navrhu' || p === 'ostava') return { error: 'no confirmed target (data 2.1 keeps no outputs or sources in the brain)' };
   if (p === 'pomocne') return { remove: true };
   const i = p.indexOf(':');
   if (i <= 0) return { error: `navrh ${p}: expected <repo>:vystupy/<typ>/, <repo>:zdroje/<tema>/ or pomocne` };
@@ -418,12 +420,12 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
   const mk = (d, role) => ({ dir: d, name: path.basename(d), role, version: dataLayoutVersion(d), moves: [], removes: [], content: new Map(), rows: [], tmp: [], notes: [], incoming: [], outgoing: [] });
   const brain = mk(dom.brain, ROLE_BRAIN);
   const plan = { dom, version, brain, repos: dom.repos.map((d) => mk(d, ROLE_REPO)), targets: [], triage: [], people: [], lessons: [], blockers, notes };
-  if (version === 1) { blockers.push(`brain ${dom.brain} is in data layout 1: move it to layout 2 first (migrate.mjs ${dom.brain} --apply), then --to 3`); return plan; }
-  if (version === TO) { notes.push(`brain ${dom.brain} is in data layout 3 already: nothing to move`); return plan; }
-  if (version !== FROM) { blockers.push(`brain ${dom.brain}: data layout ${version}, this step moves only 2 to 3`); return plan; }
+  if (version === 1) { blockers.push(`brain ${dom.brain} is in data 1: move it to data 2.0 first (migrate.mjs ${dom.brain} --apply), then --to 2.1`); return plan; }
+  if (version === TO) { notes.push(`brain ${dom.brain} is in data 2.1 already: nothing to move`); return plan; }
+  if (version !== FROM) { blockers.push(`brain ${dom.brain}: data ${dataName(version)}, this step moves only 2.0 to 2.1`); return plan; }
   for (const r of plan.repos) {
-    if (r.version === 1) blockers.push(`repo ${r.dir} is in data layout 1: move it to layout 2 first (migrate.mjs ${r.dir} --apply), then --to 3`);
-    else if (r.version !== FROM) blockers.push(`repo ${r.dir}: data layout ${r.version}, its brain has 2; the domain moves at once`);
+    if (r.version === 1) blockers.push(`repo ${r.dir} is in data 1: move it to data 2.0 first (migrate.mjs ${r.dir} --apply), then --to 2.1`);
+    else if (r.version !== FROM) blockers.push(`repo ${r.dir}: data ${dataName(r.version)}, its brain has 2.0; the domain moves at once`);
   }
   const files = trackedFiles(dom.brain).filter((f) => f.mode !== '160000').map((f) => f.rel);
   const fileSet = new Set(files);
@@ -465,9 +467,9 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
       dest.set(rel, { item: triageItem(rel) });
       continue;
     }
-    if (top === KNOWLEDGE) { blockers.push(`${rel}: outside the map of layout 2 (${KNOWLEDGE}/); move or remove it first`); dest.set(rel, { to: rel }); continue; }
+    if (top === KNOWLEDGE) { blockers.push(`${rel}: outside the map of data 2.0 (${KNOWLEDGE}/); move or remove it first`); dest.set(rel, { to: rel }); continue; }
     dest.set(rel, { to: rel });
-    if (!notes.some((n) => n.startsWith(`${top}`))) notes.push(`${top}${rel.includes('/') ? '/' : ''}: outside the map of layout 3, stays in the brain`);
+    if (!notes.some((n) => n.startsWith(`${top}`))) notes.push(`${top}${rel.includes('/') ? '/' : ''}: outside the map of data 2.1, stays in the brain`);
   }
 
   // People (11.8): carried into osoby/ by people.mjs collect --apply, or removed with the operator's approval.
@@ -531,7 +533,7 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
     if (known) return known;
     const t = mk(repoDir, layoutRole(repoDir));
     t.external = true;
-    if (t.version !== TO) blockers.push(`target ${repoDir}: data layout ${t.version}; a repository outside the domain takes files only in layout 3 (brain-init.mjs --layout 3 for a new domain)`);
+    if (t.version !== TO) blockers.push(`target ${repoDir}: data ${dataName(t.version)}; a repository outside the domain takes files only in data 2.1 (brain-init.mjs --layout 2.1 for a new domain)`);
     plan.targets.push(t);
     return t;
   };
@@ -547,7 +549,7 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
     if (tg.remove) { t.to = 'pomocne'; for (const rel of rels) dest.set(rel, { remove: STATUS.removed }); continue; }
     const target = targetOf(tg.repo);
     const role = target.role;
-    if (!validTarget(tg.to, role)) { t.error = `${tg.to}: not a place of layout 3 in ${target.name} (${role === ROLE_REPO ? `${R3.outputs}/<typ>/ or ${R3.materialy}/<tema>/` : 'topics/, memory/, decisions/, rules/, skills/'})`; blockers.push(`${item}: ${t.error}`); continue; }
+    if (!validTarget(tg.to, role)) { t.error = `${tg.to}: not a place of data 2.1 in ${target.name} (${role === ROLE_REPO ? `${R3.outputs}/<typ>/ or ${R3.materialy}/<tema>/` : 'topics/, memory/, decisions/, rules/, skills/'})`; blockers.push(`${item}: ${t.error}`); continue; }
     t.to = `${target.name}:${tg.to}`;
     for (const rel of rels) {
       const rest = item.endsWith('/') ? rel.slice(item.length) : path.posix.basename(rel);
@@ -564,7 +566,7 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
     if (tg.error || tg.remove) { blockers.push(`${key}: ${tg.error || 'pomocne only for outputs and sources'}`); continue; }
     const target = targetOf(tg.repo);
     if (target === brain) { blockers.push(`${key}: a move inside the brain is not a row of the TSV`); continue; }
-    if (!validTarget(tg.to, target.role)) { blockers.push(`${key}: ${tg.to} is not a place of layout 3 in ${target.name}`); continue; }
+    if (!validTarget(tg.to, target.role)) { blockers.push(`${key}: ${tg.to} is not a place of data 2.1 in ${target.name}`); continue; }
     const base = key.endsWith('/') ? ruleMapFolder(key, dest, files) : null;
     for (const rel of mine) {
       const to3 = dest.get(rel).to;
@@ -746,7 +748,7 @@ function planRepo(r, { dom, rewrite, approve, blockers, lessonPlan }) {
     if (rel === OLD_RECORD) { r.removes.push({ path: rel, status: STATUS.removed }); r.rows.push([rel, '-', STATUS.removed]); continue; }
     if (L2.topicHidden && under(rel, L2.topicHidden)) { r.removes.push({ path: rel, status: STATUS.archive }); r.rows.push([rel, '-', STATUS.archive]); continue; }
     if (removed.has(rel)) { r.removes.push({ path: rel, status: STATUS.lesson }); r.rows.push([rel, '-', STATUS.lesson]); continue; }
-    if (under(rel, L2.topics)) blockers.push(`${r.name}:${rel}: a topic in a project repo; layout 3 keeps topics in the brain (move it there first)`);
+    if (under(rel, L2.topics)) blockers.push(`${r.name}:${rel}: a topic in a project repo; data 2.1 keeps topics in the brain (move it there first)`);
     r.rows.push([rel, rel, STATUS.stay]);
     let content = rewritten.has(rel) ? rewritten.get(rel) : null;
     let changed = content !== null;
@@ -768,7 +770,7 @@ function planRepo(r, { dom, rewrite, approve, blockers, lessonPlan }) {
     const out = rewrite(content, { fileRepo: r.dir, relative: false }).text;
     if (out !== content || changed) r.content.set(rel, out);
   }
-  if (!files.includes(L2.policy)) blockers.push(`${r.name}: ${L2.policy} missing (data layout 2 is read from it)`);
+  if (!files.includes(L2.policy)) blockers.push(`${r.name}: ${L2.policy} missing (data 2.0 is read from it)`);
 }
 
 // ---- format -----------------------------------------------------------------------------------------------------------
@@ -791,10 +793,10 @@ function groupMoves(moves) {
 }
 
 export function formatPlan(plan, { all = false } = {}) {
-  const lines = [`domain: brain ${plan.dom.brain} (data layout ${plan.version})${plan.dom.repos.length ? `, repos ${plan.dom.repos.map((d) => path.basename(d)).join(', ')}` : ', no project repo'}`];
+  const lines = [`domain: brain ${plan.dom.brain} (data ${dataName(plan.version)})${plan.dom.repos.length ? `, repos ${plan.dom.repos.map((d) => path.basename(d)).join(', ')}` : ', no project repo'}`];
   if (plan.version !== FROM) { lines.push(...plan.blockers.map((b) => `refused: ${b}`), ...plan.notes.map((n) => `note: ${n}`)); return lines.join('\n'); }
   for (const t of [plan.brain, ...plan.repos, ...plan.targets]) {
-    lines.push(`repository ${t.dir} (${t.role}${t.external ? ', outside the domain' : ''}, data layout ${t.version} -> ${TO}):`);
+    lines.push(`repository ${t.dir} (${t.role}${t.external ? ', outside the domain' : ''}, data ${dataName(t.version)} -> ${dataName(TO)}):`);
     if (t.moves.length) { lines.push(`  moves (${t.moves.length}):`); for (const l of all ? t.moves.map((m) => `${m.from} -> ${m.to}`) : groupMoves(t.moves)) lines.push(`    ${l}`); }
     const byStatus = new Map();
     for (const r of t.removes) { if (!byStatus.has(r.status)) byStatus.set(r.status, []); byStatus.get(r.status).push(r.path); }
@@ -892,7 +894,7 @@ function pruneEmpty(dir, rel) {
  */
 export function applyDomain(dir, { confirmedFile = null, approveFile = null, env = process.env } = {}) {
   const dom = domainOf(dir);
-  if (dataLayoutVersion(dom.brain) === TO) return { ok: true, nothing: true, message: `brain ${dom.brain} is in data layout 3 already: nothing to move` };
+  if (dataLayoutVersion(dom.brain) === TO) return { ok: true, nothing: true, message: `brain ${dom.brain} is in data 2.1 already: nothing to move` };
   const confirmed = readTriage(confirmedFile);
   const approve = readApprove(approveFile);
   let plan = planDomain(dir, { confirmed, approve, env });
@@ -905,7 +907,7 @@ export function applyDomain(dir, { confirmedFile = null, approveFile = null, env
   plan = planDomain(dir, { confirmed, approve, env });
   if (plan.blockers.length) return { ok: false, error: `${plan.blockers.length} item(s) to settle first:\n${plan.blockers.map((b) => `  ${b}`).join('\n')}`, plan };
   const problems = contentProblems(plan);
-  if (problems.length) return { ok: false, error: `content checks of layout 3 refuse files the move writes (${problems.length}):\n${problems.map((p) => `  ${p}`).join('\n')}`, plan };
+  if (problems.length) return { ok: false, error: `content checks of data 2.1 refuse files the move writes (${problems.length}):\n${problems.map((p) => `  ${p}`).join('\n')}`, plan };
   const commits = [];
   const heads = [];
   const env2 = { ...brainScriptEnv(), [MIGRATE_MOVE_ENV]: '1' };
@@ -914,7 +916,7 @@ export function applyDomain(dir, { confirmedFile = null, approveFile = null, env
       heads.push({ dir: t.dir, head: git(['rev-parse', 'HEAD'], { cwd: t.dir }).stdout });
       const what = t === plan.brain ? `${t.moves.length} file(s) moved, ${t.removes.length} removed, ${t.outgoing.length} into project repos`
         : t.external ? `${t.incoming.length} file(s) from brain ${plan.brain.name}` : `${t.incoming.length} file(s) from brain ${plan.brain.name}, ${t.removes.length} removed`;
-      commits.push({ dir: t.dir, name: t.name, sha: commitRepo(t, `${COMMIT_SUBJECT}: ${what} (migrate.mjs --to 3, spec 11)`) });
+      commits.push({ dir: t.dir, name: t.name, sha: commitRepo(t, `${COMMIT_SUBJECT}: ${what} (migrate.mjs --to 2.1, spec 11)`) });
     }
   } catch (err) {
     for (const h of heads) {
@@ -942,8 +944,9 @@ export function applyDomain(dir, { confirmedFile = null, approveFile = null, env
 
 /** Commits of the move in a repository (subject of migrate --to 3), newest first: [{ sha, subject }]. */
 function moveCommits(dir) {
-  const r = git(['log', '--format=%h\t%s', '--fixed-strings', `--grep=${BRAIN_COMMIT_TAG} ${COMMIT_SUBJECT}`], { cwd: dir });
-  return (r.ok ? r.stdout.split('\n').filter(Boolean) : []).map((l) => { const [sha, ...s] = l.split('\t'); return { sha, subject: s.join('\t') }; }).filter((c) => c.subject.startsWith(`${BRAIN_COMMIT_TAG} ${COMMIT_SUBJECT}`));
+  const subjects = [COMMIT_SUBJECT, OLD_COMMIT_SUBJECT].map((s) => `${BRAIN_COMMIT_TAG} ${s}`);
+  const r = git(['log', '--format=%h\t%s', '--fixed-strings', ...subjects.map((s) => `--grep=${s}`)], { cwd: dir });
+  return (r.ok ? r.stdout.split('\n').filter(Boolean) : []).map((l) => { const [sha, ...s] = l.split('\t'); return { sha, subject: s.join('\t') }; }).filter((c) => subjects.some((s) => c.subject.startsWith(s)));
 }
 
 /** The check of one repository in layout 3 after the move: { dir, name, problems, notes }. */
@@ -957,23 +960,23 @@ export function checkRepo(dir, { brainDir = null } = {}) {
   const map = layoutFor(TO, role);
   const files = trackedFiles(dir).map((f) => f.rel);
   const record = recordRel(role);
-  if (!files.includes(record)) problems.push(`${record} missing: no record of the move 2 -> 3`);
+  if (!files.includes(record)) problems.push(`${record} missing: no record of the move 2.0 -> 2.1`);
   const commits = moveCommits(dir);
   if (commits.length !== 1) problems.push(`${commits.length} commit(s) of the move (expected one): ${commits.map((c) => c.sha).join(', ') || 'none'}`);
   const policy = readJson(path.join(dir, map.policy), {}) || {};
   const old = oldPolicyKeys(policy);
   if (old.length) problems.push(`${map.policy}: keys of 1.8.0 left: ${old.join(', ')}`);
   const index = indexProblem(dir);
-  if (index) problems.push(`${INDEX_FILE}: ${index} in HEAD; regenerate it: migrate.mjs ${dir} --to 3 --check --fix`);
+  if (index) problems.push(`${INDEX_FILE}: ${index} in HEAD; regenerate it: migrate.mjs ${dir} --to 2.1 --check --fix`);
   const lessonDirs = role === ROLE_REPO ? [R3.rules, R3.skills] : [B3.rules, B3.skills];
   for (const r of principleRefs(dir, files, lessonDirs)) problems.push(`${r.file}:${r.line}: names ${r.ids.join(', ')}, which 2.0 does not adopt (spec 11.9)`);
   if (role === ROLE_REPO) {
     const cfg = readJson(path.join(dir, WORKFLOW_CONFIG), null);
     if (cfg && Object.hasOwn(cfg, 'knowledge_branch')) problems.push(`${WORKFLOW_CONFIG}: knowledge_branch left (2.0 reads target_branch, O12)`);
     for (const rel of files) {
-      if (L2.topicHidden && under(rel, L2.topicHidden)) { problems.push(`${rel}: the hidden archive of layout 2 left`); break; }
+      if (L2.topicHidden && under(rel, L2.topicHidden)) { problems.push(`${rel}: the hidden archive of data 2.0 left`); break; }
     }
-    for (const rel of files) if (under(rel, L2.topics)) { problems.push(`${rel}: a topic in a project repo (layout 3 keeps topics in the brain)`); break; }
+    for (const rel of files) if (under(rel, L2.topics)) { problems.push(`${rel}: a topic in a project repo (data 2.1 keeps topics in the brain)`); break; }
     if (brainDir) {
       const { find } = makeRewriter(mapRules(brainDir), brainDir);
       for (const rel of files) {
@@ -988,7 +991,7 @@ export function checkRepo(dir, { brainDir = null } = {}) {
   const L2tops = [KNOWLEDGE, L2.topics, OUTPUTS, L2.materialy];
   const left = new Map();
   for (const rel of files) { const top = L2tops.find((t) => under(rel, t)); if (top) left.set(top, (left.get(top) || 0) + 1); }
-  for (const [top, n] of left) problems.push(`${top}/: ${n} tracked file(s) of layout 2 left in the brain`);
+  for (const [top, n] of left) problems.push(`${top}/: ${n} tracked file(s) of data 2.0 left in the brain`);
   const topicFiles = files.filter((r) => under(r, B3.topics));
   for (const rel of topicFiles) {
     const parts = rel.split('/');
@@ -1005,7 +1008,7 @@ export function checkRepo(dir, { brainDir = null } = {}) {
       if (fields.length) problems.push(`${rel}: fields of 1.8.0 left: ${fields.join(', ')}`);
       if (!MODES.includes(t.mode)) problems.push(`${rel}: mode ${t.mode ?? 'missing'} (expected ${MODES.join(' or ')})`);
       if (!t.repos || typeof t.repos !== 'object' || !Array.isArray(t.repos.list) || !('main' in t.repos)) problems.push(`${rel}: repos { main, list } missing`);
-      if (t.state === 'closed') problems.push(`${rel}: a closed topic left (layout 3 has no archive)`);
+      if (t.state === 'closed') problems.push(`${rel}: a closed topic left (data 2.1 has no archive)`);
     }
   }
   for (const p of personRecords(dir, files, B3.memory).map((x) => x.rel)) problems.push(`${p}: a fact about a person in memory (osoby/ of the operator repo, spec 11.8)`);
@@ -1046,14 +1049,14 @@ export function fixIndexes(dir) {
   for (const d of [dom.brain, ...dom.repos]) {
     if (dataLayoutVersion(d) !== TO || !indexProblem(d)) continue;
     if (!git(['diff', '--cached', '--quiet'], { cwd: d }).ok) { out.push(`${path.basename(d)}: staged changes, ${INDEX_FILE} not regenerated`); continue; }
-    const done = commitIndexAfterMerge(d, { env: brainScriptEnv(), message: `${BRAIN_COMMIT_TAG} regenerate ${INDEX_FILE} (migrate --to 3 --check --fix)` });
+    const done = commitIndexAfterMerge(d, { env: brainScriptEnv(), message: `${BRAIN_COMMIT_TAG} regenerate ${INDEX_FILE} (migrate --to 2.1 --check --fix)` });
     out.push(`${path.basename(d)}: ${INDEX_FILE} ${done ? `regenerated, committed ${git(['rev-parse', '--short', 'HEAD'], { cwd: d }).stdout} (not pushed)` : 'current'}`);
   }
   return out;
 }
 
 export function formatCheck(check) {
-  const lines = [check.ok ? 'check (layout 3): ok' : `check (layout 3): ${check.results.reduce((n, r) => n + r.problems.length, 0)} problem(s)`];
+  const lines = [check.ok ? 'check (data 2.1): ok' : `check (data 2.1): ${check.results.reduce((n, r) => n + r.problems.length, 0)} problem(s)`];
   for (const r of check.results) {
     lines.push(`  ${r.name}: ${r.problems.length ? `${r.problems.length} problem(s)` : 'ok'}`);
     for (const p of r.problems) lines.push(`    ${p}`);
@@ -1092,7 +1095,7 @@ export function revertList(dir) {
 }
 
 export function formatRevert(list) {
-  const lines = ['revert of the move to layout 3 (spec 11.7: only before the threads of the domain start, with the operator\'s consent; a revert is a new commit):'];
+  const lines = ['revert of the move to data 2.1 (spec 11.7: only before the threads of the domain start, with the operator\'s consent; a revert is a new commit):'];
   for (const r of list) {
     if (r.error) { lines.push(`  ${r.name}: ${r.error}`); continue; }
     lines.push(`  ${r.name}: ${r.commits.length} commit(s), newest first:`);

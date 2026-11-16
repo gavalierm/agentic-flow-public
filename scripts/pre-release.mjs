@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { git, gitRemote, readJson, PLUGIN_ROOT } from './util.mjs';
 import { domainBrains } from './stores.mjs';
-import { layoutOf, dataLayoutVersion, dataPath } from './layout.mjs';
+import { layoutOf, dataLayoutVersion, dataPath, dataName } from './layout.mjs';
 import { listTopicRecords } from './topic-files.mjs';
 import { isMainTopic, commsProjectName, readObligations } from './comms.mjs';
 import { handoverNextStep, handoverQuestions, handoverTasks, TASKS_SECTION } from './brain-checks.mjs';
@@ -130,12 +130,12 @@ export function preRelease({ root = null, ctx = null, brains = null, env = proce
   for (const b of list) {
     const version = dataLayoutVersion(b.dir);
     const where = `${b.domainRoot ? `${path.basename(b.domainRoot)}/` : ''}${b.name}`;
-    if (version === 1) findings.push({ kind: 'layout1', where, text: `brain ${posix(b.dir)} is in data layout 1: 2.0 needs layout 2 (O22): node ${MIGRATE} ${posix(b.dir)} (preview), then node ${MIGRATE} ${posix(b.dir)} --apply [--confirmed <tsv>]` });
+    if (version === 1) findings.push({ kind: 'layout1', where, text: `brain ${posix(b.dir)} is in data 1: 2.0 needs data 2.0 (O22): node ${MIGRATE} ${posix(b.dir)} (preview), then node ${MIGRATE} ${posix(b.dir)} --apply [--confirmed <tsv>]` });
     const policy = readJson(dataPath(b.dir, 'policy'), {}) || {};
     const autoProjects = Object.keys(policy?.topics?.auto?.projects || {});
     if (autoProjects.length && !Array.isArray(policy?.topics?.shared_checkouts)) {
       const shared = autoProjects.map((p) => posix(path.relative(b.domainRoot || path.dirname(b.dir), path.resolve(b.dir, p))));
-      notes.push(`${where}: shared checkouts (D-0038) come from topics.shared_checkouts in 2.0, topics.auto.projects is no longer read: add "shared_checkouts": ${JSON.stringify(shared)} under topics of ${posix(path.relative(b.dir, dataPath(b.dir, 'policy')))} (migrate --to 3 carries it)`);
+      notes.push(`${where}: shared checkouts (D-0038) come from topics.shared_checkouts in 2.0, topics.auto.projects is no longer read: add "shared_checkouts": ${JSON.stringify(shared)} under topics of ${posix(path.relative(b.dir, dataPath(b.dir, 'policy')))} (migrate --to 2.1 carries it)`);
     }
     if (version !== 3) {
       const dom = domainOf(b.dir);
@@ -198,14 +198,14 @@ export function preRelease({ root = null, ctx = null, brains = null, env = proce
       }
     }
   }
-  for (const [where, ids] of noTasks) notes.push(`${where}: ${ids.length} handover(s) without "${TASKS_SECTION}" (${ids.join(', ')}): the first save handover of each under 2.0 writes it, the turn end blocks until then (P-011 of 2.0 has six sections); migrate --to 3 adds it`);
+  for (const [where, ids] of noTasks) notes.push(`${where}: ${ids.length} handover(s) without "${TASKS_SECTION}" (${ids.join(', ')}): the first save handover of each under 2.0 writes it, the turn end blocks until then (P-011 of 2.0 has six sections); migrate --to 2.1 adds it`);
   for (const d of doms.values()) {
     const repos = d.repos.map((r) => ({ name: path.basename(r), version: dataLayoutVersion(r) }));
     const tsv = posix(path.join(d.domainDir || path.dirname(d.brain), 'migrate-2-3.tsv'));
     const first = [d.version === 1 ? path.basename(d.brain) : null, ...repos.filter((r) => r.version === 1).map((r) => r.name)].filter(Boolean);
     migrate.push({
       brain: d.brain,
-      text: `${posix(d.brain)} (layout ${d.version})${repos.length ? `, repos ${repos.map((r) => `${r.name} (layout ${r.version})`).join(', ')}` : ''}: ${first.length ? `first 1 -> 2 for ${first.join(', ')} (node ${MIGRATE} <repo> --apply); then ` : ''}node ${MIGRATE} ${posix(d.brain)} --to 3 --write-triage ${tsv}; node ${MIGRATE} ${posix(d.brain)} --to 3 --apply --confirmed ${tsv} [--approve <tsv>]; node ${MIGRATE} ${posix(d.brain)} --to 3 --check`,
+      text: `${posix(d.brain)} (data ${dataName(d.version)})${repos.length ? `, repos ${repos.map((r) => `${r.name} (data ${dataName(r.version)})`).join(', ')}` : ''}: ${first.length ? `first 1 -> 2.0 for ${first.join(', ')} (node ${MIGRATE} <repo> --apply); then ` : ''}node ${MIGRATE} ${posix(d.brain)} --to 2.1 --write-triage ${tsv}; node ${MIGRATE} ${posix(d.brain)} --to 2.1 --apply --confirmed ${tsv} [--approve <tsv>]; node ${MIGRATE} ${posix(d.brain)} --to 2.1 --check`,
     });
   }
   return { root: base, brains: list.length, topics: topics.length, findings, notes, migrate };
@@ -220,6 +220,6 @@ export function preReleaseLines(res) {
     head,
     ...res.findings.map((f) => `- ${f.text}`),
     ...(res.notes.length ? ['notes:', ...res.notes.map((n) => `- ${n}`)] : []),
-    ...(res.migrate.length ? ['not in data layout 3 yet (projects migrate at the release, spec 11.5; each domain at once):', ...res.migrate.map((m) => `- ${m.text}`)] : ['every brain is in data layout 3']),
+    ...(res.migrate.length ? ['not in data 2.1 yet (projects migrate at the release, spec 11.5; each domain at once):', ...res.migrate.map((m) => `- ${m.text}`)] : ['every brain is in data 2.1']),
   ];
 }

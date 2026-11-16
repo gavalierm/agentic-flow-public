@@ -150,7 +150,7 @@ export function sourceAddDirOps(projectDir, topic, dir, { name = null, policy = 
  */
 export function resultAddOp(home, topic, file, { name = null, policy = {}, replace = false } = {}) {
   if (hasScratch(home)) {
-    if (replace) throw new Error('--replace: iba v tvare dát 2 (v tvare 1 ležia výsledky pri zdrojoch, tie sa nemenia); zvoľ iné meno (--as <meno>)');
+    if (replace) throw new Error('--replace: iba v dátach 2.0 (v dátach 1 ležia výsledky pri zdrojoch, tie sa nemenia); zvoľ iné meno (--as <meno>)');
     return sourceAddOp(home, topic, file, { name, policy });
   }
   if (!validTopic(topic)) throw new Error(`neplatná téma: ${topic}`);

@@ -308,7 +308,7 @@ export function deployIgnoreGaps(root) {
 /** One line of the entries added to deploy ignore files, or null. */
 export function formatDeployIgnores(list) {
   if (!list?.length) return null;
-  return `deploy ignore: ${list.map((x) => `${x.file} += ${x.added.join(', ')}`).join('; ')} (internal data of layout 2 is not deployed; in the same commit)`;
+  return `deploy ignore: ${list.map((x) => `${x.file} += ${x.added.join(', ')}`).join('; ')} (internal data of 2.0 is not deployed; in the same commit)`;
 }
 
 /**

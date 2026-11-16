@@ -51,16 +51,16 @@ Politika: `topics.continue_max` (predvolene 3) je strop zobudení pokračovaním
 | `overview.mjs` | `overview({ root, ctx, brains, now, owed })` | otvorené témy všetkých brainov všetkých domén pod koreňom projektov (`stores.mjs domainBrains`): nálezy `stuck` (`turn.stuck`), `lock` (nečinný zámok), `done` (`hotovo` mimo `mode: discussion`, bez dlžnej odpovede supervisora v `owed`) |
 | | `lockIdleSince(facts)`, `lockInactivity(facts, hours)` | nečinnosť zámku (4.2.2): od posledného pushu stavu témy, nie pri `otázka`, `hotovo` a `čakám` pred budíkom, po zmeškanom budíku od jeho času |
 | | `overviewLines`, `findingLine`, `findingKey`, `obligationLines`, `isSupervisorSession` | riadky prehľadu a záväzkov pošty pri štarte supervisora; kľúč nálezu pre úlohu `overview` (pošle iba nový nález) |
-| `pre-release.mjs` | `preRelease({ root, ctx, brains, mail })`, `preReleaseLines(res)` | kontrola pripravenosti pred vydaním 2.0 (spec 11.4, plán B19, O22) nad všetkými brainmi stroja, iba čítanie (`ls-remote`, bez fetch): živá téma bez kroku a otázky, vetva `topic/<t>` či `topic/<t>--*` bez commitov na origin, necommitnutý worktree, otvorená správa P-075 (téma s `fix_gate`/`orchestrator`) či P-055 (`handoffs.json`) z `comms obligations` každej témy, nedostupná pošta, brain v tvare 1; poznámky (handover bez šiestej sekcie, `topics.auto.projects`) a domény mimo tvaru 3 s príkazmi `migrate --to 3`; postup v `docs/release-2.0.md` |
+| `pre-release.mjs` | `preRelease({ root, ctx, brains, mail })`, `preReleaseLines(res)` | kontrola pripravenosti pred vydaním 2.0 (spec 11.4, plán B19, O22) nad všetkými brainmi stroja, iba čítanie (`ls-remote`, bez fetch): živá téma bez kroku a otázky, vetva `topic/<t>` či `topic/<t>--*` bez commitov na origin, necommitnutý worktree, otvorená správa P-075 (téma s `fix_gate`/`orchestrator`) či P-055 (`handoffs.json`) z `comms obligations` každej témy, nedostupná pošta, brain v dátach 1; poznámky (handover bez šiestej sekcie, `topics.auto.projects`) a domény mimo dát 2.1 s príkazmi `migrate --to 2.1`; postup v `docs/release-2.0.md` |
 | `overlap.mjs` | `checkOverlap(ctx, { scope, repo, project, exclude })` | prekryv novej témy s otvorenými témami pri `topic create`: iba riadky `overlap:`, nič neodmieta |
 
 Politika: `overview.interval_min` (predvolene 30) je interval úlohy `overview`; prah nečinnosti zámku `topics.stale_machine_hours` (12).
 
-## Migrácia tvaru 2 → 3 (spec 11)
+## Migrácia dát 2.0 → 2.1 (spec 11)
 
 | Modul | Export | Čo robí |
 |---|---|---|
-| `migrate-3.mjs` | `domainOf(dir)`, `planDomain(dir, { confirmed, approve })`, `applyDomain(dir, { confirmedFile, approveFile })` | doména naraz (brain a repá domény, ktoré ho menujú): plán, potom jeden commit v každom repe, zlyhanie vráti všetky (bez push); `bin/migrate.mjs --to 3` |
-| | `checkDomain(dir)`, `checkRepo(dir)`, `fixIndexes(dir)` | kontrola tvaru 3 po presune (záznam `migrate-2-3.tsv`, jeden commit, nič z tvaru 2, `zavery/`, handover, polia záznamu, politika, osoby, pravidlá P-050/P-055/P-064/P-075, `INDEX.md`, staré cesty) |
+| `migrate-3.mjs` | `domainOf(dir)`, `planDomain(dir, { confirmed, approve })`, `applyDomain(dir, { confirmedFile, approveFile })` | doména naraz (brain a repá domény, ktoré ho menujú): plán, potom jeden commit v každom repe, zlyhanie vráti všetky (bez push); `bin/migrate.mjs --to 2.1` |
+| | `checkDomain(dir)`, `checkRepo(dir)`, `fixIndexes(dir)` | kontrola dát 2.1 po presune (záznam `migrate-2-3.tsv`, jeden commit, nič z dát 2.0, `zavery/`, handover, polia záznamu, politika, osoby, pravidlá P-050/P-055/P-064/P-075, `INDEX.md`, staré cesty) |
 | | `revertList(dir)` | commit presunu a commity po ňom v každom repe (11.7) |
 | | `withTasksSection`, `topicRecord3`, `policy3`, `workflowConfig3`, `withTopic` | prevody jedného súboru (šiesta sekcia, záznam témy 2.0, politika bez kľúčov 1.8.0, `target_branch`, `topic:` výstupu) |

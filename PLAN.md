@@ -266,22 +266,22 @@ Agent, 2026-11-01. Codex na stroji nie je nainštalovaný; formáty overené v o
 
 Medzery a rozpory zistené pri plánovaní (triáž a pošta subagenta, zapnutie na úrovni sedenia, kópia kódu v T3, zápis logov, skilly brain v projekte, spúšťanie triáže, e-mail notifikácia, pre-commit brain, kontrola poradia štartu, deny vzor na brain, cache stavového riadku) rozhodol operátor 2026-11-01. Rozhodnutia sú zapísané normatívne priamo v princípoch P-014, P-015, P-017, P-021, P-024, P-025, P-030, P-032, P-036, P-040, P-041, P-044, P-046, P-048 a v predvolených hodnotách politiky v `docs/principles/`. Tento plán ich preberá v M1 až M5.
 
-## Mechanika dát: tvar dát 2 (D-0048)
+## Mechanika dát: dáta 2.0 (D-0048)
 
-Workflow pozná dva tvary dát repa (brain aj repo projektu), vybrané kľúčom `data_layout` v politike repa (`scripts/layout.mjs`); bez kľúča verzia 1. Cieľ verzie 2: každý druh dát má jedno miesto (P-067), viditeľné sú iba `zdroje/`, `temy/`, `vystupy/` a `INDEX.md`, ostatné v `.brain/`.
+Workflow pozná dve verzie dát repa (brain aj repo projektu), vybrané kľúčom `data_layout` v politike repa (`scripts/layout.mjs`); bez kľúča verzia 1. Cieľ verzie 2: každý druh dát má jedno miesto (P-067), viditeľné sú iba `zdroje/`, `temy/`, `vystupy/` a `INDEX.md`, ostatné v `.brain/`.
 
-- **Mapa ciest:** `LAYOUTS[1]`, `LAYOUTS[2]` a `LAYOUTS[3]` (tvar 3 aj s mapou repa projektu); moduly berú cesty cez `dataPath`/`dataRel`/`workDirFor`, nie literálom. Štart session vypíše blok „Tvar dát tohto repa“ s cestami logických miest (zdroje, práca témy, pracovné súbory, výstupy, fakt o subjekte, INDEX.md) pre verziu projektu a brainu; pravidlá a skilly menujú iba logické miesta. Hlášky hookov a skriptov skladajú cesty z mapy repa.
+- **Mapa ciest:** `LAYOUTS[1]`, `LAYOUTS[2]` a `LAYOUTS[3]` (dáta 2.1 aj s mapou repa projektu); moduly berú cesty cez `dataPath`/`dataRel`/`workDirFor`, nie literálom. Štart session vypíše blok „Dáta tohto repa“ s cestami logických miest (zdroje, práca témy, pracovné súbory, výstupy, fakt o subjekte, INDEX.md) pre verziu projektu a brainu; pravidlá a skilly menujú iba logické miesta. Hlášky hookov a skriptov skladajú cesty z mapy repa.
 - **Téma vo verzii 2:** `temy/<téma>/` s `.tema.json` (téma a držiteľ), `handover.md` a súbormi práce; pracovné súbory v `temy/<téma>/tmp/` (mimo gitu); uzavretá téma ostáva na mieste.
 - **INDEX.md:** generuje ho každý zápis workflow (`scripts/data-index.mjs`), zoradený, rovnaký na každom stroji; zdroj ide do repa `save.mjs source <súbor> --description "..."` (popis, pôvod a dátum v `.brain/sources.json`, INDEX.md v tom istom commite), nie gitom ručne.
 - **Správanie:** zápis podľa otázok A (je to vedomosť: fakt → pamäť agenta, rozhodnutie a dokument → výstupy, postup → skill) a B (voľba mimo pravomoci → operátor); „ulož toto“ bez cieľa sa najprv spýta; do `done` sa v téme nič nemaže ani netriedi; triáž súborov témy pri `done --topic` iba pri téme zadanej operátorom; `tmp/` sa pri `done --topic` zmaže; záver pracovníka je samostatný súbor v téme (skilly `workflow:save`, `workflow:done`, `workflow:delegate`).
-- **Prechod:** počas prechodu workflow číta aj zapisuje oba tvary (agenti bežia na rôznych verziách). Repo presunie `bin/migrate.mjs` (náhľad, potom presun `git mv` a nastavenie verzie); poradie presunu dát a triáž s operátorom sú vo fáze 4 plánu D-0048. Vyjde vo verziách 1.x (D-0050).
+- **Prechod:** počas prechodu workflow číta aj zapisuje obe verzie dát (agenti bežia na rôznych verziách). Repo presunie `bin/migrate.mjs` (náhľad, potom presun `git mv` a nastavenie verzie); poradie presunu dát a triáž s operátorom sú vo fáze 4 plánu D-0048. Vyjde vo verziách 1.x (D-0050).
 
-## Mechanika dát: tvar dát 3 (flow v2)
+## Mechanika dát: dáta 2.1 (flow v2)
 
-Brain (anglické názvy) a repo projektu majú v tvare 3 oddelené role (`scripts/layout.mjs`, rola podľa miesta `data_layout`: `policy.json` v koreni = brain, `.brain/policy.json` = repo projektu).
+Brain (anglické názvy) a repo projektu majú v dátach 2.1 oddelené role (`scripts/layout.mjs`, rola podľa miesta `data_layout`: `policy.json` v koreni = brain, `.brain/policy.json` = repo projektu).
 
 - **Brain:** `topics/<téma>/` (`.tema.json`, `handover.md`, výsledky práce; `tmp/` mimo gitu), `memory/`, `decisions/`, `rules/`, `skills/`, `exceptions/`, `logs/`, `policy.json`, `INDEX.md`; bez výstupov, zdrojov a archívu tém.
 - **Repo projektu:** kód, `vystupy/<typ>/` (iba triážou pri `done --topic`, téma v hlavičke `topic:`), `zdroje/<téma>/` (`save.mjs source` hneď), `.brain/` (politika, `sources.json`, vedomosti repa), `INDEX.md`. Nekódový obsah zapisuje `save` vo vlastnom klone workflow do cieľovej vetvy (`target_branch`, pri `target_protected` do `topic/<téma>--obsah`).
 - **Osoby:** `osoby/<id>.md` repa operátora (`bin/people.mjs`, `save.mjs person`).
-- **Zhoda tvaru:** štart session a `save` odmietnu prácu, keď jedno z repa a brainu má tvar 3 a druhé iný (`layoutGuard`).
-- **Presun:** `bin/migrate.mjs <repo> --to 3` (celá doména naraz, jeden commit v každom repe, `--check`, `--revert-list`).
+- **Zhoda dát:** štart session a `save` odmietnu prácu, keď jedno z repa a brainu má dáta 2.1 a druhé iný (`layoutGuard`).
+- **Presun:** `bin/migrate.mjs <repo> --to 2.1` (celá doména naraz, jeden commit v každom repe, `--check`, `--revert-list`).

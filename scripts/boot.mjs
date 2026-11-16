@@ -15,7 +15,7 @@ import { gitAccessProblem } from './brain.mjs';
 import { readTopics } from './records.mjs';
 import { undeliveredIssues } from './issue-watch.mjs';
 import { sessionKnowledgeSources, skillSources, knowledgeKinds } from './repo-knowledge.mjs';
-import { dataPath, dataRel, dataLayoutVersion, layoutOf, topicHome, topicWorkLabel, hasData, hasScratch, layoutRefusal } from './layout.mjs';
+import { dataPath, dataRel, dataLayoutVersion, layoutOf, topicHome, topicWorkLabel, hasData, hasScratch, layoutRefusal, dataName } from './layout.mjs';
 import { workDir, workTopic } from './topic-files.mjs';
 import { overview, overviewLines, obligationLines, isSupervisorSession } from './overview.mjs';
 import { migrateLocalMail } from './comms-migrate.mjs';
@@ -279,7 +279,7 @@ export function layoutGuard(ctx) {
 }
 
 /**
- * Start block "Tvar dát tohto repa" (D-0048): the paths of the logical names rules and skills use (zdroje, práca témy,
+ * Start block "Dáta tohto repa" (D-0048): the paths of the logical names rules and skills use (zdroje, práca témy,
  * pracovné súbory, výstupy, fakt o subjekte, INDEX.md) for the layout version of this project and its brain, so no rule
  * or skill spells a folder of one layout. Topics, decisions and memory live in the brain, sources and documents in the
  * project repo; the work of a topic and its work files in a brain without scratch/ (layouts 2 and 3, D-0056), else in the
@@ -298,7 +298,7 @@ export function dataMapLines(ctx) {
   const at = (who, root, name, ...rest) => `${who} ${[dataRel(root, name), ...rest].filter(Boolean).join('/')}/`;
   const topic = workTopic(ctx);
   const t = topic && topic !== 'main' ? topic : '<téma>';
-  const head = `Tvar dát tohto repa (verzia ${pv}${brain && !same && bv !== pv ? `, brain verzia ${bv}` : ''}; ${same ? `brain = projekt = repo ${toPosix(proj)}` : `projekt = repo ${toPosix(proj)}${brain ? `, brain = repo ${toPosix(brain)}` : ''}`}; cesta nižšie je od koreňa repa, ktoré riadok menuje):`;
+  const head = `Dáta tohto repa (dáta ${dataName(pv)}${brain && !same && bv !== pv ? `, brain dáta ${dataName(bv)}` : ''}; ${same ? `brain = projekt = repo ${toPosix(proj)}` : `projekt = repo ${toPosix(proj)}${brain ? `, brain = repo ${toPosix(brain)}` : ''}`}; cesta nižšie je od koreňa repa, ktoré riadok menuje):`;
   const index = [[P, proj], ...(brain && !same ? [['brain', brain]] : [])].filter(([, root]) => hasData(root, 'index')).map(([who]) => `${who} INDEX.md (generuje workflow pri zápise, ručne nie)`);
   // D-0056: a brain without scratch/ holds the whole topic (work, tmp/), also beside a project repo in layout 1.
   const inBrain = !!brain && !hasScratch(brain);

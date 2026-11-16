@@ -45,7 +45,7 @@ test('a brain and a project repo of layout 3: paths by role, work files per topi
     assert.equal(dataRel(fx.brain, 'memory'), 'memory');
     assert.equal(dataRel(fx.project, 'memory'), '.brain/memory');
     assert.equal(dataRel(fx.project, 'outputs', 'audity'), 'vystupy/audity');
-    assert.throws(() => dataRel(fx.brain, 'docs'), /does not exist in data layout 3/);
+    assert.throws(() => dataRel(fx.brain, 'docs'), /does not exist in data 2\.1/);
     assert.equal(layoutOf(fx.brain).index, 'INDEX.md');
     assert.equal(oneTopicFile(fx.brain), true);
     assert.equal(hasScratch(fx.brain), false);
@@ -79,7 +79,7 @@ test('save and topic write into a brain of layout 3: records in the root, the to
     // A brain of layout 3 keeps no documents (spec 4): save docs names where they go instead of a path error.
     r = fx.run('save.mjs', ['docs']);
     assert.equal(r.status, 1, r.out);
-    assert.match(r.stderr, /a brain of data layout 3 keeps no documents \(spec 4\): .*save\.mjs result.*save\.mjs source/);
+    assert.match(r.stderr, /a brain of data 2\.1 keeps no documents \(spec 4\): .*save\.mjs result.*save\.mjs source/);
   } finally { fx.cleanup(); }
 });
 
@@ -113,23 +113,23 @@ test('brain-init without --layout makes a brain of layout 3 from templates/brain
     const brain = path.join(root, 'b');
     const r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'brain-init.mjs'), brain], { env: cleanEnv({}), encoding: 'utf8' });
     assert.equal(r.status, 0, r.stderr);
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(brain, 'policy.json'), 'utf8')), { data_layout: 3 });
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(brain, 'policy.json'), 'utf8')), { data_layout: '2.1' });
     for (const d of ['topics', 'memory', 'decisions', 'rules', 'skills/agentic', 'exceptions', 'logs']) assert.ok(fs.existsSync(path.join(brain, d)), d);
     for (const d of ['.brain', 'vystupy', 'zdroje', 'temy']) assert.ok(!fs.existsSync(path.join(brain, d)), d);
     assert.match(fs.readFileSync(path.join(brain, '.gitignore'), 'utf8'), /^topics\/\*\/tmp\/$/m);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('session start and save refuse a project repo whose layout does not fit its brain of layout 3: pull first', () => {
+test('session start and save refuse a project repo whose layout does not fit its brain of data 2.1: pull first', () => {
   const fx = setup3({ thread: 'l3d', projectLayout: 2 });
   try {
     const h = fx.hook('session-start.mjs', { source: 'startup' });
-    assert.match(h.context, /STOP, work refused: data layout of repo .*project is 2, the brain of its domain .*brain has 3/);
+    assert.match(h.context, /STOP, work refused: data of repo .*project is 2\.0, the brain of its domain .*brain has 2\.1/);
     assert.match(h.context, new RegExp(`git -C ${fx.project.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} pull`));
-    assert.doesNotMatch(h.context, /Tvar dát tohto repa/);
+    assert.doesNotMatch(h.context, /Dáta tohto repa/);
     const r = fx.run('save.mjs', ['memory', 'project', 'site', '--content', 'Web beží na serveri x.']);
     assert.notEqual(r.status, 0, r.out);
-    assert.match(r.out, /save\.mjs refused, nothing written: data layout of repo/);
+    assert.match(r.out, /save\.mjs refused, nothing written: data of repo/);
     assert.ok(!fx.exists('memory/project-site.md'));
   } finally { fx.cleanup(); }
 });

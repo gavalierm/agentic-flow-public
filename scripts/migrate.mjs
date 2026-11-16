@@ -25,7 +25,7 @@ import { spawnSync } from 'node:child_process';
 import { git, gitRemote, readJson, PLUGIN_ROOT } from './util.mjs';
 import { BRAIN_COMMIT_TAG, MIGRATE_MOVE_ENV, DOMAIN_MARKER, brainScriptEnv, loadPolicy, threadId } from './config.mjs';
 import { checkBrainFile } from './brain-checks.mjs';
-import { LAYOUTS, LAYOUT_KEY, dataLayoutVersion } from './layout.mjs';
+import { LAYOUTS, LAYOUT_KEY, dataLayoutVersion, dataName } from './layout.mjs';
 import { brainWrite } from './brain.mjs';
 import { INDEX_FILE, refreshIndex, indexProblem, commitIndexAfterMerge, refreshDeployIgnores, deployIgnoreGaps, formatDeployIgnores } from './data-index.mjs';
 import { CLASSES, MOVED_CLASSES, BRAIN_SUFFIX, classTargetIn } from './triage.mjs';
@@ -37,7 +37,7 @@ export const FROM_VERSION = 1;
 export const TO_VERSION = 2;
 /** The record of a move (every file tracked before it, from -> to, status), committed with it; the check reads it. */
 export const RECORD_REL = `${path.posix.dirname(L2.policy)}/migrate-1-2.tsv`;
-export const COMMIT_SUBJECT = 'migrate data layout 1 -> 2';
+export const COMMIT_SUBJECT = 'migrate data 1 -> 2.0';
 const STATUS = { move: 'presun', merge: 'zlucene', triageMove: 'triaz-presun', stay: 'ostava', triageStay: 'triaz-ostava', never: 'nikdy', outside: 'mimo-gitu', toBrain: 'do-brainu', dupBrain: 'duplicita-brainu', removed: 'pomocne-zmazane', deleted: 'pomocne-zmazane-mimo-gitu' };
 /** Moves of a project repo whose target is in its brain (written there, or there already: a duplicate). */
 const intoBrain = (m) => m.status === STATUS.toBrain || m.status === STATUS.dupBrain;
@@ -218,8 +218,8 @@ const triageReason = (item, kind) => {
   if (top === L1.materialy) return `${L1.materialy}/: ${L2.materialy}/ or ${L2.topics}/<topic>/ (operator)`;
   if (top === L1.docs) return `${L1.docs}/ of a project repo (operator)`;
   if (top === L1.scratch) return `${L1.scratch}/ outside git (operator)`;
-  if (top === L1.projectKnowledge) return `${L1.projectKnowledge}/ outside the map of layout 2`;
-  return `outside the map of layout 1 (${kind})`;
+  if (top === L1.projectKnowledge) return `${L1.projectKnowledge}/ outside the map of data 2.0`;
+  return `outside the map of data 1 (${kind})`;
 };
 
 /** Untracked work files (scratch/): files outside nested repositories and virtual environments, plus those never moved. */
@@ -269,7 +269,7 @@ function triageTarget(item, row, kind = 'brain', untracked = false) {
   if (to.split('/').includes('..') || path.isAbsolute(to)) return { to: null, error: `${to}: target outside the repository; ${VALID_PROPOSALS}` };
   if (!TARGET_ROOTS.some((r) => under(to.replace(/\/$/, ''), r))) return { to: null, error: `${to}: target must be under ${TARGET_ROOTS.join('/, ')}/; ${VALID_PROPOSALS}` };
   // A file onto the path of a folder of layout 2 (vystupy, vystupy/dokumenty ...) would block that folder.
-  if (!folder && LAYOUT2_FOLDERS.has(to)) return { to: null, error: `${to}: a folder of layout ${TO_VERSION}, a file cannot take its name (a folder target ends with /); ${VALID_PROPOSALS}` };
+  if (!folder && LAYOUT2_FOLDERS.has(to)) return { to: null, error: `${to}: a folder of data ${dataName(TO_VERSION)}, a file cannot take its name (a folder target ends with /); ${VALID_PROPOSALS}` };
   // A tracked item of a project repo under temy/ (stav): the topic lives in its brain; @brain: a file of several projects
   // or of the agent. Work files outside git (scratch/) stay in the project repo.
   const brain = kind === 'project' && !untracked && (atBrain && byClass ? true : under(to.replace(/\/$/, ''), L2.topics));
@@ -285,7 +285,7 @@ function triageTarget(item, row, kind = 'brain', untracked = false) {
 export const SCRATCH_TARGET = `${L2.topics}/main/${L2.topicTmp}/`;
 function defaultProposal(t) {
   if (t.path !== `${L1.scratch}/` || t.untracked.size !== t.files.length) return null;
-  return { proposal: SCRATCH_TARGET, topic: '', reason: `${L1.scratch}/ outside git: layout ${TO_VERSION} keeps work files in ${L2.topics}/<topic>/${L2.topicTmp}/ (operator)` };
+  return { proposal: SCRATCH_TARGET, topic: '', reason: `${L1.scratch}/ outside git: data ${dataName(TO_VERSION)} keeps work files in ${L2.topics}/<topic>/${L2.topicTmp}/ (operator)` };
 }
 
 const destOf = (item, target, rel) => {
@@ -409,7 +409,7 @@ export function planMigration(dir, { proposals = new Map(), confirmed = null } =
         const clashes = inBrain ? t.files.map((rel) => ({ rel, dest: destOf(t.path, to, rel) })).filter((x) => inBrain.has(x.dest)) : [];
         const differs = clashes.find((x) => !sameFile(path.join(dir, x.rel), path.join(brainDir, x.dest)));
         if (!brainDir || !fs.existsSync(brainDir)) { t.to = null; t.brain = false; t.error = `target ${to} is in the brain of the project, and .workflow.json names none (or it is missing); use zdroj, dokument or ostava`; }
-        else if (!inBrain) { t.to = null; t.brain = false; t.error = `target ${to} is in brain ${path.basename(brainDir)}, which is in data layout ${dataLayoutVersion(brainDir)}: move the brain to layout ${TO_VERSION} first`; }
+        else if (!inBrain) { t.to = null; t.brain = false; t.error = `target ${to} is in brain ${path.basename(brainDir)}, which is in data ${dataName(dataLayoutVersion(brainDir))}: move the brain to data ${dataName(TO_VERSION)} first`; }
         else if (differs) { t.to = null; t.brain = false; t.error = `target ${differs.dest} exists in brain ${path.basename(brainDir)} with another content`; }
         else t.dups = new Set(clashes.map((x) => x.rel));
       } else if (to) {
@@ -532,9 +532,9 @@ function rewritable(rel, kind) {
 
 export function formatPlan(plan, { all = false } = {}) {
   const lines = [];
-  lines.push(`repository: ${plan.dir} (${plan.kind}, data layout ${plan.version})`);
-  if (plan.version === TO_VERSION) { lines.push(`already in data layout ${TO_VERSION}: nothing to move`); return lines.join('\n'); }
-  if (plan.version !== FROM_VERSION) { lines.push(`data layout ${plan.version}: this tool moves only layout ${FROM_VERSION} to ${TO_VERSION}; refused`); return lines.join('\n'); }
+  lines.push(`repository: ${plan.dir} (${plan.kind}, data ${dataName(plan.version)})`);
+  if (plan.version === TO_VERSION) { lines.push(`already in data ${dataName(TO_VERSION)}: nothing to move`); return lines.join('\n'); }
+  if (plan.version !== FROM_VERSION) { lines.push(`data ${dataName(plan.version)}: this tool moves only data ${dataName(FROM_VERSION)} to ${dataName(TO_VERSION)}; refused`); return lines.join('\n'); }
   const moves = allMoves(plan);
   lines.push(`moves (${moves.length}):`);
   const brainName = plan.brainDir ? path.basename(plan.brainDir) : 'brain';
@@ -640,8 +640,8 @@ function sessionBrainIs(dir, { project, cwd }) {
  */
 export function applyMigration(dir, { confirmedFile = null, proposalsFile = null, project = null, cwd = process.cwd() } = {}) {
   const version = dataLayoutVersion(dir);
-  if (version === TO_VERSION) return { ok: true, nothing: true, message: `already in data layout ${TO_VERSION}: nothing to move` };
-  if (version !== FROM_VERSION) return { ok: false, error: `data layout ${version}: this tool moves only layout ${FROM_VERSION} to ${TO_VERSION}` };
+  if (version === TO_VERSION) return { ok: true, nothing: true, message: `already in data ${dataName(TO_VERSION)}: nothing to move` };
+  if (version !== FROM_VERSION) return { ok: false, error: `data ${dataName(version)}: this tool moves only data ${dataName(FROM_VERSION)} to ${dataName(TO_VERSION)}` };
   // --triage carries only proposals; the move executes rows of --confirmed. Without --confirmed the apply committed the
   // proposals as triaz-ostava and marked the repository layout 2 without a word (flow-public#90).
   if (proposalsFile && !confirmedFile) return { ok: false, error: '--triage carries only proposals, the apply does not execute them: pass the reviewed TSV as --confirmed <tsv> (nothing changed)' };
@@ -703,7 +703,7 @@ export function applyMigration(dir, { confirmedFile = null, proposalsFile = null
   const check = checkMigration(dir, { before, project, cwd, consolidate, outsideHere: true });
   // scratch/ left (not confirmed): said in one line with the row that moves it, not only as a triage item that stays.
   const scratchLeft = fs.existsSync(path.join(dir, L1.scratch))
-    ? `${L1.scratch}/ stays (outside git, not confirmed); layout ${TO_VERSION} has no ${L1.scratch}/: work files are in ${L2.topics}/<topic>/${L2.topicTmp}/; move its content to ${SCRATCH_TARGET} with the operator's consent (outside git: git does not restore it); before the move a confirmed row "${L1.scratch}/<TAB>${SCRATCH_TARGET}" does it`
+    ? `${L1.scratch}/ stays (outside git, not confirmed); data ${dataName(TO_VERSION)} has no ${L1.scratch}/: work files are in ${L2.topics}/<topic>/${L2.topicTmp}/; move its content to ${SCRATCH_TARGET} with the operator's consent (outside git: git does not restore it); before the move a confirmed row "${L1.scratch}/<TAB>${SCRATCH_TARGET}" does it`
     : null;
   return { ok: true, sha, brainSha, plan, moves, outside, deleted: removedOutside, note: ready.note, adapter, check, pruned, scratchLeft, deployIgnores: info.deployIgnores || [] };
 }
@@ -741,7 +741,7 @@ function moveContent(dir, plan, moves) {
   }
   const policyFrom = tracked.find((m) => m.to === L2.policy);
   const policy = policyFrom ? readJson(path.join(dir, policyFrom.from), {}) || {} : {};
-  content.set(L2.policy, json({ ...policy, [LAYOUT_KEY]: TO_VERSION }));
+  content.set(L2.policy, json({ ...policy, [LAYOUT_KEY]: dataName(TO_VERSION) }));
   const ignore = gitignoreText(dir);
   if (ignore) content.set('.gitignore', ignore);
   if (plan.kind === 'brain') {
@@ -953,11 +953,11 @@ export function checkMigration(dir, { before = null, project = null, cwd = proce
     if (!now.has(r.to) && !archivedTopicPlaces(r.to).some((p) => now.has(p))) problems.push(`${r.from}: ${r.from === r.to ? 'should stay' : `new place ${r.to}`}, not tracked`);
   }
   if (outsideAway.length) notes.push(`${outsideAway.length} file(s) the move put outside git are not here (${outsideAway.slice(0, 3).map((r) => r.to).join(', ')}${outsideAway.length > 3 ? ', …' : ''}): untracked work files exist only on the machine that ran the move, a clone or another machine has none; not checked`);
-  for (const g of deployIgnoreGaps(dir)) problems.push(`${g.file}: misses ${g.missing.join(', ')} (internal data of layout ${TO_VERSION}, a deploy would publish it); add them: migrate.mjs ${dir} --check --fix`);
-  for (const rel of now) if (LAYOUT2_FOLDERS.has(rel)) problems.push(`${rel}: a tracked file on the path of a folder of layout ${TO_VERSION}; move it under ${rel}/ or elsewhere`);
+  for (const g of deployIgnoreGaps(dir)) problems.push(`${g.file}: misses ${g.missing.join(', ')} (internal data of ${dataName(TO_VERSION)}, a deploy would publish it); add them: migrate.mjs ${dir} --check --fix`);
+  for (const rel of now) if (LAYOUT2_FOLDERS.has(rel)) problems.push(`${rel}: a tracked file on the path of a folder of data ${dataName(TO_VERSION)}; move it under ${rel}/ or elsewhere`);
   const index = version === TO_VERSION ? indexProblem(dir) : null;
   if (index) problems.push(`${INDEX_FILE}: ${index === 'missing' ? 'missing' : 'stale (differs from the tracked files)'} in HEAD; regenerate it: migrate.mjs ${dir} --check --fix`);
-  for (const rel of oldEmptyFolders(dir, rows)) problems.push(`${rel}/: empty folder of layout ${FROM_VERSION} left after the move (no file inside; remove it)`);
+  for (const rel of oldEmptyFolders(dir, rows)) problems.push(`${rel}/: empty folder of data ${dataName(FROM_VERSION)} left after the move (no file inside; remove it)`);
   const stayed = rows.filter((r) => r.from === r.to).map((r) => r.from);
   const { find } = makeRewriter(rows.filter((r) => r.from !== r.to && relocated(r)), { tracked: stayed, kind: repoKind(dir) });
   const waiting = new Set(rows.filter((r) => r.status === STATUS.triageStay).map((r) => r.from));
@@ -1197,7 +1197,7 @@ export function formatCrossFix(results) {
  * current.
  */
 export function fixIndex(dir) {
-  if (dataLayoutVersion(dir) !== TO_VERSION) throw new Error(`${dir}: data layout ${dataLayoutVersion(dir)}, ${INDEX_FILE} only in layout ${TO_VERSION}`);
+  if (dataLayoutVersion(dir) !== TO_VERSION) throw new Error(`${dir}: data ${dataName(dataLayoutVersion(dir))}, ${INDEX_FILE} only in data ${dataName(TO_VERSION)}`);
   if (!git(['diff', '--cached', '--quiet'], { cwd: dir }).ok) throw new Error(`${dir}: staged changes; commit or unstage them first (${INDEX_FILE} is built from the staged files)`);
   if (!indexProblem(dir)) return { sha: null };
   const committed = commitIndexAfterMerge(dir, { env: brainScriptEnv(), message: `${BRAIN_COMMIT_TAG} regenerate ${INDEX_FILE} (migrate --check --fix)` });
@@ -1210,7 +1210,7 @@ export function fixIndex(dir) {
  * { added: [{ file, added }], sha } (sha null when nothing was missing).
  */
 export function fixDeployIgnores(dir) {
-  if (dataLayoutVersion(dir) !== TO_VERSION) throw new Error(`${dir}: data layout ${dataLayoutVersion(dir)}, deploy ignores are filled only in layout ${TO_VERSION}`);
+  if (dataLayoutVersion(dir) !== TO_VERSION) throw new Error(`${dir}: data ${dataName(dataLayoutVersion(dir))}, deploy ignores are filled only in data ${dataName(TO_VERSION)}`);
   if (!deployIgnoreGaps(dir).length) return { added: [], sha: null };
   if (!git(['diff', '--cached', '--quiet'], { cwd: dir }).ok) throw new Error(`${dir}: staged changes; commit or unstage them first (the deploy ignore files are committed alone)`);
   const env = brainScriptEnv();

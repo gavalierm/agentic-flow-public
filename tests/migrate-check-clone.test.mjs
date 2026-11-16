@@ -78,7 +78,7 @@ test('a fresh clone after the move: files moved outside git are a note, not a pr
   } finally { fx.cleanup(); }
 });
 
-test('a clone not pulled after the domain moved to layout 3: the session start refuses it until git pull, then starts', () => {
+test('a clone not pulled after the domain moved to data 2.1: the session start refuses it until git pull, then starts', () => {
   const fx = setup3({ thread: 'mc3', projectLayout: 2 });
   try {
     const clone = path.join(fx.root, 'project-b');
@@ -86,11 +86,11 @@ test('a clone not pulled after the domain moved to layout 3: the session start r
     makeLayout2Repo(fx.project, 3);
     const opts = { cwd: clone, projectDir: clone };
     let h = fx.hook('session-start.mjs', { source: 'startup' }, opts);
-    assert.match(h.context, /STOP, work refused: data layout of repo .*project-b is 2, the brain of its domain .* has 3/, h.context);
+    assert.match(h.context, /STOP, work refused: data of repo .*project-b is 2\.0, the brain of its domain .* has 2\.1/, h.context);
     assert.match(h.context, /git -C \S*project-b pull/);
     gitq(clone, 'pull', '-q');
     h = fx.hook('session-start.mjs', { source: 'startup' }, opts);
     assert.doesNotMatch(h.context, /STOP/, h.context);
-    assert.match(h.context, /Tvar dát tohto repa \(verzia 3;/);
+    assert.match(h.context, /Dáta tohto repa \(dáta 2\.1;/);
   } finally { fx.cleanup(); }
 });

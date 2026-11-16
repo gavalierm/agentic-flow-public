@@ -90,7 +90,7 @@ test('apply: layout 2 in one commit, merged .tema.json, closed topic in place, p
     assert.match(r.stdout, /check: ok/);
     assert.equal(dataLayoutVersion(fx.brain), 2);
     assert.equal(gitq(fx.brain, 'rev-list', '--count', 'origin/main..HEAD'), '0', 'pushed');
-    assert.match(gitq(fx.brain, 'log', '-1', '--format=%s'), /migrate data layout 1 -> 2/);
+    assert.match(gitq(fx.brain, 'log', '-1', '--format=%s'), /migrate data 1 -> 2\.0/);
     // History of a moved file stays (a rename in the one commit).
     assert.match(gitq(fx.brain, 'log', '--follow', '--format=%s', '--', 'temy/beta/handover.md'), /fixture/);
     assert.match(gitq(fx.brain, 'show', '--format=', '--name-status', 'HEAD'), /^R100\ttopics\/archive\/beta\/handover\.md\ttemy\/beta\/handover\.md$/m);
@@ -142,9 +142,9 @@ test('apply with a confirmed triage list moves the item and rewrites the paths t
     const sha = head(fx.brain);
     const again = fx.run('migrate.mjs', [fx.brain, '--apply']);
     assert.equal(again.status, 0, again.out);
-    assert.match(again.stdout, /already in data layout 2: nothing to move/);
+    assert.match(again.stdout, /already in data 2\.0: nothing to move/);
     assert.equal(head(fx.brain), sha);
-    assert.match(fx.run('migrate.mjs', [fx.brain]).stdout, /already in data layout 2: nothing to move/);
+    assert.match(fx.run('migrate.mjs', [fx.brain]).stdout, /already in data 2\.0: nothing to move/);
     // Revert of the one commit: layout 1 as before.
     const rv = spawnSync('git', ['revert', '--no-edit', sha], { cwd: fx.brain, env: { ...process.env, [BRAIN_SCRIPT_ENV]: '1' }, encoding: 'utf8' });
     assert.equal(rv.status, 0, rv.stderr);
@@ -198,7 +198,7 @@ test('apply refuses a dirty tree, a divergence from origin and a layout above 2;
     commitFiles(fx.brain, { '.brain/policy.json': JSON.stringify({ data_layout: 3 }) + '\n' }, 'layout 3', { noVerify: true });
     r = fx.run('migrate.mjs', [fx.brain]);
     assert.notEqual(r.status, 0);
-    assert.match(r.out, /data layout 3; this tool moves only layout 1 to 2, refused/);
+    assert.match(r.out, /data 2\.1; this tool moves only data 1 to 2\.0, refused/);
   } finally { fx.cleanup(); }
 });
 

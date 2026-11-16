@@ -13,7 +13,7 @@ const SPLIT = /\s*(?:&&|\|\||;|\n|\|)\s*/;
 export function readOnlySourceDeny(cfg, absPaths, projectDir = null, brainDir = null) {
   // Where results and work files go, by the layout of the topic home (D-0048, D-0056: a brain in layout 2 holds the work
   // of a topic, else the project repo); without a project the logical names.
-  let where = 'výsledky patria do práce témy a medzivýsledky do pracovných súborov (cesty v štarte, blok „Tvar dát tohto repa“)';
+  let where = 'výsledky patria do práce témy a medzivýsledky do pracovných súborov (cesty v štarte, blok „Dáta tohto repa“)';
   try {
     if (projectDir) {
       const home = topicHome(brainDir, projectDir);

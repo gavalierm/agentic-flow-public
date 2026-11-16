@@ -95,7 +95,7 @@ test('preview lists the moves and what waits; --apply is refused until outputs, 
     try {
       const r = v1.run('migrate.mjs', [v1.brain, '--to', '3']);
       assert.notEqual(r.status, 0);
-      assert.match(r.out, /data layout 1; move it to layout 2 first: migrate\.mjs \S+ --apply \(then --to 3\)/);
+      assert.match(r.out, /data 1; move it to data 2\.0 first: migrate\.mjs \S+ --apply \(then --to 2\.1\)/);
     } finally { v1.cleanup(); }
   } finally { fx.cleanup(); }
 });
@@ -141,7 +141,7 @@ test('apply: one commit per repo, topics, records, outputs into the project repo
     assert.ok(!fs.existsSync(path.join(fx.brain, 'memory', 'person-jana.md')), 'a fact about a person leaves memory after collect');
     assert.ok(!fs.existsSync(path.join(fx.brain, 'skills', 'agentic', 'old-gate')), 'the approved lesson is removed');
     const policy = JSON.parse(B('policy.json'));
-    assert.equal(policy.data_layout, 3);
+    assert.equal(policy.data_layout, '2.1');
     assert.deepEqual(policy.topics, { default_holder_mode: 'operator' });
     assert.equal(policy.limits, undefined);
     assert.match(B('INDEX.md'), /topics\/alpha\/handover\.md/);
@@ -161,7 +161,7 @@ test('apply: one commit per repo, topics, records, outputs into the project repo
     // The check of layout 3 over the domain.
     const c = fx.run('migrate.mjs', [fx.brain, '--to', '3', '--check']);
     assert.equal(c.status, 0, c.out);
-    assert.match(c.stdout, /check \(layout 3\): ok/);
+    assert.match(c.stdout, /check \(data 2\.1\): ok/);
     // The revert list names every commit; reverting them brings each repository back to layout 2.
     const rl = fx.run('migrate.mjs', [fx.brain, '--to', '3', '--revert-list']);
     assert.equal(rl.status, 0, rl.out);

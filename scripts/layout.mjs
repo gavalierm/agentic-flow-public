@@ -151,6 +151,23 @@ export const ROLE_BRAIN = 'brain';
 export const ROLE_REPO = 'repo';
 /** Key of the layout version in a repository's policy file. */
 export const LAYOUT_KEY = 'data_layout';
+
+/**
+ * The names of the data versions (operator 2026-11-16): the data of workflow 2.0 is "2.0" (layout 2), the data the 2.0
+ * flow moves to is "2.1" (layout 3), the old data "1" (layout 1). Code keeps the numbers inside; everything people and
+ * agents see (messages, options, the value written to a policy) uses the names. A policy may carry either form.
+ */
+export const DATA_NAMES = Object.freeze({ 1: '1', 2: '2.0', 3: '2.1' });
+/** The name of a layout version ("2.1" for 3); an unknown value as given. */
+export const dataName = (v) => DATA_NAMES[Number(v)] ?? DATA_NAMES[parseDataVersion(v)] ?? String(v);
+/** A layout version from a name or a number ("2.1" or 3 -> 3, "2.0" or 2 -> 2, "1" or 1 -> 1); null when unknown. */
+export function parseDataVersion(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const s = String(v).trim();
+  const byName = Object.entries(DATA_NAMES).find(([, name]) => name === s);
+  if (byName) return Number(byName[0]);
+  return /^\d+$/.test(s) && DATA_NAMES[Number(s)] ? Number(s) : null;
+}
 /** Where the version is read, in order; fixed paths readable before any other path of the repository is known. */
 export const VERSION_FILES = Object.freeze(['.brain/policy.json', 'policy.json', 'agentic/policy.json']);
 
@@ -165,9 +182,9 @@ export const layoutVersions = () => [...KNOWN_VERSIONS];
  * error (a newer workflow wrote the repository).
  */
 export function layoutFor(version = DEFAULT_LAYOUT_VERSION, role = ROLE_BRAIN) {
-  const v = Number(version);
+  const v = parseDataVersion(version) ?? Number(version);
   const map = KNOWN_VERSIONS.includes(v) ? (role === ROLE_REPO && REPO_LAYOUTS[v]) || LAYOUTS[v] : null;
-  if (!map) throw new Error(`data layout ${version} is not known to this workflow (known: ${KNOWN_VERSIONS.join(', ')}); update the workflow`);
+  if (!map) throw new Error(`data ${dataName(version)} is not known to this workflow (known: ${KNOWN_VERSIONS.map(dataName).join(', ')}); update the workflow`);
   return map;
 }
 
@@ -180,7 +197,7 @@ function versionSource(root) {
   for (const rel of VERSION_FILES) {
     let json;
     try { json = JSON.parse(fs.readFileSync(path.join(root, ...rel.split('/')), 'utf8')); } catch { continue; }
-    if (json && Object.prototype.hasOwnProperty.call(json, LAYOUT_KEY)) return { version: json[LAYOUT_KEY], file: rel };
+    if (json && Object.prototype.hasOwnProperty.call(json, LAYOUT_KEY)) return { version: parseDataVersion(json[LAYOUT_KEY]) ?? json[LAYOUT_KEY], file: rel };
   }
   return { version: DEFAULT_LAYOUT_VERSION, file: null };
 }
@@ -203,7 +220,7 @@ export function layoutOf(root) {
 const pathIn = (map, name, version) => {
   const rel = map[name];
   if (rel === undefined) throw new Error(`unknown data path ${name}`);
-  if (rel === null) throw new Error(`data path ${name} does not exist in data layout ${version}`);
+  if (rel === null) throw new Error(`data path ${name} does not exist in data ${dataName(version)}`);
   return rel;
 };
 
@@ -257,7 +274,7 @@ export function layoutRefusal(brainDir, repoDir) {
   const m = layoutMismatch(brainDir, repoDir);
   if (!m) return null;
   const older = Number(m.repo) < Number(m.brain) ? repoDir : brainDir;
-  return `data layout of repo ${repoDir} is ${m.repo}, the brain of its domain ${brainDir} has ${m.brain} (${LAYOUT_KEY} in its policy): one clone is not current; run git -C ${older} pull and start the session again; no work in this repo until both have the same layout (spec 11.10)`;
+  return `data of repo ${repoDir} is ${dataName(m.repo)}, the brain of its domain ${brainDir} has ${dataName(m.brain)} (${LAYOUT_KEY} in its policy): one clone is not current; run git -C ${older} pull and start the session again; no work in this repo until both have the same data (spec 11.10)`;
 }
 
 /** Relative path (posix) of a logical name, layout 1 (kept for the tests and messages of layout 1; code reads layoutOf(root)). */

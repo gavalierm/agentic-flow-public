@@ -111,12 +111,12 @@ test('session start fast-forwards the brain to origin; a clone with own changes 
   } finally { fx.cleanup(); }
 });
 
-test('layout 3: the block "Tvar dát tohto repa" names topics/ of the brain and vystupy/<typ>/ of the project; a layout that does not fit stops the start (pull)', () => {
+test('data 2.1: the block "Dáta tohto repa" names topics/ of the brain and vystupy/<typ>/ of the project; a layout that does not fit stops the start (pull)', () => {
   const fx = setup3({ thread: 'ss3' });
   try {
     const r = fx.hook('session-start.mjs', { source: 'startup' });
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.context, /Tvar dát tohto repa \(verzia 3;/);
+    assert.match(r.context, /Dáta tohto repa \(dáta 2\.1;/);
     assert.match(r.context, /- práca témy \(handover, \.tema\.json, výsledky práce\): brain topics\/<téma>\//);
     assert.match(r.context, /- zdroje \(súbory zvonka, nemenia sa\): projekt zdroje\/<téma>\//);
     assert.match(r.context, /- výstupy: rozhodnutia brain decisions\/, výstupy podľa typu projekt vystupy\/<typ>\//);
@@ -127,8 +127,8 @@ test('layout 3: the block "Tvar dát tohto repa" names topics/ of the brain and 
   try {
     const r = bad.hook('session-start.mjs', { source: 'startup' });
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.context, /STOP, work refused: data layout of repo .* is 2, the brain of its domain .* has 3 .*pull/);
-    assert.doesNotMatch(r.context, /Tvar dát tohto repa/);
+    assert.match(r.context, /STOP, work refused: data of repo .* is 2\.0, the brain of its domain .* has 2\.1 .*pull/);
+    assert.doesNotMatch(r.context, /Dáta tohto repa/);
   } finally { bad.cleanup(); }
 });
 

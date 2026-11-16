@@ -53,7 +53,7 @@ test('a brain without policy.json is previewed as a brain with moves', () => {
   const dir = repo(BRAIN);
   const r = run(dir, '.');
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /\(brain, data layout 1\)/);
+  assert.match(r.stdout, /\(brain, data 1\)/);
   assert.doesNotMatch(r.stdout, /moves \(0\)/);
 });
 
@@ -61,5 +61,5 @@ test('a project repo with agentic/ stays a project repo', () => {
   const dir = repo({ 'agentic/topics/alpha/topic.json': '{}\n', 'src/a.js': '1\n' });
   const r = run(dir, '.');
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /\(project, data layout 1\)/);
+  assert.match(r.stdout, /\(project, data 1\)/);
 });

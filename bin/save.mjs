@@ -1142,7 +1142,7 @@ function savePerson(ctx) {
 /** Persona docs/ (P-024): files written directly are committed and pushed in one script commit. */
 function saveDocs(ctx) {
   // Data layout 3 (spec 4): a brain keeps no documents and no sources; they go to the target repo of the topic.
-  if (!hasData(ctx.brainDir, 'docs')) fail('save.mjs docs: a brain of data layout 3 keeps no documents (spec 4): a result of the topic goes to topics/<topic>/ (save.mjs result), data from outside to the target repo (save.mjs source), and done --topic sorts the topic files into vystupy/<typ>/ of the target repo; nothing written');
+  if (!hasData(ctx.brainDir, 'docs')) fail('save.mjs docs: a brain of data 2.1 keeps no documents (spec 4): a result of the topic goes to topics/<topic>/ (save.mjs result), data from outside to the target repo (save.mjs source), and done --topic sorts the topic files into vystupy/<typ>/ of the target repo; nothing written');
   if (!ctx.brainInfo?.persona) fail(`save.mjs docs: only a persona keeps documents in brain (${dataRel(ctx.brainDir, 'docs')}/, ${dataRel(ctx.brainDir, 'materialy')}/); in a project they belong to the project repo (P-024)`);
   // materialy/ like docs/ (D-0011). A file is committed byte for byte (PDF, image); only .md is read as text for its checks.
   const docs = dataRel(ctx.brainDir, 'docs');

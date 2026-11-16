@@ -38,7 +38,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, fail, gitToplevel } from '../scripts/util.mjs';
-import { dataLayoutVersion } from '../scripts/layout.mjs';
+import { dataLayoutVersion, dataName, parseDataVersion } from '../scripts/layout.mjs';
 import { planMigration, formatPlan, readTriage, formatTriageTsv, applyMigration, checkMigration, contentProblems, formatCheck, fixIndex, fixDeployIgnores, fixCrossRefs, formatCrossFix, adapterCommand, FROM_VERSION, TO_VERSION, TRIAGE_HELP } from '../scripts/migrate.mjs';
 import { formatDeployIgnores } from '../scripts/data-index.mjs';
 import * as m3 from '../scripts/migrate-3.mjs';
@@ -71,10 +71,10 @@ try {
   const project = typeof args.project === 'string' ? path.resolve(args.project) : null;
   const version = dataLayoutVersion(target);
   if (args.to !== undefined) {
-    if (String(args.to) !== String(m3.TO)) fail(`--to ${args.to}: only --to ${m3.TO} (layout 2 -> 3); layout 1 -> 2 runs without --to`);
-    if (args.triage) fail('--to 3 reads the triage from --confirmed (proposals: --write-triage); --triage refused');
+    if (parseDataVersion(args.to) !== m3.TO) fail(`--to ${args.to}: only --to ${dataName(m3.TO)} (data 2.0 -> 2.1); data 1 -> 2.0 runs without --to`);
+    if (args.triage) fail('--to 2.1 reads the triage from --confirmed (proposals: --write-triage); --triage refused');
     const brain = m3.domainOf(target).brain;
-    if (dataLayoutVersion(brain) === 1 || version === 1) fail(`${version === 1 ? target : brain}: data layout 1; move it to layout 2 first: migrate.mjs ${version === 1 ? target : brain} --apply (then --to 3)`);
+    if (dataLayoutVersion(brain) === 1 || version === 1) fail(`${version === 1 ? target : brain}: data 1; move it to data 2.0 first: migrate.mjs ${version === 1 ? target : brain} --apply (then --to 2.1)`);
     if (args['revert-list']) { out(m3.formatRevert(m3.revertList(target))); process.exit(0); }
     if (args.check) {
       if (args.fix) for (const l of m3.fixIndexes(target)) out(l);
@@ -89,18 +89,18 @@ try {
       out(m3.formatPlan(res.plan));
       for (const c of res.commits) out(`committed ${c.name}: ${c.sha} (not pushed)`);
       for (const l of res.moved) out(`moved outside git (a revert does not move it back): ${l}`);
-      if (res.pruned.length) out(`removed empty folders of layout 2: ${res.pruned.join(', ')}`);
+      if (res.pruned.length) out(`removed empty folders of data 2.0: ${res.pruned.join(', ')}`);
       for (const a of res.adapters) out(`adapter ${a.name}: ${a.res.ok ? 'regenerated' : `failed: ${a.res.out}`}`);
       out(m3.formatCheck(res.check));
       out(`push after the check (spec 11.10: the clones of other machines pull before the threads start): ${res.commits.map((c) => `git -C ${c.dir} push`).join('; ')}`);
-      out(`return before the threads start (spec 11.7): migrate.mjs ${target} --to 3 --revert-list`);
+      out(`return before the threads start (spec 11.7): migrate.mjs ${target} --to 2.1 --revert-list`);
       process.exit(res.check.ok ? 0 : 1);
     }
     const plan = m3.planDomain(target, { confirmed: readTriage(file(args.confirmed, 'confirmed')), approve: m3.readApprove(file(args.approve, 'approve')) });
     out(m3.formatPlan(plan, { all: !!args.all }));
     if (plan.version === m3.FROM) {
       const problems = m3.contentProblems(plan);
-      if (problems.length) out(`content checks of layout 3 refuse files the move writes (${problems.length}; --apply is refused until they are fixed):\n${problems.map((p) => `  ${p}`).join('\n')}`);
+      if (problems.length) out(`content checks of data 2.1 refuse files the move writes (${problems.length}; --apply is refused until they are fixed):\n${problems.map((p) => `  ${p}`).join('\n')}`);
     }
     if (typeof args['write-triage'] === 'string' && plan.version === m3.FROM) {
       const dest = path.resolve(args['write-triage']);
@@ -108,10 +108,10 @@ try {
       fs.writeFileSync(dest, m3.formatTriageTsv(plan));
       out(`triage file: ${dest}`);
     }
-    if (plan.version === m3.FROM) out(`preview only, nothing changed; the move: migrate.mjs ${target} --to 3 --apply --confirmed <tsv> [--approve <tsv>]`);
+    if (plan.version === m3.FROM) out(`preview only, nothing changed; the move: migrate.mjs ${target} --to 2.1 --apply --confirmed <tsv> [--approve <tsv>]`);
     process.exit(0);
   }
-  if (version !== FROM_VERSION && version !== TO_VERSION) fail(`${target}: data layout ${version}; this tool moves only layout ${FROM_VERSION} to ${TO_VERSION}, refused${version === m3.TO ? ' (layout 2 -> 3 and its check: --to 3)' : ''}`);
+  if (version !== FROM_VERSION && version !== TO_VERSION) fail(`${target}: data ${dataName(version)}; this tool moves only data ${dataName(FROM_VERSION)} to ${dataName(TO_VERSION)}, refused${version === m3.TO ? ' (data 2.0 -> 2.1 and its check: --to 2.1)' : ''}`);
   if (args.check) {
     if (args.fix) {
       const ignores = fixDeployIgnores(target);
@@ -134,7 +134,7 @@ try {
     if (res.deployIgnores?.length) out(formatDeployIgnores(res.deployIgnores));
     if (res.outside.length) out(`moved outside git (not in the commit, a revert does not move them back): ${res.outside.map((m) => `${m.from} -> ${m.to}`).join(', ')}`);
     for (const f of res.deleted || []) out(`deleted (pomocne, outside git, confirmed; git does not restore it): ${f}`);
-    if (res.pruned?.removed.length) out(`removed empty folders of layout ${FROM_VERSION}: ${res.pruned.removed.join(', ')}`);
+    if (res.pruned?.removed.length) out(`removed empty folders of data ${dataName(FROM_VERSION)}: ${res.pruned.removed.join(', ')}`);
     if (res.pruned?.ignored.length) out(`left in place (ignored by git, not removed): ${res.pruned.ignored.join(', ')}`);
     if (res.scratchLeft) out(`note: ${res.scratchLeft}`);
     if (res.adapter) out(`adapter: ${res.adapter.ok ? 'regenerated' : `failed: ${res.adapter.out}`}`);

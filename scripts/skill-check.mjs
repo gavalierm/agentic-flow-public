@@ -108,7 +108,7 @@ export function fixedWorkPaths(line, { script = false } = {}) {
   return [...text.matchAll(SCRATCH), ...text.matchAll(TOPIC_TMP)].map((m) => m[0]);
 }
 
-const workPathMessage = (p) => `fixed work files path ${p}: the folder depends on the topic the thread holds and the data layout; get it at run time with \`${WORK_DIR_COMMAND}\` (--main: topic main), in the text write the placeholder temy/<téma>/tmp/ (P-068); a line that only describes the path (layout 1, another project) passes with the marker "${WORK_PATH_OK}"`;
+const workPathMessage = (p) => `fixed work files path ${p}: the folder depends on the topic the thread holds and the data layout; get it at run time with \`${WORK_DIR_COMMAND}\` (--main: topic main), in the text write the placeholder temy/<téma>/tmp/ (P-068); a line that only describes the path (data 1, another project) passes with the marker "${WORK_PATH_OK}"`;
 
 /**
  * Check one skill. { name, dir, text, owner: operator|agentic|unmanaged, projectDir, home, limit, layout, scriptTexts }

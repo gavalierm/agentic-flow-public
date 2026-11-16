@@ -83,16 +83,16 @@ test('pre-release: each finding, the domains to migrate, a mail down; settled it
     assert.equal(r.status, 1, r.stdout + r.stderr);
     const out = r.stdout;
     assert.match(out, /^pre-release: 5 finding\(s\) in 4 live topic\(s\) of 3 brain\(s\)/m, out);
-    assert.match(out, /^- brain .*Beta\/brain is in data layout 1: 2\.0 needs layout 2 \(O22\): node .*bin\/migrate\.mjs .*Beta\/brain \(preview\)/m);
+    assert.match(out, /^- brain .*Beta\/brain is in data 1: 2\.0 needs data 2\.0 \(O22\): node .*bin\/migrate\.mjs .*Beta\/brain \(preview\)/m);
     assert.match(out, /^- Alfa\/brain\/a-empty: the handover has neither a step .* nor a question/m);
     assert.match(out, /^- Alfa\/brain\/a-unpushed: app: topic\/a-unpushed \(\w{7}\) not on origin: git -C .*Alfa\/app push origin topic\/a-unpushed$/m);
     assert.match(out, /^- Alfa\/brain\/a-unpushed: app: worktree .*a-unpushed \(topic\/a-unpushed\) has uncommitted changes \(c\.txt\)/m);
     assert.match(out, /^- Alfa\/brain\/a-fix: open message m-fix \(blocker, awaiting to alfa\/orch\): P-075 fix question, which 2\.0 does not process: withdraw it \(comms withdraw --id m-fix\)/m);
     assert.doesNotMatch(out, /a-ok|a-closed/, 'a pushed topic and a closed one give no finding');
     assert.match(out, /Alfa\/brain: shared checkouts .*"shared_checkouts": \["app"\]/);
-    assert.match(out, /^- .*Alfa\/brain \(layout 2\), repos app \(layout 2\): node .*migrate\.mjs .*Alfa\/brain --to 3 --write-triage .*Alfa\/migrate-2-3\.tsv; .*--to 3 --apply --confirmed .*; .*--to 3 --check$/m);
-    assert.match(out, /^- .*Beta\/brain \(layout 1\): first 1 -> 2 for brain/m);
-    assert.doesNotMatch(out, /Gamma\/brain \(layout/, 'a domain in layout 3 is not listed');
+    assert.match(out, /^- .*Alfa\/brain \(data 2\.0\), repos app \(data 2\.0\): node .*migrate\.mjs .*Alfa\/brain --to 2\.1 --write-triage .*Alfa\/migrate-2-3\.tsv; .*--to 2\.1 --apply --confirmed .*; .*--to 2\.1 --check$/m);
+    assert.match(out, /^- .*Beta\/brain \(data 1\): first 1 -> 2\.0 for brain/m);
+    assert.doesNotMatch(out, /Gamma\/brain \(data/, 'a domain in data 2.1 is not listed');
 
     // The mail does not answer: a finding, not a pass.
     fs.writeFileSync(state, JSON.stringify({ down: true }));
