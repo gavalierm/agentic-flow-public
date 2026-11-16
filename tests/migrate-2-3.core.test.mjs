@@ -483,10 +483,15 @@ test('--check: a record a brain script removed after the move is a note, a file 
     let c = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check']);
     assert.equal(c.status, 0, c.out);
     assert.match(c.stdout, /note: memory\/tool-x\.md: removed after the move by \w+ \(\[brain-script\] remove memory tool-x\)/);
-    rm('topics/alpha/w1.md', 'by hand');
+    // A topic closed after the move (done --topic removes topics/<id>/ through the brain writer): one note for its files.
+    for (const args of [['rm', '-rq', 'topics/alpha'], ['commit', '-q', '--no-verify', '-m', `${BRAIN_COMMIT_TAG} done --topic alpha: closed, topic removed`]]) assert.equal(spawnSync('git', args, { cwd: fx.brain, env: benv }).status, 0);
+    c = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check', '--fix']);
+    assert.equal(c.status, 0, c.out);
+    assert.match(c.stdout, /note: \d+ file\(s\) \(topics\/alpha\/[^)]*\): removed after the move by \w+ \(\[brain-script\] done --topic alpha: closed, topic removed\)/);
+    rm('decisions/d-0001-first.md', 'by hand');
     c = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check']);
     assert.equal(c.status, 1, c.out);
-    assert.match(c.stdout, /temy\/alpha\/zavery\/w1\.md: new place topics\/alpha\/w1\.md, not tracked/);
+    assert.match(c.stdout, /vystupy\/rozhodnutia\/d-0001-first\.md: new place decisions\/d-0001-first\.md, not tracked/);
   } finally { fx.cleanup(); }
 });
 

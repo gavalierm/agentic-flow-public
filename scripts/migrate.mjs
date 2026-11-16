@@ -966,6 +966,7 @@ export function checkMigration(dir, { before = null, project = null, cwd = proce
     for (const rel of prior.stdout.split('\0').filter(Boolean)) if (!byFrom.has(rel)) problems.push(`${rel}: tracked before the move, missing in ${RECORD_REL}`);
   } else notes.push('the commit before the move is not readable; files checked against the record only');
   const brainDir = repoKind(dir) === 'project' ? configuredBrain(dir) : null;
+  const removedLater = new Map();
   for (const r of rows) {
     if (intoBrain(r)) {
       if (!brainDir) notes.push(`${r.from}: moved into the brain, which .workflow.json does not name; not checked`);
@@ -983,10 +984,11 @@ export function checkMigration(dir, { before = null, project = null, cwd = proce
     }
     if (!now.has(r.to) && !archivedTopicPlaces(r.to).some((p) => now.has(p))) {
       const gone = removedByScript(dir, r.to);
-      if (gone) notes.push(`${r.to}: removed after the move by ${gone.sha} (${gone.subject})`);
+      if (gone) removedNote(removedLater, gone, r.to);
       else problems.push(`${r.from}: ${r.from === r.to ? 'should stay' : `new place ${r.to}`}, not tracked`);
     }
   }
+  notes.push(...removedNotes(removedLater));
   if (outsideAway.length) notes.push(`${outsideAway.length} file(s) the move put outside git are not here (${outsideAway.slice(0, 3).map((r) => r.to).join(', ')}${outsideAway.length > 3 ? ', …' : ''}): untracked work files exist only on the machine that ran the move, a clone or another machine has none; not checked`);
   problems.push(...deployIgnoreLines(deployIgnoreGaps(dir), `migrate.mjs ${dir} --check --fix`));
   problems.push(...branchProblems(dir));
@@ -1253,6 +1255,13 @@ export function fixIndex(dir) {
   const committed = commitIndexAfterMerge(dir, { env: brainScriptEnv(), message: `${BRAIN_COMMIT_TAG} regenerate ${INDEX_FILE} (migrate --check --fix)` });
   return { sha: committed ? git(['rev-parse', '--short', 'HEAD'], { cwd: dir }).stdout : null };
 }
+
+/** Files removed after the move, grouped by the commit that removed them (a closed topic: one line, not one per file). */
+export function removedNote(map, gone, rel) {
+  if (!map.has(gone.sha)) map.set(gone.sha, { ...gone, files: [] });
+  map.get(gone.sha).files.push(rel);
+}
+export const removedNotes = (map) => [...map.values()].map((g) => `${g.files.length === 1 ? g.files[0] : `${g.files.length} file(s) (${g.files.slice(0, 3).join(', ')}${g.files.length > 3 ? ', …' : ''})`}: removed after the move by ${g.sha} (${g.subject})`);
 
 /**
  * The commit of a brain script that removed `rel` after the move (save ... --remove, a skill or record dropped on purpose):

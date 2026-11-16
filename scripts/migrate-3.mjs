@@ -32,7 +32,7 @@ import { MODES } from './topic-files.mjs';
 import { turnFields } from './topic-state.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { operatorRepo, readPeople } from './people.mjs';
-import { trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand, leftoverProblems, fixDeployIgnores, removedByScript } from './migrate.mjs';
+import { trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand, leftoverProblems, fixDeployIgnores, removedByScript, removedNote, removedNotes } from './migrate.mjs';
 import { gitAccessProblem } from './brain.mjs';
 import { staleCatalog, rescanStale } from './catalog/stale.mjs';
 const LOCAL_CATALOG = 'local/catalog';
@@ -1200,6 +1200,7 @@ export function checkRepo(dir, { brainDir = null } = {}) {
     for (const h of find(text, { fileRepo: dir })) problems.push(`${rel}: old path ${h.from} (now ${h.to})`);
   }
   // The rows of the record: every file has its new place.
+  const removedLater = new Map();
   if (files.includes(record)) {
     const tracked = new Set(files);
     for (const line of fs.readFileSync(path.join(dir, record), 'utf8').split('\n')) {
@@ -1213,11 +1214,12 @@ export function checkRepo(dir, { brainDir = null } = {}) {
       } else if (!tracked.has(to)) {
         // A record removed on purpose after the move (save ... --remove) is no lost move (alice 2026-11-16).
         const gone = removedByScript(dir, to);
-        if (gone) notes.push(`${to}: removed after the move by ${gone.sha} (${gone.subject})`);
+        if (gone) removedNote(removedLater, gone, to);
         else problems.push(`${from}: new place ${to}, not tracked`);
       }
     }
   }
+  notes.push(...removedNotes(removedLater));
   return { dir, name, problems, notes };
 }
 
