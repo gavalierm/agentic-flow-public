@@ -1147,7 +1147,7 @@ function saveDocs(ctx) {
   // materialy/ like docs/ (D-0011). A file is committed byte for byte (PDF, image); only .md is read as text for its checks.
   const docs = dataRel(ctx.brainDir, 'docs');
   const materialy = dataRel(ctx.brainDir, 'materialy');
-  const st = spawnSync('git', ['status', '--porcelain', '-uall', '--', docs, materialy], { cwd: ctx.brainDir, encoding: 'utf8' });
+  const st = spawnSync('git', ['-c', 'core.quotepath=false', 'status', '--porcelain', '-uall', '--', docs, materialy], { cwd: ctx.brainDir, encoding: 'utf8' });
   const rels = st.stdout.split('\n').filter(Boolean).map((l) => l.slice(3).replace(/^.* -> /, ''));
   if (!rels.length) { out(`unchanged: ${docs}/, ${materialy}/ (nothing to commit)`); return; }
   const read = (rel) => fs.readFileSync(path.join(ctx.brainDir, rel), rel.endsWith('.md') ? 'utf8' : undefined);

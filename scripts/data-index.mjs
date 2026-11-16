@@ -63,7 +63,7 @@ function folders(root) {
   return [...new Set([L.materialy, L.topics, L.decisions, L.docs].filter(Boolean).map((p) => p.split('/')[0]))];
 }
 
-const run = (root, args, input) => spawnSync('git', args, { cwd: root, input, maxBuffer: 1 << 28, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+const run = (root, args, input) => spawnSync('git', ['-c', 'core.quotepath=false', ...args], { cwd: root, input, maxBuffer: 1 << 28, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
 
 /** Staged files (stage 0) of the repository: [{ path, sha }], or null when git cannot list them. */
 function stagedFiles(root) {

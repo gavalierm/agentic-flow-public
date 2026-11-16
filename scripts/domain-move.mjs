@@ -85,7 +85,7 @@ function rewriteBrain(project, brain, src, dest, home, env) {
   const forms = [toPosix(src)];
   if (isInside(home, src)) forms.push(`~/${toPosix(path.relative(home, src))}`);
   const destOf = (form) => (form.startsWith('~/') && isInside(home, dest) ? `~/${toPosix(path.relative(home, dest))}` : toPosix(dest));
-  const grep = spawnSync('git', ['-C', brain, 'grep', '-lF', ...forms.flatMap((f) => ['-e', f]), '--', '.', ...KEEP_AS_WRITTEN], { encoding: 'utf8' });
+  const grep = spawnSync('git', ['-c', 'core.quotepath=false', '-C', brain, 'grep', '-lF', ...forms.flatMap((f) => ['-e', f]), '--', '.', ...KEEP_AS_WRITTEN], { encoding: 'utf8' });
   const files = (grep.stdout || '').split('\n').filter(Boolean);
   const lines = [];
   for (const f of files) {

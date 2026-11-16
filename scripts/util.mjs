@@ -117,9 +117,15 @@ export function localTime(value, { timeZone } = {}) {
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} ${parts.timeZoneName}`;
 }
 
-/** Run git synchronously. Returns { status, stdout, stderr, ok }. */
+/**
+ * Paths as they are, never quoted: under core.quotepath (git's default) a name with diacritics comes as
+ * "Detsk\303\251 …" and every caller that reads paths took it literally (doma-pc 2026-11-16: project.mjs inventory, ENOENT).
+ */
+export const GIT_NO_QUOTE = Object.freeze(['-c', 'core.quotepath=false']);
+
+/** Run git synchronously. Returns { status, stdout, stderr, ok }. Paths in the output are never quoted (GIT_NO_QUOTE). */
 export function git(args, { cwd, env, input } = {}) {
-  const res = spawnSync('git', args, {
+  const res = spawnSync('git', [...GIT_NO_QUOTE, ...args], {
     cwd,
     env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: '0' },
     encoding: 'utf8',

@@ -317,7 +317,7 @@ export function citedScratch(projectDir, text) {
 export function untrackedKnowledge(dir) {
   const dirs = ['docs', 'materialy'].filter((n) => hasData(dir, n)).map((n) => dataRel(dir, n));
   if (!dirs.length) return [];
-  const r = spawnSync('git', ['status', '--porcelain', '--untracked-files=all', '--', ...dirs], { cwd: dir, encoding: 'utf8' });
+  const r = spawnSync('git', ['-c', 'core.quotepath=false', 'status', '--porcelain', '--untracked-files=all', '--', ...dirs], { cwd: dir, encoding: 'utf8' });
   if (r.status !== 0) return [];
   return r.stdout.split('\n').filter((l) => l.startsWith('?? ')).map((l) => l.slice(3).replace(/^"|"$/g, ''));
 }

@@ -73,3 +73,18 @@ test('connect --domain of an existing domain: the repo joins its brain, no brain
     assert.ok(check.notes.some((n) => /born in data 2\.1/.test(n)));
   } finally { srv.close(); fs.rmSync(base, { recursive: true, force: true }); }
 });
+
+test('inventory: a tracked name with diacritics and spaces is read as it is (doma-pc 2026-11-16: ENOENT on a quoted path)', async () => {
+  const { inventory } = await import('../scripts/project.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-inv-'));
+  try {
+    git(dir, 'init', '-q', '-b', 'main');
+    git(dir, 'config', 'core.quotepath', 'true');
+    const name = 'Carousel/Detské oblečenie – carousel 1 svetlý.png';
+    fs.mkdirSync(path.join(dir, 'Carousel'));
+    fs.writeFileSync(path.join(dir, name), 'png');
+    git(dir, 'add', '-A'); git(dir, 'commit', '-q', '-m', 'f');
+    const inv = inventory(dir);
+    assert.ok(JSON.stringify(inv).includes('svetlý.png'), JSON.stringify(inv));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
