@@ -11,7 +11,9 @@ import { loadContext } from '../scripts/config.mjs';
 import { catalogConfig } from '../scripts/catalog/config.mjs';
 import { scanAll } from '../scripts/catalog/scan.mjs';
 import { profileAll } from '../scripts/catalog/profiles.mjs';
-import { findCatalog, formatMatch, formatCatalogBlock, getRow } from '../scripts/catalog/find.mjs';
+import { findCatalog, findRepoFiles, formatMatch, formatCatalogBlock, getRow, REPO_SOURCE } from '../scripts/catalog/find.mjs';
+import { catalogRepo } from '../scripts/catalog/config.mjs';
+import { indexRows } from '../scripts/data-index.mjs';
 import { writeOverview } from '../scripts/catalog/overview.mjs';
 import { readManifest, readJsonSafe, paths, readIndex } from '../scripts/catalog/index.mjs';
 import { hasTool, detectTools } from '../scripts/catalog/tools.mjs';
@@ -71,10 +73,16 @@ function cmdFind(cfg) {
   const q = args._.slice(1).join(' ');
   if (!q) fail('usage: catalog.mjs find <slová> [--kind k] [--source n] [--all] [--json]');
   const all = !!args.all;
-  const res = findCatalog(cfg, q, { kind: args.kind || null, source: args.source || null, limit: all ? 0 : cfg.find.max_lines });
+  const max = cfg.find?.max_lines ?? 20;
+  // One search: the sources of the catalog and the files of the repo in INDEX.md (vystupy/ …), source `repo`.
+  const onlyRepo = args.source === REPO_SOURCE;
+  const cat = cfg.enabled && !onlyRepo ? findCatalog(cfg, q, { kind: args.kind || null, source: args.source || null, limit: 0 }) : { matches: [], total: 0 };
+  const own = !args.kind && (!args.source || onlyRepo) ? findRepoFiles(cfg.repo, q, { sources: cfg.sources || [], limit: 0 }) : { matches: [], total: 0 };
+  const merged = [...cat.matches, ...own.matches].sort((a, b) => b.score - a.score);
+  const res = { total: merged.length, matches: all ? merged : merged.slice(0, max), repo: own.total > 0 || !cfg.enabled };
   if (args.json) return out(JSON.stringify(res.matches));
   if (!res.total) return out(`katalóg: bez zhody pre "${q}"`);
-  if (all && res.total > cfg.find.max_lines) {
+  if (all && res.total > max) {
     // an unlimited list goes to a file, not into the context
     const dir = workOf(cfg);
     fs.mkdirSync(dir, { recursive: true });
@@ -88,9 +96,23 @@ function cmdFind(cfg) {
 function cmdShow(cfg) {
   const ref = args._[1];
   if (!ref) fail('usage: catalog.mjs show <cesta>');
+  // A file of the repo (a match of find with source repo): its row of INDEX.md.
+  const own = repoRow(cfg.repo, ref);
+  if (own) return out(JSON.stringify({ source: REPO_SOURCE, ...own }, null, args.json ? 0 : 2));
   const r = getRow(cfg, ref, process.cwd());
   if (r.error) fail(r.error);
   out(JSON.stringify(r.row, null, args.json ? 0 : 2));
+}
+
+/** The INDEX.md row of `repo/<path>` or a path of the repo outside the catalog sources; null otherwise. */
+function repoRow(repo, ref) {
+  if (!repo) return null;
+  const rel = String(ref).replace(/\\/g, '/').replace(new RegExp(`^${REPO_SOURCE}/`), '');
+  let rows;
+  try { rows = indexRows(repo); } catch { rows = null; }
+  const abs = path.resolve(process.cwd(), rel);
+  const fromRepo = path.relative(repo, abs).split(path.sep).join('/');
+  return (rows || []).find((r) => r.path === rel || r.path === fromRepo) || null;
 }
 
 function cmdSql(cfg) {
@@ -164,6 +186,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     const ctx = loadContext({ project: args.project, requireBrain: false });
     sessionCtx = ctx;
     const cfg = catalogConfig(ctx.projectDir);
+    // find searches the files of the repo (INDEX.md) also where the catalog has no source.
+    if (!cfg.enabled && (cmd === 'find' || cmd === 'show')) { COMMANDS[cmd]({ ...cfg, repo: catalogRepo(ctx.projectDir), sources: [] }); process.exit(process.exitCode || 0); }
     if (!cfg.enabled) fail(DISABLED);
     fs.mkdirSync(cfg.dir, { recursive: true });
     COMMANDS[cmd](cfg);

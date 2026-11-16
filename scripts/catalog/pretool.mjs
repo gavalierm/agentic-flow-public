@@ -84,5 +84,5 @@ export function catalogPreTool(input, ctx, cwd, h) {
   const state = h.readThreadState(ctx.brainDir, ctx.thread);
   if (state.catalog_reminded) return null;
   h.writeThreadState(ctx.brainDir, ctx.thread, { ...state, catalog_reminded: true });
-  return { remind: `katalóg: pre dáta v ${src.name} najprv node ${ctx.pluginRoot}/bin/catalog.mjs find <slová> alebo show <cesta>; CSV dotazuj cez catalog.mjs sql, nečítaj ich (P-031); prvý výpis zdroja v session je preto zamietnutý, keď katalóg nestačí, zopakovaný príkaz prejde` };
+  return { remind: `katalóg: pre dáta v ${src.name} najprv node ${ctx.pluginRoot}/bin/catalog.mjs find <slová> alebo show <cesta> (hľadá aj súbory repa z INDEX.md, napr. vystupy/); CSV dotazuj cez catalog.mjs sql, nečítaj ich (P-031); prvý výpis zdroja v session je preto zamietnutý, keď katalóg nestačí, zopakovaný príkaz prejde` };
 }

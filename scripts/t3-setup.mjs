@@ -57,7 +57,7 @@ export function welcomeMessage(name, repo, { adopted = false } = {}) {
     'Toto je uvítacie vlákno projektu: over kontext session (brain, pravidlá, témy) a v jednej odpovedi zhrň účel projektu, čo je v repe a v brain, a navrhni prvú tému práce. Nič nemeň.',
     // A summary by reading the data file by file ran into the hooks (doma-pc 2026-11-16): records through find, sources
     // through the catalog, and a denial names its own way (P-031, P-054).
-    'Záznamy brainu a repa hľadaj cez find (vráti cesty a popisy), zdroje cez catalog.mjs find a show. Súbory repa vrátane výstupov (vystupy/) vypisuje INDEX.md repa. Potom čítaj iba záznamy, ktoré zhrnutie potrebuje, po jednom. Ak hook čítanie zamietne, choď cestou, ktorú menuje, a nehľadaj inú.',
+    'Záznamy brainu (pamäť, rozhodnutia, pravidlá, skilly) hľadaj cez find. Súbory repa (výstupy vystupy/, zdroje zdroje/, témy) a obsah dát hľadaj cez catalog.mjs find a show. Oba vrátia cesty a popisy. Potom čítaj iba to, čo zhrnutie potrebuje, po jednom. Ak hook čítanie zamietne, choď cestou, ktorú menuje, a nehľadaj inú.',
     // Spec 10.1: a thread without a held topic has no blocks Otázky and Úlohy; the proposal is part of the result text and
     // the operator chooses the topic with his next message (Alice 2026-11-09: the welcome thread created the topic itself).
     'Tému nezakladaj ani nezaberaj: voľbu má operátor. Návrh témy (<id> – <predmet>) napíš do textu odpovede, bez bloku "**Otázky na operátora:**" (vlákno nedrží tému), a odpoveď skonči riadkami "**Handover:** žiadny" a "**Stav:** hotovo".',

@@ -1,9 +1,47 @@
 // Search in the catalog index: query tokens against path, tags, title, description and profile (column names and values,
 // zip listing). Returns paths and descriptions only, never file content (P-031).
+import fs from 'node:fs';
 import path from 'node:path';
 import { normalizeKey, tokens } from '../keys.mjs';
 import { readIndex } from './index.mjs';
 import { resolveRef } from './config.mjs';
+import { indexRows } from '../data-index.mjs';
+
+/** Label of the files of the repo (INDEX.md rows) among the sources of a match. */
+export const REPO_SOURCE = 'repo';
+const real = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+
+/**
+ * The files of the repo in INDEX.md (vystupy/, zdroje/, topics) matching every query token, best first: weight 2 for the
+ * path, 1 for description, topic and date; files under a catalog source are left to the catalog (its rows say more).
+ * One search for an agent (operator 2026-11-16: the catalog for sources and INDEX.md for outputs were two places, and
+ * a welcome thread found no list of the posts in vystupy/). Returns { matches, total }.
+ */
+export function findRepoFiles(repo, query, { sources = [], limit = 20 } = {}) {
+  const qt = tokens(query);
+  if (!repo || !qt.length) return { matches: [], total: 0 };
+  let rows;
+  try { rows = indexRows(repo); } catch { rows = null; }
+  if (!rows) return { matches: [], total: 0 };
+  const covered = sources.map((s) => path.relative(real(repo), real(s.path)).split(path.sep).join('/')).filter((r) => r && !r.startsWith('..'));
+  const scored = [];
+  for (const r of rows) {
+    if (covered.some((c) => r.path === c || r.path.startsWith(`${c}/`))) continue;
+    const p = norm(r.path.replace(/\.[^./]+$/, ''));
+    const weak = norm([r.desc, r.topic, r.date, r.from].filter(Boolean));
+    let score = 0;
+    let all = true;
+    for (const t of qt) {
+      const w = has(p, t) ? 2 : has(weak, t) ? 1 : 0;
+      if (!w) { all = false; break; }
+      score += w;
+    }
+    if (all) scored.push({ r, score });
+  }
+  scored.sort((a, b) => b.score - a.score || (a.r.date > b.r.date ? -1 : a.r.date < b.r.date ? 1 : 0) || (a.r.path < b.r.path ? -1 : 1));
+  const take = limit > 0 ? scored.slice(0, limit) : scored;
+  return { total: scored.length, matches: take.map(({ r, score }) => ({ source: REPO_SOURCE, path: r.path, kind: 'súbor repa', status: 'git', title: null, desc: [r.desc, r.date].filter(Boolean).join('; ') || null, dup_of: null, size: null, score })) };
+}
 
 const STATUS_RANK = { described: 0, profiled: 1, stale: 2, pending: 3, skipped: 4, error: 4, duplicate: 5 };
 const LINE_MAX = 240;
@@ -61,7 +99,7 @@ export function formatMatch(m) {
 }
 
 export function formatCatalogBlock(res, cfg) {
-  const names = cfg.sources.map((s) => s.name).join(', ');
+  const names = [...(cfg.sources || []).map((s) => s.name), ...(res.repo ? [`${REPO_SOURCE} (INDEX.md)`] : [])].join(', ');
   const more = res.total > res.matches.length ? ` (zobrazených ${res.matches.length}, všetky: catalog.mjs find --all)` : '';
   return `katalóg (${names}): ${res.total} zhôd${more}\n${res.matches.map(formatMatch).join('\n')}`.trimEnd();
 }
