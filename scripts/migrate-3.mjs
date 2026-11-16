@@ -1059,9 +1059,14 @@ export function checkRepo(dir, { brainDir = null } = {}) {
   // Outside git in the folders of data 2.0 and 1 (doma-pc 2026-11-16): junk (--fix removes it) and entries to triage.
   problems.push(...leftoverProblems(dir, { version: TO, role, fix: `migrate.mjs ${dir} --to 2.1 --check --fix` }));
   const record = recordRel(role);
-  if (!files.includes(record)) problems.push(`${record} missing: no record of the move 2.0 -> 2.1`);
   const commits = moveCommits(dir);
-  if (commits.length !== 1) problems.push(`${commits.length} commit(s) of the move (expected one): ${commits.map((c) => c.sha).join(', ') || 'none'}`);
+  // A repo born in data 2.1 (connect or create beside a brain of 2.1 stamps it) has no move to record (doma-pc 2026-11-16).
+  const born = !files.includes(record) && !commits.length;
+  if (born) notes.push('born in data 2.1 (no move from 2.0): no record or commit of a move expected');
+  else {
+    if (!files.includes(record)) problems.push(`${record} missing: no record of the move 2.0 -> 2.1`);
+    if (commits.length !== 1) problems.push(`${commits.length} commit(s) of the move (expected one): ${commits.map((c) => c.sha).join(', ') || 'none'}`);
+  }
   const policy = readJson(path.join(dir, map.policy), {}) || {};
   const old = oldPolicyKeys(policy);
   if (old.length) problems.push(`${map.policy}: keys of 1.8.0 left: ${old.join(', ')}`);

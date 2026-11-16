@@ -12,6 +12,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { connect } from '../scripts/project.mjs';
 import { layoutRefusal } from '../scripts/layout.mjs';
+import { checkRepo } from '../scripts/migrate-3.mjs';
 import { PLUGIN_ROOT, cleanEnv } from './helpers.mjs';
 
 const git = (cwd, ...args) => {
@@ -66,5 +67,9 @@ test('connect --domain of an existing domain: the repo joins its brain, no brain
     assert.equal(layoutRefusal(path.join(dom, 'shop-brain'), fb), null);
     assert.ok(res.lines.some((l) => /^data: \.brain\/policy\.json with data 2\.1 of the brain, committed and pushed$/.test(l)), res.lines.join('\n'));
     assert.ok(git(origin, 'log', '-1', '--format=%s', 'main').includes('data 2.1'));
+    // The check of data 2.1 takes a repo born in 2.1 as it is: no move to record.
+    const check = checkRepo(fb, { brainDir: path.join(dom, 'shop-brain') });
+    assert.deepEqual(check.problems, []);
+    assert.ok(check.notes.some((n) => /born in data 2\.1/.test(n)));
   } finally { srv.close(); fs.rmSync(base, { recursive: true, force: true }); }
 });
