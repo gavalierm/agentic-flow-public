@@ -268,3 +268,28 @@ test('movedCopy: a copy outside .worktrees/ keeps its place, relative to the new
   assert.equal(movedCopy('../agent-alice-topics/x', dom, '/r/workflow/brain'), '../../Alice/agent-alice-topics/x');
   assert.equal(movedCopy('../.worktrees/agentic-flow/x', dom, '/r/workflow/brain'), '../.worktrees/agentic-flow/x');
 });
+
+test('repos two brains share (each machine its own brain): the second brain moves alone, its repos already in data 2.1 stay', () => {
+  const fx = domainV2();
+  try {
+    const confirmed = tsvFile(fx, 'confirmed.tsv', ['vystupy/dokumenty/spec.md\tsrv:vystupy/specifikacie/\talpha\t', 'zdroje/alpha/\tpomocne\t\t']);
+    const approve = approveFile(fx, ['.brain/skills/agentic/old-gate/\tzmazat', '.brain/memory/person-jana.md\tzmazat']);
+    const first = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--apply', '--confirmed', confirmed, '--approve', approve]);
+    assert.equal(first.status, 0, first.out);
+    // The other machine's brain of the same repos is still in data 2.0: here the brain's commit undone, the repos stay 2.1.
+    gitq(fx.brain, 'reset', '-q', '--hard', 'HEAD~1');
+    assert.equal(dataLayoutVersion(fx.brain), 2);
+    const srvHead = head(fx.srv);
+    const p = fx.run('migrate.mjs', [fx.brain, '--to', '2.1']);
+    assert.equal(p.status, 0, p.out);
+    assert.match(p.stdout, /note: repo \S*srv is in data 2\.1 already \(moved with another brain of these repos\): it stays, only the brain moves/);
+    assert.doesNotMatch(p.stdout, /refused: |its brain has 2\.0/);
+    const second = tsvFile(fx, 'second.tsv', ['vystupy/dokumenty/spec.md\tpomocne\t\t', 'zdroje/alpha/\tpomocne\t\t']);
+    const a = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--apply', '--confirmed', second, '--approve', approve]);
+    assert.equal(a.status, 0, a.out);
+    assert.equal(dataLayoutVersion(fx.brain), 3);
+    assert.equal(head(fx.srv), srvHead, 'a repo already in data 2.1 gets no commit');
+    const c = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check']);
+    assert.equal(c.status, 0, c.out);
+  } finally { fx.cleanup(); }
+});

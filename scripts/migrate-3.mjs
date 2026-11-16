@@ -433,6 +433,10 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
   if (version === 1) { blockers.push(`brain ${dom.brain} is in data 1: move it to data 2.0 first (migrate.mjs ${dom.brain} --apply), then --to 2.1`); return plan; }
   if (version === TO) { notes.push(`brain ${dom.brain} is in data 2.1 already: nothing to move`); return plan; }
   if (version !== FROM) { blockers.push(`brain ${dom.brain}: data ${dataName(version)}, this step moves only 2.0 to 2.1`); return plan; }
+  // Project repos two brains share (an operator's brain and a copy of another one's, each machine its own brain): the
+  // first brain moved them; a repo already in data 2.1 stays as it is and only this brain moves.
+  for (const r of plan.repos.filter((x) => x.version === TO)) notes.push(`repo ${r.dir} is in data 2.1 already (moved with another brain of these repos): it stays, only the brain moves`);
+  plan.repos = plan.repos.filter((x) => x.version !== TO);
   for (const r of plan.repos) {
     if (r.version === 1) blockers.push(`repo ${r.dir} is in data 1: move it to data 2.0 first (migrate.mjs ${r.dir} --apply), then --to 2.1`);
     else if (r.version !== FROM) blockers.push(`repo ${r.dir}: data ${dataName(r.version)}, its brain has 2.0; the domain moves at once`);
@@ -534,7 +538,7 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
   const defaultRepo = (() => {
     const p = readJson(path.join(dom.brain, L2.policy), {}) || {};
     if (defaultRepoName(p)) return defaultRepoName(p);
-    return plan.repos.length === 1 ? plan.repos[0].name : null;
+    return dom.repos.length === 1 ? path.basename(dom.repos[0]) : null;
   })();
   const relocated = new Map(); // brain rel -> { repo, to, topic }
   const targetOf = (repoDir) => {
@@ -636,7 +640,7 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
       const rewritable = isText(rel) && rel !== INDEX_FILE && !['.githooks', '.claude', '.codex', '.agents'].includes(rel.split('/')[0]) && !under(rel, L2.logs) && !under(rel, L2.materialy);
       if (rewritable) {
         const r = rewrite(content, { fileRepo: fin.repo });
-        const text = repoDecisionRefs(r.text, plan.repos.map((x) => x.name));
+        const text = repoDecisionRefs(r.text, dom.repos.map((d) => path.basename(d)));
         if (text !== content) { content = text; changed = true; }
       }
       const topic = relocated.get(rel)?.topic;
