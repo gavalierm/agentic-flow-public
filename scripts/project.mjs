@@ -10,7 +10,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PLUGIN_ROOT, git, gitRemote, exists, readJson, toPosix } from './util.mjs';
 import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDirName, checkDomainName, DOMAIN_MARKER, machineRoot, classifyNames } from './config.mjs';
-import { LAYOUT, ALL_MAPS, dataPath } from './layout.mjs';
+import { LAYOUT, ALL_MAPS, dataPath, dataLayoutVersion, dataName, layoutFor, splitRoles, VERSION_FILES, ROLE_REPO } from './layout.mjs';
 // The projects root saved for this machine lives in config.mjs: the write hook reads it without this module's GitHub code.
 export { ROOT_FILE, rootFile, machineRoot, setMachineRoot } from './config.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
@@ -142,6 +142,28 @@ function adapter(projectDir, brainRel) {
   const r = spawnSync(process.execPath, args, { cwd: projectDir, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`adapter failed: ${(r.stderr || r.stdout).trim()}`);
   return (r.stdout || '').trim();
+}
+
+/**
+ * The data version of a new code repo of a domain whose brain is in data 2.1 (doma-pc 2026-11-16): a repo without a policy
+ * file reads as data 1, and the session start refused it beside the brain ("one clone is not current; pull"), so every
+ * repo connect or create brought in was blocked. The repo gets .brain/policy.json with the brain's data_layout, committed
+ * and pushed. A repo with a policy keeps it; one with agentic/ of data 1 is moved by migrate.mjs, not stamped.
+ */
+export function stampRepoLayout(projectDir, brainDir) {
+  let bv;
+  try { bv = dataLayoutVersion(brainDir); if (!splitRoles(bv)) return null; } catch { return null; }
+  if (VERSION_FILES.some((rel) => exists(path.join(projectDir, ...rel.split('/'))))) return null;
+  if (exists(path.join(projectDir, LAYOUT.projectKnowledge))) return `data: ${path.basename(projectDir)} has ${LAYOUT.projectKnowledge}/ of data 1: move it first (migrate.mjs ${toPosix(projectDir)}, then --apply), the session refuses it beside a brain in data ${dataName(bv)}`;
+  const rel = layoutFor(bv, ROLE_REPO).policy;
+  fs.mkdirSync(path.dirname(path.join(projectDir, rel)), { recursive: true });
+  fs.writeFileSync(path.join(projectDir, rel), `${JSON.stringify({ data_layout: dataName(bv) }, null, 2)}\n`);
+  const env = brainScriptEnv();
+  const add = git(['add', '--', rel], { cwd: projectDir, env });
+  const commit = add.ok ? git(['commit', '--quiet', '--no-verify', '-m', `${BRAIN_COMMIT_TAG} data ${dataName(bv)} of the domain's brain (project.mjs)`, '--', rel], { cwd: projectDir, env }) : add;
+  if (!commit.ok) return `data: ${rel} written (data ${dataName(bv)}), commit failed: ${(commit.stderr || '').split('\n')[0]}; commit and push it`;
+  const push = gitRemote(['push', '--quiet'], { cwd: projectDir });
+  return `data: ${rel} with data ${dataName(bv)} of the brain, committed${push.ok ? ' and pushed' : `, push failed: ${(push.stderr || '').split('\n')[0]}`}`;
 }
 
 /**
@@ -386,6 +408,8 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
   if (marker) lines.push(marker);
   adapter(projectDir, `../${brainName}`);
   lines.push('settings generated');
+  const stamp = stampRepoLayout(projectDir, brainDir);
+  if (stamp) lines.push(stamp);
   // A public code repo keeps no workflow knowledge (repoPublic): records, decisions and runbooks would be pushed publicly
   // (alice 2026-11-11, an adopted static web).
   const info = await gh(apiUrl, token, 'GET', `/repos/${owner}/${repoName}`);
@@ -414,6 +438,8 @@ async function joinDomain({ base, brainName, owner, me, repoName, foreign, setAs
   if (eol) lines.push(eol);
   adapter(projectDir, `../${brainName}`);
   lines.push('settings generated');
+  const stamp = stampRepoLayout(projectDir, brainDir);
+  if (stamp) lines.push(stamp);
   lines.push(`brain ${brainName}: add ${repoName} to topics.shared_checkouts of its policy if threads of the domain work in it (a topic names its repos itself)`);
   const info = await gh(apiUrl, token, 'GET', `/repos/${owner}/${repoName}`);
   if (info.status === 200 && info.json?.private === false) {
@@ -461,6 +487,8 @@ export async function create({ name, repo = null, purpose, domain = null, root =
   lines.push(ensureDomainMarker(base, `${name}-brain`));
   adapter(projectDir, `../${name}-brain`);
   lines.push('settings generated');
+  const stamp = stampRepoLayout(projectDir, brainDir);
+  if (stamp) lines.push(stamp);
   return { owner, projectDir, brainDir, lines };
 }
 

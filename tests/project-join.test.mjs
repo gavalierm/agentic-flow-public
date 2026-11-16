@@ -1,7 +1,8 @@
 // ttl: 2026-12-16
 // project.mjs connect into a domain that exists (doma-pc 2026-11-16: the marketing repo of Shop joins the domain
 // Shop): the repo is cloned beside the domain's brain and points at it; no <name>-brain is cloned or created, the
-// older folder of the setup is set aside; a --brain other than the domain's is refused before anything changes.
+// older folder of the setup is set aside; a --brain other than the domain's is refused before anything changes. The repo
+// gets the data version of the brain (a repo without one reads as data 1 and the session start refused it).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,6 +11,8 @@ import http from 'node:http';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { connect } from '../scripts/project.mjs';
+import { layoutRefusal } from '../scripts/layout.mjs';
+import { PLUGIN_ROOT, cleanEnv } from './helpers.mjs';
 
 const git = (cwd, ...args) => {
   const r = spawnSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' });
@@ -31,8 +34,9 @@ test('connect --domain of an existing domain: the repo joins its brain, no brain
   try {
     const root = path.join(base, 'root');
     const dom = path.join(root, 'Shop');
-    fs.mkdirSync(path.join(dom, 'shop-brain'), { recursive: true });
-    git(path.join(dom, 'shop-brain'), 'init', '-q', '-b', 'main');
+    fs.mkdirSync(dom, { recursive: true });
+    const init = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'brain-init.mjs'), path.join(dom, 'shop-brain')], { encoding: 'utf8', env: cleanEnv() });
+    assert.equal(init.status, 0, init.stdout + init.stderr);
     fs.writeFileSync(path.join(dom, '.agentic-domain'), JSON.stringify({ brain: 'shop-brain' }));
     const origin = path.join(base, 'facebook.git');
     const work = path.join(base, 'w');
@@ -56,5 +60,11 @@ test('connect --domain of an existing domain: the repo joins its brain, no brain
     assert.ok(res.lines.some((l) => /set aside: FACEBOOK -> FACEBOOK\.pre-adopt/.test(l)), res.lines.join('\n'));
     assert.ok(res.lines.some((l) => /joins its brain shop-brain/.test(l)));
     assert.ok(!calls.some((c) => /facebook-brain|POST/.test(c)), calls.join('\n'));
+    // The repo carries the data of the brain (2.1): the session start does not refuse it as a clone not pulled.
+    const fb = path.join(dom, 'facebook');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(fb, '.brain', 'policy.json'), 'utf8')).data_layout, '2.1');
+    assert.equal(layoutRefusal(path.join(dom, 'shop-brain'), fb), null);
+    assert.ok(res.lines.some((l) => /^data: \.brain\/policy\.json with data 2\.1 of the brain, committed and pushed$/.test(l)), res.lines.join('\n'));
+    assert.ok(git(origin, 'log', '-1', '--format=%s', 'main').includes('data 2.1'));
   } finally { srv.close(); fs.rmSync(base, { recursive: true, force: true }); }
 });
