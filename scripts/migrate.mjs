@@ -222,8 +222,13 @@ const triageReason = (item, kind) => {
   return `outside the map of data 1 (${kind})`;
 };
 
-/** Untracked work files (scratch/): files outside nested repositories and virtual environments, plus those never moved. */
-function scanUntracked(dir, rel, files, never) {
+/**
+ * Untracked work files (scratch/): every file, and a nested repository, a virtual environment or a credentials file as one
+ * unit (a folder moves whole). Work files are triaged or go to the work folder of a topic outside git; none is left in a
+ * scratch/ data 2.0 does not have (operator 2026-11-16: a clone in scratch/ is work files too). A unit is never deleted by
+ * the move (pomocne): `units` names them with their state, so the preview shows what a folder holds.
+ */
+function scanUntracked(dir, rel, files, units) {
   const abs = path.join(dir, rel);
   let entries = [];
   try { entries = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }
@@ -231,8 +236,8 @@ function scanUntracked(dir, rel, files, never) {
     const r = `${rel}/${e.name}`;
     const a = path.join(dir, r);
     const why = neverReason(r, { abs: e.isDirectory() ? a : null });
-    if (why) { never.push({ path: e.isDirectory() ? `${r}/` : r, reason: why === NESTED ? `${why} (${nestedState(a)})` : why }); continue; }
-    if (e.isDirectory()) scanUntracked(dir, r, files, never);
+    if (why) { files.push(r); units.set(r, { why: why === NESTED ? `${why} (${nestedState(a)})` : why, folder: e.isDirectory() }); continue; }
+    if (e.isDirectory()) scanUntracked(dir, r, files, units);
     else if (e.isFile()) files.push(r);
   }
 }
@@ -360,7 +365,8 @@ export function planMigration(dir, { proposals = new Map(), confirmed = null } =
   // Work files outside git (scratch/): triage, never committed by the plan itself.
   if (fs.existsSync(path.join(dir, L1.scratch))) {
     const list = [];
-    scanUntracked(dir, L1.scratch, list, plan.never);
+    plan.units = new Map();
+    scanUntracked(dir, L1.scratch, list, plan.units);
     const untracked = list.filter((r) => !plan.tracked.includes(r));
     if (untracked.length) for (const r of untracked) addTriage(`${L1.scratch}/`, r, true);
   }
@@ -547,6 +553,7 @@ export function formatPlan(plan, { all = false } = {}) {
   }
   const merges = plan.merges.filter((m) => m.closed);
   if (merges.length) lines.push(`closed topics (state closed, stay in ${L2.topics}/<id>/): ${merges.map((m) => m.to.split('/')[1]).join(', ')}`);
+  if (plan.units?.size) { lines.push(`folders and files of ${L1.scratch}/ that move whole with their item (${plan.units.size}):`); for (const [p, u] of plan.units) lines.push(`  ${p}${u.folder ? '/' : ''}: ${u.why}`); }
   lines.push(`triage, waits for the operator (${plan.triage.length}; TSV: cesta, navrh, tema, dovod):`);
   for (const t of plan.triage) {
     const state = t.remove ? '-> removed (pomocne)' : t.to ? `-> ${t.brain ? `${brainName}:` : ''}${t.to}` : t.error ? `stays (${t.error})` : `stays`;
@@ -696,6 +703,7 @@ export function applyMigration(dir, { confirmedFile = null, proposalsFile = null
   }
   const removedOutside = [];
   for (const m of deleted) {
+    if (plan.units?.has(m.from)) { process.stderr.write(`${m.from}: not deleted (${plan.units.get(m.from).why}: the move deletes no folder of its own; move it to a topic's work folder or remove it by hand)\n`); continue; }
     try { fs.rmSync(path.join(dir, m.from)); removedOutside.push(m.from); } catch (err) { process.stderr.write(`${m.from}: not deleted (${err.message})\n`); }
   }
   const pruned = pruneOldFolders(dir, moves);

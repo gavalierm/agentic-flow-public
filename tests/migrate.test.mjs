@@ -175,13 +175,14 @@ test('apply refuses a dirty tree, a divergence from origin and a layout above 2;
     assert.equal(head(fx.brain), before);
     assert.equal(dataLayoutVersion(fx.brain), 1);
     gitq(fx.brain, 'reset', '-q', '--hard', 'origin/main');
-    // Untracked scratch/ (outside git) is triage: without a confirmed list it stays where it is; nested repos never move.
+    // Untracked scratch/ (outside git) is triage: without a confirmed list it stays where it is; a nested repo is one unit of it.
     fs.mkdirSync(path.join(fx.brain, 'scratch', 'clone', '.git'), { recursive: true });
     fs.writeFileSync(path.join(fx.brain, 'scratch', 'note.md'), 'n\n');
     fs.writeFileSync(path.join(fx.brain, '.git', 'info', 'exclude'), 'scratch/\n');
     const p = fx.run('migrate.mjs', [fx.brain]);
     assert.match(p.stdout, /scratch\/\ttemy\/main\/tmp\/\t.*\[outside git\]\tstays/);
-    assert.match(p.stdout, /scratch\/clone\/: nested git repository \(state unreadable\)/);
+    assert.match(p.stdout, /folders and files of scratch\/ that move whole with their item \(1\):\n  scratch\/clone\/: nested git repository \(state unreadable\)/);
+    assert.doesNotMatch(p.stdout, /never moved automatically \(\d+\):\n  scratch\//);
     // A real clone with its state: origin, uncommitted changes and commits on no remote.
     const clone = path.join(fx.brain, 'scratch', 'work');
     gitq(fx.root, 'clone', '-q', fx.origin, clone);
@@ -243,3 +244,23 @@ test('project repo: agentic/ goes to .brain/ and vystupy/rozhodnutia, docs/ wait
 
 // A handover over the line limit from before the limit (pilot 2026-11-14): the move keeps it; a changed one is refused.
 const LONG_HANDOVER = (task, extra = '') => HANDOVER(task).replace('## Hotové\n-\n', `## Hotové\n${Array.from({ length: 13 }, (_, i) => `- krok ${i + 1}${extra}`).join('\n')}\n`);
+
+test('confirmed scratch/ moves whole to temy/main/tmp/, a clone inside it with its commits (nothing deleted, nothing left)', () => {
+  const fx = brainV1();
+  try {
+    fs.writeFileSync(path.join(fx.brain, '.git', 'info', 'exclude'), 'scratch/\n');
+    fs.mkdirSync(path.join(fx.brain, 'scratch'), { recursive: true });
+    fs.writeFileSync(path.join(fx.brain, 'scratch', 'note.md'), 'n\n');
+    const clone = path.join(fx.brain, 'scratch', 'work');
+    gitq(fx.root, 'clone', '-q', fx.origin, clone);
+    gitq(clone, 'config', 'user.name', 't'); gitq(clone, 'config', 'user.email', 't@t');
+    gitq(clone, 'commit', '-q', '--allow-empty', '--no-verify', '-m', 'local only');
+    const tsv = path.join(fx.root, 'scratch.tsv');
+    fs.writeFileSync(tsv, 'cesta\tnavrh\ttema\tdovod\nscratch/\ttemy/main/tmp/\t\twork files\n');
+    const r = fx.run('migrate.mjs', [fx.brain, '--apply', '--confirmed', tsv]);
+    assert.equal(r.status, 0, r.out);
+    for (const p of ['note.md', 'work/.git']) assert.ok(fs.existsSync(path.join(fx.brain, 'temy', 'main', 'tmp', p)), p);
+    assert.equal(gitq(path.join(fx.brain, 'temy', 'main', 'tmp', 'work'), 'log', '-1', '--format=%s'), 'local only', 'the clone keeps its commits');
+    assert.ok(!fs.existsSync(path.join(fx.brain, 'scratch', 'work')), 'nothing left in scratch/');
+  } finally { fx.cleanup(); }
+});
