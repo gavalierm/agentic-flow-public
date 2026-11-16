@@ -1,13 +1,16 @@
-// Error report to the workflow maintainer (spec 7.3 to 7.5, P-003 step 5), decided by code, not by the agent: mail, sent
-// once, under the key report-<fp> of the maintainer's project (its intake delivers it to the maintainer topic). No pickup
-// (no reply, undelivered) puts it into Úlohy pre operátora and it is never sent again; mail that cannot be sent leaves a
-// draft in the held topic (git) and a task with its path. No issue: the operator files one if they see fit (7.5, the
-// text may carry client data). Only a delivered message counts as reported (operator 2026-11-07).
+// Error report to the workflow maintainer (spec 7.3 to 7.5, P-003 step 5), decided by code, not by the agent. The
+// maintainer is one T3 thread outside the workflow, named by the mail server (instance.json maintainer.thread), so a report
+// is mail straight into that thread (comms send --maintainer, operator 2026-11-16). When this mail server names no
+// maintainer thread, or the thread does not exist any more (the mail bounces: no reply / undelivered, error.mjs report
+// --from), the report goes to an issue in the public workflow repo (policy maintainer repo). Only when both fail: a draft
+// in the held topic (git) and a task for the operator. Only a delivered message or a created issue counts as reported (operator 2026-11-07).
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh } from './github.mjs';
+import { recordIssue } from './issue-watch.mjs';
 import { commsSettings, runClient, parseAddress } from './comms.mjs';
 import { PLUGIN_ROOT, toPosix } from './util.mjs';
 import { channelOf } from './config.mjs';
@@ -18,12 +21,13 @@ import { heldTopics } from './topic.mjs';
 import { brainWrite } from './brain.mjs';
 import { isMainTopic } from './comms.mjs';
 
-// Defaults; `policy.maintainer` ({comms, repo}) of the brain overrides (another maintainer, a fork).
-export const MAINTAINER = { comms: 'maintainer/workflow-dev', repo: 'https://github.com/gavalierm/agentic-flow-public.git' };
+// The maintainer's thread is no workflow setting: the mail server names it (instance.json maintainer.thread). The issue
+// repo is the default below; `policy.maintainer.repo` of the brain overrides it (a fork), null turns issues off.
+export const MAINTAINER = { repo: 'https://github.com/gavalierm/agentic-flow-public.git' };
 
 export function maintainerOf(policy = {}) {
-  const m = policy && typeof policy.maintainer === 'object' ? policy.maintainer : {};
-  return { comms: m.comms === undefined ? MAINTAINER.comms : m.comms, repo: m.repo === undefined ? MAINTAINER.repo : m.repo };
+  const m = policy && typeof policy.maintainer === 'object' && policy.maintainer ? policy.maintainer : {};
+  return { repo: m.repo === undefined ? MAINTAINER.repo : m.repo };
 }
 
 export function repoSlug(url) {
@@ -140,28 +144,9 @@ function writeReport(ctx, id, rec) {
   try { fs.mkdirSync(path.dirname(reportsFile(ctx)), { recursive: true }); fs.writeFileSync(reportsFile(ctx), `${JSON.stringify(all, null, 2)}\n`); } catch { /* the record only helps the late fallback */ }
 }
 
-// A maintainer topic this mail server held once is remembered per brain and mail is skipped for a week: every report
-// otherwise left the operator another "new topic? / redirect" notice first (agentic-flow-public#20, 12 notices).
-export const UNREACHABLE_DAYS = 7;
-export function unreachableFile(ctx) {
-  return dataPath(ctx.brainDir || ctx.projectDir, 'local', 'maintainer-unreachable.json');
-}
-function serverKey(s, addr) {
-  return `${s.instance || toPosix(s.configFile || '') || 'default'}|${addr.project}/${addr.topic}`;
-}
-function readUnreachable(ctx) {
-  try { return JSON.parse(fs.readFileSync(unreachableFile(ctx), 'utf8')) || {}; } catch { return {}; }
-}
-function rememberUnreachable(ctx, key) {
-  const all = readUnreachable(ctx);
-  all[key] = new Date().toISOString();
-  try { fs.mkdirSync(path.dirname(unreachableFile(ctx)), { recursive: true }); fs.writeFileSync(unreachableFile(ctx), `${JSON.stringify(all, null, 2)}\n`); } catch { /* only saves a notice */ }
-}
-
 /**
- * Topic of a report at the maintainer (3b, D-0022): `report-<fp>`, fp = first 8 hex of sha256(lower-case scrubbed title |
- * workflow version). No client data; the same report of another instance on the same version lands in the same topic, a
- * release with the fix starts a new one.
+ * Key of a report (3b, D-0022): `report-<fp>`, fp = first 8 hex of sha256(lower-case scrubbed title | workflow version),
+ * the supersede key of its mail. No client data; a release with the fix starts a new key.
  */
 export function reportTopic(title, ctx = {}, env = process.env, ver = version()) {
   const t = scrub(String(title || ''), ctx, env).trim().toLowerCase();
@@ -169,30 +154,49 @@ export function reportTopic(title, ctx = {}, env = process.env, ver = version())
 }
 
 /**
- * Mail of a report to the maintainer project, topic `topic` (default the maintainer topic itself); delivered = accepted
- * pending in a registered topic (not queued in the outbox). Held with `project_known` (the maintainer's project is on this
- * server, its intake delivers it to the maintainer topic, spec 7.3): counted as mailed, `pending_topic`. Held without it
- * (an older server, or no maintainer here): not reachable, remembered for a week.
+ * Mail of a report to the maintainer's T3 thread (comms send --maintainer: the server names the thread); delivered =
+ * accepted pending (not queued in the outbox). `key` supersedes an unpicked copy of the same report. A server that names
+ * no maintainer thread (404) or does not know the address (an older server, 400) is no delivery: the caller files an issue.
  */
-export function mailReport(ctx, text, maintainer = maintainerOf(ctx.policy), { topic = null } = {}) {
-  if (!maintainer.comms) return { ok: false, why: 'no maintainer topic configured' };
+export function mailReport(ctx, text, { key = null } = {}) {
   const s = commsSettings(ctx);
   if (!s.enabled) return { ok: false, why: `mail not configured (${s.reason || 'off'})` };
-  const addr = parseAddress(maintainer.comms, s.project);
-  if (!addr || addr.persona) return { ok: false, why: `bad maintainer address ${maintainer.comms}` };
-  const key = serverKey(s, addr);
-  const seen = readUnreachable(ctx)[key];
-  if (seen && Date.now() - Date.parse(seen) < UNREACHABLE_DAYS * 86400000) return { ok: false, why: `maintainer topic ${maintainer.comms} not on this mail server (held ${seen.slice(0, 10)}; mail skipped)` };
-  const to = { project: addr.project, topic: topic || addr.topic };
-  const res = runClient(ctx, ['send', '--text', '-', '--level', 'assist', '--project', to.project, '--topic', to.topic], { input: text });
-  if (!res.ok) return { ok: false, why: `mail ${res.error || 'failed'}` };
+  const res = runClient(ctx, ['send', '--maintainer', '--text', '-', '--level', 'assist', ...(key ? ['--supersede-key', key] : [])], { input: text });
+  if (!res.ok) return { ok: false, why: `no maintainer thread on this mail server (${res.error || 'failed'})` };
   const d = res.data || {};
   // A brain without its mail key queues everything (agentic-flow-public#62: a domain brain attached without project.mjs mail).
-  if (d.queued) return { ok: false, why: `mail unavailable (queued in the outbox)${s.configFile ? '' : `; this brain has no mail key (<brain>/${LAYOUT.local}/comms.json): project.mjs mail <project dir>`}`, id: d.id };
-  if (d.status === 'held' && d.project_known === true && d.id) return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${to.project}/${to.topic}`, pending_topic: true, notice: d.notice_id || null };
-  if (d.status === 'held') rememberUnreachable(ctx, key);
-  if (d.status !== 'pending' || !d.id) return { ok: false, why: `maintainer topic ${maintainer.comms} not on this mail server (message ${d.status || '?'}${d.notice_id ? `, notice ${d.notice_id}` : ''})`, id: d.id, notice: d.status === 'held' ? d.notice_id || null : null };
-  return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${to.project}/${to.topic}` };
+  if (d.queued) return { ok: false, why: `mail unavailable (queued in the outbox)${s.configFile ? '' : `; this brain has no mail key (<brain>/${LAYOUT.local}/comms.json): project.mjs mail <project dir>`}`, queued: d.id || null };
+  if (d.status !== 'pending' || !d.id) return { ok: false, why: `maintainer thread not reached (message ${d.status || '?'})` };
+  return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `thread ${d.to_thread || 'maintainer'}` };
+}
+
+const issueNumber = (url) => Number((/\/issues\/(\d+)/.exec(url) || [])[1]) || null;
+
+/**
+ * Issue in the maintainer repo (policy maintainer repo) with this machine's GitHub access: token file, else the gh CLI.
+ * Title and body scrubbed (D-0009); the footer names why mail did not reach the maintainer thread
+ * (agentic-flow-public#62).
+ */
+export async function issueReport(ctx, title, body, maintainer = maintainerOf(ctx.policy), env = process.env, why = []) {
+  const slug = repoSlug(maintainer.repo);
+  if (!slug) return { ok: false, why: 'no maintainer repo configured' };
+  const t = scrub(title, ctx, env).slice(0, 120);
+  const reason = why.length ? scrub(why.join('; '), ctx, env) : 'the maintainer thread was not reachable';
+  const b = `${scrub(body, ctx, env)}\n\n---\nreported by error.mjs report (maintainer thread not reached: ${reason})`;
+  const tokenFile = env.WORKFLOW_GITHUB_TOKEN_FILE || DEFAULT_TOKEN_FILE;
+  let token = null;
+  try { token = fs.readFileSync(tokenFile, 'utf8').trim() || null; } catch { /* try gh */ }
+  if (token) {
+    try {
+      const r = await gh(env.WORKFLOW_GITHUB_API || DEFAULT_API_URL, token, 'POST', `/repos/${slug}/issues`, { title: t, body: b });
+      if (r.status === 201 && r.json.html_url) return { ok: true, url: r.json.html_url, slug, number: r.json.number || issueNumber(r.json.html_url), id: r.json.id || null, login: r.json.user?.login || null };
+      return { ok: false, why: `GitHub issue in ${slug} failed (HTTP ${r.status})` };
+    } catch (err) { return { ok: false, why: `GitHub issue in ${slug} failed (${err.message})` }; }
+  }
+  const cli = spawnSync(env.WORKFLOW_GH_CLI || 'gh', ['issue', 'create', '-R', slug, '--title', t, '--body-file', '-'], { input: b, encoding: 'utf8', timeout: 30000, env });
+  const url = /https:\/\/\S+\/issues\/\d+/.exec(cli.stdout || '');
+  if (cli.status === 0 && url) return { ok: true, url: url[0], slug, number: issueNumber(url[0]), id: null, login: null };
+  return { ok: false, why: cli.error ? `no GitHub access (no ${toPosix(tokenFile).replace(env.HOME || os.homedir(), '~')}, no gh)` : `gh issue create in ${slug} failed: ${(cli.stderr || '').trim().split('\n')[0]}` };
 }
 
 /**
@@ -250,24 +254,38 @@ function draft(ctx, title, body, why) {
   return toPosix(file);
 }
 
+/** The issue fallback, its watch and the line for the agent; null when no issue could be created (`why` gets the reason). */
+async function issueLine(ctx, title, text, m, env, why, fromId) {
+  const issue = await issueReport(ctx, title, text, m, env, why);
+  if (!issue.ok) { why.push(issue.why); return null; }
+  if (fromId) writeReport(ctx, fromId, { issue: issue.url });
+  // The reporter watches its own issue (3c.1): the wake job issue-watch rings this topic on the maintainer's answer.
+  let watched = '';
+  try { if (recordIssue(ctx, issue, env)) watched = `; watched: the answer rings this topic, then error.mjs confirm|reopen ${issue.url} --text "..."`; } catch { /* reported anyway; only the watch is missing */ }
+  return `reported: issue ${issue.url} (${why.join('; ')}); tell the operator the link (P-003)${watched}`;
+}
+
 /**
- * One report, sent once (spec 7.4): mail (to the thread that did the work with `to`, else under report-<fp> to the
- * maintainer), else a draft and an operator task. Returns the line for the agent; `reported` only after delivery.
- * `fromId`: a mailed report that got no reply or bounced (no-reply / undelivered bell): it goes into the operator's tasks,
- * never sent again and never an issue.
+ * One report, sent once (spec 7.4): mail (to the thread that did the work with `to`, else to the maintainer's T3 thread
+ * the mail server names), else an issue in the public workflow repo, else a draft and an operator task. Returns the line for the
+ * agent; `reported` only after delivery or a created issue. `fromId`: a mailed report that got no reply or bounced
+ * (no-reply / undelivered bell): the thread is gone or did not take it, so the report goes to an issue, never mailed again.
  */
 export async function report(ctx, { text, title, fromId, to } = {}, env = process.env) {
   const m = maintainerOf(ctx.policy);
+  const why = [];
   if (fromId) {
     const rec = readReports(ctx)[fromId];
-    const what = rec ? `${rec.title} (${fromId} -> ${rec.to})` : `mail ${fromId}`;
-    if (rec) writeReport(ctx, fromId, { not_picked: new Date().toISOString() });
-    return { reported: false, line: `error report ${fromId} not picked up; it is sent once and never again (spec 7.4). ${taskLine(ctx, `hlásenie chyby workflow nebolo prevzaté: ${what}`)} (P-003)` };
+    if (!rec) return { reported: false, line: `no error report ${fromId} recorded on this machine; send it again: error.mjs report --title "..." --text "..." (P-003)` };
+    if (rec.issue) return { reported: true, line: `error report ${fromId} already reported: ${rec.issue}; nothing more to do (P-003)` };
+    writeReport(ctx, fromId, { not_picked: new Date().toISOString() });
+    why.push(`mail ${fromId} -> ${rec.to} not picked up (the thread does not exist or did not take it)`);
+    const line = await issueLine(ctx, rec.title, rec.text, m, env, why, fromId);
+    if (line) return { reported: true, line };
+    return { reported: false, line: `error report ${fromId} not picked up and no issue (${why.join('; ')}); it is never mailed again (spec 7.4). ${taskLine(ctx, `hlásenie chyby workflow nebolo prevzaté ani založené ako issue: ${rec.title} (${fromId} -> ${rec.to})`)} (P-003)` };
   }
-  const why = [];
-  let held = null;
-  // The environment travels with the text: the mail and the draft carry it. D-0009 holds for mail too: the maintainer's
-  // topic and the record get the scrubbed text.
+  // The environment travels with the text: the mail, the issue and the draft carry it. D-0009 holds for mail too: the
+  // maintainer's thread and the record get the text an issue would.
   title = scrub(String(title || ''), ctx, env).trim();
   text = scrub(`${String(text || '').trimEnd()}\n\n${reportMeta(ctx, env)}`, ctx, env);
   if (to) {
@@ -275,24 +293,21 @@ export async function report(ctx, { text, title, fromId, to } = {}, env = proces
     const direct = mailTopicReport(ctx, `title: ${title}\n\n${text}`, to);
     if (direct.ok) {
       writeReport(ctx, direct.id, { text, title, at: new Date().toISOString(), to: direct.to });
-      return { reported: true, line: `reported: mail ${direct.id} -> ${direct.to} (the thread that did the work); sent once: without pickup by ${direct.expires_at || 'the deadline'} the bell says no reply / undelivered, then error.mjs report --from ${direct.id} gives the operator task (P-003)` };
+      return { reported: true, line: `reported: mail ${direct.id} -> ${direct.to} (the thread that did the work); sent once: without pickup by ${direct.expires_at || 'the deadline'} the bell says no reply / undelivered, then error.mjs report --from ${direct.id} files it as an issue (P-003)` };
     }
     why.push(direct.why);
     if (direct.notice) runClient(ctx, ['decide', '--notice', direct.notice, '--decision', 'discard']);
   }
-  const mail = mailReport(ctx, `title: ${title}\n\n${text}`, m, { topic: reportTopic(title, ctx, env) });
+  const mail = mailReport(ctx, `title: ${title}\n\n${text}`, { key: reportTopic(title, ctx, env) });
   if (mail.ok) {
-    writeReport(ctx, mail.id, { text, title, at: new Date().toISOString(), to: mail.to, ...(mail.pending_topic ? { pending_topic: true } : {}) });
+    writeReport(ctx, mail.id, { text, title, at: new Date().toISOString(), to: mail.to });
     const pre = why.length ? `${why.join('; ')}; ` : '';
-    return { reported: true, line: `${pre}reported: mail ${mail.id} -> ${mail.to}${mail.pending_topic ? ' (the maintainer intake delivers it to its topic)' : ''}; sent once: without pickup by ${mail.expires_at || 'the deadline'} the bell says no reply / undelivered, then error.mjs report --from ${mail.id} gives the operator task (P-003)` };
+    return { reported: true, line: `${pre}reported: mail ${mail.id} -> ${mail.to} (the maintainer thread); sent once: without pickup by ${mail.expires_at || 'the deadline'} the bell says no reply / undelivered, then error.mjs report --from ${mail.id} files it as an issue (P-003)` };
   }
   why.push(mail.why);
-  held = mail.notice || null;
-  // The held copy only leaves the operator a "new topic?" notice about nothing (operator 2026-11-07): the sender withdraws it.
-  let tail = '';
-  if (held) tail = runClient(ctx, ['decide', '--notice', held, '--decision', 'discard']).ok ? `; held mail copy discarded (notice ${held})` : `; held mail copy stays (notice ${held}): the operator may discard it`;
+  const line = await issueLine(ctx, title, text, m, env, why, null);
+  if (line) return { reported: true, line };
   const file = draft(ctx, title, text, why);
-  const repo = repoSlug(m.repo);
-  const item = `hlásenie chyby workflow sa nedalo odoslať (${title}): koncept ${file}${repo ? `; issue v ${repo} založ, ak uznáš (text môže niesť údaje klienta)` : ''}`;
-  return { reported: false, line: `NOT reported: ${why.join('; ')}${tail}. ${taskLine(ctx, item)}; do not write "reported" (spec 7.5, P-019)` };
+  const item = `hlásenie chyby workflow sa nedalo odoslať ani založiť ako issue (${title}): koncept ${file}`;
+  return { reported: false, line: `NOT reported: ${why.join('; ')}. ${taskLine(ctx, item)}; do not write "reported" (spec 7.5, P-019)` };
 }

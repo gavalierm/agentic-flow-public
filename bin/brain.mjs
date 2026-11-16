@@ -5,7 +5,8 @@
 //   brain.mjs sync | status
 //   brain.mjs pin <vX.Y.Z|N|latest> [--all]   set policy workflow_version (N: newest release of major N, the deliberate
 //                                            upgrade, P-066; one install per machine: --all pins every brain it knows)
-//   brain.mjs maintainer [--comms <project>/<topic>|none] [--repo <github url>|none]   where error reports go (policy maintainer)
+//   brain.mjs maintainer [--repo <github url>|none]   the issue repo of error reports (policy maintainer; the maintainer's
+//                                                       thread is set on the mail server, instance.json maintainer.thread)
 //   brain.mjs supervisor [--persona <name>|none] [--comms <project>/<topic>|@<persona>/main|none]   who the supervisor is
 //                                            (the sender of its mail) and its mail address (policy supervisor, plan O5)
 //   brain.mjs resolve <file> --keep local|remote   settle a disagreement on one file (this machine's version or origin's)
@@ -87,23 +88,25 @@ try {
     process.stdout.write(`workflow_version ${want}: the install switches at the next session start (or /clear)${args.all ? '' : '; other brains on this machine: brain.mjs pin --all'}\n`);
     if (failed) process.exit(1);
   } else if (cmd === 'maintainer') {
-    // flow-public#21: policy.maintainer (where error.mjs report goes) had no writer; a hand edit of policy.json is refused
-    // (P-013, P-040). `none` turns a channel off (comms none: a report is kept as a draft for the operator, spec 7.5).
+    // flow-public#21: policy.maintainer (the issue repo of error.mjs report) had no writer; a hand edit of policy.json is
+    // refused (P-013, P-040). `none` turns issues off (a report the maintainer thread cannot take is kept as a draft for
+    // the operator, spec 7.5). The maintainer's thread is no brain setting: instance.json maintainer.thread of the mail server.
     const file = dataPath(ctx.brainDir || '', 'policy');
     const rel = dataRel(ctx.brainDir || '', 'policy');
     if (!ctx.brainDir) fail('brain unavailable');
     let policy = {};
     try { if (fs.existsSync(file)) policy = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (err) { fail(`${rel} is not valid JSON (${err.message}); fix it first`); }
-    const show = (m) => `maintainer comms ${m.comms ?? 'none'}; repo ${m.repo ?? 'none'}`;
-    if (args.comms === undefined && args.repo === undefined) { process.stdout.write(`${show(maintainerOf(policy))}\n`); process.exit(0); }
+    const show = (m) => `maintainer thread: set on the mail server (instance.json maintainer.thread); repo ${m.repo ?? 'none'}`;
+    if (args.comms !== undefined) fail('brain.mjs maintainer --comms is gone: the maintainer is a T3 thread set on the mail server (instance.json maintainer.thread); only --repo <github url>|none is a brain setting');
+    if (args.repo === undefined) { process.stdout.write(`${show(maintainerOf(policy))}\n`); process.exit(0); }
     if (ctx.thread && isWakeTurn(ctx.brainDir, ctx.thread)) fail('the maintainer setting cannot change in a turn started by a message (P-047)');
     const next = { ...(typeof policy.maintainer === 'object' && policy.maintainer ? policy.maintainer : {}) };
-    for (const key of ['comms', 'repo']) {
+    delete next.comms;
+    for (const key of ['repo']) {
       const v = args[key];
       if (v === undefined) continue;
-      if (v === true || v === '') fail(`usage: brain.mjs maintainer [--comms <project>/<topic>|none] [--repo <github url>|none]`);
+      if (v === true || v === '') fail('usage: brain.mjs maintainer [--repo <github url>|none]');
       if (v === 'none') next[key] = null;
-      else if (key === 'comms' && !/^[\w.-]+\/[\w.-]+$/.test(v)) fail(`--comms ${v}: expected <project>/<topic> of the maintainer's mail topic, or none`);
       else if (key === 'repo' && !repoSlug(v)) fail(`--repo ${v}: expected a github.com repository URL, or none`);
       else next[key] = v;
     }

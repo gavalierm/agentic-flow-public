@@ -109,6 +109,6 @@ export async function checkAll({ t3Home = path.join(os.homedir(), '.t3', 'userda
 export function formatResults({ version, results }) {
   const count = (s) => results.filter((r) => r.status === s).length;
   const lines = results.map((r) => `${r.status} ${r.id}: ${r.message}`);
-  lines.push(`t3 ${version ?? 'unknown'}: ${['OK', 'FAIL', 'PENDING', 'REMOVE', 'MANUAL'].map((s) => `${count(s)} ${s.toLowerCase()}`).join(', ')}; MANUAL and PENDING go to the workflow maintainer (alice) for the pilot check`);
+  lines.push(`t3 ${version ?? 'unknown'}: ${['OK', 'FAIL', 'PENDING', 'REMOVE', 'MANUAL'].map((s) => `${count(s)} ${s.toLowerCase()}`).join(', ')}; MANUAL and PENDING go to the workflow maintainer (error.mjs report) for the pilot check`);
   return lines.join('\n');
 }

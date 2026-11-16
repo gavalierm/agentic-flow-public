@@ -97,6 +97,11 @@ switch (cmd) {
     if (state.sends) { state.sends.push({ argv, text: stdin() }); save(); }
     if (state.send_queued) { print({ queued: true, outbox_file: 'stub-outbox/1.json', message: 'comms unavailable; queued in the outbox' }); break; }
     if (state.send_fail) refuse(500, 'stub send failed');
+    // send --maintainer (operator 2026-11-16): the server names the maintainer's T3 thread, or refuses with 404.
+    if (argv.includes('--maintainer')) {
+      if (state.no_maintainer) refuse(404, 'na tomto serveri nie je nastavené vlákno správcu (instance.json maintainer.thread)');
+      print({ id: state.send_id || 'm-sent', status: 'pending', level: opt('level'), to_thread: state.maintainer_thread || 'thread-maint', expires_at: '2026-11-01T12:30:00.000Z', wait_due_at: '2026-11-01T11:00:00.000Z' }); break;
+    }
     if ((state.send_closed_topic || []).includes(`${opt('project')}/${opt('topic')}`)) refuse(410, `téma ${opt('project')}/${opt('topic')} je uzavretá`);
     if ((state.send_held_to || []).includes(opt('persona') ? `@${opt('persona')}` : `${opt('project')}/${opt('topic')}`)) { print({ id: `m-held-${(state.sends || []).length}`, status: 'held', notice_id: 'n-held', expires_at: '2026-11-01T12:30:00.000Z', project_known: true }); break; }
     if (state.send_held) { print({ id: 'm-held', status: 'held', notice_id: 'n-1', expires_at: '2026-11-01T12:30:00.000Z', ...(state.project_known ? { project_known: true } : {}) }); break; }

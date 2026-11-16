@@ -4,23 +4,22 @@
 //   error.mjs check <tool-or-work>      -> existing brain skill to extend, or "none"
 //   error.mjs resolve <id> [<id> ...]   -> remove the listed failures (stable id from list, not the number) after the lesson was saved
 //   error.mjs restore <brain commit>    -> bring back the failure(s) a wrong resolve commit dropped
-//   error.mjs report --title "..." --text "..."   -> report to the maintainer, sent once by mail; mail unavailable: a draft in the
-//                                                held topic and a task for the operator; never an issue (spec 7.3 to 7.5, P-003)
+//   error.mjs report --title "..." --text "..."   -> report to the maintainer's T3 thread (the mail server names it), sent once
+//                                                by mail; no maintainer thread: an issue in the public workflow repo; both
+//                                                unavailable: a draft in the held topic and a task for the operator (spec 7.3 to 7.5, P-003)
 //   error.mjs report --to <[project/]topic> --title "..." --text "..." -> to the thread that did the work; maintainer only if unreachable
-//   error.mjs report --from <message id>         -> a mailed report without pickup (no reply / undelivered): a task for the
-//                                                operator (Úlohy pre operátora), never sent again (spec 7.4)
+//   error.mjs report --from <message id>         -> a mailed report without pickup (no reply / undelivered: the thread is gone):
+//                                                an issue in the public workflow repo, never mailed again (spec 7.4)
 //   error.mjs confirm <issue url> --text "..."    -> the fix works in the reported scenario: comment, the watch ends (3c)
 //   error.mjs reopen <issue url> --text "..."     -> the fix does not work: reopen with the evidence, the watch goes on
 //   error.mjs watch [--force]                     -> check the watched issues now; prints the rings without a mail address
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { deployedSkillName } from '../scripts/skills-sync.mjs';
 import { listFailures, formatFailures, resolveFailuresOp, restoreFailuresOp } from '../scripts/logs.mjs';
 import { find, formatMatches } from '../scripts/find.mjs';
 import { readSkills } from '../scripts/records.mjs';
 import { tokens } from '../scripts/keys.mjs';
 import { brainWrite } from '../scripts/brain.mjs';
-import { heldTopics } from '../scripts/topic.mjs';
 import { report, scrub } from '../scripts/report.mjs';
 import { confirmIssue, reopenIssue, watchIssues, undeliveredIssues, updateIssue, baseOf } from '../scripts/issue-watch.mjs';
 
@@ -45,9 +44,7 @@ try {
     const fuzzy = readSkills(ctx.brainDir).filter((s) => tokens(`${s.skillName} ${s.description}`).some((t) => want.has(t))).map((s) => ({ path: s.path, description: `${s.skillName} [${s.owner}]: ${s.description}` }));
     const hits = exact.length ? exact : fuzzy;
     out(hits.length ? `existing skill(s) for "${arg}" (merge the lesson into the whole skill with --replace, do not create a new one):\n${formatMatches(hits)}` : `none: create a new skill with save skill <name> --origin error --description "Použi, keď ..."`);
-    // The maintainer's own thread does not mail itself: it fixes the error in workflow-dev directly (error skill, step 5).
-    const maintainer = ctx.brainDir && ctx.thread && heldTopics(ctx.brainDir, ctx.thread).some((t) => t.id === 'workflow-dev');
-    out(maintainer ? `this thread holds workflow-dev: do not mail the report to yourself; fix the error here (skill ${deployedSkillName(ctx.projectDir, 'fix')}) (P-003)` : REPORT_LINE);
+    out(REPORT_LINE);
   } else if (cmd === 'resolve') {
     const r = resolveFailuresOp(ctx.brainDir, args._.slice(1));
     brainWrite(ctx, { internal: true, ops: [r.op], message: `error: failure ${r.ids.join(' ')} processed` });
@@ -58,9 +55,6 @@ try {
     for (const l of r.lines) out(`restored: ${l}`);
   } else if (cmd === 'report') {
     const to = args.to && args.to !== true ? String(args.to) : null;
-    // A report to the thread that did the work (--to) is no report to the maintainer itself: workflow-dev may send it.
-    const maintainer = !to && ctx.brainDir && ctx.thread && heldTopics(ctx.brainDir, ctx.thread).some((t) => t.id === 'workflow-dev');
-    if (maintainer) fail(`this thread holds workflow-dev: do not report to yourself; fix the error here (skill ${deployedSkillName(ctx.projectDir, 'fix')}) (P-003)`);
     const fromId = args.from && args.from !== true ? String(args.from) : null;
     const text = args.text && args.text !== true ? String(args.text) : null;
     if (!fromId && !text) fail('usage: error.mjs report [--to <[project/]topic>] --title "<short>" --text "chyba: ...; príčina: ...; uložené: ..." | --from <message id>');

@@ -7,17 +7,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
 
-// Fake mail client of mail model 2: records each call, a send to `work-topic` or a report topic is delivered, any other
-// topic is held.
+// Fake mail client of mail model 2: records each call, a send to `work-topic` or to the maintainer thread (--maintainer) is
+// delivered, any other topic is held.
 const FAKE = `
 const fs = require('node:fs');
 const a = process.argv.slice(2);
 const input = a.includes('-') ? fs.readFileSync(0, 'utf8') : '';
 fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ a, input }) + '\\n');
-const topic = a[a.indexOf('--topic') + 1];
+const topic = a.includes('--maintainer') ? 'maintainer' : a[a.indexOf('--topic') + 1];
 if (a[0] === 'health') process.stdout.write(JSON.stringify({ ok: true, instance_id: 'fake', model: 2 }));
 else if (a[0] === 'send') {
-  const ok = topic === 'work-topic' || topic.startsWith('report-');
+  const ok = topic === 'work-topic' || topic === 'maintainer';
   process.stdout.write(JSON.stringify(ok ? { id: 'm-' + topic, status: 'pending' } : { id: 'm-held', status: 'held', notice_id: 'n1' }));
 } else process.stdout.write('{}');
 `;
@@ -49,9 +49,9 @@ test('report --to an unreachable topic falls back to the maintainer and withdraw
   const r = fx.run('error.mjs', ['report', '--to', 'proj/gone', '--title', 'scratch left', '--text', 'chyba: scratch ostal'], { env });
   assert.equal(r.status, 0, r.out);
   const c = calls();
-  const topics = c.filter((x) => x.a[0] === 'send').map((x) => x.a[x.a.indexOf('--topic') + 1]);
-  assert.equal(topics[0], 'gone');
-  assert.match(topics[1] || '', /^report-[0-9a-f]{8}$/);
+  const sends = c.filter((x) => x.a[0] === 'send');
+  assert.equal(sends[0].a[sends[0].a.indexOf('--topic') + 1], 'gone');
+  assert.ok(sends[1]?.a.includes('--maintainer'), JSON.stringify(sends[1]?.a));
   assert.ok(c.some((x) => x.a[0] === 'decide' && x.a.includes('n1')), 'held copy discarded');
-  assert.match(r.out, /not reachable by mail.*reported: mail m-report-/);
+  assert.match(r.out, /not reachable by mail.*reported: mail m-maintainer -> thread maintainer \(the maintainer thread\)/);
 });

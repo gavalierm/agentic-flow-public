@@ -2,7 +2,7 @@
 // Freeze during a rebuild (P-074, agent-alice/D-0092): threads reacted to reports and issues and rewrote the old, already
 // rejected flow while the new version was being built. The freeze is a state of the brain policy, on and off with one
 // command (brain.mjs freeze on|off); during it topic create refuses a code topic in a frozen repo unless allowed, and error
-// reports are still taken in: the intake delivers them to the maintainer topic (spec 9, plan B15).
+// reports still go to the maintainer thread (spec 9).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,8 +11,6 @@ import { setup, PLUGIN_ROOT } from './helpers.mjs';
 import { readTopicRecord } from '../scripts/topic-files.mjs';
 import { freezeOf, freezeRefusal, frozenRepo } from '../scripts/freeze.mjs';
 
-const STUB = path.join(PLUGIN_ROOT, 'tests', 'fixtures', 'comms-stub.mjs');
-const CRON = { WORKFLOW_THREAD_ID: '', T3CODE_THREAD_ID: '', CLAUDECODE: '', CODEX_HOME: '', CODEX_SANDBOX: '', CODEX_THREAD_ID: '' };
 const TOPIC = 'report-0123abcd';
 const policyOf = (fx) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'policy.json'), 'utf8'));
 
@@ -64,28 +62,5 @@ test('topic create refuses a code topic in a frozen repo outside the allowed one
     assert.equal(fx.run('brain.mjs', ['freeze', 'off']).status, 0);
     const after = fx.run('topic.mjs', ['create', 'fix-old', '--subject', 'Oprava', '--class', 'code', '--here', '--no-copy']);
     assert.equal(after.status, 0, after.out);
-  } finally { fx.cleanup(); }
-});
-
-test('report-intake during the freeze delivers the report to the maintainer topic: no topic, no rejection', () => {
-  const fx = setup({ thread: 'fz3' });
-  try {
-    const stateFile = path.join(fx.root, 'stub-state.json');
-    fs.writeFileSync(stateFile, JSON.stringify({
-      sends: [],
-      notices: [{ id: 'n-1', kind: 'unregistered-topic', state: 'open', project: 'project', topic: TOPIC, message_id: 'm-1' }],
-      message: { 'm-1': { id: 'm-1', status: 'held', project: 'project', topic: TOPIC, sender: 'rep', from_project: 'rp', from_topic: 'rt', expires_at: '2999-01-01T00:00:00.000Z', expired_at: null } },
-    }));
-    const env = { ...CRON, WORKFLOW_COMMS_CLIENT: STUB, STUB_COMMS_STATE: stateFile, STUB_COMMS_LOG: path.join(fx.root, 'stub-log.jsonl') };
-    assert.equal(fx.run('brain.mjs', ['maintainer', '--comms', 'project/workflow-dev']).status, 0);
-    assert.equal(fx.run('brain.mjs', ['freeze', 'on', '--until', '1.8.0', '--reason', 'prestavba pošty']).status, 0);
-    const r = fx.run('report-intake.mjs', [], { env });
-    assert.equal(r.status, 0, r.out);
-    assert.match(r.stdout, new RegExp(`${TOPIC}: message m-1 delivered to the maintainer topic project/workflow-dev`));
-    assert.equal(readTopicRecord(fx.brain, TOPIC), null, 'no topic');
-    const st = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    assert.equal(st.sends.length, 0, 'no rejection to the reporter');
-    assert.equal(st.notices[0].decision, 'redirect');
-    assert.deepEqual([st.message['m-1'].status, st.message['m-1'].topic], ['pending', 'workflow-dev']);
   } finally { fx.cleanup(); }
 });

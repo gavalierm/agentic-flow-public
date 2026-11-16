@@ -566,13 +566,13 @@ function ruleGate(ctx, name, content, oldBody, isNew, enforcedBy, target = null)
   const judged = judgeRule({ id: where.id, text: content, enforcedBy, oldText: isNew ? '' : oldBody }, corpus, { spawn: spawnSync });
   const verdict = { ...judged, conflicts: judged.conflicts.filter((c) => !excepted.has(c.id)) };
   const list = (a) => a.map((x) => `${x.id} (${x.how})`).join('; ');
-  const fix = (id) => (/^P-\d{3}$/.test(id) ? `${id} is a workflow principle: report it to maintainer/workflow-dev (send --level assist) or save an exception`
+  const fix = (id) => (/^P-\d{3}$/.test(id) ? `${id} is a workflow principle: report it to the workflow maintainer (error.mjs report --title ... --text ...) or save an exception`
     : id.includes('/') ? `save.mjs rule ${id.split('/')[1]} --repo ${id.split('/')[0]} --content "<reworded>"` : `save.mjs rule ${id} --content "<reworded>"`);
   if (verdict.conflicts.length) fail(`rule ${name} conflicts with ${list(verdict.conflicts)}: two rules must not order different behaviour; resolve the conflict in that rule first (${verdict.conflicts.map((c) => fix(c.id)).join('; ')}), then save this one only if something is left [${verdict.by}]`);
   if (!isNew) return;
   const open = unanswered(verdict.overlaps, args.distinct);
   if (open.length) fail(`rule ${name} overlaps ${list(verdict.overlaps.filter((o) => open.includes(o.id)))}: extend or narrow the existing rule instead of a new one (${open.map(fix).join('; ')}); only when it truly is another subject: --distinct "<id>: <how it differs and why it does not conflict>; …" for each [${verdict.by}]`);
-  if (verdict.code_instead && !(typeof args['needs-text'] === 'string' && args['needs-text'].trim().length >= 20)) fail(`rule ${name} can be enforced by code alone: ${verdict.code_instead} Do that (skill ${deployedSkillName(ctx.projectDir, 'fix')}, or report it to maintainer/workflow-dev) and drop the rule; the code's own message teaches the agent. Only when the agent must know it before acting: --needs-text "<why>" [${verdict.by}]`);
+  if (verdict.code_instead && !(typeof args['needs-text'] === 'string' && args['needs-text'].trim().length >= 20)) fail(`rule ${name} can be enforced by code alone: ${verdict.code_instead} Do that (skill ${deployedSkillName(ctx.projectDir, 'fix')}, or report it to the workflow maintainer: error.mjs report) and drop the rule; the code's own message teaches the agent. Only when the agent must know it before acting: --needs-text "<why>" [${verdict.by}]`);
 }
 
 /**

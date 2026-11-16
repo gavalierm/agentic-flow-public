@@ -226,7 +226,7 @@ try {
     out(`agentic skills sharing a tool/work token (merge only same tool): ${r.mergeable.length ? r.mergeable.map((m) => `${m.token}: ${m.paths.join(' + ')}`).join('; ') : 'none'}`);
     out(`skill health (skill-check.mjs <name> for details, skill workflow:skill-check): ${r.health.length ? r.health.map((h) => `${h.name} ${h.errors}e/${h.warns}w`).join(', ') : 'all ok'}`);
     out(`untracked ${L.docs}/ and ${L.materialy}/ (not in git, lost with the disk: commit them in that repo, keep one version of a document): ${r.untracked.length ? r.untracked.map((u) => `\n  ${u.repo}: ${u.files.slice(0, 5).join(', ')}${u.files.length > 5 ? `, … (+${u.files.length - 5})` : ''}\n    git -C ${u.dir} add ${dataRel(u.dir, 'docs')} ${dataRel(u.dir, 'materialy')} && git -C ${u.dir} commit -m "docs: track project knowledge"`).join('') : 'none'}`);
-    out(`most frequent hook refusals in ${DENIAL_DAYS} d (P-076: a refusal that keeps coming back means the skill or rule that should lead the step does not; fix that skill or rule with save, or report a hook that is too strict to maintainer/workflow-dev; inputs: denials.mjs): ${denialsLine(r.denials)}`);
+    out(`most frequent hook refusals in ${DENIAL_DAYS} d (P-076: a refusal that keeps coming back means the skill or rule that should lead the step does not; fix that skill or rule with save, or report a hook that is too strict to the workflow maintainer (error.mjs report); inputs: denials.mjs): ${denialsLine(r.denials)}`);
     out(`operator records (never deleted by the agent, only proposed): ${r.byOrigin.operator.length}`);
     out(`observed records (verify cheaply or delete): ${r.byOrigin.observed.length ? r.byOrigin.observed.join(', ') : 'none'}`);
   }

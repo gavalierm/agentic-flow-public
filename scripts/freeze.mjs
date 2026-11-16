@@ -4,7 +4,7 @@
 //   { "reason": "<why>", "until": "<version that ends it>", "allow": ["<topic>", ...], "repos": ["<repo>", ...],
 //     "since": "<iso>", "by": "<thread>" }
 // `topic create` of a code topic in a frozen repo is refused unless the topic is allowed (the work of the rebuild); error
-// reports are still delivered to the maintainer topic (spec 9, P-074; plan B15).
+// reports still go to the maintainer thread (spec 9, P-074).
 
 /** Repos a freeze covers when the policy names none: the workflow and the mail. */
 export const FREEZE_REPOS = Object.freeze(['agentic-flow', 'agentic-comms']);

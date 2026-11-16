@@ -277,11 +277,12 @@ export function run(input) {
         : 'wake: no new mail; end the turn with only your **Handover:** section and **Stav:** line (P-061)');
   } else if (messageBell) {
     const res = runClient(ctx, ['message', '--id', parsed.id]);
-    // An error report the maintainer did not pick up goes to the operator's tasks (spec 7.4), not "send elsewhere" by guess.
+    // An error report the maintainer thread did not pick up (gone or silent) goes to a public issue (spec 7.4), not
+    // "send elsewhere" by guess.
     const errReport = (ctx.brainDir || ctx.projectDir) && readReports(ctx)[parsed.id];
     const bell = messageBellLine(kind, parsed.id, res.ok ? res.data : null);
     extras.unshift(errReport
-      ? `${bell.replace(P047_ACTIONS, '')}: this is an error report to the workflow maintainer, sent once and never again; run node ${toPosix(PLUGIN_ROOT)}/bin/error.mjs report --from ${parsed.id}: its line is the item for Úlohy pre operátora (spec 7.4, P-003)`
+      ? `${bell.replace(P047_ACTIONS, '')}: this is an error report to the workflow maintainer, never mailed again; run node ${toPosix(PLUGIN_ROOT)}/bin/error.mjs report --from ${parsed.id}: it files the report as an issue in the public workflow repo, and only when that fails gives the item for Úlohy pre operátora (spec 7.4, P-003)`
       : bell);
   }
   // P-061: the thread timer fired (the wake module rang at resume_at): its step comes first; the timer is spent. Other timers
