@@ -316,7 +316,8 @@ export function dataMapLines(ctx) {
       ? `- práca témy: handover ${brain ? at('brain', brain, 'topics', t) : 'bez brainu'}, výsledky práce ${at(P, proj, 'materialy', t)}`
       : `- práca témy (${work}): ${brain ? at('brain', brain, 'topics', t) : at(P, proj, 'topics', t)}`,
     `- pracovné súbory (mimo gitu, ${same || inBrain ? 'v brainu' : 'v repe projektu'}): ${toPosix(workDir(ctx))}/`,
-    `- výstupy: rozhodnutia ${brain ? at('brain', brain, 'decisions') : 'bez brainu'}, ${outputs}`,
+    `- rozhodnutia: ${brain ? at('brain', brain, 'decisions') : 'bez brainu'}${brain && !same && hasData(proj, 'outputs') ? `, rozhodnutie jedného repa (--repo) ${at(P, proj, 'decisions')}` : ''}`,
+    `- výstupy: ${outputs}`,
     `- fakt o subjekte (pamäť agenta): ${brain ? at('brain', brain, 'memory') : 'bez brainu'}`,
     // Layout 1 has no INDEX.md: the block does not name it there.
     ...(index.length ? [`- INDEX.md: ${index.join(', ')}`] : []),

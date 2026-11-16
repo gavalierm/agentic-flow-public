@@ -17,8 +17,8 @@
 // operator repo (its `migrated_from`), or when the operator approved its removal (11.8). A rule or a skill of the domain
 // that names a principle 2.0 does not adopt (NOT_ADOPTED, spec kap. 9) blocks the apply until --approve names it
 // (`zmazat`, or `prepisat <file>` with a new text without the reference, 11.9).
-// A project repo: data_layout 3 in .brain/policy.json, knowledge_branch of .workflow.json -> target_branch (O12), the
-// hidden archive removed, references to moved paths of its brain rewritten in .brain/ and vystupy/, incoming outputs
+// A project repo: data_layout 3 in .brain/policy.json, knowledge_branch of .workflow.json -> target_branch (O12), its
+// decisions vystupy/rozhodnutia/ -> .brain/decisions/ (a decision is knowledge, not an output), the hidden archive removed, references to moved paths of its brain rewritten in .brain/ and vystupy/, incoming outputs
 // and sources from the brain (with their sources.json entries), INDEX.md regenerated.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -73,6 +73,16 @@ const real = (p) => { try { return fs.realpathSync(p); } catch { return path.res
 const same = (a, b) => real(a) === real(b);
 const json = (v) => `${JSON.stringify(v, null, 2)}\n`;
 const firstLine = (s) => String(s || '').split('\n')[0];
+const reRepo = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** The decisions of a project repo, data 2.0 -> 2.1: a reference from the repo itself (no folder before it). */
+const OWN_DECISIONS = new RegExp(`(^|[\\s(\\[{<"'\`=,:])(\\./)?${reRepo(L2.decisions)}(?=/|[\\s)\\]}>"'\`,;.:]|$)`, 'gm');
+export const ownDecisionRefs = (text) => String(text).replace(OWN_DECISIONS, (all, lead, dot) => `${lead}${dot || ''}${R3.decisions}`);
+/** A reference to the decisions of a project repo by its name (`../<repo>/vystupy/rozhodnutia/`, an absolute path). */
+export function repoDecisionRefs(text, names) {
+  let out = String(text);
+  for (const n of names) out = out.replace(new RegExp(`((?:^|[^\\w.-])${reRepo(n)}/)${reRepo(L2.decisions)}(?=/|[^\\w.-]|$)`, 'gm'), `$1${R3.decisions}`);
+  return out;
+}
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const isText = (rel) => TEXT_EXT.has(path.posix.extname(rel).toLowerCase());
 const GIT_PATHS = ['-c', 'core.quotepath=false'];
@@ -626,7 +636,8 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
       const rewritable = isText(rel) && rel !== INDEX_FILE && !['.githooks', '.claude', '.codex', '.agents'].includes(rel.split('/')[0]) && !under(rel, L2.logs) && !under(rel, L2.materialy);
       if (rewritable) {
         const r = rewrite(content, { fileRepo: fin.repo });
-        if (r.text !== content) { content = r.text; changed = true; }
+        const text = repoDecisionRefs(r.text, plan.repos.map((x) => x.name));
+        if (text !== content) { content = text; changed = true; }
       }
       const topic = relocated.get(rel)?.topic;
       if (topic) { content = withTopic(content, topic); changed = true; }
@@ -749,7 +760,9 @@ function planRepo(r, { dom, rewrite, approve, blockers, lessonPlan }) {
     if (L2.topicHidden && under(rel, L2.topicHidden)) { r.removes.push({ path: rel, status: STATUS.archive }); r.rows.push([rel, '-', STATUS.archive]); continue; }
     if (removed.has(rel)) { r.removes.push({ path: rel, status: STATUS.lesson }); r.rows.push([rel, '-', STATUS.lesson]); continue; }
     if (under(rel, L2.topics)) blockers.push(`${r.name}:${rel}: a topic in a project repo; data 2.1 keeps topics in the brain (move it there first)`);
-    r.rows.push([rel, rel, STATUS.stay]);
+    // The decisions of the repo go to its knowledge (.brain/decisions/): a decision is no output of a topic.
+    const dst = under(rel, L2.decisions) ? `${R3.decisions}${rel.slice(L2.decisions.length)}` : rel;
+    if (dst !== rel) { r.moves.push({ from: rel, to: dst }); r.rows.push([rel, dst, STATUS.move]); } else r.rows.push([rel, rel, STATUS.stay]);
     let content = rewritten.has(rel) ? rewritten.get(rel) : null;
     let changed = content !== null;
     if (rel === L2.policy) {
@@ -763,12 +776,13 @@ function planRepo(r, { dom, rewrite, approve, blockers, lessonPlan }) {
       if (w) { r.content.set(rel, json(w.cfg)); r.notes.push(`${WORKFLOW_CONFIG}: ${w.note}`); }
       continue;
     }
-    // References to the brain's moved paths (`../<brain>/temy/...`, absolute) in the knowledge and outputs of the repo.
-    if (!isText(rel) || !(under(rel, KNOWLEDGE) || under(rel, OUTPUTS))) { if (changed) r.content.set(rel, content); continue; }
+    // References to the brain's moved paths (`../<brain>/temy/...`, absolute) and to the repo's own decisions in the
+    // knowledge and outputs of the repo.
+    if (!isText(rel) || !(under(rel, KNOWLEDGE) || under(rel, OUTPUTS))) { if (changed) r.content.set(dst, content); continue; }
     if (content === null) { try { content = fs.readFileSync(path.join(r.dir, rel), 'utf8'); } catch { continue; } }
     if (content.includes('\0')) continue;
-    const out = rewrite(content, { fileRepo: r.dir, relative: false }).text;
-    if (out !== content || changed) r.content.set(rel, out);
+    const out = ownDecisionRefs(rewrite(content, { fileRepo: r.dir, relative: false }).text);
+    if (out !== content || changed) r.content.set(dst, out);
   }
   if (!files.includes(L2.policy)) blockers.push(`${r.name}: ${L2.policy} missing (data 2.0 is read from it)`);
 }
@@ -935,6 +949,8 @@ export function applyDomain(dir, { confirmedFile = null, approveFile = null, env
     }
   }
   const pruned = [L2.topics, OUTPUTS, L2.materialy, KNOWLEDGE].flatMap((rel) => pruneEmpty(plan.brain.dir, rel));
+  // The empty vystupy/rozhodnutia/ a project repo's decisions left (they moved to .brain/decisions/).
+  for (const t of plan.repos) pruned.push(...pruneEmpty(t.dir, L2.decisions).map((p) => `${t.name}:${p}`));
   const adapters = [...plan.repos.map((t) => ({ name: t.name, res: t.adapter })), { name: plan.brain.name, res: regenerateAdapter(plan.brain.dir) }].filter((a) => a.res);
   const check = checkDomain(plan.brain.dir);
   return { ok: true, commits, plan, moved, pruned, adapters, check };
@@ -977,6 +993,8 @@ export function checkRepo(dir, { brainDir = null } = {}) {
       if (L2.topicHidden && under(rel, L2.topicHidden)) { problems.push(`${rel}: the hidden archive of data 2.0 left`); break; }
     }
     for (const rel of files) if (under(rel, L2.topics)) { problems.push(`${rel}: a topic in a project repo (data 2.1 keeps topics in the brain)`); break; }
+    const oldDecisions = files.filter((rel) => under(rel, L2.decisions) && path.posix.basename(rel) !== '.gitkeep');
+    if (oldDecisions.length) problems.push(`${L2.decisions}/: ${oldDecisions.length} decision(s) of data 2.0 left (data 2.1: ${R3.decisions}/)`);
     if (brainDir) {
       const { find } = makeRewriter(mapRules(brainDir), brainDir);
       for (const rel of files) {

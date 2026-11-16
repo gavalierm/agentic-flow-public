@@ -10,7 +10,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { PLUGIN_ROOT, git, gitRemote, exists, readJson, toPosix } from './util.mjs';
 import { WORKFLOW_CONFIG, BRAIN_COMMIT_TAG, brainScriptEnv, domainDir, domainDirName, checkDomainName, DOMAIN_MARKER, machineRoot, classifyNames } from './config.mjs';
-import { LAYOUT, dataPath, layoutFor, layoutVersions } from './layout.mjs';
+import { LAYOUT, ALL_MAPS, dataPath } from './layout.mjs';
 // The projects root saved for this machine lives in config.mjs: the write hook reads it without this module's GitHub code.
 export { ROOT_FILE, rootFile, machineRoot, setMachineRoot } from './config.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
@@ -430,8 +430,8 @@ export async function create({ name, repo = null, purpose, domain = null, root =
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // First folder of a path in the brain layout (inventoryGroup).
 // Every layout (D-0048): layout 1 rules/, decisions/, ...; layout 2 .brain/rules/, vystupy/rozhodnutia/, ..., work files
-// temy/<id>/tmp/; layout 3 as layout 1, work files topics/<id>/tmp/.
-const MAPS = layoutVersions().map((v) => layoutFor(v));
+// temy/<id>/tmp/; layout 3 as layout 1, work files topics/<id>/tmp/; a project repo of layout 3 .brain/decisions/.
+const MAPS = ALL_MAPS;
 const any = (rels) => [...new Set(rels)].map(esc).join('|');
 const UNDER = Object.fromEntries(['rules', 'decisions', 'skills', 'memory'].map((n) => [n, new RegExp(`^(?:${any(MAPS.map((L) => L[n]))})/`)]));
 const TOPIC_WORK = [...new Set(MAPS.filter((L) => L.topicTmp).map((L) => `${esc(L.topics)}/[^/]+/${esc(L.topicTmp)}`))];

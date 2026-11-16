@@ -119,12 +119,13 @@ Každý druh dát má jedno miesto (P-067). Pravidlá a skilly menujú miesta lo
 
 Skript ani skill nemá pevnú cestu pracovných súborov (P-068): priečinok vlákna vypíše a vytvorí `node ~/.claude/skills/workflow/bin/work-dir.mjs` (dáta 2.1 `topics/<držaná téma alebo main>/tmp`, dáta 2.0 `temy/<…>/tmp`, dáta 1 `scratch/`; `--main` pre súbor, ktorý číta viac tém; projekt z `--project`, `WORKFLOW_PROJECT_DIR` alebo cwd, vlákno z `WORKFLOW_THREAD_ID` či `T3CODE_THREAD_ID`). `save.mjs skill` odmietne a `skill-check.mjs` nahlási `scratch/` či pracovné súbory konkrétnej témy v tele skillu alebo v jeho skripte; text skillu píše zástupný tvar `topics/<téma>/tmp/`.
 
-| Logické miesto | Verzia 3 | Verzia 2 | Verzia 1 |
+| Logické miesto | Dáta 2.1 | Dáta 2.0 | Dáta 1 |
 |---|---|---|---|
 | zdroje (súbory zvonka, nemenia sa) | `zdroje/<téma>/` hlavného cieľového repa témy; zápis hneď `save.mjs source <súbor\|priečinok> --description "..." [--as <meno\|podcesta>] [--repo <repo>]` vo vlastnom klone workflow (priečinok jedným commitom, mená podľa pravidla mien s vypísaným mapovaním), popis, pôvod a dátum v `.brain/sources.json` repa | `zdroje/<téma>/` repa projektu | `materialy/<téma>/` repa projektu |
 | práca témy (handover, výsledky práce) | `topics/<téma>/` brainu (`.tema.json`, `handover.md`, výsledky `save.mjs result <súbor>`); pri `done --topic` triáž presunie výstupy do `vystupy/<typ>/` a téma zanikne (bez archívu) | `temy/<téma>/` brainu; uzavretá téma ostáva na mieste, téma s iba handoverom v skrytom `.brain/archive/topics/<téma>/` (`done.mjs --archive-closed`) | `topics/<téma>/` brainu (`topic.json`, `holder.json`, `results.md`), uzavretá v `topics/archive/` |
 | pracovné súbory (mimo gitu) | `topics/<téma>/tmp/` brainu, zaniknú s témou | `temy/<téma>/tmp/` brainu | `scratch/` repa projektu |
-| výstupy | `vystupy/<typ>/` cieľového repa (téma v hlavičke `topic:`), iba triážou pri `done --topic`; rozhodnutia v `decisions/` brainu | `vystupy/rozhodnutia/` brainu, `vystupy/dokumenty/` repa projektu | `decisions/`, `docs/` |
+| výstupy | `vystupy/<typ>/` cieľového repa (téma v hlavičke `topic:`), iba hotové diela tém, iba triážou pri `done --topic` | `vystupy/dokumenty/` brainu aj repa projektu | `docs/` |
+| rozhodnutia (`save.mjs decision`) | `decisions/` brainu; rozhodnutie jedného repa (`--repo`) v `.brain/decisions/` repa: rozhodnutie je vedomosť, nie výstup | `vystupy/rozhodnutia/` brainu aj repa projektu | `decisions/` |
 | fakt o subjekte (pamäť agenta) | `memory/` brainu (aj `rules/`, `skills/`, `exceptions/`, `logs/`, `policy.json` v koreni brainu) | `.brain/memory/` (aj `rules/`, `skills/` … v `.brain/`) | `memory/` |
 | fakt o človeku | `osoby/<id>.md` repa operátora (`workflow:people`, `save.mjs person`) | to isté | to isté |
 | INDEX.md | v koreni repa projektu aj brainu; generuje ho workflow pri každom zápise, ručne sa needituje; súbor ignore nasadenia v koreni (`.assetsignore`, `.vercelignore`, `.netlifyignore`, `.dockerignore`, `.gcloudignore` a i.) dostane v tom istom commite chýbajúce interné priečinky a `INDEX.md` (výstup to vypíše), aby ich nasadenie nezverejnilo | v koreni repa | nie je |
@@ -166,7 +167,7 @@ Persona je projekt, ktorého repo je zároveň brain (P-024): `.workflow.json` m
 
 1. Nová persona: `node ~/.claude/skills/workflow/bin/persona-create.mjs <meno>` (krátke meno, napr. `bob`); skript sám odvodí repo `agent-<meno>`, overí, že neexistuje (ak existuje, skončí chybou, náhradné meno nepoužije), založí súkromné repo a brain v doméne `~/agentic/<Meno>/agent-<meno>` so značkou `.agentic-domain` (brain `agent-<meno>`). Nie ručné `brain-init` ani ručné založenie repa, lebo prefix `agent-` by sa dal obísť. Existujúce repo persony: `brain-init.mjs . --attach`.
 2. V repe persony: `node ~/.claude/skills/workflow/bin/adapter.mjs claude-code --brain .`. Adaptér vygenerované súbory (`.workflow.json`, `.claude/settings.json`, `.gitignore`) sám commitne cez skript brain a pushne.
-3. Agent v persone priamo zapisuje iba do pracovných súborov (verzia 1 `scratch/`, verzia 2 `temy/<téma>/tmp/`, verzia 3 `topics/<téma>/tmp/`) a `local/`; všetko ostatné ide cez `save`, `topic`, `done`. Worktree persony používa brain hlavného checkoutu.
+3. Agent v persone priamo zapisuje iba do pracovných súborov (dáta 1 `scratch/`, dáta 2.0 `temy/<téma>/tmp/`, dáta 2.1 `topics/<téma>/tmp/`) a `local/`; všetko ostatné ide cez `save`, `topic`, `done`. Worktree persony používa brain hlavného checkoutu.
 
 ### Doména (v3)
 

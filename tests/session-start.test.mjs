@@ -119,7 +119,8 @@ test('data 2.1: the block "Dáta tohto repa" names topics/ of the brain and vyst
     assert.match(r.context, /Dáta tohto repa \(dáta 2\.1;/);
     assert.match(r.context, /- práca témy \(handover, \.tema\.json, výsledky práce\): brain topics\/<téma>\//);
     assert.match(r.context, /- zdroje \(súbory zvonka, nemenia sa\): projekt zdroje\/<téma>\//);
-    assert.match(r.context, /- výstupy: rozhodnutia brain decisions\/, výstupy podľa typu projekt vystupy\/<typ>\//);
+    assert.match(r.context, /- rozhodnutia: brain decisions\/, rozhodnutie jedného repa \(--repo\) projekt \.brain\/decisions\//);
+    assert.match(r.context, /- výstupy: výstupy podľa typu projekt vystupy\/<typ>\//);
     assert.match(r.context, /- fakt o subjekte \(pamäť agenta\): brain memory\//);
     assert.doesNotMatch(r.context, /STOP/);
   } finally { fx.cleanup(); }

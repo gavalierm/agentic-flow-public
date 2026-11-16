@@ -6,13 +6,13 @@ argument-hint: "[memory|decision|rule|exception|skill|handover|person|source|res
 
 # save – jeden vstupný bod zápisu (P-013, P-007)
 
-Zápis do brain ide výlučne cez `node ${CLAUDE_PLUGIN_ROOT}/bin/save.mjs`. Write/Edit do brain sú zakázané. Miesta dát v tomto skille sú logické mená (zdroje, práca témy, pracovné súbory, výstupy: rozhodnutia a dokumenty, pamäť agenta); ich cesty pre dáta repa dáva štart v bloku „Dáta tohto repa“.
+Zápis do brain ide výlučne cez `node ${CLAUDE_PLUGIN_ROOT}/bin/save.mjs`. Write/Edit do brain sú zakázané. Miesta dát v tomto skille sú logické mená (zdroje, práca témy, pracovné súbory, rozhodnutia, výstupy, pamäť agenta); ich cesty pre dáta repa dáva štart v bloku „Dáta tohto repa“.
 
 ## 1. Strom rozhodnutia (P-007): otázka A, potom B
 **A: Je to vedomosť?** Vedomosť je fakt, rozhodnutie, návod alebo opis, ktorý platí. Presnú vedomosť zapíš hneď, s odkazom na pôvod (súbor v práci témy alebo v zdrojoch); poznatok zo zdroja ide tiež cez A. Ciele, prvá zhoda vyhráva:
 1. Postup (kroky, ako niečo urobiť) → `skill`
 2. Mení správanie agenta (MUSÍ/NESMIE, „odteraz rob…“) → `rule`; ak operátor mení platný princíp → `exception`
-3. Voľba medzi alternatívami → `decision` (výstupy: rozhodnutia)
+3. Voľba medzi alternatívami → `decision` (rozhodnutia)
 4. Obsah s hodnotou sám o sebe (návod, opis, zoznam, report, analýza) → výsledok témy (`save.mjs result`, nižšie), nie pamäť; do `vystupy/<typ>/` cieľového repa ho zaradí triáž pri `done --topic`. Voľba, ktorá je obsahom dokumentu (špecifikácia, návrh), ostáva iba v dokumente, nie v `decision`
 5. Opisný fakt o subjekte: človek (aj operátor) → `person` (osoby v repe operátora, nižšie); prostredie, nástroj, služba, projekt → `memory` (pamäť agenta)
 

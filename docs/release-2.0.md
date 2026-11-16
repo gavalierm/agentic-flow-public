@@ -61,7 +61,8 @@ Migruj po jednej doméne, celú doménu naraz: brain a každé repo projektu, kt
    - pridá do handoverov šiestu sekciu;
    - prenesie `topics.auto.projects` do `topics.shared_checkouts` (relatívne k doméne);
    - zapíše `default_repo` ako meno repa;
-   - zmení `knowledge_branch` na `target_branch`.
+   - zmení `knowledge_branch` na `target_branch`;
+   - presunie rozhodnutia repa projektu z `vystupy/rozhodnutia/` do `.brain/decisions/` a prepíše odkazy na ne v repe aj v braine.
 4. Kontrola: `node <plugin>/bin/migrate.mjs <brain> --to 2.1 --check`. Musí skončiť bez nálezu a s jedným migračným commitom v každom repe. `--fix` pregeneruje zastaraný `INDEX.md`. Potom pushni repá, ktoré výstup vymenuje.
 5. Iné stroje: urob pull klonov domény ešte pred spustením vlákien. Štart session v repe, ktorého dáta nesedia s brainom domény, sa odmietne s príkazom na pull.
 

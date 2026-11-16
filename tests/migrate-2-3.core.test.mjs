@@ -40,7 +40,7 @@ function domainV2() {
     'temy/beta/.tema.json': JSON.stringify({ id: 'beta', subject: 'Beta', class: 'ops', state: 'closed' }, null, 2) + '\n',
     'temy/beta/handover.md': HANDOVER5('Beta'),
     '.brain/archive/topics/gamma/handover.md': HANDOVER5('Gamma'),
-    '.brain/memory/tool-x.md': '---\nkey: tool-x\ntype: tool\norigin: operator\n---\nNástroj; rozhodnutie vystupy/rozhodnutia/d-0001-first.md.\n',
+    '.brain/memory/tool-x.md': '---\nkey: tool-x\ntype: tool\norigin: operator\n---\nNástroj; rozhodnutie vystupy/rozhodnutia/d-0001-first.md, API ../srv/vystupy/rozhodnutia/d-0001-api.md.\n',
     '.brain/memory/person-jana.md': '---\nkey: person-jana\ntype: person\nname: Jana\norigin: operator\n---\nJana.\n',
     'vystupy/rozhodnutia/d-0001-first.md': '---\nkey: D-0001\nid: D-0001\ntitle: "First"\nstatus: valid\nrelates_to: [temy/alpha/handover.md]\naliases: []\ncreated: 2026-11-01\n---\n**Rozhodnuté:** podľa temy/alpha/handover.md.\n',
     'vystupy/dokumenty/spec.md': '# Spec\nPlán v temy/alpha/handover.md.\n',
@@ -49,7 +49,10 @@ function domainV2() {
     '.brain/skills/agentic/old-gate/SKILL.md': '---\nname: old-gate\ndescription: "Použi pri fixe (P-075)."\norigin: routine\n---\nOrchestrátor schváli fix (P-075).\n',
   });
   gitq(fx.brain, 'push', '-q', 'origin', 'HEAD:main');
-  commitFiles(fx.srv, { '.brain/memory/service-a.md': '---\nkey: service-a\norigin: operator\n---\nStav v ../brain/temy/alpha/handover.md.\n' });
+  commitFiles(fx.srv, {
+    '.brain/memory/service-a.md': '---\nkey: service-a\norigin: operator\n---\nStav v ../brain/temy/alpha/handover.md, API podľa vystupy/rozhodnutia/d-0001-api.md.\n',
+    'vystupy/rozhodnutia/d-0001-api.md': '---\nkey: D-0001\nid: D-0001\ntitle: "Api"\nstatus: valid\nrelates_to: []\naliases: []\ncreated: 2026-11-01\n---\n**Rozhodnuté:** REST.\n',
+  });
   return fx;
 }
 
@@ -156,7 +159,11 @@ test('apply: one commit per repo, topics, records, outputs into the project repo
     const cfg = JSON.parse(S('.workflow.json'));
     assert.equal(cfg.target_branch, 'main');
     assert.equal(cfg.knowledge_branch, undefined);
-    assert.match(S('.brain/memory/service-a.md'), /Stav v \.\.\/brain\/topics\/alpha\/handover\.md/);
+    assert.match(S('.brain/memory/service-a.md'), /Stav v \.\.\/brain\/topics\/alpha\/handover\.md, API podľa \.brain\/decisions\/d-0001-api\.md/);
+    // The decisions of the repo: knowledge in .brain/decisions/, not an output; the brain's reference follows them.
+    assert.ok(fs.existsSync(path.join(fx.srv, '.brain', 'decisions', 'd-0001-api.md')) && !fs.existsSync(path.join(fx.srv, 'vystupy', 'rozhodnutia')));
+    assert.match(S('.brain/migrate-2-3.tsv'), /^vystupy\/rozhodnutia\/d-0001-api\.md\t\.brain\/decisions\/d-0001-api\.md\tpresun$/m);
+    assert.match(B('memory/tool-x.md'), /rozhodnutie decisions\/d-0001-first\.md, API \.\.\/srv\/\.brain\/decisions\/d-0001-api\.md/);
     assert.match(S('INDEX.md'), /vystupy\/specifikacie\/spec\.md/);
     // The check of layout 3 over the domain.
     const c = fx.run('migrate.mjs', [fx.brain, '--to', '3', '--check']);

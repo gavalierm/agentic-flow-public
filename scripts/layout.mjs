@@ -125,13 +125,14 @@ const LAYOUT_3 = Object.freeze({
 });
 
 /**
- * Layout 3, a project repo (plan O11): .brain/ as in layout 2 (policy, sources.json, the knowledge of the repo), outputs by
- * type in vystupy/<typ>/ (outputs; the documents of layout 2 and the decisions of the repo are the types dokumenty and
- * rozhodnutia) and outside material in zdroje/<téma>/. Topics live in the brain; topics/ here only names where a topic
- * home would be.
+ * Layout 3, a project repo (plan O11): .brain/ as in layout 2 (policy, sources.json, the knowledge of the repo) with the
+ * decisions of the repo in .brain/decisions/ (operator 2026-11-16: a decision is knowledge, not an output), outputs by
+ * type in vystupy/<typ>/ (finished works of topics only; the documents of layout 2 are the type dokumenty) and outside
+ * material in zdroje/<téma>/. Topics live in the brain; topics/ here only names where a topic home would be.
  */
 const LAYOUT_3_REPO = Object.freeze({
   ...LAYOUT_2,
+  decisions: '.brain/decisions',
   topics: 'topics',
   topicHidden: null,
   outputs: 'vystupy',
@@ -141,6 +142,8 @@ const LAYOUT_3_REPO = Object.freeze({
 export const LAYOUTS = Object.freeze({ 1: LAYOUT_1, 2: LAYOUT_2, 3: LAYOUT_3 });
 /** Maps of a project repo where they differ from the brain's (layout 3). */
 const REPO_LAYOUTS = Object.freeze({ 3: LAYOUT_3_REPO });
+/** Every map of every layout and role (a path test over all data ever written). */
+export const ALL_MAPS = Object.freeze([LAYOUT_1, LAYOUT_2, LAYOUT_3, LAYOUT_3_REPO]);
 const KNOWN_VERSIONS = Object.freeze([1, 2, 3]);
 /** Version of a repository whose policy names none (every repository written before layout 2). */
 export const DEFAULT_LAYOUT_VERSION = 1;
