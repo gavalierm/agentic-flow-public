@@ -269,10 +269,15 @@ export { isValidId };
 
 // --- collection (spec 11.8, plan O10): operator-*.md and person records of every brain of the machine ------------------
 
-/** Memory records about people in the brains of the machine: type person, or operator (the operator-*.md files). */
-export function personSources(ctx) {
+/**
+ * Memory records about people in the brains of the machine: type person, or operator (the operator-*.md files). `domain`:
+ * only the brains of that domain (a domain migrates on its own; the people of the others wait for theirs, mojprojekt
+ * 2026-11-16: the plan of one domain had to put the other domains' people into dropped).
+ */
+export function personSources(ctx, { domain = null } = {}) {
   const out = [];
-  for (const s of machineStores(ctx).filter((x) => x.kind === 'brain')) {
+  const inDomain = (s) => !domain || (s.domainRoot && path.basename(s.domainRoot).toLowerCase() === String(domain).toLowerCase());
+  for (const s of machineStores(ctx).filter((x) => x.kind === 'brain' && inDomain(x))) {
     const recs = storeRecords(s, ctx.brainDir || s.dir).filter((r) => r.kind === 'memory' && !r.topic && ['person', 'operator'].includes(recordType(r)));
     if (!recs.length) continue;
     const authors = recordAuthors(s.dir);
@@ -292,9 +297,9 @@ const subjectNamesOf = (r) => [String(r.key).replace(/^person-/, ''), r.data?.na
  * the operator-*.md records of one author (git identity of the commit that added them) are one entry, the operator.
  * Every source is in exactly one entry, so applying the list loses no record.
  */
-export function collectPlan(ctx, repo = null) {
+export function collectPlan(ctx, repo = null, { domain = null } = {}) {
   const entries = [];
-  for (const x of personSources(ctx)) {
+  for (const x of personSources(ctx, { domain })) {
     const operator = recordType(x.r) === 'operator';
     const who = operator ? lc(x.author?.email || x.author?.name || 'unknown') : null;
     const names = operator ? [] : subjectNamesOf(x.r);
@@ -362,14 +367,26 @@ export function collectPlan(ctx, repo = null) {
     ids.set(e.id, n);
     if (n > 1) e.id = `${e.id}-${n}`;
   }
-  return { people: entries.map(({ author, bodies, ...e }) => ({ ...e, body: bodies.map((b) => (b.head ? `${b.head}\n\n${b.text}` : b.text)).join('\n\n') })), dropped: [] };
+  return { ...(domain ? { domain } : {}), people: entries.map(({ author, bodies, ...e }) => ({ ...e, body: bodies.map((b) => (b.head ? `${b.head}\n\n${b.text}` : b.text)).join('\n\n') })), dropped: [] };
 }
 
-/** One line per entry for the operator (the list to approve). */
+/** Headings of a body that occur more than once: [{ head, n }] (three `## operator` sections of three machines). */
+export function repeatedSections(body) {
+  const counts = new Map();
+  for (const m of String(body || '').matchAll(/^(#{2,3} .+)$/gm)) counts.set(m[1].trim(), (counts.get(m[1].trim()) || 0) + 1);
+  return [...counts].filter(([, n]) => n > 1).map(([head, n]) => ({ head, n }));
+}
+
+/**
+ * One line per entry for the operator (the list to approve). An entry whose body repeats a section (records of several
+ * machines merged word for word, mojprojekt 2026-11-16: three `## operator` sections, one with a stale role) is marked:
+ * the agent merges them in the plan and checks each fact with the operator before --apply.
+ */
 export function planLines(plan) {
+  const repeated = (p) => repeatedSections(p.body);
   return [
-    ...plan.people.map((p) => `- ${PEOPLE_DIR}/${p.id}.md${p.existing ? ' (exists: merged into it)' : ''}${!p.existing && p.surname === false ? ' (surname unknown: ask the operator, the id is meno-priezvisko)' : ''}: ${p.name}${p.operator ? ' (operator)' : ''}${p.aliases.length ? `, aliases ${p.aliases.join(', ')}` : ''}${p.domains.length ? `, domains ${p.domains.join(', ')}` : ', all domains'}; from ${p.sources.map((s) => s.label).join(', ')}`),
-    ...plan.dropped.map((d) => `- dropped ${d.label || d.file}: ${d.reason || '(no reason)'}`),
+    ...plan.people.map((p) => `- ${PEOPLE_DIR}/${p.id}.md${p.existing ? ' (exists: merged into it)' : ''}${!p.existing && p.surname === false ? ' (surname unknown: ask the operator, the id is meno-priezvisko)' : ''}: ${p.name}${p.operator ? ' (operator)' : ''}${p.aliases.length ? `, aliases ${p.aliases.join(', ')}` : ''}${p.domains.length ? `, domains ${p.domains.join(', ')}` : ', all domains'}; from ${p.sources.map((s) => s.label).join(', ')}${repeated(p).length ? `\n  ! repeated sections ${repeated(p).map((x) => `"${x.head}" (${x.n}×)`).join(', ')}: merge them into one in the body of the plan and check each fact with the operator (a role or a fact may be stale) before --apply` : ''}`),
+    ...(plan.dropped || []).map((d) => `- dropped ${d.label || d.file}: ${d.reason || '(no reason)'}`),
   ];
 }
 
@@ -383,7 +400,8 @@ export function applyPlan(ctx, repo, plan) {
   const people = Array.isArray(plan?.people) ? plan.people : [];
   const dropped = Array.isArray(plan?.dropped) ? plan.dropped : [];
   const covered = new Set([...people.flatMap((p) => asList(p.sources).map((s) => path.resolve(s.file || s))), ...dropped.filter((d) => String(d.reason || '').trim()).map((d) => path.resolve(d.file || ''))]);
-  const lost = personSources(ctx).filter((x) => !covered.has(path.resolve(x.r.abs))).map(sourceLabel);
+  // A plan of one domain (collect --domain) covers the records of that domain only.
+  const lost = personSources(ctx, { domain: plan?.domain || null }).filter((x) => !covered.has(path.resolve(x.r.abs))).map(sourceLabel);
   if (lost.length) throw new Error(`records about people in no entry of the list (add them to an entry, or to dropped with a reason): ${lost.join(', ')}; nothing written`);
   const seen = new Set();
   const files = {};

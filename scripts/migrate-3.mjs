@@ -27,12 +27,12 @@ import { git, readJson, PLUGIN_ROOT } from './util.mjs';
 import { BRAIN_COMMIT_TAG, MIGRATE_MOVE_ENV, DOMAIN_MARKER, WORKFLOW_CONFIG, WORKTREES_DIR, brainScriptEnv } from './config.mjs';
 import { LAYOUTS, LAYOUT_KEY, ROLE_BRAIN, ROLE_REPO, layoutFor, dataLayoutVersion, layoutRole, dataName } from './layout.mjs';
 import { checkBrainFile, checkHandover, TASKS_SECTION, QUESTIONS_SECTION, handoverNextStep, handoverQuestions, handoverTasks } from './brain-checks.mjs';
-import { INDEX_FILE, refreshIndex, indexProblem, commitIndexAfterMerge } from './data-index.mjs';
+import { INDEX_FILE, refreshIndex, indexProblem, commitIndexAfterMerge, deployIgnoreGaps, deployIgnoreLines, refreshDeployIgnores, formatDeployIgnores } from './data-index.mjs';
 import { MODES } from './topic-files.mjs';
 import { turnFields } from './topic-state.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { operatorRepo, readPeople } from './people.mjs';
-import { trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand, leftoverProblems } from './migrate.mjs';
+import { trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand, leftoverProblems, fixDeployIgnores } from './migrate.mjs';
 import { gitAccessProblem } from './brain.mjs';
 import { staleCatalog, rescanStale } from './catalog/stale.mjs';
 const LOCAL_CATALOG = 'local/catalog';
@@ -87,6 +87,8 @@ export function repoDecisionRefs(text, names) {
   for (const n of names) out = out.replace(new RegExp(`((?:^|[^\\w.-])${reRepo(n)}/)${reRepo(L2.decisions)}(?=/|[^\\w.-]|$)`, 'gm'), `$1${R3.decisions}`);
   return out;
 }
+/** The scratch folder of data 1 (work files of topics there, outside git). */
+const SCRATCH = 'scratch';
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const isText = (rel) => TEXT_EXT.has(path.posix.extname(rel).toLowerCase());
 const GIT_PATHS = ['-c', 'core.quotepath=false'];
@@ -355,7 +357,7 @@ export function readApprove(file) {
   for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
     if (!line.trim() || line.startsWith('#') || /^cesta\t/i.test(line)) continue;
     const [p, action = '', src = ''] = line.split('\t').map((s) => s.trim());
-    if (p) out.set(posix(p).replace(/^\.\//, ''), { action, file: src ? path.resolve(path.dirname(file), src) : '' });
+    if (p) out.set(posix(p).replace(/^\.\//, ''), { action, file: src ? path.resolve(path.dirname(file), src) : '', arg: src });
   }
   return out;
 }
@@ -443,6 +445,8 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
   // Project repos two brains share (an operator's brain and a copy of another one's, each machine its own brain): the
   // first brain moved them; a repo already in data 2.1 stays as it is and only this brain moves.
   for (const r of plan.repos.filter((x) => x.version === TO)) notes.push(`repo ${r.dir} is in data 2.1 already (moved with another brain of these repos): it stays, only the brain moves`);
+  // Their work files and leftovers outside git still go with the brain's move (a shop repo 2026-11-16).
+  plan.done = plan.repos.filter((x) => x.version === TO);
   plan.repos = plan.repos.filter((x) => x.version !== TO);
   if (dom.unmarked) blockers.push(`${posix(dom.unmarked)} has no ${DOMAIN_MARKER}, though ${plan.repos.map((r) => r.name).join(', ')} name this brain: write ${posix(path.join(dom.unmarked, DOMAIN_MARKER))} with {"brain": "${path.basename(dom.brain)}"} (the domain folder, D-0002), then run the preview again`);
   for (const r of plan.repos) {
@@ -562,7 +566,10 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
   const rowFor = (key) => confirmed.get(key) || null;
   for (const [item, rels] of [...items].sort((a, b) => a[0].localeCompare(b[0]))) {
     const row = rowFor(item);
-    const proposal = proposals.get(item) || (defaultRepo ? { proposal: `${defaultRepo}:${item.startsWith(`${L2.materialy}/`) ? (item.endsWith('/') ? item : `${L2.materialy}/`) : `${item.split('/').slice(0, 2).join('/')}/`}`, topic: '', reason: 'default repo of the domain' } : null);
+    // A folder item keeps its name in the target (vystupy/dokumenty/dizajn/ -> <repo>:vystupy/dokumenty/dizajn/, as done
+    // does): the folder of its type alone scattered its content into vystupy/dokumenty/ (mojprojekt 2026-11-16). A loose
+    // file goes into the folder it is in and keeps its name.
+    const proposal = proposals.get(item) || (defaultRepo ? { proposal: `${defaultRepo}:${item.endsWith('/') ? item : `${path.posix.dirname(item)}/`}`, topic: '', reason: 'default repo of the domain' } : null);
     const t = { path: item, files: rels, proposal: row?.proposal || proposal?.proposal || 'bez navrhu', topic: row?.topic || proposal?.topic || '', reason: row?.reason || proposal?.reason || '', confirmed: !!row, to: null, error: null };
     plan.triage.push(t);
     if (!row) { t.error = 'not confirmed'; blockers.push(`${item}: output or source of the brain without a confirmed row (--confirmed <tsv>: cesta, navrh <repo>:vystupy/<typ>/ | <repo>:zdroje/<tema>/ | pomocne, tema, dovod)`); continue; }
@@ -707,12 +714,13 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
   }
 
   // Project repos of the domain.
-  for (const r of plan.repos) {
-    if (r.version !== FROM) continue;
-    planRepo(r, { dom, rewrite, approve, blockers, lessonPlan });
+  for (const r of [...plan.repos, ...plan.done]) {
+    if (r.version === FROM) planRepo(r, { dom, rewrite, approve, blockers, lessonPlan });
+    else if (r.version !== TO) continue;
     // Work files of a project repo outside git (temy/<id>/tmp/, the scratch/ of data 1 moved there): data 2.1 keeps every
     // topic in the brain, so they go to the brain's work folder of that topic (main, or main/<repo>-<id> for a topic the
-    // brain does not have); never left in a temy/ the repo has no more (doma-pc 2026-11-16).
+    // brain does not have); never left in a temy/ the repo has no more (doma-pc 2026-11-16). A repo already in data 2.1
+    // (moved with another brain) keeps them too, so they go as well (a shop repo 2026-11-16).
     const temy = path.join(r.dir, L2.topics);
     for (const id of fs.existsSync(temy) ? fs.readdirSync(temy) : []) {
       const fromAbs = path.join(temy, id, L2.topicTmp);
@@ -727,7 +735,8 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
   //   - in the folders of data 2.0 that the move leaves (temy/, vystupy/ … of the brain): files git does not track and no
   //     work folder takes stay behind, so they wait too;
   //   - a work folder over the limit moves only with the operator's approval (--approve "<repo>:<path>/<TAB>presunut").
-  for (const t of [brain, ...plan.repos]) {
+  const liveTopics = new Set(topicIds.filter((id) => !closed.has(id)));
+  for (const t of [brain, ...plan.repos, ...plan.done]) {
     const role = t === brain ? ROLE_BRAIN : ROLE_REPO;
     const moving = [...brain.tmp, ...plan.repos.flatMap((r) => r.tmp)].filter((m) => (m.prune || dom.brain) === t.dir).map((m) => posix(path.relative(t.dir, m.fromAbs)));
     const skip = (rel) => moving.some((m) => under(rel, m));
@@ -740,7 +749,25 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
     }
     t.junk = [...new Set(junk)];
     if (t.junk.length) t.notes.push(`${junkText(t.junk)}: generated, removed by --apply`);
-    for (const l of leftoverLines(other.sort((a, b) => b.bytes - a.bytes))) blockers.push(`${t.name}:${l}: outside git in a folder of an older data layout, the move does not take it; triage it with the operator: remove what is not needed, move work into the work folder of its topic (${B3.topics}/<topic>/${B3.topicTmp}/ of the brain), then run the preview again`);
+    // An entry named as a live topic of the brain (scratch/<topic>/ of data 1) is work of that topic: it goes to the work
+    // folder of the topic. Another one goes where the operator approves: --approve "<repo>:<path>/<TAB>presunut<TAB><topic>"
+    // (main when no topic is named); anything else waits for the triage (a shop repo 2026-11-16).
+    const rest = [];
+    for (const g of other) {
+      const key = `${t.name}:${g.path}`;
+      const ap = approvalOf(approve, key);
+      const base = g.path.replace(/\/$/, '').split('/').pop();
+      const top = g.path.split('/')[0];
+      const topic = ap?.action === 'presunut' ? (ap.arg || 'main') : top === SCRATCH && liveTopics.has(base) ? base : null;
+      // Only a whole folder that holds no other work folder of the move (temy/<id>/ keeps its tmp/, moved on its own).
+      const holds = moving.some((m) => under(m, g.path.replace(/\/$/, '')));
+      if (!topic || !g.path.endsWith('/') || holds) { rest.push(g); continue; }
+      if (topic !== 'main' && !liveTopics.has(topic)) { blockers.push(`${key}: --approve presunut names topic ${topic}, which is no live topic of the brain (${[...liveTopics].join(', ') || 'none'}; main takes anything)`); continue; }
+      brain.tmp.push({ fromAbs: path.join(t.dir, ...g.path.replace(/\/$/, '').split('/')), to: `${B3.topics}/${topic}/${B3.topicTmp}/${t === brain ? '' : `${t.name}-`}${base}`, prune: t.dir, leftover: true });
+    }
+    other.length = 0;
+    other.push(...rest);
+    for (const l of leftoverLines(other.sort((a, b) => b.bytes - a.bytes))) blockers.push(`${t.name}:${l}: outside git in a folder of an older data layout, the move does not take it; triage it with the operator: remove what is not needed, move work into the work folder of its topic (${B3.topics}/<topic>/${B3.topicTmp}/ of the brain: --approve "${t.name}:<path>/<TAB>presunut<TAB><topic>", main when none fits), then run the preview again`);
   }
   for (const m of [...brain.tmp, ...plan.repos.flatMap((r) => r.tmp)]) {
     const src = m.prune || dom.brain;
@@ -750,6 +777,40 @@ export function planDomain(dir, { confirmed = new Map(), proposals = new Map(), 
     const ap = approvalOf(approve, m.key);
     if (ap?.action === 'presunut') continue;
     blockers.push(`${m.key}: ${sizeText(m.size)} of work files outside git, too many to move without triage (limit ${human(LARGE_BYTES)} or ${LARGE_FILES} files): triage them with the operator (remove exports, backups and copies not needed), or approve the move as it is: --approve "${m.key}<TAB>presunut"`);
+  }
+  // References to the work files that move outside git (absolute, or ../<repo>/… from the brain) in the files of the move:
+  // a handover or results.md naming .../<repo>/scratch/<topic>/x keeps a valid path (a shop repo 2026-11-16).
+  const owners = [brain, ...plan.repos, ...plan.targets];
+  const tmpRules = owners.flatMap((o) => o.tmp.map((m) => ({ from: m.fromAbs, to: path.join(o.dir, ...m.to.split('/')) })));
+  if (tmpRules.length) {
+    const swap = (text, fileRepo) => {
+      let out = text;
+      for (const r of [...tmpRules].sort((a, b) => b.from.length - a.from.length)) {
+        for (const from of new Set([posix(path.resolve(r.from)), posix(real(r.from))])) out = out.replace(new RegExp(`${escRe(from)}(?=[/\\s)\\]}>"'\`,;|*:]|$)`, 'gm'), posix(r.to));
+        const up = posix(path.relative(fileRepo, r.from));
+        if (up.startsWith('../')) out = out.replace(new RegExp(`(^|[\\s(\\[{<"'\`=,])${escRe(up)}(?=[/\\s)\\]}>"'\`,;|*:]|$)`, 'gm'), (all, lead) => `${lead}${posix(path.relative(fileRepo, r.to))}`);
+      }
+      return out;
+    };
+    // The brain's files at their new place (as moved or as rewritten above).
+    for (const rel of files) {
+      const d = dest.get(rel);
+      if (!d?.to || !isText(d.to)) continue;
+      const text = brain.content.has(d.to) ? brain.content.get(d.to) : read(rel);
+      if (typeof text !== 'string' || text.includes('\0')) continue;
+      const out = swap(text, dom.brain);
+      if (out !== text) brain.content.set(d.to, out);
+    }
+    for (const o of owners) {
+      if (o === brain) continue;
+      for (const [rel, text] of o.content) if (typeof text === 'string' && isText(rel)) { const out = swap(text, o.dir); if (out !== text) o.content.set(rel, out); }
+    }
+  }
+  // A deployed web (wrangler, Vercel, … ignore files): the move adds every path of the workflow its ignore files do not
+  // exclude, in its commit (operator 2026-11-16: nothing of the workflow goes to Cloudflare, outside git neither).
+  for (const t of [...plan.repos, ...plan.targets]) {
+    t.deployIgnores = deployIgnoreGaps(t.dir, { map: R3 });
+    for (const g of t.deployIgnores) t.notes.push(`deploy ignore: ${g.file}${g.created ? ` (created: ${g.created} deploys the root)` : ''} += ${g.missing.join(', ')}, added by --apply in the move commit`);
   }
   // Incoming files of every target: clash with a file it tracks, sources.json, record rows.
   for (const t of [brain, ...plan.repos, ...plan.targets]) {
@@ -947,6 +1008,7 @@ function commitRepo(t, message) {
     if (t.adapter) run(['add', '-u']);
   }
   refreshIndex(t.dir, env);
+  if (t.role === ROLE_REPO) t.deployAdded = refreshDeployIgnores(t.dir, env, { map: R3 });
   const c = spawnSync('git', ['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} ${message}`], { cwd: t.dir, encoding: 'utf8', env: { ...process.env, ...env } });
   if (c.status !== 0) throw new Error(`${t.name}: commit failed: ${(c.stderr || c.stdout || '').trim()}`);
   return git(['rev-parse', '--short', 'HEAD'], { cwd: t.dir }).stdout;
@@ -1020,12 +1082,12 @@ export function applyDomain(dir, { confirmedFile = null, approveFile = null, env
         fs.renameSync(m.fromAbs, to);
         moved.push(`${posix(m.fromAbs)} -> ${t.name}:${m.to}`);
       }
-      if (m.prune) pruneEmpty(m.prune, L2.topics);
+      if (m.prune) pruneEmpty(m.prune, posix(path.relative(m.prune, m.fromAbs)).split('/')[0]);
     }
   }
   // Junk outside git in the old folders (generated, never work) goes with the folders it leaves empty.
   const junk = [];
-  for (const t of [plan.brain, ...plan.repos]) {
+  for (const t of [plan.brain, ...plan.repos, ...(plan.done || [])]) {
     const role = t === plan.brain ? ROLE_BRAIN : ROLE_REPO;
     // The old folders of data 2.1 include those of data 1 (scratch/, materialy/, docs/); memory/ … of data 1 are folders
     // of the brain again, never pruned here.
@@ -1039,12 +1101,15 @@ export function applyDomain(dir, { confirmedFile = null, approveFile = null, env
   for (const t of plan.repos) pruned.push(...pruneEmpty(t.dir, L2.decisions).map((p) => `${t.name}:${p}`));
   const adapters = [...plan.repos.map((t) => ({ name: t.name, res: t.adapter })), { name: plan.brain.name, res: regenerateAdapter(plan.brain.dir) }].filter((a) => a.res);
   const check = checkDomain(plan.brain.dir);
-  return { ok: true, commits, plan, moved, pruned, junk, catalogs, adapters, check };
+  const deploy = [...plan.repos, ...plan.targets].filter((t) => t.deployAdded?.length).map((t) => `${t.name}: ${formatDeployIgnores(t.deployAdded)}`);
+  return { ok: true, commits, plan, moved, pruned, junk, catalogs, adapters, deploy, check };
 }
 
 // ---- check ------------------------------------------------------------------------------------------------------------
 
 /** Commits of the move in a repository (subject of migrate --to 3), newest first: [{ sha, subject }]. */
+/** Subject of the commit of a repository that only took files of a brain (an external target). */
+const INCOMING_ONLY = /: \d+ file\(s\) from brain \S+ \(migrate\.mjs/;
 function moveCommits(dir) {
   const subjects = [COMMIT_SUBJECT, OLD_COMMIT_SUBJECT].map((s) => `${BRAIN_COMMIT_TAG} ${s}`);
   const r = git(['log', '--format=%h\t%s', '--fixed-strings', ...subjects.map((s) => `--grep=${s}`)], { cwd: dir });
@@ -1063,9 +1128,11 @@ export function checkRepo(dir, { brainDir = null } = {}) {
   const files = trackedFiles(dir).map((f) => f.rel);
   // Outside git in the folders of data 2.0 and 1 (doma-pc 2026-11-16): junk (--fix removes it) and entries to triage.
   problems.push(...leftoverProblems(dir, { version: TO, role, fix: `migrate.mjs ${dir} --to 2.1 --check --fix` }));
+  if (role === ROLE_REPO) problems.push(...deployIgnoreLines(deployIgnoreGaps(dir), `migrate.mjs ${dir} --to 2.1 --check --fix`));
   for (const s of staleCatalog(dir)) problems.push(`${LOCAL_CATALOG}: source ${s.name} is indexed on ${posix(s.indexed)}, the data is in ${posix(s.path)} now (moved): catalog.mjs find misses it; scan it again: migrate.mjs ${dir} --to 2.1 --check --fix`);
   const record = recordRel(role);
-  const commits = moveCommits(dir);
+  // A repo outside the move (data 2.1 already) that took files of a brain has a commit of those files only: no move of its own.
+  const commits = moveCommits(dir).filter((c) => !INCOMING_ONLY.test(c.subject));
   // A repo born in data 2.1 (connect or create beside a brain of 2.1 stamps it) has no move to record (doma-pc 2026-11-16).
   const born = !files.includes(record) && !commits.length;
   if (born) notes.push('born in data 2.1 (no move from 2.0): no record or commit of a move expected');
@@ -1161,6 +1228,9 @@ export function fixJunk(dir) {
   for (const d of [dom.brain, ...dom.repos]) {
     if (dataLayoutVersion(d) !== TO) continue;
     out.push(...rescanStale(d));
+    if (layoutRole(d) === ROLE_REPO) {
+      try { const ig = fixDeployIgnores(d); if (ig.sha) out.push(`${path.basename(d)}: ${formatDeployIgnores(ig.added)}, committed ${ig.sha} (not pushed)`); } catch (err) { out.push(`${path.basename(d)}: deploy ignores not fixed (${err.message})`); }
+    }
     const res = removeJunk(d, { version: TO, role: layoutRole(d) });
     if (res.removed.length) out.push(`${path.basename(d)}: removed generated files outside git: ${res.removed.join(', ')}`);
     if (res.pruned.length) out.push(`${path.basename(d)}: removed empty folders of an older data layout: ${res.pruned.join(', ')}`);

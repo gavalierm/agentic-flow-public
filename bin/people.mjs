@@ -3,7 +3,8 @@
 //   people.mjs find <alias> [--domain [<domain>]] [--json]
 //   people.mjs new <id> --name "<name>" [--aliases a,b] [--domains d1,d2] --content "<who, relation, preferences>" [--new]
 //   people.mjs change <alias|id> [--domain [<domain>]] [--name ..] [--aliases a,b] [--domains d1,d2] [--content ..]
-//   people.mjs collect [--out <plan.json>] | collect --apply <plan.json>      (spec 11.8, plan O10)
+//   people.mjs collect [--domain <d>] [--out <plan.json>] | collect --apply <plan.json>      (spec 11.8, plan O10)
+//     --domain: only the brains of that domain (a domain migrates on its own); the plan names it and --apply checks it
 // --domain without a value is the domain of the session. find with 0 or 2+ matches only reports; new and change refuse
 // then, so the agent asks the operator before it writes a fact (spec 6.2).
 import fs from 'node:fs';
@@ -15,7 +16,7 @@ import { requireOperatorRepo, readPeople, findPeople, collectPlan, planLines, ap
 const args = parseArgs(process.argv.slice(2));
 const [cmd, ...rest] = args._;
 const out = (s) => process.stdout.write(s + '\n');
-const USAGE = 'usage: people.mjs find <alias> [--domain [<d>]] | new <id> --name "<name>" --content "..." [--aliases a,b] [--domains d1,d2] | change <alias|id> [--name] [--aliases] [--domains] [--content] | collect [--out <plan.json>] | collect --apply <plan.json>';
+const USAGE = 'usage: people.mjs find <alias> [--domain [<d>]] | new <id> --name "<name>" --content "..." [--aliases a,b] [--domains d1,d2] | change <alias|id> [--name] [--aliases] [--domains] [--content] | collect [--domain <d>] [--out <plan.json>] | collect --apply <plan.json>';
 
 /** The domain the search is limited to: --domain <name>, bare --domain = the domain of the session, none = all. */
 function domainOf() {
@@ -51,19 +52,23 @@ function change(repo) {
 }
 
 function collect(repo) {
-  const ctx = loadContext({ project: args.project });
+  // Run inside a brain too (no .workflow.json there): the brains of the machine are found from it (mojprojekt 2026-11-16:
+  // "brain unavailable: no brain configured" in the brain itself).
+  const ctx = loadContext({ project: args.project, requireBrain: false });
+  const domain = args.domain === undefined ? null : domainOf();
   if (args.apply !== undefined) {
     if (args.apply === true) fail('collect --apply <plan.json>: the list the operator approved');
     const plan = JSON.parse(fs.readFileSync(path.resolve(String(args.apply)), 'utf8'));
     for (const line of applyPlan(ctx, repo, plan)) out(line);
     return;
   }
-  const plan = collectPlan(ctx, repo);
+  const plan = collectPlan(ctx, repo, { domain });
   if (args.out && args.out !== true) {
     fs.writeFileSync(path.resolve(String(args.out)), JSON.stringify(plan, null, 2) + '\n');
     out(`plan: ${toPosix(path.resolve(String(args.out)))} (${plan.people.length} person(s))`);
   }
-  out(plan.people.length ? planLines(plan).join('\n') : 'no records about people in the brains of this machine');
+  out(plan.people.length ? planLines(plan).join('\n') : `no records about people in the brains of ${domain ? `domain ${domain}` : 'this machine'}`);
+  if (domain) out(`domain ${domain} only: the people of the other domains are collected when their domain migrates (collect --domain <d>)`);
   if (plan.people.length) out(`show this list to the operator; after the approval (edit the plan: id, name, aliases, domains, body; a record that is no person goes to "dropped" with a reason): people.mjs collect --apply <plan.json> writes it in one commit`);
 }
 

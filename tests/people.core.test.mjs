@@ -168,6 +168,15 @@ test('collect: operator-*.md and person records of every brain of the machine ->
     assert.match(r.stdout, /show this list to the operator/);
     assert.equal(gitq(op.dir, 'rev-list', '--count', 'HEAD'), '1', 'the list alone writes nothing');
 
+    // One domain at a time (mojprojekt 2026-11-16): --domain lists only its brains, its plan covers only them.
+    const planBeta = path.join(m.root, 'plan-beta.json');
+    r = m.run(['collect', '--domain', 'Beta', '--out', planBeta], op.env);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.stdout, /carol/);
+    assert.doesNotMatch(r.stdout, /alpha-brain/);
+    assert.match(r.stdout, /domain Beta only: the people of the other domains are collected when their domain migrates/);
+    assert.equal(JSON.parse(fs.readFileSync(planBeta, 'utf8')).domain, 'Beta');
+
     // The operator drops Carol from the list without a reason: refused, nothing written.
     const approved = JSON.parse(fs.readFileSync(plan, 'utf8'));
     const carol = approved.people.find((p) => p.id === 'carol');
@@ -257,4 +266,12 @@ test('the id of a person is meno-priezvisko when the surname is known (operator 
   assert.match(shortIdProblem('mira', ['Mira', 'Mira Kováčová']), /meno-priezvisko, mira-kovacova/);
   assert.equal(shortIdProblem('mira', ['Mira']), null, 'surname unknown: the first name stays');
   assert.equal(shortIdProblem('mira-kovacova', ['Mira Kováčová']), null);
+});
+
+test('collect marks an entry whose body repeats a section (records of several machines merged word for word)', async () => {
+  const { planLines, repeatedSections } = await import('../scripts/people.mjs');
+  const body = '## operator\n\nWrites in Slovak.\n\n## operator\n\nWrites in Slovak; X is the maintainer.\n\n## limits\n\n30 %.';
+  assert.deepEqual(repeatedSections(body), [{ head: '## operator', n: 2 }]);
+  const lines = planLines({ people: [{ id: 'op-one', name: 'Op One', operator: true, aliases: [], domains: [], sources: [{ label: 'a:memory/operator-operator.md' }], body }] });
+  assert.match(lines.join('\n'), /! repeated sections "## operator" \(2×\): merge them into one in the body of the plan and check each fact with the operator/);
 });

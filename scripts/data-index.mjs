@@ -258,26 +258,103 @@ export function refreshIndex(root, env = {}) {
  */
 export const DEPLOY_IGNORES = ['.assetsignore', '.vercelignore', '.netlifyignore', '.dockerignore', '.gcloudignore', '.cfignore', '.ebignore', '.slugignore', '.npmignore'];
 
-/** Entries of layout 2 a deploy must not publish: the data folders and INDEX.md (only those the staged files have). */
-function internalEntries(root, staged) {
-  const L = mapOf(root);
-  const tops = [...new Set([...folders(root), L.policy.split('/')[0]])].filter((t) => t && t !== '.');
-  const have = new Set(staged.map((f) => f.path.split('/')[0]));
-  return [...tops.filter((t) => have.has(t)), ...(have.has(INDEX_FILE) ? [INDEX_FILE] : [])];
+/**
+ * Top entries of the workflow a deploy must never publish (operator 2026-11-16: nothing of the workflow goes to Cloudflare),
+ * by the map of the repository or the map given (the 2.1 preview passes the map the repo moves to): the data folders
+ * (zdroje, temy or topics, vystupy), .brain, local/ (catalog, work files, outside git), INDEX.md, .workflow.json and
+ * .claude/ (the adapter). All of them, present or not: wrangler deploys from the working folder, so a folder outside git
+ * (local/, topics/<t>/tmp/) or one a later write creates is published as well.
+ */
+export function internalEntries(root, map = mapOf(root)) {
+  if (!map) return [];
+  const data = [map.materialy, map.topics, map.decisions, map.docs, map.outputs, map.local, map.policy].filter(Boolean).map((p) => p.split('/')[0]);
+  return [...new Set([...data, map.index, WORKFLOW_FILES].flat())].filter((t) => t && t !== '.');
+}
+/** Files of the adapter in a project repo: never deployed. */
+const WORKFLOW_FILES = ['.workflow.json', '.claude'];
+
+/** A gitignore pattern (one line, without !) as a test of a path relative to the root (a folder ends with /). */
+function patternTest(pattern) {
+  let p = pattern;
+  const dirOnly = p.endsWith('/');
+  if (dirOnly) p = p.replace(/\/+$/, '');
+  const anchored = p.startsWith('/') || p.slice(0, -1).includes('/');
+  p = p.replace(/^\//, '');
+  let re = '';
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i];
+    if (c === '*' && p[i + 1] === '*') { re += '.*'; i += 1; if (p[i + 1] === '/') i += 1; }
+    else if (c === '*') re += '[^/]*';
+    else if (c === '?') re += '[^/]';
+    else if (c === '[') { const j = p.indexOf(']', i); if (j > i) { re += p.slice(i, j + 1); i = j; } else re += '\\['; }
+    else re += c.replace(/[.+^${}()|\\]/g, '\\$&');
+  }
+  const rx = new RegExp(`^${anchored ? '' : '(?:.*/)?'}${re}$`);
+  // A path is matched when it or one of its parent folders is (a folder pattern matches only folders).
+  return (rel, isDir) => {
+    const parts = rel.split('/');
+    for (let n = 1; n <= parts.length; n++) {
+      const sub = parts.slice(0, n).join('/');
+      if ((n < parts.length || isDir || !dirOnly) && rx.test(sub)) return true;
+    }
+    return false;
+  };
+}
+
+/** The rules of an ignore file in order: [{ neg, test, text }] (comments and empty lines left out). */
+function ignoreRules(text) {
+  return text.split(/\r?\n/).map((l) => l.replace(/\s+$/, '')).filter((l) => l && !l.startsWith('#')).map((l) => {
+    const neg = l.startsWith('!');
+    const body = neg ? l.slice(1) : l.replace(/^\\/, '');
+    return { neg, test: patternTest(body), text: body.replace(/^\//, '').replace(/\/$/, '') };
+  });
 }
 
 /**
- * Layout 2: every deploy ignore file of the repository root (DEPLOY_IGNORES, only one that exists) gets the internal
- * entries it lacks (zdroje, temy, vystupy, .brain, INDEX.md, those the staged files have), appended and staged, so the
- * write that first creates them never lets the next deploy publish them (a static web repo, 2026-11-14). An entry counts as
- * present as `x`, `x/`, `/x` or `/x/`. Returns [{ file, added: [entry] }] (empty when nothing changed or outside layout 2).
+ * The entry is excluded by the rules (gitignore order: the last rule that matches wins, so an allowlist `*` then `!x`
+ * works too) and no later rule takes back a path inside it (`!zdroje/public`).
  */
-export function refreshDeployIgnores(root, env = {}) {
+export function ignoredBy(text, entry) {
+  const rules = ignoreRules(text);
+  let ignored = false;
+  for (const r of rules) if (r.test(entry, true)) ignored = !r.neg;
+  if (!ignored) return false;
+  return !rules.some((r) => r.neg && r.text.startsWith(`${entry}/`));
+}
+
+/** wrangler configs of the repository root, in the order wrangler reads them. */
+const WRANGLER_CONFIGS = ['wrangler.jsonc', 'wrangler.json', 'wrangler.toml'];
+const ROOT_DIRS = new Set(['', '.', './', '/']);
+
+/**
+ * The repository root is the assets folder of a wrangler config (assets.directory or the old site.bucket is "." or
+ * "./"): wrangler uploads every file of the working folder that .assetsignore of that folder does not exclude.
+ */
+export function deploysRoot(root) {
+  for (const f of WRANGLER_CONFIGS) {
+    let text;
+    try { text = fs.readFileSync(path.join(root, f), 'utf8'); } catch { continue; }
+    const dirs = f.endsWith('.toml')
+      ? [...text.matchAll(/^\s*(?:directory|bucket)\s*=\s*["']([^"']*)["']/gm)].map((m) => m[1])
+      : [...text.matchAll(/"(?:directory|bucket)"\s*:\s*"([^"]*)"/g)].map((m) => m[1]);
+    if (dirs.some((d) => ROOT_DIRS.has(d.trim()))) return f;
+  }
+  return null;
+}
+
+/**
+ * Every deploy ignore file of the repository root (DEPLOY_IGNORES, only one that exists) gets the internal entries it does
+ * not exclude (internalEntries), appended and staged, so no deploy publishes a path of the workflow (a static web repo,
+ * 2026-11-14 and 2026-11-16). A wrangler config deploying the root without .assetsignore gets one. Returns
+ * [{ file, added: [entry] }] (empty when nothing changed or outside layouts 2 and 3).
+ */
+export function refreshDeployIgnores(root, env = {}, { map } = {}) {
   const out = [];
-  for (const { file: f, text, missing: added } of deployIgnoreGaps(root)) {
+  for (const { file: f, text, missing: added } of deployIgnoreGaps(root, { map })) {
     const abs = path.join(root, f);
     const eol = text.includes('\r\n') ? '\r\n' : '\n';
-    fs.writeFileSync(abs, `${text}${text && !text.endsWith('\n') ? eol : ''}${added.join(eol)}${eol}`);
+    const head = text ? '' : `# not deployed: files of the workflow (agentic-flow)${eol}`;
+    fs.writeFileSync(abs, `${text}${text && !text.endsWith('\n') ? eol : ''}${head}${added.join(eol)}${eol}`);
     const add = spawnSync('git', ['add', '--', f], { cwd: root, encoding: 'utf8', env: { ...process.env, ...env } });
     if (add.status !== 0) throw new Error(`git add ${f} failed: ${String(add.stderr).split('\n')[0]}`);
     out.push({ file: f, added });
@@ -286,29 +363,38 @@ export function refreshDeployIgnores(root, env = {}) {
 }
 
 /**
- * Layout 2: the deploy ignore files of the repository root (DEPLOY_IGNORES) that lack an internal entry the repository
- * has, as refreshDeployIgnores adds it (from the files of the git index): [{ file, text, missing: [entry] }]. Nothing
- * changes (migrate --check reports them: a repo moved before the move filled deploy ignores, 2026-11-14).
+ * The deploy ignore files of the repository root (DEPLOY_IGNORES, and .assetsignore a wrangler config deploying the root
+ * needs) that do not exclude an internal entry, as refreshDeployIgnores adds it: [{ file, text, missing: [entry],
+ * created? }]. Nothing changes (migrate --check reports them; the 2.1 preview lists them with the map it moves to).
  */
-export function deployIgnoreGaps(root) {
-  if (!hasDataIndex(root)) return [];
+export function deployIgnoreGaps(root, { map } = {}) {
+  const m = map || (hasDataIndex(root) ? mapOf(root) : null);
+  if (!m) return [];
   const files = DEPLOY_IGNORES.filter((f) => { try { return fs.statSync(path.join(root, f)).isFile(); } catch { return false; } });
+  const wrangler = deploysRoot(root);
+  const create = wrangler && !files.includes(ASSETS_IGNORE);
+  if (create) files.unshift(ASSETS_IGNORE);
   if (!files.length) return [];
-  const entries = internalEntries(root, stagedFiles(root) || []);
+  const entries = internalEntries(root, m);
   const out = [];
   for (const file of files) {
-    const text = fs.readFileSync(path.join(root, file), 'utf8');
-    const have = new Set(text.split(/\r?\n/).map((l) => l.trim().replace(/^\//, '').replace(/\/$/, '')));
-    const missing = entries.filter((e) => !have.has(e));
-    if (missing.length) out.push({ file, text, missing });
+    const text = create && file === ASSETS_IGNORE ? '' : fs.readFileSync(path.join(root, file), 'utf8');
+    const missing = entries.filter((e) => !ignoredBy(text, e));
+    if (missing.length) out.push({ file, text, missing, ...(create && file === ASSETS_IGNORE ? { created: wrangler } : {}) });
   }
   return out;
+}
+const ASSETS_IGNORE = '.assetsignore';
+
+/** Problem lines of deployIgnoreGaps: what a deploy would publish and the command that fixes it. */
+export function deployIgnoreLines(gaps, fix) {
+  return gaps.map((g) => `${g.file}: ${g.created ? `missing, though ${g.created} deploys the repository root; it` : 'it'} does not exclude ${g.missing.join(', ')} (files of the workflow, a deploy would publish them); fix: ${fix}`);
 }
 
 /** One line of the entries added to deploy ignore files, or null. */
 export function formatDeployIgnores(list) {
   if (!list?.length) return null;
-  return `deploy ignore: ${list.map((x) => `${x.file} += ${x.added.join(', ')}`).join('; ')} (internal data of 2.0 is not deployed; in the same commit)`;
+  return `deploy ignore: ${list.map((x) => `${x.file} += ${x.added.join(', ')}`).join('; ')} (files of the workflow are not deployed; in the same commit)`;
 }
 
 /**

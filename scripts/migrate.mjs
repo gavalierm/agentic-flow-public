@@ -27,7 +27,7 @@ import { BRAIN_COMMIT_TAG, MIGRATE_MOVE_ENV, DOMAIN_MARKER, brainScriptEnv, load
 import { checkBrainFile } from './brain-checks.mjs';
 import { LAYOUTS, LAYOUT_KEY, dataLayoutVersion, dataName } from './layout.mjs';
 import { brainWrite, gitAccessProblem } from './brain.mjs';
-import { INDEX_FILE, refreshIndex, indexProblem, commitIndexAfterMerge, refreshDeployIgnores, deployIgnoreGaps, formatDeployIgnores } from './data-index.mjs';
+import { INDEX_FILE, refreshIndex, indexProblem, commitIndexAfterMerge, refreshDeployIgnores, deployIgnoreGaps, deployIgnoreLines, formatDeployIgnores } from './data-index.mjs';
 import { CLASSES, MOVED_CLASSES, BRAIN_SUFFIX, classTargetIn } from './triage.mjs';
 import { redactUrl } from './secrets.mjs';
 import { staleCatalog, rescanStale } from './catalog/stale.mjs';
@@ -912,7 +912,8 @@ export function adapterCommand(dir) {
 export function regenerateAdapter(dir) {
   const cfg = readJson(path.join(dir, '.workflow.json'), null);
   if (!cfg || !cfg.brain) return null;
-  const r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'adapter.mjs'), 'claude-code', '--brain', cfg.brain], { cwd: dir, encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: dir, WORKFLOW_PROJECT_DIR: dir } });
+  // WORKFLOW_NO_PUSH: a persona's adapter commits into the brain it moved and pushed the move before its check.
+  const r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'adapter.mjs'), 'claude-code', '--brain', cfg.brain], { cwd: dir, encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: dir, WORKFLOW_PROJECT_DIR: dir, WORKFLOW_NO_PUSH: '1' } });
   return { ok: r.status === 0, out: firstLine(r.status === 0 ? r.stdout : r.stderr || r.stdout) };
 }
 
@@ -982,7 +983,7 @@ export function checkMigration(dir, { before = null, project = null, cwd = proce
     if (!now.has(r.to) && !archivedTopicPlaces(r.to).some((p) => now.has(p))) problems.push(`${r.from}: ${r.from === r.to ? 'should stay' : `new place ${r.to}`}, not tracked`);
   }
   if (outsideAway.length) notes.push(`${outsideAway.length} file(s) the move put outside git are not here (${outsideAway.slice(0, 3).map((r) => r.to).join(', ')}${outsideAway.length > 3 ? ', …' : ''}): untracked work files exist only on the machine that ran the move, a clone or another machine has none; not checked`);
-  for (const g of deployIgnoreGaps(dir)) problems.push(`${g.file}: misses ${g.missing.join(', ')} (internal data of ${dataName(TO_VERSION)}, a deploy would publish it); add them: migrate.mjs ${dir} --check --fix`);
+  problems.push(...deployIgnoreLines(deployIgnoreGaps(dir), `migrate.mjs ${dir} --check --fix`));
   for (const rel of now) if (LAYOUT2_FOLDERS.has(rel)) problems.push(`${rel}: a tracked file on the path of a folder of data ${dataName(TO_VERSION)}; move it under ${rel}/ or elsewhere`);
   const index = version === TO_VERSION ? indexProblem(dir) : null;
   if (index) problems.push(`${INDEX_FILE}: ${index === 'missing' ? 'missing' : 'stale (differs from the tracked files)'} in HEAD; regenerate it: migrate.mjs ${dir} --check --fix`);
@@ -1248,12 +1249,13 @@ export function fixIndex(dir) {
 }
 
 /**
- * --check --fix: the deploy ignore files of a layout 2 repository get the internal entries they miss (refreshDeployIgnores,
+ * --check --fix: the deploy ignore files of a repository of data 2.0 or 2.1 get the internal entries they miss (refreshDeployIgnores,
  * as on every write of the workflow) in one commit (brain script tag, not pushed). Refused with staged changes. Returns
  * { added: [{ file, added }], sha } (sha null when nothing was missing).
  */
 export function fixDeployIgnores(dir) {
-  if (dataLayoutVersion(dir) !== TO_VERSION) throw new Error(`${dir}: data ${dataName(dataLayoutVersion(dir))}, deploy ignores are filled only in data ${dataName(TO_VERSION)}`);
+  const v = dataLayoutVersion(dir);
+  if (v !== TO_VERSION && v !== 3) throw new Error(`${dir}: data ${dataName(v)}, deploy ignores are filled only in data ${dataName(TO_VERSION)} and 2.1`);
   if (!deployIgnoreGaps(dir).length) return { added: [], sha: null };
   if (!git(['diff', '--cached', '--quiet'], { cwd: dir }).ok) throw new Error(`${dir}: staged changes; commit or unstage them first (the deploy ignore files are committed alone)`);
   const env = brainScriptEnv();

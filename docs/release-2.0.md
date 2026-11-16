@@ -30,6 +30,8 @@ Na každom stroji spusti `node <plugin>/bin/overview.mjs --pre-release [--root <
 - zvyšky mimo gitu v priečinkoch starších dát (`scratch/`, `materialy/`, `docs/`, `temy/` …). Ostávajú aj na stroji, ktorý presun iba stiahol cez pull:
   - generované súbory (`__pycache__`, `*.pyc`, `.DS_Store`) odstráni `migrate.mjs <repo> [--to 2.1] --check --fix`;
   - ostatné súbory triedi operátor po položkách, s veľkosťou a počtom súborov. Čo netreba, zmaže. Prácu presunie do pracovného priečinka jej témy;
+  - pri `--to 2.1` ide `scratch/<téma>/` živej témy brainu do `topics/<téma>/tmp/<repo>-<téma>/` sám. Inú položku presunie schválenie `--approve "<repo>:<cesta>/<TAB>presunut<TAB><téma>"` (`main`, keď žiadna téma nesedí). Platí to aj pre repá, ktoré už sú v 2.1 a presúva sa iba brain. Absolútne cesty a cesty `../<repo>/…` k týmto súborom v záznamoch tém presun prepíše;
+- nasadzovaný web (`.assetsignore`, `.vercelignore` …, alebo `wrangler.*`, ktorý nasadzuje koreň repa): ignore súbor musí vylúčiť každú cestu workflow (`.brain`, `zdroje`, `vystupy`, `topics`/`temy`, `local`, `INDEX.md`, `.workflow.json`, `.claude`), aj mimo gitu. Čo chýba, doplní `migrate.mjs <repo> [--to 2.1] --check --fix` a presun na 2.1 v svojom commite. Platí aj allowlist (`*` a potom `!x`): rozhoduje posledné pravidlo;
 - pracovné súbory mimo gitu (`topics/<téma>/tmp/`) nad 500 MB v jednom repe: nález vymenuje najväčšie priečinky a súbory. Exporty, zálohy a kópie, ktoré netreba, sa zmažú so súhlasom operátora. Hotové dielo patrí do `vystupy/` alebo `zdroje/`. Rovnaký nález hlási aj prehľad supervisora.
 
 Kontrola vypíše aj riadky, ktoré nie sú nálezy:

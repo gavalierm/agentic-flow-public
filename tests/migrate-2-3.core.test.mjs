@@ -389,3 +389,82 @@ test('leftovers outside git (doma-pc 2026-11-16): data 1 work files wait for tri
     assert.ok(fs.existsSync(path.join(fx.srv, 'temy', 'x', 'keep.md')), 'work is never deleted by code');
   } finally { fx.cleanup(); }
 });
+
+test('the default proposal of a folder output keeps its name: <repo>:vystupy/dokumenty/<folder>/ (mojprojekt 2026-11-16)', () => {
+  const fx = domainV2();
+  try {
+    const pol = JSON.parse(fs.readFileSync(path.join(fx.brain, '.brain', 'policy.json'), 'utf8'));
+    commitFiles(fx.brain, { '.brain/policy.json': JSON.stringify({ ...pol, default_repo: 'srv' }, null, 2) + '\n', 'vystupy/dokumenty/dizajn/web-v1/x.md': '# X\n' });
+    const tsv = path.join(fx.root, 'triage.tsv');
+    const p = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--write-triage', tsv]);
+    assert.equal(p.status, 0, p.out);
+    const text = fs.readFileSync(tsv, 'utf8');
+    assert.match(text, /^vystupy\/dokumenty\/dizajn\/\tsrv:vystupy\/dokumenty\/dizajn\/\t/m, text);
+    assert.match(text, /^vystupy\/dokumenty\/spec\.md\tsrv:vystupy\/dokumenty\/\t/m, 'a loose file keeps its folder');
+  } finally { fx.cleanup(); }
+});
+
+test('a deployed web repo: the preview names the deploy ignore entries, --apply adds every workflow path in the move commit; --check reports a gap, --fix fills it (gma 2026-11-16)', () => {
+  const fx = domainV2();
+  try {
+    // An allowlist .assetsignore that takes zdroje back, and wrangler deploying the root.
+    commitFiles(fx.srv, { 'wrangler.jsonc': '{\n  // site\n  "assets": { "directory": "./" }\n}\n', '.assetsignore': '*\n!index.html\n!zdroje\n', 'index.html': '<p>x</p>\n' });
+    const confirmed = tsvFile(fx, 'confirmed.tsv', ['vystupy/dokumenty/spec.md\tsrv:vystupy/specifikacie/\talpha\tšpecifikácia', 'zdroje/alpha/\tsrv:zdroje/alpha/\t\tpodklady']);
+    const approve = approveFile(fx, ['.brain/skills/agentic/old-gate/\tzmazat']);
+    const env = operatorRepoWith(fx, `${path.basename(fx.brain)}:.brain/memory/person-jana.md`);
+    const p = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--confirmed', confirmed, '--approve', approve], { env });
+    assert.match(p.stdout, /deploy ignore: \.assetsignore \+= zdroje, added by --apply/, p.out);
+    const a = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--apply', '--confirmed', confirmed, '--approve', approve], { env });
+    assert.equal(a.status, 0, a.out);
+    const lines = gitq(fx.srv, 'show', 'HEAD:.assetsignore').split('\n');
+    assert.ok(lines.indexOf('zdroje') > lines.indexOf('!zdroje'), 'appended after the negation, so it wins');
+    assert.match(a.stdout, /srv: deploy ignore: \.assetsignore \+= /);
+    // A later edit takes local/ back in: the check reports it, --fix excludes it again.
+    commitFiles(fx.srv, { '.assetsignore': '*\n!index.html\n!local/\n' });
+    const c = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check']);
+    assert.equal(c.status, 1, c.out);
+    assert.match(c.stdout, /\.assetsignore: it does not exclude local \(files of the workflow/);
+    const f = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check', '--fix']);
+    assert.match(f.stdout, /srv: deploy ignore: \.assetsignore \+= local/, f.out);
+    assert.doesNotMatch(f.stdout, /does not exclude/, f.out);
+  } finally { fx.cleanup(); }
+});
+
+test('only the brain moves (its repo is in data 2.1 already): the repo\'s work files and a scratch/<topic>/ go with the topic, references to them are rewritten (a shop repo 2026-11-16)', () => {
+  const fx = domainV2();
+  try {
+    // srv moved with another brain: data 2.1, its decisions in .brain/decisions/, work files outside git left behind.
+    const pol = JSON.parse(fs.readFileSync(path.join(fx.srv, '.brain', 'policy.json'), 'utf8'));
+    fs.mkdirSync(path.join(fx.srv, '.brain', 'decisions'), { recursive: true });
+    gitq(fx.srv, 'mv', 'vystupy/rozhodnutia/d-0001-api.md', '.brain/decisions/d-0001-api.md');
+    commitFiles(fx.srv, { '.brain/policy.json': JSON.stringify({ ...pol, data_layout: '2.1' }, null, 2) + '\n', '.gitignore': 'scratch/\ntemy/\n', '.brain/memory/service-a.md': '---\nkey: service-a\norigin: operator\n---\nSlužba A.\n' });
+    assert.equal(dataLayoutVersion(fx.srv), 3);
+    for (const [rel, text] of [['scratch/alpha/audit.csv', 'a\n'], ['temy/main/tmp/n.txt', 'n\n'], ['scratch/other/x.txt', 'x\n']]) {
+      fs.mkdirSync(path.dirname(path.join(fx.srv, rel)), { recursive: true });
+      fs.writeFileSync(path.join(fx.srv, rel), text);
+    }
+    const abs = path.join(fx.srv, 'scratch', 'alpha', 'audit.csv').split(path.sep).join('/');
+    commitFiles(fx.brain, { 'temy/alpha/results.md': `# Výsledky\nAudit: ${abs}, kópia ../srv/scratch/alpha/audit.csv.\n` });
+    gitq(fx.brain, 'push', '-q', 'origin', 'HEAD:main');
+    const confirmed = tsvFile(fx, 'confirmed.tsv', ['vystupy/dokumenty/spec.md\tsrv:vystupy/specifikacie/\talpha\tšpecifikácia', 'zdroje/alpha/\tsrv:zdroje/alpha/\t\tpodklady']);
+    const env = operatorRepoWith(fx, `${path.basename(fx.brain)}:.brain/memory/person-jana.md`);
+    let approve = approveFile(fx, ['.brain/skills/agentic/old-gate/\tzmazat']);
+    const p = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--confirmed', confirmed, '--approve', approve], { env });
+    assert.match(p.stdout, /srv\/scratch\/alpha\/ -> topics\/alpha\/tmp\/srv-alpha/, p.out);
+    assert.match(p.stdout, /srv\/temy\/main\/tmp\/ -> topics\/main\/tmp/, p.out);
+    assert.match(p.stdout, /srv:scratch\/other\/ \(.*triage it with the operator.*presunut<TAB><topic>/, 'a scratch entry of no topic waits for the triage');
+    approve = approveFile(fx, ['.brain/skills/agentic/old-gate/\tzmazat', 'srv:scratch/other/\tpresunut\tmain']);
+    const a = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--apply', '--confirmed', confirmed, '--approve', approve], { env });
+    assert.equal(a.status, 0, a.out);
+    assert.equal(fs.readFileSync(path.join(fx.brain, 'topics', 'alpha', 'tmp', 'srv-alpha', 'audit.csv'), 'utf8'), 'a\n');
+    assert.ok(fs.existsSync(path.join(fx.brain, 'topics', 'main', 'tmp', 'n.txt')));
+    assert.ok(fs.existsSync(path.join(fx.brain, 'topics', 'main', 'tmp', 'srv-other', 'x.txt')));
+    assert.ok(!fs.existsSync(path.join(fx.srv, 'scratch')) && !fs.existsSync(path.join(fx.srv, 'temy')), 'nothing left in the repo');
+    const results = gitq(fx.brain, 'show', 'HEAD:topics/alpha/results.md');
+    const now = path.join(fx.brain, 'topics', 'alpha', 'tmp', 'srv-alpha', 'audit.csv').split(path.sep).join('/');
+    assert.ok(results.includes(`Audit: ${now},`), results);
+    assert.ok(results.includes('kópia topics/alpha/tmp/srv-alpha/audit.csv.'), results);
+    assert.match(a.stdout, /check \(data 2\.1\): ok/, a.out);
+    assert.match(a.stdout, /srv: ok\n\s+note: born in data 2\.1/, 'the commit of the files it took is no move of its own');
+  } finally { fx.cleanup(); }
+});

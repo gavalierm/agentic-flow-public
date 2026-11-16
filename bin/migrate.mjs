@@ -94,6 +94,7 @@ try {
       if (res.pruned.length) out(`removed empty folders of data 2.0: ${res.pruned.join(', ')}`);
       for (const l of res.catalogs || []) out(l);
       if (res.junk?.length) out(`removed generated files outside git: ${res.junk.length} (${res.junk.slice(0, 5).join(', ')}${res.junk.length > 5 ? ', …' : ''})`);
+      for (const l of res.deploy || []) out(l);
       for (const a of res.adapters) out(`adapter ${a.name}: ${a.res.ok ? 'regenerated' : `failed: ${a.res.out}`}`);
       out(m3.formatCheck(res.check));
       out(`push after the check (spec 11.10: the clones of other machines pull before the threads start): ${res.commits.map((c) => `git -C ${c.dir} push`).join('; ')}`);

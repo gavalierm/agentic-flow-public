@@ -45,7 +45,7 @@ test('--check reports a deploy ignore file of a moved repo without the internal 
     commitFiles(web, { '.assetsignore': 'node_modules\n' });
     const c = fx.run('migrate.mjs', [web, '--check']);
     assert.equal(c.status, 1, c.out);
-    assert.match(c.stdout, /\.assetsignore: misses .*vystupy.*\.brain.*INDEX\.md.*--check --fix/);
+    assert.match(c.stdout, /\.assetsignore: it does not exclude .*vystupy.*\.brain.*INDEX\.md.*--check --fix/);
     const f = fx.run('migrate.mjs', [web, '--check', '--fix']);
     assert.equal(f.status, 0, f.out);
     assert.match(f.stdout, /deploy ignore: \.assetsignore \+= /);
