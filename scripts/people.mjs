@@ -322,7 +322,8 @@ export function planLines(plan) {
 /**
  * Write an approved list (collectPlan, edited by the operator) into osoby/ in one commit. Refused, with nothing written,
  * when a person record of the brains is in no entry and not in dropped (with a reason), when an id is invalid or used twice,
- * or when a person file of that id exists already. profile.md is written when it is missing and the list has one operator.
+ * or when a person file of that id exists already. profile.md is written when it is missing, or gets the line when it names
+ * no osoby/<id>.md, and the list has one operator.
  */
 export function applyPlan(ctx, repo, plan) {
   const people = Array.isArray(plan?.people) ? plan.people : [];
@@ -343,8 +344,12 @@ export function applyPlan(ctx, repo, plan) {
   }
   const operators = people.filter((p) => p.operator);
   const notes = [];
-  if (!fs.existsSync(repo.profile)) {
-    if (operators.length === 1) files[toPosix(path.relative(repo.dir, repo.profile))] = `# Profil operátora\n\nOperátor tejto inštalácie: [${operators[0].name}](${PEOPLE_DIR}/${operators[0].id}.md)\n`;
+  // profile.md names the operator's record: written when missing; a profile that names no osoby/<id>.md yet (the operator
+  // started the repo with one) gets the line appended.
+  const profileText = fs.existsSync(repo.profile) ? fs.readFileSync(repo.profile, 'utf8') : null;
+  if (profileText === null || !profilePersonId(profileText)) {
+    const line = operators.length === 1 ? `Operátor tejto inštalácie: [${operators[0].name}](${PEOPLE_DIR}/${operators[0].id}.md)\n` : null;
+    if (line) files[toPosix(path.relative(repo.dir, repo.profile))] = profileText === null ? `# Profil operátora\n\n${line}` : `${profileText.replace(/\n*$/, '\n\n')}${line}`;
     else notes.push(`${toPosix(repo.profile)} not written: the list has ${operators.length} operator entries; write it naming ${PEOPLE_DIR}/<id>.md of this installation's operator`);
   }
   if (!Object.keys(files).length) return ['nothing to write', ...notes];

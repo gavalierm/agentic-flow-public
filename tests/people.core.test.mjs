@@ -195,3 +195,27 @@ test('collect: operator-*.md and person records of every brain of the machine ->
     assert.equal(r.status, 1); assert.match(r.stderr, /osoby\/op-one\.md exists already/);
   } finally { m.cleanup(); }
 });
+
+test('collect: the operator is who wrote the records, not the agent that later moved them (migration); an existing profile.md gets the line', () => {
+  const m = machine();
+  try {
+    m.record('Alpha', 'operator-old-name.md', mem('operator-old-name', 'limits', 'Usage limit 30 percent.'), 'Ana Writer');
+    // Another machine's agent moves and rewrites the record in one commit (a migration of the data layout).
+    const b = m.domains.Alpha.brain;
+    gitq(b, 'mv', 'memory/operator-old-name.md', 'memory/operator-limits.md');
+    fs.appendFileSync(path.join(b, 'memory', 'operator-limits.md'), 'Odkaz prepísaný migráciou.\n');
+    gitq(b, 'add', '-A');
+    const agent = { GIT_AUTHOR_NAME: 'Migrating Agent', GIT_AUTHOR_EMAIL: 'agent@example.test', GIT_COMMITTER_NAME: 'Migrating Agent', GIT_COMMITTER_EMAIL: 'agent@example.test' };
+    const c = spawnSync('git', ['-c', 'core.hooksPath=/nonexistent', 'commit', '-q', '-m', 'migrate'], { cwd: b, encoding: 'utf8', env: { ...process.env, ...agent } });
+    assert.equal(c.status, 0, c.stderr);
+    const op = operatorRepo(m.root, { profile: '# Profil\n\nMoje nastavenia.\n' });
+    const plan = path.join(m.root, 'plan.json');
+    let r = m.run(['collect', '--out', plan], op.env);
+    assert.equal(r.status, 0, r.out);
+    assert.match(r.stdout, /- osoby\/ana-writer\.md: Ana Writer \(operator\)/);
+    assert.doesNotMatch(r.stdout, /Migrating Agent|migrating-agent/);
+    r = m.run(['collect', '--apply', plan], op.env);
+    assert.equal(r.status, 0, r.out);
+    assert.equal(fs.readFileSync(path.join(op.dir, 'profile.md'), 'utf8'), '# Profil\n\nMoje nastavenia.\n\nOperátor tejto inštalácie: [Ana Writer](osoby/ana-writer.md)\n');
+  } finally { m.cleanup(); }
+});

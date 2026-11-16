@@ -3,7 +3,7 @@
 // before need no migration. Shown by name only and only on a record of another operator (session start, find, save): a brain
 // of one author reads as before.
 import { git } from './util.mjs';
-import { LAYOUT, dataRel } from './layout.mjs';
+import { LAYOUT, ALL_MAPS, dataRel } from './layout.mjs';
 
 /** Record folders of the brain the author log looks at (logical names of layout.mjs; RECORD_DIRS: their layout-1 paths). */
 const RECORD_NAMES = ['memory', 'decisions', 'rules', 'skills'];
@@ -29,20 +29,38 @@ export function sameIdentity(a, b) {
 }
 
 /**
- * Authors of the brain records in one git log: the author of the newest commit that added each path (`--no-renames`, so a
- * moved file has its addition). `paths` narrows the log (save: the one record). A file no commit added belongs to this
- * machine. Returns { me, files: Map<brain-relative path, { name, email }>, git } (`git`: the log result, which also tells a
- * repo git refuses, see gitAccessProblem).
+ * Authors of the brain records in one git log: the author of the commit that first added each file, followed through its
+ * moves (a rename, also a migration of the data layout that moved and rewrote it, keeps the author who wrote the record;
+ * operator 2026-11-16: a brain migrated by another machine named the migrating agent the author of every record).
+ * `paths` narrows the log (save: the one record); the folders of every data layout are searched, so a move from an older
+ * layout is followed. A file no commit added belongs to this machine. Returns { me, files: Map<brain-relative path,
+ * { name, email }>, git } (`git`: the log result, which also tells a repo git refuses, see gitAccessProblem).
  */
 export function recordAuthors(brainDir, { paths = RECORD_NAMES.map((n) => dataRel(brainDir, n)) } = {}) {
-  const res = git(['-c', 'core.quotePath=false', 'log', '--no-renames', '--diff-filter=A', '--relative', '--format=%x01%ae%x02%an', '--name-only', '--', ...paths], { cwd: brainDir });
+  const tracked = git(['-c', 'core.quotePath=false', 'ls-files', '--', ...paths], { cwd: brainDir });
+  const pending = new Map(); // path in the commit being read (older going back) -> current path
+  for (const p of tracked.ok ? tracked.stdout.split('\n') : []) if (p.trim()) pending.set(p.trim(), p.trim());
+  const search = [...new Set([...paths, ...ALL_MAPS.flatMap((L) => RECORD_NAMES.map((n) => L[n]).filter(Boolean))])];
+  const res = git(['-c', 'core.quotePath=false', 'log', '-M', '--diff-filter=AR', '--relative', '--format=%x01%ae%x02%an', '--name-status', '--', ...search], { cwd: brainDir });
   const files = new Map();
   let cur = null;
   for (const line of res.ok ? res.stdout.split('\n') : []) {
+    if (!pending.size) break;
     if (line.startsWith('\x01')) {
       const [email = '', name = ''] = line.slice(1).split('\x02');
       cur = { email: email.trim(), name: name.trim() };
-    } else if (cur && line.trim() && !files.has(line.trim())) files.set(line.trim(), cur);
+      continue;
+    }
+    const parts = line.split('\t');
+    if (!cur || parts.length < 2) continue;
+    if (parts[0].startsWith('R') && parts.length >= 3) {
+      // A move: the record lived at the old path before this commit.
+      const now = pending.get(parts[2]);
+      if (now !== undefined) { pending.delete(parts[2]); pending.set(parts[1], now); }
+    } else if (parts[0] === 'A') {
+      const now = pending.get(parts[1]);
+      if (now !== undefined) { pending.delete(parts[1]); files.set(now, cur); }
+    }
   }
   return { me: files.size ? localIdentity(brainDir) : null, files, git: res };
 }
