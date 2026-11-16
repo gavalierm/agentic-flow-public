@@ -40,6 +40,7 @@ import path from 'node:path';
 import { parseArgs, fail, gitToplevel } from '../scripts/util.mjs';
 import { dataLayoutVersion, dataName, parseDataVersion } from '../scripts/layout.mjs';
 import { removeJunk } from '../scripts/leftovers.mjs';
+import { rescanStale } from '../scripts/catalog/stale.mjs';
 import { repoKind, planMigration, formatPlan, readTriage, formatTriageTsv, applyMigration, checkMigration, contentProblems, formatCheck, fixIndex, fixDeployIgnores, fixCrossRefs, formatCrossFix, adapterCommand, FROM_VERSION, TO_VERSION, TRIAGE_HELP } from '../scripts/migrate.mjs';
 import { formatDeployIgnores } from '../scripts/data-index.mjs';
 import * as m3 from '../scripts/migrate-3.mjs';
@@ -91,6 +92,7 @@ try {
       for (const c of res.commits) out(`committed ${c.name}: ${c.sha} (not pushed)`);
       for (const l of res.moved) out(`moved outside git (a revert does not move it back): ${l}`);
       if (res.pruned.length) out(`removed empty folders of data 2.0: ${res.pruned.join(', ')}`);
+      for (const l of res.catalogs || []) out(l);
       if (res.junk?.length) out(`removed generated files outside git: ${res.junk.length} (${res.junk.slice(0, 5).join(', ')}${res.junk.length > 5 ? ', …' : ''})`);
       for (const a of res.adapters) out(`adapter ${a.name}: ${a.res.ok ? 'regenerated' : `failed: ${a.res.out}`}`);
       out(m3.formatCheck(res.check));
@@ -118,6 +120,7 @@ try {
     if (args.fix) {
       const ignores = fixDeployIgnores(target);
       if (ignores.sha) out(`${formatDeployIgnores(ignores.added)}, committed ${ignores.sha} (not pushed)`);
+      for (const l of rescanStale(target)) out(l);
       const junk = removeJunk(target, { version, role: repoKind(target) });
       if (junk.removed.length) out(`removed generated files outside git: ${junk.removed.join(', ')}`);
       if (junk.pruned.length) out(`removed empty folders of an older data layout: ${junk.pruned.join(', ')}`);
@@ -140,6 +143,7 @@ try {
     if (res.outside.length) out(`moved outside git (not in the commit, a revert does not move them back): ${res.outside.map((m) => `${m.from} -> ${m.to}`).join(', ')}`);
     for (const f of res.deleted || []) out(`deleted (pomocne, outside git, confirmed; git does not restore it): ${f}`);
     if (res.pruned?.removed.length) out(`removed empty folders of data ${dataName(FROM_VERSION)}: ${res.pruned.removed.join(', ')}`);
+    for (const l of res.catalogs || []) out(l);
     if (res.junk?.removed.length) out(`removed generated files outside git: ${res.junk.removed.length} (${res.junk.removed.slice(0, 5).join(', ')}${res.junk.removed.length > 5 ? ', …' : ''})`);
     if (res.junk?.pruned.length) out(`removed empty folders of data ${dataName(FROM_VERSION)}: ${res.junk.pruned.join(', ')}`);
     if (res.pruned?.ignored.length) out(`left in place (ignored by git, not removed): ${res.pruned.ignored.join(', ')}`);

@@ -11,6 +11,7 @@
 // script commit, so the brain stays clean. project.mjs connect and restore attach their brain the same way.
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { PLUGIN_ROOT, copyDir, git, fail, parseArgs, exists } from '../scripts/util.mjs';
 import { assertPersonaRemote, PERSONA_REPO_RE } from '../scripts/persona-name.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv } from '../scripts/config.mjs';
@@ -157,7 +158,7 @@ export function brainInit(target, { attach = false, adopt = false, remote = null
   return { brainDir, created };
 }
 
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('brain-init.mjs')) {
+if ((process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) || process.argv[1]?.endsWith('brain-init.mjs')) {
   const args = parseArgs(process.argv.slice(2));
   const [target] = args._;
   if (!target) fail('usage: brain-init.mjs <path> [--attach [--adopt]] [--remote <url>] [--project <dir>] [--persona] [--layout 1|2.0|2.1]');

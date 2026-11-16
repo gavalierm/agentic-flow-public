@@ -30,6 +30,7 @@ import { brainWrite, gitAccessProblem } from './brain.mjs';
 import { INDEX_FILE, refreshIndex, indexProblem, commitIndexAfterMerge, refreshDeployIgnores, deployIgnoreGaps, formatDeployIgnores } from './data-index.mjs';
 import { CLASSES, MOVED_CLASSES, BRAIN_SUFFIX, classTargetIn } from './triage.mjs';
 import { redactUrl } from './secrets.mjs';
+import { staleCatalog, rescanStale } from './catalog/stale.mjs';
 import { isJunk, isLarge, sizeOf, sizeText, leftovers, removeJunk, leftoverLines, junkText } from './leftovers.mjs';
 
 const L1 = LAYOUTS[1];
@@ -725,13 +726,15 @@ export function applyMigration(dir, { confirmedFile = null, proposalsFile = null
   // 2026-11-16: materialy/ with only .pyc): removed with the folders it leaves empty; other files there the check reports.
   const junk = removeJunk(dir, { version: TO_VERSION, role: plan.kind });
   const pruned = pruneOldFolders(dir, moves);
+  let catalogs = [];
+  try { catalogs = rescanStale(dir); } catch (err) { catalogs = [`catalog not scanned (${err.message}); migrate.mjs ${dir} --check --fix`]; }
   const adapter = regenerateAdapter(dir);
   const check = checkMigration(dir, { before, project, cwd, consolidate, outsideHere: true });
   // scratch/ left (not confirmed): said in one line with the row that moves it, not only as a triage item that stays.
   const scratchLeft = fs.existsSync(path.join(dir, L1.scratch))
     ? `${L1.scratch}/ stays (outside git, not confirmed, ${sizeText(sizeOf(path.join(dir, L1.scratch)))}); data ${dataName(TO_VERSION)} has no ${L1.scratch}/: triage it with the operator, entry by entry: remove what is not needed (exports, backups, generated files), move the rest into the work folder of its topic ${L2.topics}/<topic>/${L2.topicTmp}/ (${SCRATCH_TARGET} only for work of no topic); outside git: git does not restore it`
     : null;
-  return { ok: true, sha, brainSha, plan, moves, outside, deleted: removedOutside, note: ready.note, adapter, check, pruned, junk, scratchLeft, deployIgnores: info.deployIgnores || [] };
+  return { ok: true, sha, brainSha, plan, moves, outside, deleted: removedOutside, note: ready.note, adapter, check, pruned, junk, catalogs, scratchLeft, deployIgnores: info.deployIgnores || [] };
 }
 
 /** Content of a file for the brain writer: text when it is text, else the bytes. */
@@ -985,6 +988,7 @@ export function checkMigration(dir, { before = null, project = null, cwd = proce
   if (index) problems.push(`${INDEX_FILE}: ${index === 'missing' ? 'missing' : 'stale (differs from the tracked files)'} in HEAD; regenerate it: migrate.mjs ${dir} --check --fix`);
   for (const rel of oldEmptyFolders(dir, rows)) problems.push(`${rel}/: empty folder of data ${dataName(FROM_VERSION)} left after the move (no file inside; remove it)`);
   problems.push(...leftoverProblems(dir, { version: TO_VERSION, role: repoKind(dir), fix: `migrate.mjs ${dir} --check --fix` }));
+  for (const s of staleCatalog(dir)) problems.push(`local/catalog: source ${s.name} is indexed on ${posix(s.indexed)}, the data is in ${posix(s.path)} now (moved): catalog.mjs find misses it; scan it again: migrate.mjs ${dir} --check --fix`);
   const stayed = rows.filter((r) => r.from === r.to).map((r) => r.from);
   const { find } = makeRewriter(rows.filter((r) => r.from !== r.to && relocated(r)), { tracked: stayed, kind: repoKind(dir) });
   const waiting = new Set(rows.filter((r) => r.status === STATUS.triageStay).map((r) => r.from));

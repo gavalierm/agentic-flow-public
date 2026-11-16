@@ -34,6 +34,8 @@ import { parseFrontmatter } from './frontmatter.mjs';
 import { operatorRepo, readPeople } from './people.mjs';
 import { trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand, leftoverProblems } from './migrate.mjs';
 import { gitAccessProblem } from './brain.mjs';
+import { staleCatalog, rescanStale } from './catalog/stale.mjs';
+const LOCAL_CATALOG = 'local/catalog';
 import { leftovers, removeJunk, leftoverLines, junkText, sizeOf, sizeText, isLarge, human, LARGE_BYTES, LARGE_FILES } from './leftovers.mjs';
 import { defaultRepoName } from './target.mjs';
 
@@ -1030,11 +1032,14 @@ export function applyDomain(dir, { confirmedFile = null, approveFile = null, env
     junk.push(...removeJunk(t.dir, { version: TO, role }).removed.map((r) => `${t.name}:${r}`));
   }
   const pruned = [L2.topics, OUTPUTS, L2.materialy, KNOWLEDGE].flatMap((rel) => pruneEmpty(plan.brain.dir, rel));
+  // The local catalog of a repo indexes its sources on the old path: scanned again where the move changed it.
+  const catalogs = [];
+  for (const t of plan.repos) { try { catalogs.push(...rescanStale(t.dir)); } catch (err) { catalogs.push(`${t.name}: catalog not scanned (${err.message}); migrate.mjs ${dom.brain} --to 2.1 --check --fix`); } }
   // The empty vystupy/rozhodnutia/ a project repo's decisions left (they moved to .brain/decisions/).
   for (const t of plan.repos) pruned.push(...pruneEmpty(t.dir, L2.decisions).map((p) => `${t.name}:${p}`));
   const adapters = [...plan.repos.map((t) => ({ name: t.name, res: t.adapter })), { name: plan.brain.name, res: regenerateAdapter(plan.brain.dir) }].filter((a) => a.res);
   const check = checkDomain(plan.brain.dir);
-  return { ok: true, commits, plan, moved, pruned, junk, adapters, check };
+  return { ok: true, commits, plan, moved, pruned, junk, catalogs, adapters, check };
 }
 
 // ---- check ------------------------------------------------------------------------------------------------------------
@@ -1058,6 +1063,7 @@ export function checkRepo(dir, { brainDir = null } = {}) {
   const files = trackedFiles(dir).map((f) => f.rel);
   // Outside git in the folders of data 2.0 and 1 (doma-pc 2026-11-16): junk (--fix removes it) and entries to triage.
   problems.push(...leftoverProblems(dir, { version: TO, role, fix: `migrate.mjs ${dir} --to 2.1 --check --fix` }));
+  for (const s of staleCatalog(dir)) problems.push(`${LOCAL_CATALOG}: source ${s.name} is indexed on ${posix(s.indexed)}, the data is in ${posix(s.path)} now (moved): catalog.mjs find misses it; scan it again: migrate.mjs ${dir} --to 2.1 --check --fix`);
   const record = recordRel(role);
   const commits = moveCommits(dir);
   // A repo born in data 2.1 (connect or create beside a brain of 2.1 stamps it) has no move to record (doma-pc 2026-11-16).
@@ -1154,6 +1160,7 @@ export function fixJunk(dir) {
   const out = [];
   for (const d of [dom.brain, ...dom.repos]) {
     if (dataLayoutVersion(d) !== TO) continue;
+    out.push(...rescanStale(d));
     const res = removeJunk(d, { version: TO, role: layoutRole(d) });
     if (res.removed.length) out.push(`${path.basename(d)}: removed generated files outside git: ${res.removed.join(', ')}`);
     if (res.pruned.length) out.push(`${path.basename(d)}: removed empty folders of an older data layout: ${res.pruned.join(', ')}`);

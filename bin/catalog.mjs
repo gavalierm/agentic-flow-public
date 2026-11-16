@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
 import { catalogConfig } from '../scripts/catalog/config.mjs';
@@ -154,7 +155,9 @@ function cmdStatus(cfg) {
 
 const COMMANDS = { scan: cmdScan, profile: cmdProfile, find: cmdFind, show: cmdShow, sql: cmdSql, overview: cmdOverview, status: cmdStatus };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Main module: pathToFileURL, since `file://${argv[1]}` never matched on Windows (D:\\… against file:///D:/…) and every
+// command ended silently with exit 0 (doma-pc 2026-11-16).
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
     const cmd = args._[0];
     if (!COMMANDS[cmd]) fail(USAGE);
