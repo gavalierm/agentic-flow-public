@@ -76,13 +76,24 @@ export function pinClone(root, version, { min = PIN_MIN } = {}) {
   if (inst.tag === want) return { status: 'current', from: inst.tag, to: want };
   const has = () => git(['rev-parse', '--verify', '--quiet', `refs/tags/${want}`], { cwd: root }).ok;
   if (!has()) {
-    const fetch = git(['fetch', '--tags', '--quiet', 'origin'], { cwd: root });
+    const fetch = fetchTags(root);
     if (!fetch.ok) return { status: 'failed', from: inst.tag, to: want, reason: `git fetch: ${fetch.stderr.split('\n')[0]}` };
     if (!has()) return { status: 'failed', from: inst.tag, to: want, reason: `release ${want} does not exist` };
   }
   const co = git(['checkout', '--quiet', want], { cwd: root });
   if (!co.ok) return { status: 'failed', from: inst.tag, to: want, reason: `git checkout: ${co.stderr.split('\n')[0]}` };
   return { status: 'updated', from: inst.tag, to: want };
+}
+
+/**
+ * Tags of origin, forced: a release tag is origin's (2026-11-16: v2.0.0 was moved on origin while machines kept the older
+ * one, and `fetch --tags` refused with "would clobber existing tag", so the update failed on every such machine). A fetch
+ * that reached origin but refused only some tag still updated the others: ok.
+ */
+function fetchTags(root) {
+  const r = git(['fetch', '--tags', '--force', '--quiet', 'origin'], { cwd: root });
+  if (r.ok || !/\[rejected\]|would clobber/.test(r.stderr || '')) return r;
+  return { ...r, ok: true };
 }
 
 /**
@@ -93,7 +104,7 @@ export function pinClone(root, version, { min = PIN_MIN } = {}) {
 export function newerReleases(root, tag) {
   const at = /^v/.test(String(tag)) ? String(tag) : `v${tag}`;
   if (!semver(at).length) return null;
-  git(['fetch', '--tags', '--quiet', 'origin'], { cwd: root }); // offline: the tags known locally
+  fetchTags(root); // offline: the tags known locally
   const tags = releaseTags(root);
   const update = newest(tags, at, major(at));
   const upgrade = newest(tags.filter((t) => major(t) > major(at)), null);
@@ -114,7 +125,7 @@ export function updateClone(root, { major: maj = null } = {}) {
   const inst = releaseInstall(root);
   if (!inst.tag) { const { dev, ...r } = inst; return r; }
   const cur = { stdout: inst.tag };
-  const fetch = git(['fetch', '--tags', '--quiet', 'origin'], { cwd: root });
+  const fetch = fetchTags(root);
   if (!fetch.ok) return { status: 'failed', from: cur.stdout, reason: `git fetch: ${fetch.stderr.split('\n')[0]}` };
   const tags = releaseTags(root);
   const best = maj === null ? newest(tags, cur.stdout, major(cur.stdout)) : newest(tags, major(cur.stdout) === maj ? cur.stdout : null, maj);

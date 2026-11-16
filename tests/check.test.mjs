@@ -72,3 +72,31 @@ test('major version guard: latest updates within the major version, a new major 
     assert.deepEqual(pinClone(clone, 'latest'), { status: 'updated', from: 'v1.0.0', to: 'v1.1.0' }, '1.x follows 1.x');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('updateClone: a release tag moved on origin (the clone keeps the old one) does not stop the update (2026-11-16)', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { git } = await import('../scripts/util.mjs');
+  const { updateClone } = await import('../scripts/update.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-update-'));
+  const env = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
+  const g = (cwd, ...a) => { const r = git(a, { cwd, env }); assert.ok(r.ok, r.stderr); return r.stdout; };
+  try {
+    const origin = path.join(dir, 'origin');
+    fs.mkdirSync(origin);
+    g(origin, 'init', '-q', '-b', 'main');
+    g(origin, 'commit', '-q', '--allow-empty', '-m', 'a');
+    g(origin, 'tag', 'v2.0.0');
+    const clone = path.join(dir, 'clone');
+    g(dir, 'clone', '-q', origin, clone);
+    g(clone, 'checkout', '-q', 'v2.0.0');
+    // origin moves v2.0.0 (a fix under the same tag), then releases v2.0.1.
+    g(origin, 'commit', '-q', '--allow-empty', '-m', 'fix');
+    g(origin, 'tag', '-f', 'v2.0.0');
+    g(origin, 'commit', '-q', '--allow-empty', '-m', 'b');
+    g(origin, 'tag', 'v2.0.1');
+    assert.deepEqual(updateClone(clone), { status: 'updated', from: 'v2.0.0', to: 'v2.0.1' });
+    assert.equal(g(clone, 'rev-parse', 'v2.0.0'), g(origin, 'rev-parse', 'v2.0.0'), 'the moved tag follows origin');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
