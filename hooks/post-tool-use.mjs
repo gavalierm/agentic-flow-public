@@ -20,6 +20,7 @@ import { bashTargets, bashEdits } from './pre-tool-use.mjs';
 import { wakerFromTool, recordWaker } from '../scripts/waker.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 import { recordPublish } from '../scripts/artifacts.mjs';
+import { contextTokens, compactNudge } from '../scripts/compact.mjs';
 
 export const HOOK_META = { event: 'PostToolUse|PostToolUseFailure', class: 'log+c', limit: '1 line (once per waiting message; once per read step)', principles: ['P-001', 'P-018', 'P-030', 'P-028', 'P-003', 'P-041', 'P-042', 'P-061', 'P-021'] };
 
@@ -128,6 +129,21 @@ export function readBudget(ctx, input) {
   return r.line;
 }
 
+/**
+ * P-026 (operator 2026-11-16): near the auto-compact window the main thread that holds a topic saves its handover while
+ * it still has the whole context; once per context (session-start clears `compact_nudged`).
+ */
+export function compactLine(ctx, input) {
+  if (input.agent_id || input.agent_type || !ctx.brainDir || !ctx.thread) return null;
+  const state = readThreadState(ctx.brainDir, ctx.thread);
+  if (state.compact_nudged) return null;
+  const window = ctx.policy?.compaction?.auto_compact_window_tokens ?? 200000;
+  const r = compactNudge({ tokens: contextTokens(input.transcript_path), window, state, held: heldTopics(ctx.brainDir, ctx.thread) });
+  if (!r) return null;
+  writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), ...r.patch });
+  return r.line;
+}
+
 /** Files the finished tool call changed (file tools, shell targets and in-place edits). */
 export function changedFiles(input) {
   const cwd = input.cwd || process.cwd();
@@ -181,7 +197,7 @@ export function run(input, now = Date.now()) {
   if (entry?.kind === 'cmd' && !input.agent_id && ctx.thread && progressCommand(input.tool_input?.command)) markProgress(ctx.brainDir, ctx.thread, now);
   // P-061: a waker armed by this call (background task or agent, scheduler, mail) lets the turn end waiting.
   if (!input.agent_id && ctx.thread) recordWaker(ctx.brainDir, ctx.thread, wakerFromTool(input, now));
-  const lines = [readBudget(ctx, input), watch(ctx, input, now)].filter(Boolean);
+  const lines = [readBudget(ctx, input), watch(ctx, input, now), compactLine(ctx, input)].filter(Boolean);
   return lines.length ? contextOutput('PostToolUse', lines.join('\n')) : {};
 }
 

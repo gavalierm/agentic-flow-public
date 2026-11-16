@@ -11,6 +11,7 @@ import { syncBrainSkills, ensureGitignore, harnessSkills } from '../../scripts/s
 import { assembleRules } from '../../scripts/rules.mjs';
 import { adapterSkillSources } from '../../scripts/repo-knowledge.mjs';
 import { toToml } from './toml.mjs';
+import { COMPACT_PROMPT as SHARED_COMPACT_PROMPT } from '../../scripts/compact.mjs';
 import { dataPath, dataRel, dataLayoutVersion, workIgnoreLine } from '../../scripts/layout.mjs';
 import { workDir } from '../../scripts/topic-files.mjs';
 import { threadId } from '../../scripts/config.mjs';
@@ -21,20 +22,13 @@ export const AGENTS_END = '<!-- workflow:end -->';
 export const PERMISSION_PROFILE = 'workflow';
 /** Events whose Codex input/output differs from Claude Code and go through adapters/codex/hook.mjs. */
 export const TRANSLATED_EVENTS = { SessionStart: 'session-start', PreToolUse: 'pre-tool-use', Stop: 'stop' };
-/** Claude Code events Codex does not have (hooks docs list 12 events; failed Bash arrives as PostToolUse). */
-export const UNSUPPORTED_EVENTS = ['PostToolUseFailure'];
+/** Claude Code events Codex does not have (hooks docs list 12 events; failed Bash arrives as PostToolUse), or has with an
+ * unverified output: PreCompact steers the summary through `compact_prompt` in Codex. */
+export const UNSUPPORTED_EVENTS = ['PostToolUseFailure', 'PreCompact'];
 export const LOCAL_FILES = ['.codex/hooks.json', harnessSkills('codex').gitignore];
 
-/** Compaction prompt (P-026): the summary is a state, not a history. */
-export const COMPACT_PROMPT = [
-  'Zhrň kontext ako stav práce, nie ako históriu rozhovoru. Presne tieto časti, každá najviac 3 riadky:',
-  '1. Zadanie a téma (ID témy, ak existuje).',
-  '2. Hotové (overené výsledky, nie zámery).',
-  '3. Ďalší krok (jeden, konkrétny).',
-  '4. Otvorené otázky a čakajúce správy.',
-  '5. Dotknuté súbory.',
-  'Po kompakcii je primárnym podkladom handover témy z brain, ktorý vloží hook SessionStart; nezhrňuj pravidlá workflow.',
-].join('\n');
+/** Compaction prompt (P-026): the summary is a state, not a history; the same text as the Claude Code PreCompact hook. */
+export const COMPACT_PROMPT = SHARED_COMPACT_PROMPT;
 
 /** Pure function: policy + brain relative path -> .codex/config.toml as an object (serialized by toToml). */
 export function codexConfig(policy, brainRel, brainVersion = 1) {

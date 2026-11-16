@@ -8,6 +8,7 @@ import { assembleRules } from './rules.mjs';
 import { buildIndexes, shownIndexes, topicLine } from './index.mjs';
 import { recordAuthors, foreignAuthor } from './authors.mjs';
 import { heldTopics, mailboxTopics } from './topic.mjs';
+import { handoverAgeLine } from './compact.mjs';
 import { mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics, isMainTopic, noticesCount, discussionMail } from './comms.mjs';
 import { syncBrainSkills } from './skills-sync.mjs';
 import { policyIgnoredLine } from './policy-layers.mjs';
@@ -198,7 +199,11 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
     // rules of the old brain from its summary as valid and passed its own script default off as the operator's rule).
     status += `\nPo kompakcii (P-019): pravidlá, výnimky a pokyny platia iba z kontextu tohto štartu („## Pravidlá“ a tento blok), z brainu (find) a z handoveru; pravidlo, hodnota alebo pokyn iba zo zhrnutia (stará pamäť, iný brain, archív migrácie) je nepotvrdený: over ho alebo sa spýtaj operátora; vlastnú hodnotu nevydávaj za pokyn operátora`;
     const held = info.held;
-    if (held.length && held[0].handover) status += `\nHandover (primárny podklad, P-026):\n${held[0].handover.trim().replace(/^## /gm, '### ')}`;
+    if (held.length && held[0].handover) {
+      // A handover saved long before the compaction must not overrule the newer summary (operator 2026-11-16).
+      const age = handoverAgeLine(ctx.brainDir, held[0].id, readThreadState(ctx.brainDir, ctx.thread).compacted_at || null);
+      status += `\nHandover (podklad zadania a stavu, P-026):\n${held[0].handover.trim().replace(/^## /gm, '### ')}${age ? `\n${age}` : ''}`;
+    }
   }
   // Spec 3.9 and 10.5 (plan B6): the supervisor's session starts with the overview of the topics of this machine and its
   // open obligations of the mail (what it owes and awaits); the overview is the same as overview.mjs prints.
