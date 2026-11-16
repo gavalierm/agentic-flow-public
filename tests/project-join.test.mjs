@@ -2,7 +2,8 @@
 // project.mjs connect into a domain that exists (doma-pc 2026-11-16: the marketing repo of Shop joins the domain
 // Shop): the repo is cloned beside the domain's brain and points at it; no <name>-brain is cloned or created, the
 // older folder of the setup is set aside; a --brain other than the domain's is refused before anything changes. The repo
-// gets the data version of the brain (a repo without one reads as data 1 and the session start refused it).
+// gets the data version of the brain (a repo without one reads as data 1 and the session start refused it). The T3
+// project of the setup set aside is moved to the new clone (its threads stay), not replaced by a new empty one.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -60,6 +61,13 @@ test('connect --domain of an existing domain: the repo joins its brain, no brain
     assert.ok(fs.existsSync(path.join(root, 'FACEBOOK.pre-adopt', 'brain')));
     assert.ok(res.lines.some((l) => /set aside: FACEBOOK -> FACEBOOK\.pre-adopt/.test(l)), res.lines.join('\n'));
     assert.ok(res.lines.some((l) => /joins its brain shop-brain/.test(l)));
+    assert.deepEqual(res.previous, [path.join(root, 'FACEBOOK')]);
+    // T3: the project of the setup set aside (its threads) moves to the new clone, no new empty project.
+    const { setupT3 } = await import('../scripts/t3-setup.mjs');
+    const t3 = setupT3(path.join(dom, 'facebook'), { name: 'facebook', previous: res.previous, deferWelcome: true, trustFile: path.join(base, 'claude.json'), run: () => { throw new Error('t3 project add must not run'); } });
+    assert.equal(t3.added, false);
+    assert.match(t3.pending[0], /^t3_project_update \(project with workspaceRoot \S+\/FACEBOOK\): workspaceRoot \S+\/Shop\/facebook; t3_project_create .* only when no T3 project has that workspaceRoot$/);
+    assert.ok(t3.lines.some((l) => /its threads stay/.test(l)), t3.lines.join('\n'));
     assert.ok(!calls.some((c) => /facebook-brain|POST/.test(c)), calls.join('\n'));
     // The repo carries the data of the brain (2.1): the session start does not refuse it as a clone not pulled.
     const fb = path.join(dom, 'facebook');

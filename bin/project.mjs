@@ -96,14 +96,14 @@ function brainOf(dir) {
 /** Trust, T3 project and welcome thread of each repository folder (the skill step agents skipped, 2026-11-08). */
 // --adopt: the welcome thread waits for `wizard end` (welcome_deferred in the thread state); started with connect it
 // proposed the adoption's own tidying while the adoption topic did it (alice 2026-11-11).
-function t3Step(dirs, name) {
+function t3Step(dirs, name, previous = {}) {
   if (args['no-t3']) return ['t3: skipped (--no-t3): trust, T3 project and welcome thread were not set up'];
   const lines = []; const update = {}; const deferred = {};
   for (const dir of dirs) {
     // wakeJob: the issue check job in this machine's wake.json (D-0024), idempotent for every project of the machine.
     let wakeJob = null;
     try { wakeJob = loadContext({ project: dir, requireBrain: false }); } catch { /* no context: no job line */ }
-    const r = setupT3(dir, { name, policy: wakeJob?.policy || policyOf(dir), welcome: !args['no-welcome'], deferWelcome: !!args.adopt, wakeJob });
+    const r = setupT3(dir, { name, policy: wakeJob?.policy || policyOf(dir), welcome: !args['no-welcome'], deferWelcome: !!args.adopt, wakeJob, previous: previous[dir] || [] });
     lines.push(...r.lines.map((l) => `${path.basename(dir)}: ${l}`));
     update[dir] = r.pending;
     if (r.deferred) deferred[dir] = name;
@@ -167,7 +167,7 @@ try {
     if (!target) fail('usage: project.mjs connect <name> [--owner <account|org>] [--repo <repo>] [--brain <repo>] [--rename-brain] [--adopt] [--brain-branch <b>] [--set-aside] [--domain "<folder>"]');
     guardWrite();
     const r = await connect({ project: target, owner: ownerArg('project.mjs connect <name> --owner <account|org>'), repo: args.repo || null, brain: args.brain || null, renameBrain: !!args['rename-brain'], adopt: !!args.adopt, brainBranch: args['brain-branch'] || null, setAside: typeof args['set-aside'] === 'string' ? args['set-aside'] : !!args['set-aside'], domain: typeof args.domain === 'string' ? args.domain : null, root, ...gh });
-    out(`connected ${r.projectDir} (brain ${r.brainDir})\n${list([...r.lines, ...mailStep(r), ...t3Step([r.projectDir], target), ...rememberRoot()])}`);
+    out(`connected ${r.projectDir} (brain ${r.brainDir})\n${list([...r.lines, ...mailStep(r), ...t3Step([r.projectDir], target, { [r.projectDir]: r.previous || [] }), ...rememberRoot()])}`);
   } else if (cmd === 'create') {
     if (!target) fail('usage: project.mjs create <name> [--repo <repo>] --purpose "<one sentence>"');
     guardWrite();

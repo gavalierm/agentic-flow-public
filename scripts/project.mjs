@@ -290,7 +290,7 @@ function isWorkflowDomain(dir) {
 }
 
 function setAsideNamed(root, setAside) {
-  if (typeof setAside !== 'string') return [];
+  if (typeof setAside !== 'string') return { lines: [], from: [] };
   const names = setAside.split(',').map((s) => s.trim()).filter(Boolean);
   const plan = names.map((n) => {
     if (n !== path.basename(n) || n === '.' || n === '..') throw new Error(`--set-aside takes folder names in ${root}, got "${n}"`);
@@ -301,7 +301,8 @@ function setAsideNamed(root, setAside) {
     if (exists(to)) throw new Error(`${to} already exists; resolve it first`);
     return { n, from, to };
   });
-  return plan.map(({ n, from, to }) => { fs.renameSync(from, to); return `set aside: ${n} -> ${path.basename(to)}`; });
+  const lines = plan.map(({ n, from, to }) => { fs.renameSync(from, to); return `set aside: ${n} -> ${path.basename(to)}`; });
+  return { lines, from: plan.map((x) => x.from) };
 }
 
 // owner: the account or organization of the code repository when it is not the operator's (the operator is a
@@ -330,7 +331,9 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
     if (exists(path.join(joinBase, repoName))) throw new Error(`${path.join(joinBase, repoName)} exists; nothing is overwritten (P-018)`);
     return joinDomain({ base: joinBase, brainName: joinBrain, owner, me, repoName, foreign, setAside, root, apiUrl, token, agentTokenFile, remoteFor });
   }
-  const setAsideLines = setAsideNamed(root, setAside);
+  const aside0 = setAsideNamed(root, setAside);
+  const setAsideLines = aside0.lines || [];
+  const previous = [...(aside0.from || [])];
   let base = domainDir(root, name, domain);
   // A chosen domain name may be the old setup's own folder (`Home assistant`): it is not taken over as the domain.
   if (domain && exists(base) && !exists(path.join(base, '.git')) && !isWorkflowDomain(base) && subdirs(base).length) {
@@ -345,6 +348,7 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
     if (exists(aside)) throw new Error(`${aside} already exists; resolve it first`);
     fs.renameSync(base, aside);
     setAsideLines.push(`set aside: ${path.basename(base)} -> ${path.basename(aside)}`);
+    previous.push(base);
     base = path.join(root, domain || domainDirName(name));
   }
   fs.mkdirSync(base, { recursive: true });
@@ -418,7 +422,7 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
     fs.writeFileSync(cfgFile, `${JSON.stringify({ ...(readJson(cfgFile, {}) || {}), visibility: 'public' }, null, 2)}\n`);
     lines.push(`visibility: ${owner}/${repoName} is PUBLIC: its knowledge stays in brain (save --repo refuses it), secrets in local/; check its history for secrets and that its deploy leaves out the workflow files (skill project, public repo)`);
   }
-  return { owner, projectDir, brainDir, lines };
+  return { owner, projectDir, brainDir, lines, previous };
 }
 
 /**
@@ -427,7 +431,8 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
  * projects root) is set aside as in connect; its own records are moved by the adoption topic (tidy), as in connect --adopt.
  */
 async function joinDomain({ base, brainName, owner, me, repoName, foreign, setAside, root, apiUrl, token, agentTokenFile, remoteFor }) {
-  const lines = setAsideNamed(root, setAside);
+  const aside = setAsideNamed(root, setAside);
+  const lines = [...(aside.lines || [])];
   lines.push(`domain ${path.basename(base)}: the repo joins its brain ${brainName} (${DOMAIN_MARKER}); no brain of its own`);
   const projectDir = path.join(base, repoName);
   const brainDir = path.join(base, brainName);
@@ -447,7 +452,7 @@ async function joinDomain({ base, brainName, owner, me, repoName, foreign, setAs
     fs.writeFileSync(cfgFile, `${JSON.stringify({ ...(readJson(cfgFile, {}) || {}), visibility: 'public' }, null, 2)}\n`);
     lines.push(`visibility: ${owner}/${repoName} is PUBLIC: its knowledge stays in brain (save --repo refuses it), secrets in local/`);
   }
-  return { owner: owner || me, projectDir, brainDir, lines, joined: true };
+  return { owner: owner || me, projectDir, brainDir, lines, joined: true, previous: aside.from || [] };
 }
 
 // The machine's agent account gets push access before the first push (Repository not found otherwise, Alice 2026-11-09).
