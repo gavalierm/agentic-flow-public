@@ -2,7 +2,7 @@
 
 Postup vydania workflow 2.0 a prechodu domén na dáta 2.1 (špecifikácia flow v2, kap. 11; implementačný plán, časť 2). Kód 2.0 nemá vrstvu spätnej kompatibility: nečíta handover bez šiestej sekcie, polia 1.8 (`orchestrator`, `fix_gate`, `topics.auto`, `knowledge_branch`) ani `materialy.mjs`. Nemá ani nástroj návratu polí v2. Projekty sa preto migrujú na dáta 2.1 hneď pri vydaní, ešte pred spustením vlákien. Pilot v dátach 2.0 sa nerobí.
 
-`<plugin>` je checkout workflow vo verzii 2.0.0. Pred prepnutím inštalácie je to checkout repa na tagu `v2.0.0`, potom inštalácia, ktorú vypíše `brain.mjs pin`. `<root>` je koreň projektov stroja (`project.mjs root`).
+`<plugin>` je checkout workflow vo verzii 2.0.x (najnovšie vydanie 2.0, od 2.0.1 bez posúvania tagov). Pred prepnutím inštalácie je to checkout repa na najnovšom tagu `v2.0.x`, potom inštalácia, ktorú vypíše `brain.mjs pin`. `<root>` je koreň projektov stroja (`project.mjs root`).
 
 Pošta sa nemení. Vydanie 2.0 má `commsModel: 2` ako 1.8, takže pošta 0.5.0 je kompatibilná a novú verziu pošty netreba (11.11.2, P-073). Pošta neodmietne ani klienta 1.8. Starší stroj preto zastaví iba to, že sa vlákna spustia až po aktualizácii všetkých strojov (krok 3).
 
@@ -49,9 +49,9 @@ Na všetkých strojoch: každé vlákno uloží handover (s krokom alebo otázko
 
 ## 3. Aktualizácia workflow na všetkých strojoch (11.11.2)
 
-Na každom stroji spusti `node <plugin>/bin/brain.mjs pin v2.0.0 --all`. Inštalácia sa prepne pri ďalšom štarte session. Do spustenia vlákien (krok 6) sa v žiadnej doméne nepracuje.
+Na každom stroji spusti `node <plugin>/bin/brain.mjs pin 2 --all` (pin hlavnej verzie: každé ďalšie vydanie 2.x štart session stiahne sám). Inštalácia sa prepne pri ďalšom štarte session. Do spustenia vlákien (krok 6) sa v žiadnej doméne nepracuje.
 
-Brána: verzia 2.0.0 je na každom stroji pred prvým vláknom.
+Brána: verzia 2.0.x je na každom stroji pred prvým vláknom.
 
 ## 4. Migrácia domén na dáta 2.1 (11.5, 11.9)
 
@@ -111,4 +111,4 @@ Zlyhaná doména zastaví poradie. Po spustení vlákien sa nevracia nič: chyba
 
 Po overení domény sa vlákna spustia nanovo a pokračujú z handoveru (krok alebo otázka). Ďalšia doména začína krokom 4.
 
-Domény zmigrované na dáta 2.1 pred opravou kontroly záznamu migrácie nemusia v braine nič meniť. Stačí `git -C <plugin> fetch --force --tags && git -C <plugin> checkout v2.0.0`. Témy uzavreté po migrácii potom `--check` vypíše ako poznámku „removed after the move by <commit>“, nie ako nález.
+Domény zmigrované na dáta 2.1 pred opravou kontroly záznamu migrácie nemusia v braine nič meniť. Stačí workflow v2.0.1 alebo novšie (pri pine `2` ho štart session stiahne sám). Témy uzavreté po migrácii potom `--check` vypíše ako poznámku „removed after the move by <commit>“, nie ako nález.
