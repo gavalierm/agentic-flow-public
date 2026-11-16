@@ -298,6 +298,16 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
   if (domain) checkDomainName(domain);
   if (foreign && (await gh(apiUrl, token, 'GET', `/repos/${owner}/${repoName}`)).status !== 200) throw new Error(`${owner}/${repoName} not found with the operator's token (is the operator a collaborator there?); probe --owner ${owner} lists what it can reach`);
   const brainOwner = foreign && (await gh(apiUrl, token, 'GET', `/repos/${owner}/${brain || brainName}`)).status !== 200 ? me : owner;
+  // A repo joining a domain that exists (doma-pc 2026-11-16: the marketing repo of a shop into the domain of the shop):
+  // the domain has one brain, named by its marker, and the repo uses it; no <name>-brain is cloned or created.
+  const joinBase = domain ? domainDir(root, name, domain) : null;
+  const joinBrain = joinBase && exists(path.join(joinBase, DOMAIN_MARKER)) ? readJson(path.join(joinBase, DOMAIN_MARKER), {})?.brain || null : null;
+  if (joinBrain && joinBrain !== brainName) {
+    if (brain && brain !== joinBrain) throw new Error(`domain ${path.basename(joinBase)} has the brain ${joinBrain} (${DOMAIN_MARKER}); a domain has one brain, --brain ${brain} does not fit it`);
+    if (!exists(path.join(joinBase, joinBrain, '.git'))) throw new Error(`domain ${path.basename(joinBase)} names the brain ${joinBrain}, which is not in ${joinBase}: restore the domain first (project.mjs restore)`);
+    if (exists(path.join(joinBase, repoName))) throw new Error(`${path.join(joinBase, repoName)} exists; nothing is overwritten (P-018)`);
+    return joinDomain({ base: joinBase, brainName: joinBrain, owner, me, repoName, foreign, setAside, root, apiUrl, token, agentTokenFile, remoteFor });
+  }
   const setAsideLines = setAsideNamed(root, setAside);
   let base = domainDir(root, name, domain);
   // A chosen domain name may be the old setup's own folder (`Home assistant`): it is not taken over as the domain.
@@ -385,6 +395,33 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
     lines.push(`visibility: ${owner}/${repoName} is PUBLIC: its knowledge stays in brain (save --repo refuses it), secrets in local/; check its history for secrets and that its deploy leaves out the workflow files (skill project, public repo)`);
   }
   return { owner, projectDir, brainDir, lines };
+}
+
+/**
+ * connect into a domain that exists: the code repository is cloned into the domain folder beside its brain, the settings
+ * point at that brain (`../<brain>`), the brain itself is not touched. The setup being adopted (an older folder in the
+ * projects root) is set aside as in connect; its own records are moved by the adoption topic (tidy), as in connect --adopt.
+ */
+async function joinDomain({ base, brainName, owner, me, repoName, foreign, setAside, root, apiUrl, token, agentTokenFile, remoteFor }) {
+  const lines = setAsideNamed(root, setAside);
+  lines.push(`domain ${path.basename(base)}: the repo joins its brain ${brainName} (${DOMAIN_MARKER}); no brain of its own`);
+  const projectDir = path.join(base, repoName);
+  const brainDir = path.join(base, brainName);
+  const access = foreign ? await grantAgentAccess(apiUrl, token, owner, repoName, agentTokenFile, { foreign: true }) : null;
+  if (access) lines.push(access);
+  try { lines.push(cloneInto(remoteFor(owner, repoName), projectDir, repoName)); } catch (err) { throw new Error(access && / NOT /.test(access) ? `${err.message}; ${access}` : err.message); }
+  const eol = ensureLineEndings(projectDir, { label: repoName });
+  if (eol) lines.push(eol);
+  adapter(projectDir, `../${brainName}`);
+  lines.push('settings generated');
+  lines.push(`brain ${brainName}: add ${repoName} to topics.shared_checkouts of its policy if threads of the domain work in it (a topic names its repos itself)`);
+  const info = await gh(apiUrl, token, 'GET', `/repos/${owner}/${repoName}`);
+  if (info.status === 200 && info.json?.private === false) {
+    const cfgFile = path.join(projectDir, WORKFLOW_CONFIG);
+    fs.writeFileSync(cfgFile, `${JSON.stringify({ ...(readJson(cfgFile, {}) || {}), visibility: 'public' }, null, 2)}\n`);
+    lines.push(`visibility: ${owner}/${repoName} is PUBLIC: its knowledge stays in brain (save --repo refuses it), secrets in local/`);
+  }
+  return { owner: owner || me, projectDir, brainDir, lines, joined: true };
 }
 
 // The machine's agent account gets push access before the first push (Repository not found otherwise, Alice 2026-11-09).

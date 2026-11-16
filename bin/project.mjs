@@ -8,6 +8,7 @@
 //     --owner: the repositories of that account or organization the operator's token reaches (as a collaborator too); the
 //     brain is the owner's <name>-brain when it has one, else one in the operator's account; the agent account gets push
 //     access by an invitation only an owner or admin can give: otherwise a NOT line names the step, connect goes on
+//     --domain of a domain that exists (its .agentic-domain names a brain): the repo joins that brain, no <name>-brain
 //   project.mjs create <name> [--repo <repo>] --purpose "<one sentence>" [--domain "<folder>"] [--root <dir>]
 // Layout: ~/agentic/<Name>/<repo> (code repositories, each a T3 project) and ~/agentic/<Name>/<name>-brain;
 // the project folder (domain) is the folder name the operator chose (--domain, spaces allowed), by default the project
