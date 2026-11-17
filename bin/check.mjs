@@ -6,13 +6,19 @@
 // rules (they replace the loaded ones).
 // Same version: the problem must be reported to the workflow maintainer.
 import { parseArgs, fail, shortSha, git, PLUGIN_ROOT } from '../scripts/util.mjs';
-import { loadContext } from '../scripts/config.mjs';
+import { loadContext, readThreadState } from '../scripts/config.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { updateClone, pinClone, newerReleases, upgradeNote } from '../scripts/update.mjs';
 
 const args = parseArgs(process.argv.slice(2));
-const loaded = typeof args.loaded === 'string' ? args.loaded.trim() : '';
+// The version this session loaded comes from the thread state of its start (SessionStart, boot_plugin_sha), not from the
+// agent: an agent that passed the sha installed meanwhile got "up to date" right after "updated" and told the operator
+// nothing changed (operator 2026-11-17). --loaded is the fallback without a brain or a thread.
+let boot = null;
+try { const c = loadContext({ requireBrain: false }); if (c.brainDir && c.thread) { const st = readThreadState(c.brainDir, c.thread); if (st.boot_plugin_sha) boot = { sha: st.boot_plugin_sha, version: st.boot_plugin_version || null }; } } catch { /* no state: --loaded */ }
+const loaded = boot?.sha || (typeof args.loaded === 'string' ? args.loaded.trim() : '');
 if (!loaded) fail('usage: check.mjs --loaded <sha from the boot line "workflow <sha>">');
+const vlabel = (version, sha) => (version ? `v${version} (${sha})` : sha);
 
 const out = (s) => process.stdout.write(s + '\n');
 // A brain pinned to a release (policy workflow_version, P-040) keeps every machine on it: no update past the pin.
@@ -30,8 +36,15 @@ if (held) out(`held back: the brain policy pins ${up.to}, the newest release of 
 if (newer?.upgrade) out(`upgrade available: ${upgradeNote(up.to, newer.upgrade)}`);
 const installed = shortSha(PLUGIN_ROOT);
 const tag = git(['describe', '--tags', '--exact-match'], { cwd: PLUGIN_ROOT }).stdout || 'untagged';
-const same = installed.startsWith(loaded) || loaded.startsWith(installed);
-out(`loaded: workflow ${loaded}; installed: workflow ${installed} (${tag})`);
+// Updated in this run: the session runs the older version by definition, whatever --loaded says.
+const same = up.status !== 'updated' && (installed.startsWith(loaded) || loaded.startsWith(installed));
+out(`loaded: workflow ${boot ? vlabel(boot.version, loaded) : loaded}${boot ? ' (session start)' : ''}; installed: workflow ${installed} (${tag})`);
+// One line the reply states first (operator 2026-11-17: "check always reports nothing to change, even when it updated").
+const result = up.status === 'updated'
+  ? `result: updated now: ${up.from} -> ${up.to}; tell the operator this first`
+  : !same ? `result: updated during this session: ${boot ? vlabel(boot.version, loaded) : loaded} -> ${tag} (${installed}); tell the operator this first`
+    : held ? `result: not updated: the brain pins ${up.to}, the newest is ${held}`
+      : up.status === 'current' ? `result: no update: ${tag} is the newest release; the session runs it` : `result: not updated: ${up.reason}`;
 if (same && held) {
   out(`pinned: the loaded workflow is the pinned ${up.to}, not the newest release ${held}; do not call it up to date; after the operator moves the pin, a new session (or /clear) loads it and the problem is checked again`);
 } else if (same) {
@@ -47,3 +60,4 @@ if (same && held) {
     fail(err.message);
   }
 }
+out(result);

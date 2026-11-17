@@ -100,3 +100,23 @@ test('updateClone: a release tag moved on origin (the clone keeps the old one) d
     assert.equal(g(clone, 'rev-parse', 'v2.0.0'), g(origin, 'rev-parse', 'v2.0.0'), 'the moved tag follows origin');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// Operator 2026-11-17: check always reported "nothing to update", even when the workflow had been updated: the agent passed
+// the sha installed meanwhile as --loaded. The loaded version comes from the session start (thread state), the last line
+// `result:` names the update.
+test('check.mjs: the loaded version comes from the session start, not from --loaded; the result line names an update during the session', async () => {
+  const fs = await import('node:fs');
+  const { threadStateFile } = await import('../scripts/config.mjs');
+  const fx = setup();
+  try {
+    fx.hook('session-start.mjs', { source: 'startup' });
+    const file = threadStateFile(fx.brain, fx.thread);
+    const st = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(st.boot_plugin_sha, shortSha(PLUGIN_ROOT), 'SessionStart records the loaded version');
+    fs.writeFileSync(file, JSON.stringify({ ...st, boot_plugin_sha: 'abc1234', boot_plugin_version: '2.0.24' }));
+    const r = fx.run('check.mjs', ['--loaded', shortSha(PLUGIN_ROOT)]);
+    assert.match(r.stdout, /^loaded: workflow v2\.0\.24 \(abc1234\) \(session start\)/m);
+    assert.match(r.stdout, /^result: updated during this session: v2\.0\.24 \(abc1234\) -> /m);
+    assert.doesNotMatch(r.stdout, /^up to date/m);
+  } finally { fx.cleanup(); }
+});

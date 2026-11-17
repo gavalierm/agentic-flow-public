@@ -51,7 +51,7 @@ export function run(input) {
   // P-021: the revision this session loaded; the prompt and tool hooks announce a later update once. P-001: a new or
   // compacted context starts with an empty read budget (post-tool-use readNudge).
   if (ctx.brainDir && ctx.thread) {
-    try { const w = installedWorkflow(); writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), plugin_sha: w.sha, plugin_version: w.version, read_budget: null, compact_nudged: false, ...(catalog.stateHash ? { catalog_boot_hash: catalog.stateHash } : {}) }); } catch { /* state is best effort */ }
+    try { const w = installedWorkflow(); writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), plugin_sha: w.sha, plugin_version: w.version, boot_plugin_sha: w.sha, boot_plugin_version: w.version, read_budget: null, compact_nudged: false, ...(catalog.stateHash ? { catalog_boot_hash: catalog.stateHash } : {}) }); } catch { /* state is best effort */ }
   }
   // flow-public#46: a compaction inside a turn drops which targets the turn refused; the refusals still lock (P-054).
   const closed = input.source === 'compact' ? closedTargetsNote(ctx, input) : null;
