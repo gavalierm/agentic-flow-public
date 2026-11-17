@@ -49,9 +49,17 @@ const ID = '((?=[A-Za-z0-9_.:-]*\\d)[A-Za-z0-9][A-Za-z0-9_.:-]*)';
 // The wake service labels a bell `project/topic`, `@persona/topic` (main thread of a persona) or `thread/<thread id>` (ids
 // like `mcp:launch:<uuid>`): a label it sends is a bell, else the turn runs as the operator's (34 % of bells, audit M1 2026-11-11).
 const TOPIC = '@?[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.:-]*)?';
-// Optional sender of a wake (agentic-comms v2.0.17, operator 2026-11-17): `<wake_template> <to> from <from>`, where
-// <from> is the sender's topic, thread or key. Never the body (P-047).
-const FROM = '(?:\\s+from\\s+@?[A-Za-z0-9][A-Za-z0-9_.:@-]*(?:/[A-Za-z0-9][A-Za-z0-9_.:@-]*)?)?';
+// Sender of a wake (operator 2026-11-17: from, then to): `you have mail from <from> in topic <to>` (agentic-comms v2.0.20),
+// where <from> is the sender's topic, thread or key; the form `<wake_template> <to> from <from>` (comms v2.0.17-v2.0.19)
+// and the plain `<wake_template> <to>` stay bells. Never the body (P-047).
+const LABEL = '@?[A-Za-z0-9][A-Za-z0-9_.:@-]*(?:/[A-Za-z0-9][A-Za-z0-9_.:@-]*)?';
+const FROM = `(?:\\s+from\\s+${LABEL})?`;
+/** The from-first bell of a template ending in ` in topic`: `^<head> from <from> in topic <to>$`, else null. */
+const words = (s) => escapeRe(s).replace(/ /g, '\\s+');
+const fromFirst = (tpl) => {
+  const m = /^(.*\S)\s+(in\s+topic)$/i.exec(String(tpl || '').trim());
+  return m ? new RegExp(`^${words(m[1])}\\s+from\\s+${LABEL}\\s+${words(m[2])}\\s+${TOPIC}$`, 'i') : null;
+};
 
 /** Topic id from a name: lower case, no diacritics, words joined by `-` (at most 60 characters). */
 export function topicSlug(name) {
@@ -99,6 +107,7 @@ export function parsePrompt(prompt, policy) {
   const cfg = policy?.prompt || {};
   const exact = (tpl, tail) => (tpl ? new RegExp(`^${escapeRe(String(tpl).trim()).replace(/ /g, '\\s+')}${tail}$`, 'i').exec(p) : null);
   if (exact(cfg.wake_template, `\\s+${TOPIC}${FROM}`)) return { kind: 'wake' };
+  if (fromFirst(cfg.wake_template)?.test(p)) return { kind: 'wake' };
   let m = exact(cfg.no_reply_template, `\\s+${ID}`);
   if (m) return { kind: 'no-reply', id: m[1] };
   m = exact(cfg.undelivered_template, `\\s+${ID}`);

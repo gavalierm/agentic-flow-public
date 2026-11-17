@@ -41,6 +41,9 @@ test('classifyPrompt: only the exact whole prompt is a bell; a quoted template i
   // the sender after the recipient (comms v2.0.17): still a bell; anything more is an operator prompt
   for (const l of ['shop-web/faq from shop-api/schema', '@alpha/main from thread/mcp:f0a5bf5c-1234', 'thread/b2 from agent-bob']) assert.equal(classifyPrompt(`you have mail in topic ${l}`, policy), 'wake', l);
   for (const l of ['alpha from', 'alpha from x y', 'alpha from x, read it']) assert.equal(classifyPrompt(`you have mail in topic ${l}`, policy), null, l);
+  // from, then to (operator 2026-11-17; comms v2.0.20): a bell; anything more or less is an operator prompt
+  for (const t of ['you have mail from shop-api/schema in topic shop-web/faq', 'you have mail from agent-bob in topic thread/b2', 'You have mail from @alpha/main in topic p/t']) assert.equal(classifyPrompt(t, policy), 'wake', t);
+  for (const t of ['you have mail from in topic p/t', 'you have mail from x y in topic p/t', 'you have mail from x in topic', 'did you have mail from x in topic p/t']) assert.equal(classifyPrompt(t, policy), null, t);
   assert.deepEqual(parsePrompt('no reply m-123', policy), { kind: 'no-reply', id: 'm-123' });
   assert.deepEqual(parsePrompt('undelivered m-9', policy), { kind: 'undelivered', id: 'm-9' });
   assert.equal(classifyPrompt('there was no reply m-123 yesterday', policy), null);
