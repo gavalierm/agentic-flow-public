@@ -100,7 +100,7 @@ test('done --topic is refused in a wake turn and for a non-holder', () => {
     fs.mkdirSync(path.join(fx.brain, 'local', 'threads'), { recursive: true });
     fs.writeFileSync(path.join(fx.brain, 'local', 'threads', 'a1.json'), JSON.stringify({ turn_source: 'wake' }));
     r = fx.run('done.mjs', ['--topic', '--knowledge', 'nic nové', '--verified', 'x']);
-    assert.equal(r.status, 1); assert.match(r.stderr, /P-047/); assert.match(r.stderr, /continuation is set in 1 min/);
+    assert.equal(r.status, 1); assert.match(r.stderr, /P-047/); assert.match(r.stderr, /continuation is set in 10 s/);
     assert.ok(fx.exists('topics/d/topic.json'));
     // An answer of the operator in a dialog of this turn is the instruction (D-0011); an answer from an earlier turn is not.
     const state = (s) => fs.writeFileSync(path.join(fx.brain, 'local', 'threads', 'a1.json'), JSON.stringify({ turn_source: 'wake', ...s }));

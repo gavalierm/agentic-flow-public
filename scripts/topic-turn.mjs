@@ -12,8 +12,11 @@ import { fieldsOp, holderFileRel } from './topic-files.mjs';
 import { syncAndCheckHolder, checkHolder } from './brain.mjs';
 import { threadTimers, TIMER_MAX_MS } from './waker.mjs';
 
-/** Plan O2: the continuation goes to the mail with resume_at (end of the turn + this), so the mail rings it also with the same step. */
-export const CONTINUE_RESUME_MS = 60_000;
+/**
+ * Plan O2: the continuation goes to the mail with resume_at (end of the turn + this), so the mail rings it also with the same
+ * step. 10 s, not 60 s (operator 2026-11-17, P-079: "čakám (na pokračovanie)" and nothing happened for 2 min).
+ */
+export const CONTINUE_RESUME_MS = 10_000;
 /** Default of `topics.continue_max` (plan O23): continuation wakes without progress; the one that reaches it is the last. */
 export const CONTINUE_MAX = 3;
 

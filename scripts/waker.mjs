@@ -156,8 +156,8 @@ export function recordWaker(brainDir, thread, waker) {
 /** Add a thread timer: the wake module rings the thread at `at` with the step `then` (via the closed turn, P-061). Other
  * timers stay, none is lost (2026-11-13); it replaces only its own earlier entry (the same step). No timer is bound to a
  * message: the mail rings for an answer (1e, P-072). */
-export function setTimer(brainDir, thread, { delayMs, then, reason = null, until = null, deadline = null, everyMs = null }, now = Date.now()) {
-  const ms = Math.min(Math.max(delayMs, TIMER_MIN_MS), TIMER_MAX_MS);
+export function setTimer(brainDir, thread, { delayMs, then, reason = null, until = null, deadline = null, everyMs = null, minMs = TIMER_MIN_MS }, now = Date.now()) {
+  const ms = Math.min(Math.max(delayMs, minMs), TIMER_MAX_MS);
   const state = readThreadState(brainDir, thread);
   // A condition (--until): the prompt hook runs it at `at` and rings the model only when it holds or `deadline` passed.
   const cond = until ? { until: String(until).slice(0, 300), deadline, every_ms: everyMs || ms } : {};
@@ -168,7 +168,8 @@ export function setTimer(brainDir, thread, { delayMs, then, reason = null, until
 }
 
 /** A step P-047 refused in a turn from a bell continues by itself: a thread timer in this time (topic close-after-bell). */
-export const BELL_CONTINUE_MS = 60_000;
+// 10 s, not 60 s (operator 2026-11-17, P-079: a thread that waited for its continuation sat idle 2 min).
+export const BELL_CONTINUE_MS = 10_000;
 
 /** The command line of this process (`done.mjs --topic …`), the step a bell turn refused; null outside a bin/ command (a hook). */
 export function refusedCommand(argv = process.argv) {
@@ -185,8 +186,8 @@ export function refusedCommand(argv = process.argv) {
  */
 export function bellContinuation(brainDir, thread, step = refusedCommand()) {
   if (!brainDir || !thread || !step) return '';
-  setTimer(brainDir, thread, { delayMs: BELL_CONTINUE_MS, then: `${step} (odmietnutý v ťahu zo zvončeka, P-047)` });
-  return `; the continuation is set in 1 min (a thread timer with this step): end the turn now with your **Handover:** section and "**Stav:** čakám (na pokračovanie z handoveru)"; the next turn continues from handover, where P-047 does not lock, and runs the step there`;
+  setTimer(brainDir, thread, { delayMs: BELL_CONTINUE_MS, minMs: 0, then: `${step} (odmietnutý v ťahu zo zvončeka, P-047)` });
+  return `; the continuation is set in ${BELL_CONTINUE_MS / 1000} s (a thread timer with this step): end the turn now with your **Handover:** section and "**Stav:** čakám (na pokračovanie z handoveru)"; the next turn continues from handover, where P-047 does not lock, and runs the step there`;
 }
 
 /** The prompt hook runs the condition within its 15 s (hooks.json); a slower check counts as not met yet. */

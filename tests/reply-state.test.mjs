@@ -208,7 +208,7 @@ test('Stop 10.3 item 2: the state against the facts; an open question is otázka
     const close = readState(fx.brain, 'a1').last_close;
     assert.equal(close.next, 'dopísať testy');
     const due = Date.parse(close.resume_at) - before;
-    assert.ok(due >= 55_000 && due <= 70_000, `resume_at in ${due} ms`);
+    assert.ok(due >= 5_000 && due <= 20_000, `resume_at in ${due} ms (10 s, P-079)`);
     const turn = topicRecord(fx, 'alpha').turn;
     assert.equal(turn.state, 'otázka');
     assert.ok(Date.parse(turn.alarm_at) >= before, 'the continuation alarm is the end of the turn');

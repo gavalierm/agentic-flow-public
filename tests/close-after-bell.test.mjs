@@ -24,14 +24,14 @@ test('done --topic refused in a bell turn arms the continuation in 1 min; the tu
     let r = fx.run('done.mjs', ['--topic', '--knowledge', 'nic nové', '--verified', 'tests pass']);
     assert.equal(r.status, 1, r.out);
     assert.match(r.stderr, /P-047/);
-    assert.match(r.stderr, /continuation is set in 1 min/);
+    assert.match(r.stderr, /continuation is set in 10 s/);
     assert.ok(fx.exists('topics/d/topic.json'), 'the lock stays: nothing closed in the bell turn');
     const timers = [stateOf(fx).timer, ...(stateOf(fx).timers || [])].filter(Boolean);
     const t = timers.find((x) => /^done\.mjs --topic /.test(x.then));
     assert.ok(t, JSON.stringify(timers));
     assert.match(t.then, /--verified "tests pass".*\(odmietnutý v ťahu zo zvončeka, P-047\)$/);
     const due = Date.parse(t.at) - before;
-    assert.ok(due >= 55_000 && due <= 70_000, `timer in ${due} ms`);
+    assert.ok(due >= 5_000 && due <= 20_000, `timer in ${due} ms (10 s, P-079)`);
     // the turn ends waiting for the continuation: no block, the closed turn carries resume_at and the step
     r = fx.hook('stop.mjs', { last_assistant_message: 'Uzavretie odmietnuté v ťahu zo správy.\n\n**Stav:** čakám (na pokračovanie z handoveru)' });
     assert.notEqual(r.json.decision, 'block', JSON.stringify(r.json));
@@ -53,7 +53,7 @@ test('topic claim refused in a bell turn arms the continuation too', () => {
     fx.hook('user-prompt-submit.mjs', { prompt: WAKE });
     const r = fx.run('topic.mjs', ['claim', 'd', '--force']);
     assert.equal(r.status === 0, false);
-    assert.match(r.out, /P-047.*continuation is set in 1 min/);
+    assert.match(r.out, /P-047.*continuation is set in 10 s/);
     const timers = [stateOf(fx).timer, ...(stateOf(fx).timers || [])].filter(Boolean);
     assert.ok(timers.some((x) => /^topic\.mjs claim d --force \(odmietnutý v ťahu zo zvončeka, P-047\)$/.test(x.then)), JSON.stringify(timers));
   } finally { fx.cleanup(); }
