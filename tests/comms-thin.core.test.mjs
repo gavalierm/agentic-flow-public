@@ -35,7 +35,7 @@ const readState = (brain, thread = 'a1') => (fs.existsSync(threadFile(brain, thr
 const writeState = (brain, patch, thread = 'a1') => { fs.mkdirSync(path.dirname(threadFile(brain, thread)), { recursive: true }); fs.writeFileSync(threadFile(brain, thread), JSON.stringify({ ...readState(brain, thread), ...patch })); };
 
 // Keys of the thread state that may name a message: what a turn received (3b) and what a hook showed once.
-const SHOWN_KEYS = ['received_from', 'mail_replies', 'watch_seen', 'pending_signals', 'operator_prompts', 'updated'];
+const SHOWN_KEYS = ['received_from', 'mail_replies', 'watch_seen', 'mail_held_signaled', 'pending_signals', 'operator_prompts', 'updated'];
 // Files of <brain>/local the mail client writes (outbox, its backup of the mail's answer) or that name no message.
 const CLIENT_FILES = /^(outbox\/|comms\/(obligations-cache|count-cache|model-check|model-2|notices-count)\.json$)/;
 

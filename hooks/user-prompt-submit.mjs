@@ -11,7 +11,7 @@ import { loadContext, readThreadState, writeThreadState } from '../scripts/confi
 import { deployedSkillName } from '../scripts/skills-sync.mjs';
 import { statusInfo, rulesHash, rulesSections, changedRules, BOOT_MARKERS } from '../scripts/boot.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
-import { recordTurn, runClient, mailNoticeLine, isMainTopic, turnDiscussion, recentLine, OWED_PREFIX, OWED_LINE, unansweredOwed, ageText, supervisorOf, fromSupervisor, mailSenders } from '../scripts/comms.mjs';
+import { recordTurn, runClient, mailNoticeLine, heldMailLine, isMainTopic, turnDiscussion, recentLine, OWED_PREFIX, OWED_LINE, unansweredOwed, ageText, supervisorOf, fromSupervisor, mailSenders } from '../scripts/comms.mjs';
 import { migrateLocalMail } from '../scripts/comms-migrate.mjs';
 import { setTimer, untilMet, threadTimers, timersPatch, sameTimer, finishedTasks, withoutFinished, AUTO_TIMER_MS } from '../scripts/waker.mjs';
 import { readReports } from '../scripts/report.mjs';
@@ -343,6 +343,9 @@ export function run(input) {
   const signaled = state?.mail_signaled ?? 0;
   // A no-reply/undelivered turn does not show the mail: the lines wait for the next prompt (mail_signaled unchanged).
   if (kind !== 'wake' && !messageBell && info.mail.count > 0 && (kind === 'nudge' || info.mail.count !== signaled)) extras.unshift(mailNoticeLine(info.mail));
+  // D-0022 (report 2026-11-17): mail held for the discussion is named once per change of its ids, never hidden as `mail: 0`.
+  const heldKey = (info.mail.held || []).map((it) => it.id).join(',');
+  if (heldKey && heldKey !== (state?.mail_held_signaled || '')) extras.push(heldMailLine(info.mail));
   // P-021: rules changed during the session (workflow, brain rules or exceptions) -> once, the changed sections.
   // Only the changed sections: 43 of 50 full re-injections arrived as a 2 KB preview, over the 10 000 chars of one hook
   // output (audit 2026-11-11); a state without section hashes (a session begun before) gets the rules in full once.
@@ -403,7 +406,7 @@ export function run(input) {
   const progress = turnSource === 'operator' && ownPlain(input.prompt) ? { progress_at: startedAt } : {};
   // D-0039: the operator's own words (this prompt and the one before) let a dialog use the marks the operator used.
   const operatorPrompts = state && turnSource === 'operator' && typeof input.prompt === 'string' ? { operator_prompts: [input.prompt.slice(0, 20000), ...(state.operator_prompts || []).slice(0, 1)] } : {};
-  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...state, ...keepTimer, ...progress, ...taskSpent, ...(upd?.patch || {}), ...operatorPrompts, turn_started_at: startedAt, ...(title?.patch || {}), turn_source: turnSource, turn_supervisor: supervisorMail, discussion, turn_intent: turnIntent, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, mail_cursor: cursor, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
+  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...state, ...keepTimer, ...progress, ...taskSpent, ...(upd?.patch || {}), ...operatorPrompts, turn_started_at: startedAt, ...(title?.patch || {}), turn_source: turnSource, turn_supervisor: supervisorMail, discussion, turn_intent: turnIntent, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, mail_held_signaled: heldKey, mail_cursor: cursor, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
   if (extras.length) lines.push(extras.join('; '));
   const limited = enforceLines(lines.join('\n'), ctx.policy?.limits?.hook_signal_lines ?? 2);
   // Nothing new: empty context (contextOutput leaves additionalContext out).

@@ -330,8 +330,13 @@ export function mailCount(ctx, held = [], { since = null } = {}) {
   return out;
 }
 
-/** Levels an open discussion with the operator holds back (D-0015, D-0022): a blocker and every reply pass. */
-export const DISCUSSION_HELD_LEVELS = ['steer', 'assist'];
+/**
+ * Levels an open discussion with the operator holds back from the mail lines (D-0015, D-0022): a blocker, a steer and every
+ * reply pass. A steer changes the running work, so the line shows it as the line after a tool does (P-061; report
+ * 2026-11-17: a steer and two assists with the operator's own remarks waited while the line said `mail: 0`). The mail
+ * still rings neither steer nor assist during the discussion (its own list in agentic-comms).
+ */
+export const DISCUSSION_HELD_LEVELS = ['assist'];
 
 /**
  * The running turn of the thread discusses with the operator (D-0015): `discussion` of the thread state, written by the
@@ -361,13 +366,26 @@ export function discussionMail(mail) {
   const items = all.filter((it) => !DISCUSSION_HELD_LEVELS.includes(categoryOf(it)));
   const unlisted = Math.max(0, (mail.blockers || 0) - all.filter((it) => it.level === 'blocker').length);
   const count = items.length + unlisted;
-  return { ...mail, items, count, blockers: items.filter((it) => it.level === 'blocker').length + unlisted, steers: items.filter((it) => it.level === 'steer').length, held_back: mail.count - count };
+  const held = all.filter((it) => DISCUSSION_HELD_LEVELS.includes(categoryOf(it)));
+  return { ...mail, items, count, blockers: items.filter((it) => it.level === 'blocker').length + unlisted, steers: items.filter((it) => it.level === 'steer').length, held_back: mail.count - count, held };
+}
+
+/**
+ * The line of mail held back for the discussion (D-0022, report 2026-11-17): ids and levels, never a body, so the thread
+ * does not read them now but tells the operator they wait (the operator decides; one of them may carry their own remark).
+ */
+export function heldMailLine(mail, max = 10) {
+  const held = Array.isArray(mail?.held) ? mail.held : [];
+  if (!held.length) return '';
+  const shown = held.slice(0, max).map((it) => `${it.id} ${categoryLabel(it)}`).join(', ');
+  return `mail held for the discussion with the operator: ${held.length} (${shown}${held.length > max ? `, +${held.length - max} more` : ''}); do not read them now; say in your reply in one line that ${held.length === 1 ? 'a message waits' : `${held.length} messages wait`} (level, sender topic from comms list), the operator decides; they ring when the turn ends hotovo or čakám (D-0015, D-0022)`;
 }
 
 export function formatMail(mail) {
   let s = `mail: ${mail.unknown && !mail.count ? '?' : mail.count}`;
   if (mail.blockers) s += ` (${mail.blockers} blocker)`;
   if (mail.steers) s += ` (${mail.steers} steer)`;
+  if (mail.held_back) s += ` (+${mail.held_back} held for the discussion)`;
   if (mail.note) s += ` (${mail.note})`;
   if (mail.wake && mail.wake.running === false) s += ' | wake: off';
   return s;
