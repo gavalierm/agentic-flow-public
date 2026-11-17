@@ -193,23 +193,24 @@ test('Stop 10.3 item 1: skeleton — state line, Handover line of every held top
   } finally { fx.cleanup(); }
 });
 
-test('Stop 10.3 item 2: the state against the facts; a next step is "čakám (na pokračovanie)", the turn closes with the step and resume_at (O2)', () => {
+test('Stop 10.3 item 2: the state against the facts; an open question is otázka also with a next step, the turn still closes with the step and resume_at (O2)', () => {
   const fx = setup();
   try {
     assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'ops']).status, 0);
     assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--task', 'T', '--next', 'dopísať testy', '--questions', 'Zlúčiť do main?']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'pracuj' });
     const end = (state) => `Hotová časť.\n\n**Otázky na operátora:**\n1. Zlúčiť do main?\n\n**Handover:**\n1. alpha → dopísať testy\n\n**Stav:** ${state}`;
-    assert.match(stopRaw(fx, end('hotovo')).reason, /declares "\*\*Stav:\*\* hotovo" but the facts give "čakám" \(topic alpha: 1 next step\(s\), 1 open question\(s\)/);
-    assert.match(stopRaw(fx, end('otázka')).reason, /the facts give "čakám"/, 'a question does not stop the work: the step continues');
+    assert.match(stopRaw(fx, end('hotovo')).reason, /declares "\*\*Stav:\*\* hotovo" but the facts give "otázka" \(topic alpha: 1 next step\(s\), 1 open question\(s\)/);
+    // Operator 2026-11-17: the open question is the state; the step still continues (the continuation does not hang on it).
+    assert.match(stopRaw(fx, end('čakám (na pokračovanie)')).reason, /the facts give "otázka"/, 'an open question is not hidden by the step');
     const before = Date.now();
-    assert.equal(stopRaw(fx, end('čakám (na pokračovanie)')).decision, undefined);
+    assert.equal(stopRaw(fx, end('otázka')).decision, undefined);
     const close = readState(fx.brain, 'a1').last_close;
     assert.equal(close.next, 'dopísať testy');
     const due = Date.parse(close.resume_at) - before;
     assert.ok(due >= 55_000 && due <= 70_000, `resume_at in ${due} ms`);
     const turn = topicRecord(fx, 'alpha').turn;
-    assert.equal(turn.state, 'čakám');
+    assert.equal(turn.state, 'otázka');
     assert.ok(Date.parse(turn.alarm_at) >= before, 'the continuation alarm is the end of the turn');
     // the second attempt of a turn passes (at most one block per turn)
     assert.equal(stopRaw(fx, end('hotovo'), { stop_hook_active: true }).decision, undefined);
@@ -271,6 +272,11 @@ test('Stop 10.3 item 3: the dialog only in a turn the operator did not start, at
     const st = readState(fx.brain, 'a1');
     fs.writeFileSync(stateFile(fx.brain, 'a1'), JSON.stringify({ ...st, dialog_at: new Date(Date.now() + 1000).toISOString() }));
     assert.equal(stopRaw(fx, ask).decision, undefined, 'a dialog asked in the turn: only that it was asked counts');
+    // A mail turn that goes on with a next step needs no dialog: it would hold the continuation (operator 2026-11-17).
+    assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--next', 'zostaviť register']).status, 0);
+    turnOf(fx, 'wake');
+    const goesOn = 'Pošta spracovaná.\n\n**Otázky na operátora:**\n1. Variant A alebo B?\n\n**Handover:**\n1. alpha → zostaviť register\n\n**Stav:** otázka';
+    assert.equal(stopRaw(fx, goesOn).decision, undefined, 'otázka with a next step: no dialog');
   } finally { fx.cleanup(); }
 });
 

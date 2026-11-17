@@ -11,7 +11,7 @@ import path from 'node:path';
 import { computeState, summaryState, turnAlarms, earliestAlarm, turnFields, DONE, QUESTION, WAITING } from '../scripts/topic-state.mjs';
 import { fieldsOp, holderOp, topicOp, mergeTopicOps } from '../scripts/topic-files.mjs';
 
-test('10.2 table: next step or alarm = čakám, else an item in Otázky or Úlohy = otázka, else hotovo', () => {
+test('10.2 table: an item in Otázky or Úlohy = otázka (also with a next step, operator 2026-11-17), else next step or alarm = čakám, else hotovo', () => {
   const timer = [{ kind: 'timer', at: '2026-11-15T10:00:00Z' }];
   const cases = [
     [{}, DONE],
@@ -20,20 +20,21 @@ test('10.2 table: next step or alarm = čakám, else an item in Otázky or Úloh
     [{ tasks: ['Schváľ zverejnenie'] }, QUESTION],
     [{ questions: 1, tasks: 2 }, QUESTION],
     [{ next: ['spusti testy'] }, WAITING],
-    [{ next: ['a', 'b'], questions: ['q'], tasks: ['t'] }, WAITING],
+    [{ next: ['a', 'b'], questions: ['q'], tasks: ['t'] }, QUESTION],
     [{ alarms: timer }, WAITING],
-    [{ alarms: timer, questions: ['q'] }, WAITING],
+    [{ alarms: timer, questions: ['q'] }, QUESTION],
     [{ next: 0, questions: 0, tasks: 0, alarms: 0 }, DONE],
   ];
   for (const [facts, want] of cases) assert.equal(computeState(facts), want, JSON.stringify(facts));
 });
 
-test('several held topics: čakám when one waits, else otázka when one asks, else hotovo', () => {
+test('several held topics: otázka when one asks, else čakám when one waits, else hotovo', () => {
   assert.equal(summaryState([]), DONE);
   assert.equal(summaryState([DONE, DONE]), DONE);
   assert.equal(summaryState([DONE, QUESTION]), QUESTION);
-  assert.equal(summaryState([QUESTION, WAITING, DONE]), WAITING);
-  assert.equal(summaryState([{ questions: ['q'] }, { next: ['krok'] }]), WAITING);
+  assert.equal(summaryState([QUESTION, WAITING, DONE]), QUESTION);
+  assert.equal(summaryState([{ questions: ['q'] }, { next: ['krok'] }]), QUESTION);
+  assert.equal(summaryState([WAITING, DONE]), WAITING);
   assert.equal(summaryState([{ tasks: ['t'] }, {}]), QUESTION);
 });
 

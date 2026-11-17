@@ -19,24 +19,27 @@ const time = (v) => {
 };
 
 /**
- * State of one topic (10.2 points 1 to 3): `čakám` when the handover has a next step or an alarm runs; else `otázka`
- * when an item is in Otvorené otázky or Úlohy pre operátora; else `hotovo`. `next` is the list of next-step items (or
- * their count), `questions` and `tasks` the items (or counts) of the two sections, `alarms` the running alarms.
+ * State of one topic (10.2 points 1 to 3): `otázka` when an item is in Otvorené otázky or Úlohy pre operátora (the
+ * operator owes an answer, also while the thread goes on with a next step: the continuation does not hang on the state);
+ * else `čakám` when the handover has a next step or an alarm runs; else `hotovo`. Cause (operator 2026-11-17): a mail
+ * turn after an unanswered question ended "čakám (na pokračovanie)", the question stayed open and the state hid it.
+ * `next` is the list of next-step items (or their count), `questions` and `tasks` the items (or counts) of the two
+ * sections, `alarms` the running alarms.
  */
 export function computeState({ next = [], questions = 0, tasks = 0, alarms = [] } = {}) {
-  if (count(next) > 0 || count(alarms) > 0) return WAITING;
   if (count(questions) + count(tasks) > 0) return QUESTION;
+  if (count(next) > 0 || count(alarms) > 0) return WAITING;
   return DONE;
 }
 
 /**
- * State over several held topics (10.2, 1.1.2): `čakám` when one topic has it, else `otázka` when one has it, else
- * `hotovo`. Each element is a state or the facts of one topic (computeState). No topic: `hotovo`.
+ * State over several held topics (10.2, 1.1.2): `otázka` when one topic has it (the operator owes an answer), else
+ * `čakám` when one has it, else `hotovo`. Each element is a state or the facts of one topic (computeState). No topic: `hotovo`.
  */
 export function summaryState(topics = []) {
   const states = topics.map((t) => (typeof t === 'string' ? t : computeState(t)));
-  if (states.includes(WAITING)) return WAITING;
   if (states.includes(QUESTION)) return QUESTION;
+  if (states.includes(WAITING)) return WAITING;
   return DONE;
 }
 

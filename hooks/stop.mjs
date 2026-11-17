@@ -40,7 +40,7 @@ export const FINAL_REPLY = 'The operator sees only your last message of this tur
 // flow-public#37: after a block the reply was only its state line and the result stayed in an earlier, folded message.
 export const STATE_ONLY_REASON = 'the last message of this turn is only its skeleton (the **Handover:** section and the state line): the answer stays in an earlier message the operator does not see; write the complete answer above the skeleton in this last message (spec 10.3 item 1, P-061, flow-public#37)';
 
-const STATES_HELP = 'The state comes from the facts, not from the text (spec 10.2): čakám = a held topic\'s handover has a next step ("**Stav:** čakám (na pokračovanie)") or an alarm armed by code runs (timer.mjs, a background task, mail you sent that waits for an answer); otázka = no step and no alarm, and an item in the handover sections Otvorené otázky or Úlohy pre operátora (the blocks **Otázky na operátora:** and **Úlohy pre operátora:** are their content); hotovo = none of that. A step is only the handover\'s Ďalší krok (save.mjs handover --next), a step that waits for the operator\'s answer is a question';
+const STATES_HELP = 'The state comes from the facts, not from the text (spec 10.2): otázka = an item in the handover sections Otvorené otázky or Úlohy pre operátora (the blocks **Otázky na operátora:** and **Úlohy pre operátora:** are their content), also when a next step goes on (the continuation runs anyway); čakám = no such item, and a held topic\'s handover has a next step ("**Stav:** čakám (na pokračovanie)") or an alarm armed by code runs (timer.mjs, a background task, mail you sent that waits for an answer); hotovo = none of that. A step is only the handover\'s Ďalší krok (save.mjs handover --next), a step that waits for the operator\'s answer is a question';
 export const NO_STATE_REASON = `the final reply has no state line: end it with exactly one line "**Stav:** hotovo", "**Stav:** otázka" or "**Stav:** čakám (na <what>)", after the section ${HANDOVER_LINE} (P-061), e.g. ${PROTOCOL_EXAMPLE}. ${STATES_HELP}`;
 // D-0040 (operator 2026-11-13): items and steps are numbered, the handover is its own section, the state line is bold.
 const OLD_FORM_PARTS = {
@@ -91,7 +91,9 @@ export function violationOf({ msg, reply, work, facts, alarms, factsState, turnS
   if (said.questions !== saved.questions || said.tasks !== saved.tasks) return COUNT_REASON(said, saved, facts.length > 0);
   if (reply.state !== factsState) return STATE_FACTS_REASON(reply.state, factsState, facts, alarms);
   const asks = facts.some((f) => f.facts.questions > 0 && !isDiscussionMode(f.topic));
-  if (turnSource !== 'operator' && factsState === 'otázka' && asks && !dialog) return DIALOG_REASON;
+  // A turn that goes on with a next step needs no dialog: it would hold the continuation (the question stays in the reply).
+  const goesOn = facts.some((f) => (f.facts.next || []).length > 0);
+  if (turnSource !== 'operator' && factsState === 'otázka' && asks && !dialog && !goesOn) return DIALOG_REASON;
   return null;
 }
 
