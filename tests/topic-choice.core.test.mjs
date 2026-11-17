@@ -26,8 +26,14 @@ test('a thread without a topic: the first step of work asks which topic; workflo
     // Another thread holds the topic the task continues.
     const r0 = fx.run('topic.mjs', ['create', 'uprava-skillu', '--subject', 'Úprava skillu nahodenie produktu', '--class', 'ops'], { env: { WORKFLOW_THREAD_ID: 'other' } });
     assert.equal(r0.status, 0, r0.out);
-    fx.hook('user-prompt-submit.mjs', { prompt: 'priprav stroj na skill nahodenie-produktu a over prístup' }, OFF);
+    let u = fx.hook('user-prompt-submit.mjs', { prompt: 'priprav stroj na skill nahodenie-produktu a over prístup' }, OFF);
     assert.ok(state(fx).topic_gate, 'the operator task of a thread without a topic is gated');
+    // The topic comes from the message, before the first reply (a first message "Téma: Xy" got "bez témy").
+    assert.match(u.context, /topic: this thread holds no topic: take it from this message before your reply: the open topic it continues \(uprava-skillu/);
+    u = fx.hook('user-prompt-submit.mjs', { prompt: '**Téma:** Úprava skillu nahodenie produktu\npriprav stroj' }, OFF);
+    assert.match(u.context, /topic: the operator names topic uprava-skillu .*held by another thread.*"Prevziať tému uprava-skillu"/);
+    u = fx.hook('user-prompt-submit.mjs', { prompt: 'Tema: Zálohy servera\nnastav zálohy' }, OFF);
+    assert.match(u.context, /topic: the operator names the topic "Zálohy servera": create it before anything else \(topic\.mjs create zalohy-servera/);
     let d = pre(fx, 'Bash', { command: 'node .claude/skills/nahodenie-produktu/check-access.mjs --init' });
     assert.equal(d.permissionDecision, 'deny', 'a skill script is work');
     assert.match(d.permissionDecisionReason, /holds no topic and this step runs a skill script/);

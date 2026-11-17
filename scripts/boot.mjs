@@ -190,7 +190,8 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   const named = info.held.find((t) => !isMainTopic(t)) || info.held[0];
   if (ctx.thread && named) status += `\nyour first reply in this session starts with the line "${ctx.projectName} / ${named.id}" (spec 10.7)`;
   // A thread without a topic wrote the name of its skill there, so the line read like a topic (operator 2026-11-17).
-  else if (ctx.thread && ctx.brainDir) status += `\nyour first reply in this session starts with the line "${ctx.projectName} / bez témy" (spec 10.7; never a skill or thread name in place of the topic); work needs a topic: the first step of work asks the operator which topic, and passes once this thread holds one (P-012)`;
+  // The topic comes from the operator's first message (operator 2026-11-17: a first message "Téma: Xy" got "bez témy").
+  else if (ctx.thread && ctx.brainDir) status += `\nyour first reply in this session starts with the line "${ctx.projectName} / <topic>": the topic comes from the operator's first message (the one it names, "Téma: X", or the open topic it continues, else a new one); claim or create it before the reply; "${ctx.projectName} / bez témy" only for a reply without any work (spec 10.7, P-012; never a skill or thread name in place of the topic)`;
   if (ctx.brainDir && ctx.thread) {
     const state = readThreadState(ctx.brainDir, ctx.thread);
     writeThreadState(ctx.brainDir, ctx.thread, { ...state, turn_source: 'operator', session_source: source, mail_signaled: info.mail.count, last_status: info.line, rules_hash: recordRules ? rulesHash(rules.text) : state.rules_hash ?? null, rules_sections: recordRules ? rulesSections(rules.text) : state.rules_sections ?? null, rules_hook: rulesHook });

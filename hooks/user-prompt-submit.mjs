@@ -53,6 +53,42 @@ const TOPIC = '@?[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.:-]*)?';
 // <from> is the sender's topic, thread or key. Never the body (P-047).
 const FROM = '(?:\\s+from\\s+@?[A-Za-z0-9][A-Za-z0-9_.:@-]*(?:/[A-Za-z0-9][A-Za-z0-9_.:@-]*)?)?';
 
+/** Topic id from a name: lower case, no diacritics, words joined by `-` (at most 60 characters). */
+export function topicSlug(name) {
+  return String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60).replace(/-+$/, '');
+}
+
+/**
+ * The topic the operator names in the prompt (`Téma: X`, `Tema: X`, `Topic: X` at the start of a line, also in bold), as
+ * { name, id, topic } (topic: the open topic it names by id, slug or subject; null: a new one), else null.
+ */
+export function namedTopic(prompt, topics = []) {
+  const m = /^[ \t>*_-]*(?:t[eé]ma|topic)[*_]*[ \t]*[:：][*_]*[ \t]*(.+)$/im.exec(String(prompt || ''));
+  if (!m) return null;
+  const name = m[1].replace(/[*_`]+/g, '').replace(/[\s.,;!]+$/, '').trim();
+  const id = topicSlug(name);
+  if (!id) return null;
+  const low = name.toLowerCase();
+  const topic = topics.find((t) => t.id === name || t.id === id) || topics.find((t) => String(t.subject || '').trim().toLowerCase() === low) || null;
+  return { name, id: topic ? topic.id : id, topic };
+}
+
+/**
+ * P-012 (operator 2026-11-17: "téma sa má pochopiť zo správy"; a first message with "Téma: Xy" got the reply "bez témy"):
+ * the line for an operator task in a thread without a topic: the topic it names, else the one to take from the message,
+ * before the first reply.
+ */
+export function topicFromMessageLine(projectName, named, topics = []) {
+  const holderOf = (t) => (t.holder?.thread ? 'held by another thread' : 'free');
+  if (named?.topic) {
+    const t = named.topic;
+    return `topic: the operator names topic ${t.id} ("${String(t.subject || '').slice(0, 80)}", ${holderOf(t)}): ${t.holder?.thread ? `another thread holds it: ask in one AskUserQuestion "Pokračovať vo vlákne témy ${t.id}" (recommended) or "Prevziať tému ${t.id}" (topic.mjs claim ${t.id} --force --operator-approved)` : `claim it before anything else (topic.mjs claim ${t.id})`}; your reply starts with the line "${projectName} / ${t.id}" (P-012)`;
+  }
+  if (named) return `topic: the operator names the topic "${named.name}": create it before anything else (topic.mjs create ${named.id} --subject "${named.name.replace(/"/g, "'")}" --class web|code|ops|discussion); your reply starts with the line "${projectName} / ${named.id}" (P-012)`;
+  const open = topics.slice(0, 6).map((t) => `${t.id} ("${String(t.subject || '').slice(0, 60)}", ${holderOf(t)})`).join(', ');
+  return `topic: this thread holds no topic: take it from this message before your reply: ${open ? `the open topic it continues (${open}; free: topic.mjs claim <id>; held by another thread: ask "Pokračovať vo vlákne témy" or "Prevziať tému"), ` : ''}else a new topic named from the task (topic.mjs create <id> --subject "..." --class ...); unclear: one AskUserQuestion; your reply starts with the line "${projectName} / <topic>"; only a reply without any work needs no topic (P-012)`;
+}
+
 /**
  * Kind of the prompt. Bells (wake, no-reply, undelivered, keepalive) are recognised ONLY when the whole prompt (trimmed)
  * is exactly the bell text: an operator prompt quoting a template is an operator prompt, not a wake (P-047).
@@ -408,7 +444,12 @@ export function run(input) {
   // first step that starts work asks the operator where it goes (PreToolUse, `topic_gate`), the judge names the open topic
   // it continues. Work needs a topic: there is no choice without one (operator 2026-11-17), every operator task is gated.
   const gate = !!state && turnSource === 'operator' && kind === null && !turnIntent && !(info.held || []).length;
-  if (gate) startDriftJudge({ brainDir: ctx.brainDir, thread: ctx.thread, startedAt, task: ownWords(input.prompt), ...noTopicJob(listTopics(ctx.brainDir).filter((t) => !isMainTopic(t))) });
+  // The topic from the message (named "Téma: X", else to be taken from it), also in a question turn when it names one.
+  const noTopic = !!state && turnSource === 'operator' && kind === null && !(info.held || []).length;
+  const openTopics = noTopic ? listTopics(ctx.brainDir).filter((t) => !isMainTopic(t) && t.subject && t.state !== 'closed') : [];
+  const named = noTopic ? namedTopic(String(input.prompt || ''), openTopics) : null;
+  if (gate || named) extras.push(topicFromMessageLine(ctx.projectName, named, openTopics));
+  if (gate) startDriftJudge({ brainDir: ctx.brainDir, thread: ctx.thread, startedAt, task: ownWords(input.prompt), ...noTopicJob(openTopics) });
   // Spec 10.2: the operator's message in the thread is progress (the continuation count starts from zero); a harness
   // notice alone (a task end) is none.
   const progress = turnSource === 'operator' && ownPlain(input.prompt) ? { progress_at: startedAt } : {};
