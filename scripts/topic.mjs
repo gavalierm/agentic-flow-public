@@ -1027,7 +1027,7 @@ function setTopicModeUnlocked(ctx, id, mode) {
   if (mode === 'discussion') {
     const steps = handoverNextStep(readText(path.join(topicDir(ctx.brainDir, id), layoutOf(ctx.brainDir).handover), ''));
     if (steps === null) throw new Error(`topic ${id}: its handover has no section "## Ďalší krok" (P-011); save the handover with its six sections first`);
-    if (steps.length) throw new Error(`topic ${id} has a next step in its handover ("${steps.join('; ').slice(0, 160)}"): mode discussion is set only over a handover without a step (spec 10.6). Move the steps into Otvorené otázky as a question whether to go on with them (save.mjs handover ${id} ... --questions "..."), then set the mode again`);
+    if (steps.length) throw new Error(`topic ${id} has a next step in its handover ("${steps.join('; ').slice(0, 160)}"): mode discussion is set only over a handover without a step (spec 10.6). Move the steps into Otvorené otázky as a question whether to go on with them (save.mjs handover ${id} --next "" --questions "..."), then set the mode again`);
   }
   const write = brainWrite(ctx, { internal: true, ops: [fieldsOp(ctx.brainDir, id, { mode })], message: `topic mode ${id} ${mode} by ${ctx.thread}` });
   return { ok: true, topic: { ...topic, mode }, write };

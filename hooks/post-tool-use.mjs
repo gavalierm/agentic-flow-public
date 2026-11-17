@@ -20,6 +20,9 @@ import { bashTargets, bashEdits } from './pre-tool-use.mjs';
 import { wakerFromTool, recordWaker } from '../scripts/waker.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 import { recordPublish } from '../scripts/artifacts.mjs';
+import { shownFile, tmpOwner, syncResults, savedLine } from '../scripts/results.mjs';
+import { brainWrite } from '../scripts/brain.mjs';
+import { isMainTopic } from '../scripts/comms.mjs';
 import { contextTokens, compactNudge } from '../scripts/compact.mjs';
 
 export const HOOK_META = { event: 'PostToolUse|PostToolUseFailure', class: 'log+c', limit: '1 line (once per waiting message; once per read step)', principles: ['P-001', 'P-018', 'P-030', 'P-028', 'P-003', 'P-041', 'P-042', 'P-061', 'P-021'] };
@@ -186,7 +189,10 @@ export function run(input, now = Date.now()) {
     writeThreadState(ctx.brainDir, ctx.thread, { ...lifted, dialog_questions: [], ...answeredNow });
   }
   // report-80357d47: the address of a published artifact outlives the context (scripts/artifacts.mjs).
-  if (!input.agent_id) { try { recordPublish(ctx, input, now); } catch { /* the record never fails the hook */ } }
+  let published = null;
+  if (!input.agent_id) { try { published = recordPublish(ctx, input, now); } catch { /* the record never fails the hook */ } }
+  // P-078: a work file shown to the operator (Artifact, html_preview) is a result of the held topic, saved at once.
+  const shown = !input.agent_id && input.hook_event_name !== 'PostToolUseFailure' ? saveShown(ctx, input, published, now) : null;
   settleOwn(ctx, changedFiles(input));
   // report-143e7cdb: what this thread leaves in a scratch/ is its own; another thread's recursive rm of the dir asks (P-018).
   // The work files are in the topic home (a brain in layout 2, D-0056), isSessionWorkPath.
@@ -197,8 +203,29 @@ export function run(input, now = Date.now()) {
   if (entry?.kind === 'cmd' && !input.agent_id && ctx.thread && progressCommand(input.tool_input?.command)) markProgress(ctx.brainDir, ctx.thread, now);
   // P-061: a waker armed by this call (background task or agent, scheduler, mail) lets the turn end waiting.
   if (!input.agent_id && ctx.thread) recordWaker(ctx.brainDir, ctx.thread, wakerFromTool(input, now));
-  const lines = [readBudget(ctx, input), watch(ctx, input, now), compactLine(ctx, input)].filter(Boolean);
+  const lines = [shown, readBudget(ctx, input), watch(ctx, input, now), compactLine(ctx, input)].filter(Boolean);
   return lines.length ? contextOutput('PostToolUse', lines.join('\n')) : {};
+}
+
+/**
+ * P-078: the work file an Artifact publish or html_preview showed to the operator goes into the results of the topic the
+ * thread holds (bound to its source, scripts/results.mjs). One line of what was saved, or null; a failure never fails the hook.
+ */
+export function saveShown(ctx, input, url = null, now = Date.now()) {
+  if (!ctx.brainDir || !ctx.thread) return null;
+  const file = shownFile(input);
+  if (!file || !tmpOwner(ctx.brainDir, file)) return null;
+  try {
+    const topic = heldTopics(ctx.brainDir, ctx.thread).find((t) => !isMainTopic(t));
+    if (!topic) return null;
+    const via = input.tool_name === 'Artifact' ? 'artifact' : 'preview';
+    const res = syncResults(ctx.brainDir, topic.id, { policy: ctx.policy, extra: [{ abs: file, via, url }], now });
+    if (!res.ops.length) return null;
+    brainWrite(ctx, { ops: res.ops, internal: true, sync: false, message: `save result ${res.saved.map((s) => s.name).join(', ') || 'bindings'} (${via}, P-078)` });
+    return savedLine(topic.id, res);
+  } catch (err) {
+    return `result not saved (P-078): ${String(err.message).split('\n')[0]}`;
+  }
 }
 
 /**

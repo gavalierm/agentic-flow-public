@@ -20,7 +20,7 @@ test('D-0042: rm of a target git cannot restore is a deny with the reason and th
     fs.writeFileSync(path.join(data, 'export.csv'), 'x\n');
     const out = bash(fx, `rm -rf ${data}`);
     assert.equal(out.permissionDecision, 'deny');
-    assert.match(out.permissionDecisionReason, /targets not recoverable from git: .*data.*\(P-018\)\. this step needs the operator's consent/);
+    assert.match(out.permissionDecisionReason, /targets not recoverable from git: .*data.*\(P-018\); the dialog names exactly: "[^"]*\/data"\. this step needs the operator's consent/);
     assert.ok(out.permissionDecisionReason.endsWith(NO_ASK_WAY), out.permissionDecisionReason);
     assert.ok(fs.existsSync(data), 'the data stays');
     // the deny locks nothing: a later call on the same path is checked by P-018 again, not refused as a bypass (P-054)

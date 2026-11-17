@@ -21,9 +21,9 @@
 //   comms.mjs register [<topic>]                        idempotent registration of held topics in the mail service
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseArgs, fail, readStdin, localTime } from '../scripts/util.mjs';
-import { loadContext, inSubagent, readThreadState, mainCheckout, resolveDomain } from '../scripts/config.mjs';
-import { commsSettings, commsProjectName, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, categoryLabel, LEVELS, dropNoticesCache, readObligations, ageText, supervisorOf, fromSupervisor } from '../scripts/comms.mjs';
+import { parseArgs, fail, readStdin, localTime, toPosix } from '../scripts/util.mjs';
+import { loadContext, inSubagent, readThreadState, writeThreadState, mainCheckout, resolveDomain } from '../scripts/config.mjs';
+import { commsSettings, commsProjectName, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, categoryLabel, LEVELS, dropNoticesCache, readObligations, ageText, supervisorOf, fromSupervisor, threadMailBrain } from '../scripts/comms.mjs';
 import { readTopic, readTopicRecord, mailboxTopics, heldTopics, heldBy, topicMailProject, listTopics } from '../scripts/topic.mjs';
 import { readHolder, isHolderOf } from '../scripts/brain.mjs';
 import { validWaker, TIMER_CMD } from '../scripts/waker.mjs';
@@ -147,6 +147,9 @@ function listItems(ctx) {
   const seen = new Set();
   for (const q of queries(ctx)) {
     const data = must(runClient(ctx, ['count', ...queryArgs(q)]));
+    // A count the client gives from its cache after a failed call (`unavailable`, up to a minute after an outage or a
+    // restart of the mail) is not the inbox: "no waiting messages" from it hid a waiting message (2026-11-17, critical).
+    if (data.unavailable) fail(`comms unavailable: the mail did not answer${data.cached ? ` (last known: ${data.total ?? '?'} waiting)` : ''}; nothing is known about the inbox now: run comms list again in a minute`, 2);
     for (const it of data.items || []) if (!seen.has(it.id)) { seen.add(it.id); items.push(it); }
   }
   return items.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
@@ -433,6 +436,9 @@ function cmdSend(ctx) {
   const from = fromTopic(ctx);
   if (from) clientArgs.push('--from-project', s.project, '--from-topic', from);
   const data = must(runClient(ctx, clientArgs, { input: String(text) }));
+  // The reply to this message rings this thread; its session project may have no brain (another cwd next time): the
+  // thread's state in this brain makes it the thread's mail home (threadMailBrain), also for the bell hook.
+  if (ctx.brainDir && ctx.thread && !inSubagent()) { try { const st = readThreadState(ctx.brainDir, ctx.thread); writeThreadState(ctx.brainDir, ctx.thread, { ...st, mail_sent_at: new Date().toISOString() }); } catch { /* only a hint */ } }
   if (data.queued) {
     out(`comms unavailable: message queued in <brain>/local/outbox and sent with the next successful call (${destination})`);
   } else {
@@ -513,8 +519,27 @@ function cmdRegister(ctx) {
   }
 }
 
+/**
+ * Context of the command. A session project without a brain (P-024) still reads and answers the mail of its thread with
+ * the settings of the thread's mail home (threadMailBrain): a bell it cannot pick up is lost mail (operator 2026-11-17,
+ * critical). register needs the brain of the topic and keeps the refusal.
+ */
+function mailContext() {
+  try {
+    return loadContext({ project: args.project, requireBrain: cmd !== 'status' });
+  } catch (err) {
+    if (!/^brain unavailable/.test(err.message) || cmd === 'register') throw err;
+    const ctx = loadContext({ project: args.project, requireBrain: false });
+    const home = ctx.thread ? threadMailBrain(ctx.thread, { any: true }) : null;
+    if (!home) throw new Error(`${err.message}; no brain on this machine has mail settings for thread ${ctx.thread || '(no thread id)'}: run comms from the project of the topic (--project <dir>)`);
+    ctx.mailBrainDir = home;
+    process.stderr.write(`mail of thread ${ctx.thread} with the settings of ${toPosix(home)} (no brain in ${toPosix(ctx.projectDir)})\n`);
+    return ctx;
+  }
+}
+
 try {
-  const ctx = loadContext({ project: args.project, requireBrain: cmd !== 'status' });
+  const ctx = mailContext();
   const handlers = { status: cmdStatus, count: cmdCount, list: cmdList, receive: cmdReceive, message: cmdMessage, ack: cmdAck, settle: cmdSettle, withdraw: cmdWithdraw, send: cmdSend, notices: cmdNotices, decide: cmdDecide, register: cmdRegister };
   if (!handlers[cmd]) fail('usage: comms.mjs status|count|list|receive|message|ack|settle|withdraw|send|notices|decide|register');
   if (cmd !== 'status' && !commsSettings(ctx).enabled) fail(`comms off: ${commsSettings(ctx).reason}; see README "Pošta" to enable it`, 2);

@@ -51,8 +51,28 @@ export function driftJob(heldWork, topics) {
   };
 }
 
+/**
+ * Judge input for a thread that holds no topic (P-012, operator 2026-11-17: "ak sa téma nezhoduje alebo sa zmenila, nech flow
+ * spraví výzvu, či zmeniť tému alebo pokračovať v už existujúcej"): which open topic the task continues, if any.
+ */
+export function noTopicJob(topics) {
+  return { topic: null, subject: null, held: [], others: (topics || []).filter((t) => t && t.id && t.subject).map((t) => ({ id: t.id, subject: t.subject })) };
+}
+
+function noTopicPrompt(task, list) {
+  return [
+    'An agent that works on no topic got a new task from an operator. Decide which of the open topics listed below the task continues. Answer only with the JSON object {"fits": boolean, "reason": string, "belongs_to": string}.',
+    'belongs_to: the id of the open topic whose subject the task continues, corrects or is a part of (setting up, testing or running the same skill, tool or job counts), or "" when none fits. When in doubt, "".',
+    'fits: always false. reason: one short sentence in the language of the task, naming what the task is about.',
+    '',
+    `# Open topics (id: subject)\n${list.map((t) => `${t.id}: ${String(t.subject).slice(0, 200)}`).join('\n')}`,
+    `# New task from the operator\n${task.slice(0, 3000)}`,
+  ].join('\n');
+}
+
 export function driftPrompt({ subject, topicTask = null, state, next, handover, task, held = [], others = [] }) {
   const list = (others || []).filter((t) => t && t.id && t.subject).slice(0, 40);
+  if (!subject) return noTopicPrompt(String(task || ''), list);
   const also = (held || []).filter((t) => t && t.id && t.subject).slice(0, 20);
   const assigned = topicTask && String(topicTask).trim();
   return [
@@ -95,6 +115,8 @@ export function judgeDrift(job, { run = spawnSync } = {}) {
     // flow-public#72: work of another topic this thread holds is no drift.
     if (named && (job.held || []).some((t) => t && t.id === named)) return { fits: true, reason: String(data.reason || '').replace(/\s+/g, ' ').trim().slice(0, 200) };
     const belongs = ids.has(named) ? named : '';
+    // A thread without a topic never fits: the verdict only names the open topic the task continues.
+    if (!job.subject) return { fits: false, noTopic: true, reason: String(data.reason || '').replace(/\s+/g, ' ').trim().slice(0, 200), ...(belongs ? { belongs_to: belongs } : {}) };
     return { fits: belongs ? false : data.fits, reason: String(data.reason || '').replace(/\s+/g, ' ').trim().slice(0, 200), ...(belongs ? { belongs_to: belongs } : {}) };
   } catch {
     return null;
@@ -108,7 +130,8 @@ export function judgeDrift(job, { run = spawnSync } = {}) {
  * Returns false when no judge starts (off, nothing to compare).
  */
 export function startDriftJudge(job) {
-  if (process.env.WORKFLOW_DRIFT_JUDGE === 'off' || !job.brainDir || !job.thread || !job.subject || !job.task) return false;
+  if (process.env.WORKFLOW_DRIFT_JUDGE === 'off' || !job.brainDir || !job.thread || !job.task) return false;
+  if (!job.subject && !(job.others || []).length) return false;
   try {
     const child = spawn(process.execPath, [SELF], { detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, [JOB_ENV]: JSON.stringify(job) } });
     child.on('error', () => {});
@@ -124,7 +147,7 @@ function main() {
   if (!job.brainDir || !job.thread || !job.startedAt) return;
   const verdict = judgeDrift(job);
   if (!verdict) return;
-  writeJson(driftFile(job.brainDir, job.thread), { started_at: job.startedAt, fits: verdict.fits, reason: verdict.reason, topic: job.topic, subject: job.subject, ...(verdict.belongs_to ? { belongs_to: verdict.belongs_to, belongs_subject: (job.others || []).find((t) => t.id === verdict.belongs_to)?.subject || '' } : {}) });
+  writeJson(driftFile(job.brainDir, job.thread), { started_at: job.startedAt, fits: verdict.fits, reason: verdict.reason, topic: job.topic, subject: job.subject, ...(verdict.noTopic ? { no_topic: true } : {}), ...(verdict.belongs_to ? { belongs_to: verdict.belongs_to, belongs_subject: (job.others || []).find((t) => t.id === verdict.belongs_to)?.subject || '' } : {}) });
 }
 
 if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === fs.realpathSync(SELF)) {

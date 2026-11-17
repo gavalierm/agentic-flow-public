@@ -25,13 +25,14 @@ import { unpushedCount, brainSync, oldestUnpushedAgeMs } from '../scripts/brain.
 import { recordTurn, isMainTopic, readObligations, ageText, OWED_PREFIX, OWED_LINE, unansweredOwed } from '../scripts/comms.mjs';
 import { heldTopics, isDiscussionMode } from '../scripts/topic.mjs';
 import { fieldsOp } from '../scripts/topic-files.mjs';
+import { syncResults, savedLine } from '../scripts/results.mjs';
 import { parseReply, HANDOVER_LINE, HANDOVER_NONE_LINE, PROTOCOL_EXAMPLE, handoverMatches } from '../scripts/protocol.mjs';
 import { summaryState, WAITING, DONE } from '../scripts/topic-state.mjs';
 import { threadAlarms, topicFacts, turnUpdate, stuckNow, verifyLocks, LOCK_LOST_LINE, CONTINUE_RESUME_MS } from '../scripts/topic-turn.mjs';
 import { validWaker, awaitingWaker, clearTimer, threadTimers, timersPatch, sameTimer, finishedTasks, withoutFinished, resumeAtFor } from '../scripts/waker.mjs';
 import { transcriptTail } from '../scripts/bypass.mjs';
 
-export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to next prompt); 1 block reason', principles: ['P-026', 'P-030', 'P-037', 'P-040', 'P-042', 'P-043', 'P-061'] };
+export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to next prompt); 1 block reason', principles: ['P-026', 'P-030', 'P-037', 'P-040', 'P-042', 'P-043', 'P-061', 'P-078'] };
 
 // T3 shows the operator only the last message of a turn and folds the earlier ones under "Worked for …": a note written
 // after a block hid the answer (operator 2026-11-03: "the payload I want is hidden, I get the operational message").
@@ -186,15 +187,25 @@ export function run(input) {
   // Spec 10.2: the state and the alarm time of each held topic, from the facts (not from the state line), only when they
   // changed; after the pull the lock decides (4.2.4): a topic this thread lost is not written and gets no continuation.
   const updates = facts.map((f) => ({ id: f.topic.id, patch: turnUpdate(ctx, f.topic, f.facts, before) })).filter((u) => u.patch);
+  // P-078: the results bound to their work files follow them (a changed source is copied over its result) and the work
+  // files shown to the operator or cited by the handover are saved, in the commit of the topic state.
+  const synced = work.map((t) => {
+    try { return { id: t.id, res: syncResults(ctx.brainDir, t.id, { policy: ctx.policy, now }) }; }
+    catch (err) { signals.push(`results of ${t.id} not synced: ${err.message.split('\n')[0]}`); return null; }
+  }).filter((x) => x && x.res.ops.length);
   const lost = new Set();
-  if (updates.length) {
-    const locks = verifyLocks(ctx, updates.map((u) => u.id));
+  if (updates.length || synced.length) {
+    const locks = verifyLocks(ctx, [...new Set([...updates.map((u) => u.id), ...synced.map((x) => x.id)])]);
     for (const l of locks.lost) lost.add(l.id);
     if (locks.lost.length) signals.push(LOCK_LOST_LINE(locks.lost));
     const write = updates.filter((u) => !lost.has(u.id));
+    const results = synced.filter((x) => !lost.has(x.id));
     let ops = [];
     try { ops = write.map((u) => fieldsOp(ctx.brainDir, u.id, { turn: u.patch })); } catch (err) { signals.push(`topic state not written: ${err.message.split('\n')[0]}`); }
-    flush(ops, ops.length ? `turn ${write.map((u) => `${u.id} ${u.patch.state || 'state'}`).join(', ')}` : null);
+    ops.push(...results.flatMap((x) => x.res.ops));
+    for (const x of results) { const line = savedLine(x.id, x.res); if (line) signals.push(line); }
+    const message = [write.length ? `turn ${write.map((u) => `${u.id} ${u.patch.state || 'state'}`).join(', ')}` : null, results.length ? `results ${results.map((x) => `${x.id}: ${x.res.saved.map((r) => r.name).join(', ') || 'bindings'}`).join('; ')} (P-078)` : null].filter(Boolean).join('; ');
+    flush(ops, ops.length ? message : null);
   } else flush();
   queue();
   const st = readThreadState(ctx.brainDir, ctx.thread);

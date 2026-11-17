@@ -50,7 +50,7 @@ import { recordAuthors, foreignAuthor } from '../scripts/authors.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { ruleCorpus, judgeRule, unanswered, onlyCondenses } from '../scripts/rule-gate.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
-import { renderHandover, checkHandover, handoverNextStep, withReports } from '../scripts/brain-checks.mjs';
+import { mergeHandover, checkHandover, handoverNextStep, withReports } from '../scripts/brain-checks.mjs';
 import { openReportLines, baseOf } from '../scripts/issue-watch.mjs';
 import { removeNames } from '../scripts/logs.mjs';
 import { setTopicState, readTopic, topicRel, heldTopics, isDiscussionMode, DISCUSSION_NEXT_REFUSAL } from '../scripts/topic.mjs';
@@ -60,7 +60,10 @@ import { oversized, maxBytes, materialyDir, sourceAddOp, sourceAddDirOps, result
 import { hasDataIndex, sourcesFileRel, sourcesWith } from '../scripts/data-index.mjs';
 import { workflowSkillNames, PROJECT_SKILLS_DIR, syncBrainSkills, deployedSkillName } from '../scripts/skills-sync.mjs';
 import { skillSources, PROJECT_KNOWLEDGE, domainRepos, knowledgeDirs, repoByName, sessionRepo, singleRepoOf, nextRepoDecisionId, repoWrite, formatRepoWrite, heldRepoTopic, repoPublic } from '../scripts/repo-knowledge.mjs';
-import { isInside } from '../scripts/util.mjs';
+import { isInside, nowIso } from '../scripts/util.mjs';
+import { fieldsOp } from '../scripts/topic-files.mjs';
+import { resultsActive, tmpOwner, readBindings } from '../scripts/results.mjs';
+import { uncitedDecisions, uncitedLine, boundSkills, boundLine } from '../scripts/skill-decisions.mjs';
 import { checkSkill, meaningDiff, workLayout } from '../scripts/skill-check.mjs';
 import { personRedirect, requireOperatorRepo, readPeople, findPeople, newPerson, changePerson, shortIdProblem, proposedId } from '../scripts/people.mjs';
 import { machineStores, machineRecords, targetStore, sameStore, checkDecisionRefs, decisionRefs, rewriteDecisionRefs, subjectMatch, saveHint, displayPath, refFiles, isTombstone, SUBJECT_TYPES, ID_LINE, lc } from '../scripts/stores.mjs';
@@ -468,6 +471,8 @@ function saveDecision(ctx) {
   });
   finish(ctx, res, [rel]);
   out(`decision ${id}: reference it in the commit message of the change it drives (P-008)`);
+  // Report 2026-11-17: a decision of one topic set the output of a skill another topic edited, and never reached it.
+  try { const line = boundLine(id, boundSkills(ctx.brainDir, { id, title, body: `${args.what} ${args.reason || ''}` })); if (line) out(line); } catch { /* a hint never fails the save */ }
 }
 
 // The ID is assigned under the repo lock (repoWrite takes it again, re-entrant): two threads saving into one repo at once,
@@ -861,6 +866,8 @@ function saveSkill(ctx) {
   out(notDeployed ? `not deployed to the project (${notDeployed}); it reaches the project at the next session start` : `deployed to ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR))}${deployedName !== name ? ` as skill ${deployedName}` : ''}`);
   // P-052: the skill text calls its script by the deployed absolute path, never relative to the cwd or from scratch.
   for (const s of scripts) out(`script runs as: ${runners.get(s)} ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR, deployedName, path.posix.basename(s)))} (write this path in the skill text)`);
+  // Report 2026-11-17: the skill was called consistent with the decisions it cites; a valid decision of another topic it does not cite set its output.
+  try { const line = uncitedLine(uncitedDecisions(ctx.brainDir, String(ops[0].content))); if (line) out(line); } catch { /* a hint never fails the save */ }
 }
 
 /** Skill of one repo (`<repo>/agentic/skills/<name>/`): agentic only, one name per domain (skills-sync deploys both). */
@@ -1103,9 +1110,12 @@ function saveHandover(ctx) {
   const hint = (k) => (k === 'topic' ? ` (the topic is the first argument: save.mjs handover ${typeof args.topic === 'string' ? args.topic : '<topic>'} ...)` : '');
   if (!topic && !unknown.length) fail('usage: save.mjs handover <topic> --task ".." --done "a; b" --next "a; b" --files "a; b" --questions "a; b" --tasks "a; b" | --file <path>');
   if (unknown.length) fail(`save.mjs handover: unknown option ${unknown.map((k) => `--${k}${hint(k)}`).join(', ')}; nothing written, the current handover stays (usage: save.mjs handover <topic> --task ".." --done "a; b" --next "a; b" --files "a; b" --questions "a; b" --tasks "a; b" | --file <path>)`);
-  if (!args.file && !HANDOVER_FIELDS.some((k) => typeof args[k] === 'string' && args[k].trim())) fail('save.mjs handover: no content (--task, --done, --next, --files, --questions, --tasks or --file); nothing written, the current handover stays');
+  if (!args.file && !HANDOVER_FIELDS.some((k) => typeof args[k] === 'string')) fail('save.mjs handover: no content (--task, --done, --next, --files, --questions, --tasks or --file); nothing written, the current handover stays');
   // The structure check and the mode need no remote state: refuse before the first fetch.
-  const written = args.file ? fs.readFileSync(args.file, 'utf8') : renderHandover({ task: args.task, done: args.done, next: args.next, files: args.files, questions: args.questions, tasks: args.tasks });
+  // Without --file only the sections given change; the others keep their current text (P-018, mergeHandover).
+  const fields = Object.fromEntries(HANDOVER_FIELDS.map((k) => [k, typeof args[k] === 'string' ? args[k] : undefined]));
+  const merged = args.file ? null : mergeHandover(readText(path.join(ctx.brainDir, topicRel(ctx.brainDir, topic, 'handover')), ''), fields);
+  const written = args.file ? fs.readFileSync(args.file, 'utf8') : merged.text;
   const refs = checkDecisionRefs(ctx, targetStore(ctx), [written]);
   if (refs) fail(refs);
   // The open issues of this topic (3c.3) come from the local records, also over --file: the agent neither writes nor drops them.
@@ -1122,6 +1132,7 @@ function saveHandover(ctx) {
   const ops = [{ path: handoverRel, content }, setTopicState(ctx, topic, readTopic(ctx.brainDir, topic)?.state === 'paused' ? 'paused' : 'working')];
   const res = brainWrite(ctx, { ops, message: `handover ${topic}`, presynced: true });
   out(formatWriteResult(res, [handoverRel]));
+  if (merged?.kept.length) out(`kept from the current handover: ${merged.kept.join(', ')} (an option not given keeps its section; --<option> "" empties it)`);
 }
 
 /**
@@ -1287,11 +1298,26 @@ function saveResult(ctx) {
   if (!file) fail('usage: save.mjs result <file> [--topic <id>] [--as <name>] [--replace]');
   const id = sourceTopic(ctx, 'save.mjs result');
   const home = topicHome(ctx.brainDir, ctx.projectDir);
-  const { rel, content } = resultAddOp(home, id, file, { name: typeof args.as === 'string' ? args.as : null, policy: ctx.policy, replace: args.replace === true });
   const inBrain = !!ctx.brainDir && path.resolve(ctx.brainDir) === path.resolve(home);
-  const res = brainWrite(inBrain ? ctx : { brainDir: home, thread: ctx.thread, policy: ctx.policy }, { ops: [{ path: rel, content }], message: `save result ${rel}`, sync: inBrain, presynced: !!ctx.presynced });
+  // P-078: a result saved from the work files stays bound to its source; the end of each turn copies a change over it.
+  const name = typeof args.as === 'string' ? args.as : null;
+  const bound = inBrain && resultsActive(home);
+  const owner = bound ? tmpOwner(home, path.resolve(file)) : null;
+  const bindings = bound ? readBindings(home, id) : {};
+  const target = name || path.basename(path.resolve(file));
+  const same = !!owner && bindings[target]?.from === owner.from;
+  const { rel, content } = resultAddOp(home, id, file, { name, policy: ctx.policy, replace: args.replace === true || same });
+  const ops = [{ path: rel, content }];
+  if (bound) {
+    const base = path.posix.basename(rel);
+    const prev = bindings[base];
+    const next = owner ? { from: owner.from, via: prev?.from === owner.from ? prev.via : 'save', ...(prev?.from === owner.from && prev.url ? { url: prev.url } : {}), at: prev?.from === owner.from ? prev.at : nowIso() } : { from: null, via: 'manual', at: nowIso() };
+    if (JSON.stringify(prev) !== JSON.stringify(next)) ops.push(fieldsOp(home, id, { results: { ...bindings, [base]: next } }));
+  }
+  const res = brainWrite(inBrain ? ctx : { brainDir: home, thread: ctx.thread, policy: ctx.policy }, { ops, message: `save result ${rel}`, sync: inBrain, presynced: !!ctx.presynced });
   const shown = inBrain && path.resolve(home) !== path.resolve(ctx.projectDir) ? `brain ${rel}` : rel;
   out(formatWriteResult(res, [shown, ...(hasDataIndex(home) ? ['INDEX.md'] : [])]));
+  if (owner) out(`bound to ${owner.from}: its changes are saved at the end of each turn (P-078)`);
 }
 
 try {

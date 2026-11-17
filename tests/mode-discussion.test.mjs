@@ -21,7 +21,7 @@ test('mode discussion: refused over a step, set after the step went to the quest
     assert.match(r.stderr, /has a next step in its handover \("nasadiť stránku"\): mode discussion is set only over a handover without a step/);
     assert.equal(record(fx, 'web-x').mode, 'off');
     // The step moves into Otvorené otázky as a question; then the mode is set, the class stays.
-    assert.equal(fx.run('save.mjs', ['handover', 'web-x', '--task', 'T', '--questions', 'Pokračovať v nasadení stránky?']).status, 0);
+    assert.equal(fx.run('save.mjs', ['handover', 'web-x', '--task', 'T', '--next', '', '--questions', 'Pokračovať v nasadení stránky?']).status, 0);
     r = fx.run('topic.mjs', ['mode', 'web-x', 'discussion']);
     assert.equal(r.status, 0, r.out); assert.match(r.stdout, /topic web-x mode discussion/);
     let t = record(fx, 'web-x');

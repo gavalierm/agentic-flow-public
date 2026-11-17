@@ -18,7 +18,7 @@ import { readReports } from '../scripts/report.mjs';
 import { PLUGIN_ROOT, toPosix, localTime } from '../scripts/util.mjs';
 import { threadTitleSignal } from '../scripts/thread-title.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
-import { startDriftJudge, ownWords, driftJob } from '../scripts/drift.mjs';
+import { startDriftJudge, ownWords, driftJob, noTopicJob } from '../scripts/drift.mjs';
 import { listTopics, mailboxTopics } from '../scripts/topic.mjs';
 import { brainWrite } from '../scripts/brain.mjs';
 import { verifyLocks, LOCK_LOST_LINE, countContinue, continueMax, STUCK_LINE } from '../scripts/topic-turn.mjs';
@@ -401,12 +401,17 @@ export function run(input) {
     // flow-public#87: the topic's own task goes to the judge.
     startDriftJudge({ brainDir: ctx.brainDir, thread: ctx.thread, startedAt, task: ownWords(input.prompt), ...driftJob(heldWork, listTopics(ctx.brainDir).filter((t) => !isMainTopic(t))) });
   }
+  // P-012 (operator 2026-11-17): an operator task in a thread that holds no topic at all (not the persona main thread): the
+  // first step that starts work asks the operator where it goes (PreToolUse, `topic_gate`), the judge names the open topic
+  // it continues. Once the operator chose to work without a topic (`no_topic_ok`), the thread is not asked again.
+  const gate = !!state && turnSource === 'operator' && kind === null && !turnIntent && !(info.held || []).length && !state.no_topic_ok;
+  if (gate) startDriftJudge({ brainDir: ctx.brainDir, thread: ctx.thread, startedAt, task: ownWords(input.prompt), ...noTopicJob(listTopics(ctx.brainDir).filter((t) => !isMainTopic(t))) });
   // Spec 10.2: the operator's message in the thread is progress (the continuation count starts from zero); a harness
   // notice alone (a task end) is none.
   const progress = turnSource === 'operator' && ownPlain(input.prompt) ? { progress_at: startedAt } : {};
   // D-0039: the operator's own words (this prompt and the one before) let a dialog use the marks the operator used.
   const operatorPrompts = state && turnSource === 'operator' && typeof input.prompt === 'string' ? { operator_prompts: [input.prompt.slice(0, 20000), ...(state.operator_prompts || []).slice(0, 1)] } : {};
-  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...state, ...keepTimer, ...progress, ...taskSpent, ...(upd?.patch || {}), ...operatorPrompts, turn_started_at: startedAt, ...(title?.patch || {}), turn_source: turnSource, turn_supervisor: supervisorMail, discussion, turn_intent: turnIntent, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, mail_held_signaled: heldKey, mail_cursor: cursor, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
+  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...state, ...keepTimer, ...progress, ...taskSpent, ...(upd?.patch || {}), ...operatorPrompts, turn_started_at: startedAt, topic_gate: gate ? startedAt : null, ...(title?.patch || {}), turn_source: turnSource, turn_supervisor: supervisorMail, discussion, turn_intent: turnIntent, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, mail_held_signaled: heldKey, mail_cursor: cursor, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
   if (extras.length) lines.push(extras.join('; '));
   const limited = enforceLines(lines.join('\n'), ctx.policy?.limits?.hook_signal_lines ?? 2);
   // Nothing new: empty context (contextOutput leaves additionalContext out).

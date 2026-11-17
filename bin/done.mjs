@@ -41,6 +41,8 @@ import { bellContinuation } from '../scripts/waker.mjs';
 import { asList } from '../scripts/frontmatter.mjs';
 import { PROJECT_KNOWLEDGE, REPO_HANDOVER } from '../scripts/repo-knowledge.mjs';
 import { scratchReminder, citedScratch, topicResultsLabel } from '../scripts/materialy.mjs';
+import { resultsActive, syncResults, citedWork, tmpOwner, savedLine, countFiles } from '../scripts/results.mjs';
+import { readTopics } from '../scripts/records.mjs';
 import { topicFiles, handoverTask, confirmRefusal, bellRefusal, ownStepRequested, removeTopicTmp, parseTypeTriage, typeTriageListing, UNCLEAR, NEW_TYPE } from '../scripts/triage.mjs';
 import { hasTypeTriage, targetRepos, targetRepoDir, targetBranch, targetProtected, topicBranch, contentBranch, contentWrite, contentWhere, outputTypes, withTopicHeader, onOrigin, mergedInto, mergeRequest } from '../scripts/target.mjs';
 import { cloneMerge } from '../scripts/own-clone.mjs';
@@ -286,6 +288,43 @@ function citedResults(ctx, id) {
  * Threads that held the topic before a takeover (claim --force): `took_over_from` of holder.json and, from the claim
  * history (commits of topics/<id>/holder.json), the holder before each forced claim. Never this thread.
  */
+/**
+ * P-078 (operator 2026-11-17: "pointa flow je, aby sa dôležité dáta a vedomosti ukladali, aby nedošlo k strate dôležitej
+ * práce"): done --topic removes the work files of the topic (outside git). First the results of the topic bound to their
+ * work files are synced (a source changed since the last turn) and the work files its handover cites or that were shown to
+ * the operator are saved (`own`, not for --cancel); the work files of this topic another open topic cites in its handover
+ * are saved into that topic. A cited folder of these work files refuses the close: the agent saves what of it is needed
+ * and rewrites the line of the handover. What was saved is written before the refusal.
+ */
+function saveBeforeClose(ctx, id, { own = true } = {}) {
+  if (!resultsActive(ctx.brainDir)) return;
+  const mine = (abs) => tmpOwner(ctx.brainDir, abs)?.topic === id;
+  const writes = [];
+  const dirs = [];
+  if (own) {
+    const res = syncResults(ctx.brainDir, id, { policy: ctx.policy });
+    if (res.ops.length) writes.push({ id, res });
+    for (const d of res.dirs.filter(mine)) dirs.push({ by: id, dir: d });
+  }
+  for (const t of readTopics(ctx.brainDir).filter((x) => x.id !== id && x.state !== 'closed')) {
+    const cited = citedWork(ctx.brainDir, t.id, t.handover);
+    for (const d of cited.dirs.filter(mine)) dirs.push({ by: t.id, dir: d });
+    const files = cited.files.filter(mine);
+    if (!files.length) continue;
+    const res = syncResults(ctx.brainDir, t.id, { policy: ctx.policy, handover: t.handover, extra: files.map((abs) => ({ abs, via: 'handover' })) });
+    if (res.ops.length) writes.push({ id: t.id, res });
+  }
+  if (writes.length) {
+    const res = brainWrite(ctx, { ops: writes.flatMap((w) => w.res.ops), internal: true, message: `done --topic ${id}: results saved from the work files before they end (P-078)` });
+    out(formatWriteResult(res, writes.flatMap((w) => w.res.saved.map((s) => topicRel(ctx.brainDir, w.id, null) + '/' + s.name))));
+    for (const w of writes) { const line = savedLine(w.id, w.res); if (line) out(line); }
+  }
+  if (dirs.length) {
+    const rel = (abs) => path.relative(ctx.brainDir, abs).split(path.sep).join('/');
+    fail(`done --topic ${id} refused: ${dirs.map((d) => `the handover of ${d.by} cites the folder ${rel(d.dir)}/ (${countFiles(d.dir)} file(s))`).join('; ')}. The work files of ${id} end with the topic (outside git): save what of the folder is needed (save.mjs result <file> --topic <that topic>; a file from outside: save.mjs source), then rewrite the line of the handover to the saved files (save.mjs handover), or remove the line when nothing of the folder is needed; then done --topic again (P-078, P-018)`);
+  }
+}
+
 function previousHolders(ctx, id, holder = {}) {
   const found = [];
   if (holder?.took_over_from) found.push(String(holder.took_over_from).split(' on ')[0]);
@@ -339,6 +378,8 @@ function doneTopic(ctx, id) {
   // (agent-alice/D-0094: the refusal armed a timer and a new turn for the same step). The supervisor's instruction is no
   // message of another agent: its turn may close the topic within the mandate (plan O7, spec 5.2).
   else if (isWakeTurn(ctx.brainDir, ctx.thread) && !supervisorTurn(ctx.brainDir, ctx.thread) && !dialogAnsweredInTurn(ctx.brainDir, ctx.thread) && !ownStepRequested(ctx.brainDir, ctx.thread, id, 'done')) fail(`done --topic refused: this turn was started by a message, not the operator, and the operator answered no dialog in it (P-047, D-0011)${bellContinuation(ctx.brainDir, ctx.thread)}`);
+  // P-078: before the work files of the topic end, what is worth keeping from them is saved (or the close is refused).
+  saveBeforeClose(ctx, id, { own: !cancel });
   if (hasTypeTriage(ctx.brainDir)) return cancel ? cancelTopic3(ctx, id, topic) : doneTopic3(ctx, id, topic, knowledge);
   if (cancel) fail('done --topic --cancel: a brain of data 2.1 only (spec 5.4); this brain is older, migrate it first');
   if (args.triage !== undefined) fail('--triage: a brain of data 2.1 only (spec 5); this brain is older, migrate it first');

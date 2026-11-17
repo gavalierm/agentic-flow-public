@@ -55,6 +55,43 @@ export function renderHandover({ task, done, next, files, questions, tasks, repo
   ].join('\n') + '\n';
 }
 
+const HANDOVER_KEYS = [['task', '## Zadanie'], ['done', '## Hotové'], ['next', NEXT_SECTION], ['files', '## Súbory'], ['questions', QUESTIONS_SECTION], ['tasks', TASKS_SECTION]];
+
+/** heading → body lines of each `## ` section of a handover (in order; trailing blank lines dropped). */
+export function handoverBodies(text) {
+  const out = new Map();
+  let cur = null;
+  for (const line of String(text || '').replace(/\r\n/g, '\n').split('\n')) {
+    if (/^## /.test(line.trim())) { cur = line.trim(); out.set(cur, []); continue; }
+    if (cur) out.get(cur).push(line);
+  }
+  for (const [k, v] of out) { while (v.length && !v.at(-1).trim()) v.pop(); out.set(k, v); }
+  return out;
+}
+
+/**
+ * A handover from the fields given (save handover without --file) over the current one: a section whose option is not
+ * given keeps its current text; sections outside the six (except the generated reports) stay after them. Returns
+ * { text, kept } (headings kept from the current handover). Cause (report 20261117T195322961Z, P-018):
+ * `save.mjs handover <topic> --questions "a; b"` wrote '-' into Zadanie, Hotové, Ďalší krok and Súbory (11.6 kB -> 413 B).
+ */
+export function mergeHandover(current, fields) {
+  const now = current ? handoverBodies(current) : new Map();
+  const given = (k) => typeof fields[k] === 'string' || Array.isArray(fields[k]);
+  const kept = [];
+  const lines = [];
+  for (const [k, heading] of HANDOVER_KEYS) {
+    let body;
+    if (given(k)) body = handoverBodies(renderHandover({ [k]: fields[k] })).get(heading);
+    else if (now.has(heading) && now.get(heading).some((l) => l.trim())) { body = now.get(heading); kept.push(heading.slice(3)); }
+    else body = ['-'];
+    lines.push(heading, ...body);
+  }
+  const six = new Set([...HANDOVER_KEYS.map(([, h]) => h), REPORTS_SECTION]);
+  for (const [heading, body] of now) if (!six.has(heading)) { lines.push(heading, ...body); kept.push(heading.slice(3)); }
+  return { text: `${lines.join('\n')}\n`, kept };
+}
+
 /** Lines of a generated section in a handover (heading included); 0 without it. */
 function sectionLines(lines, heading) {
   const i = lines.findIndex((l) => l.trim() === heading);

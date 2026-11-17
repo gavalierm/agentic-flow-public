@@ -595,7 +595,12 @@ export function readyForMove(dir) {
   if (!status.ok) return { ok: false, error: gitAccessProblem(dir, status) || `git status failed: ${firstLine(status.stderr)}` };
   if (status.stdout) {
     const list = status.stdout.split('\n').map((l) => l.slice(3));
-    return { ok: false, error: `the working tree is not clean (${list.slice(0, 5).join(', ')}${list.length > 5 ? ', …' : ''}); commit or restore first` };
+    // flow-public#100: an untracked clone of the mail client (comms/ in the brain root) was taken for clutter and removed,
+    // and the mail stopped. It is named, with the way that keeps it.
+    const clients = status.stdout.split('\n').filter((l) => l.startsWith('?? ')).map((l) => l.slice(3).replace(/\/$/, ''))
+      .filter((rel) => fs.existsSync(path.join(dir, rel, 'bin', 'comms.mjs')));
+    const keep = clients.length ? `; ${clients.map((c) => `${c}/`).join(', ')} is the mail client (bin/comms.mjs), never remove it: add ${clients.map((c) => `/${c}/`).join(', ')} to .gitignore of this repo and run again` : '';
+    return { ok: false, error: `the working tree is not clean (${list.slice(0, 5).join(', ')}${list.length > 5 ? ', …' : ''}); commit or restore first${keep}` };
   }
   if (!git(['remote', 'get-url', 'origin'], { cwd: dir }).ok) return { ok: true, note: 'no remote origin' };
   const fetch = gitRemote(['fetch', '--quiet', 'origin'], { cwd: dir });

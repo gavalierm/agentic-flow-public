@@ -42,12 +42,14 @@ test('startup: items 3-7 in order under 9 500 chars; item 1 from the rules hook 
 });
 
 // Spec 10.7, plan B3: no status block at the start; the first line with the topic's name stays.
-test('no status block: no "bez témy", no topic list or topic question; a held topic gives only the first line of the reply', () => {
+test('no status block: no topic list or topic question; the first line of the reply names the held topic, else "bez témy"', () => {
   const fx = setup();
   try {
     let r = fx.hook('session-start.mjs', { source: 'startup' });
     assert.equal(r.status, 0, r.stderr);
-    assert.doesNotMatch(r.context, /status block|bez témy|Dostupné témy|Aká bude téma|first reply in this session/);
+    assert.doesNotMatch(r.context, /status block|Dostupné témy|Aká bude téma/);
+    // Operator 2026-11-17: without a topic the agent wrote the skill name in place of the topic ("<project> / <skill> (bez témy)").
+    assert.match(r.context, /your first reply in this session starts with the line "project \/ bez témy"/);
     assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'ops']).status, 0);
     r = fx.hook('session-start.mjs', { source: 'startup' });
     assert.match(r.context, /\nyour first reply in this session starts with the line "project \/ alpha" \(spec 10\.7\)\n/);

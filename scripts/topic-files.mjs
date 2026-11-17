@@ -158,9 +158,10 @@ export function holderOp(brainDir, id, holder) {
 /**
  * Fields of flow v2 in the topic record (plan O1): `turn` (`state`, `alarm_at`, `stuck`, `continues`: the state of the
  * protocol, spec 10.2), `mode` (`discussion` | `off`, 10.6) and `repos` (`{ main, list }`, 4.5) at the top level; the
- * field `state` (working | paused | closed) is another one and stays.
+ * field `state` (working | paused | closed) is another one and stays. `results` (P-078): the results of the topic bound to
+ * their work file (scripts/results.mjs).
  */
-export const V2_FIELDS = ['turn', 'mode', 'repos'];
+export const V2_FIELDS = ['turn', 'mode', 'repos', 'results'];
 export const TURN_FIELDS = ['state', 'alarm_at', 'stuck', 'continues'];
 export const MODES = ['discussion', 'off'];
 

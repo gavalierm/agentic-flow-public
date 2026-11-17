@@ -29,6 +29,17 @@ export function pagePublish(input) {
   return { file, url: typeof ti.url === 'string' && ti.url ? ti.url : null };
 }
 
+/**
+ * The recorded path as it is now: a record of data 2.0 (`<brain>/temy/<id>/…`) names a file that migrate --to 2.1 moved to
+ * `<brain>/topics/<id>/…`; local/ is not migrated, so the record is read through (a project, 2026-11-17: the republish
+ * guard and the result binding missed the audit page). Unchanged when the file exists or no moved one does.
+ */
+export function currentPath(file) {
+  if (!file || fs.existsSync(file)) return file;
+  const moved = String(file).replace(/([\\/])temy([\\/][^\\/]+[\\/])/, '$1topics$2');
+  return moved !== file && fs.existsSync(moved) ? moved : file;
+}
+
 /** All recorded artifacts of this brain: [{ file, url, at, key }]. */
 export function readArtifacts(brainDir) {
   const dir = artifactsDir(brainDir);
@@ -36,7 +47,7 @@ export function readArtifacts(brainDir) {
   try { names = fs.readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { return []; }
   return names.flatMap((n) => {
     const data = readJson(path.join(dir, n), null);
-    return Array.isArray(data?.artifacts) ? data.artifacts.map((a) => ({ ...a, key: n.slice(0, -5) })) : [];
+    return Array.isArray(data?.artifacts) ? data.artifacts.map((a) => ({ ...a, file: currentPath(a.file), key: n.slice(0, -5) })) : [];
   });
 }
 

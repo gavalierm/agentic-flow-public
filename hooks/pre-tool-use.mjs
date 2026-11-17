@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
-import { loadContext, loadPolicy, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, brainWritable, personaWritableDirs, brainEntries, SCRATCH_DIR, resolveBrain, threadStateFile } from '../scripts/config.mjs';
+import { dialogAnsweredInTurn, loadContext, loadPolicy, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, brainWritable, personaWritableDirs, brainEntries, SCRATCH_DIR, resolveBrain, threadStateFile } from '../scripts/config.mjs';
 import { git, isInside, toPosix } from '../scripts/util.mjs';
 import { readDrift } from '../scripts/drift.mjs';
 import { parse, programIndex } from '../scripts/shell-parse.mjs';
@@ -196,7 +196,15 @@ export function classifyTarget(file) {
   const anchor = existingAncestor(abs);
   const top = anchor ? git(['rev-parse', '--show-toplevel'], { cwd: fs.statSync(anchor).isDirectory() ? anchor : path.dirname(anchor) }) : { ok: false };
   if (!top.ok) return { dangerous: true, reason: 'not in a git repository', exists };
-  const repo = path.resolve(top.stdout);
+  let repo = path.resolve(top.stdout);
+  // flow-public#99: the root of a repo nested in another one (a clone of the mail client in the brain, `?? comms/`) is a
+  // path of the outer repo: classified there (untracked), not as "tracked and clean" in its own repo.
+  // Windows: git gives D:/…, the target may be d:\… (the drive letter and the case of a path do not tell two paths apart).
+  const same = (a, b) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+  if (exists && same(repo, abs)) {
+    const outer = git(['rev-parse', '--show-toplevel'], { cwd: path.dirname(abs) });
+    if (outer.ok && !same(path.resolve(outer.stdout), abs)) repo = path.resolve(outer.stdout);
+  }
   const ignored = git(['check-ignore', '-q', '--', abs], { cwd: repo }).ok;
   if (ignored) return { dangerous: true, reason: 'ignored by git', exists, repo };
   if (!exists) return { dangerous: false, reason: 'new file', exists, repo };
@@ -229,7 +237,9 @@ const needsConsent = (reason) => permissionOutput('ask', reason);
 
 /** D-0042: the way a refused step that needs the operator's consent names, instead of a window that holds the thread. */
 export const NO_ASK_WAY = 'this step needs the operator\'s consent and the workflow never holds the thread with a confirmation window: if the work really needs it, ask with a question in the protocol (AskUserQuestion in the operator\'s turn naming the exact targets, by path or file name: the dialog check lets them stay; after the yes the same call passes once), otherwise go on with other work (P-042, D-0042)';
-export const noAskReason = (why) => `${String(why || '').replace(/[\s.]+$/, '')}. ${NO_ASK_WAY}`;
+// flow-public#102: the refusal names what the dialog must hold, so the yes pairs at the first try.
+// The way stays the end of the text: a refusal ending with it locks no path (run) and the Codex adapter rewrites it.
+export const noAskReason = (why, targets = []) => `${String(why || '').replace(/[\s.]+$/, '')}${targets.length ? `; the dialog names exactly: ${targets.map((t) => `"${toPosix(t)}"`).join(', ')}` : ''}. ${NO_ASK_WAY}`;
 
 /**
  * agent-alice/D-0094: what the operator's dialog must name for its yes to let a call that needs a consent pass: the file
@@ -257,7 +267,24 @@ export function consentTargets(tool, toolInput = {}, cwd = process.cwd(), anchor
   }
   const named = [...new Set([...paths, ...words])];
   if (named.length) return named;
-  return [op || text.split(' ').slice(0, 2).join(' ')].filter(Boolean);
+  if (op) return [op];
+  // flow-public#102: `cd <repo> && git commit --no-verify …` paired with its first two words ("cd <repo>"), so a dialog that
+  // named the repo and described the step did not count. A leading change of directory names the repo the step works in:
+  // its path is the target (a dialog names it by path or name); without one, the first two words of the command.
+  // PowerShell (Windows): Set-Location, sl, chdir and `-Path` likewise.
+  const CD = String.raw`(?:cd|pushd|chdir|set-location|sl)\s+(?:-(?:literal)?path\s+)?("[^"]+"|'[^']+'|[^\s;&|]+)`;
+  const LEAD = new RegExp(String.raw`^(?:${CD}\s*(?:&&|;|\|\|)\s*)+`, 'i');
+  // The path from the command as written (executedText hides quoted text, and a Windows path with a space is quoted).
+  const raw = LEAD.exec(cmd.replace(/\s+/g, ' ').trim());
+  if (raw) {
+    const dirs = [...raw[0].matchAll(new RegExp(CD, 'gi'))].map((m) => m[1].replace(/^['"]|['"]$/g, ''));
+    let dir = cwd;
+    for (const d of dirs) dir = path.resolve(dir, gitBashPath(d.startsWith('~/') ? path.join(os.homedir(), d.slice(2)) : d));
+    if (fs.existsSync(dir)) return [dir];
+  }
+  const lead = LEAD.exec(text);
+  const rest = lead ? text.slice(lead[0].length) : text;
+  return [rest.split(' ').slice(0, 2).join(' ')].filter(Boolean);
 }
 
 /** The text names the target: a path as namesPath (absolute, relative or its file name), another word as a whole word. */
@@ -1027,9 +1054,40 @@ function driftWrite(tool, toolInput, cwd, ctx, sessionId) {
   if (!FILE_TOOLS.includes(tool) && tool !== 'Bash' && tool !== 'PowerShell') return false;
   return !!questionSideEffect(tool, toolInput, cwd, ctx, sessionId);
 }
+// Operator 2026-11-17: "ak sa téma nezhoduje alebo sa zmenila, nech flow spraví výzvu, či zmeniť tému alebo pokračovať v už
+// existujúcej": a write after the verdict passes only once the operator answered a dialog in this turn (no plain repeat).
+const DIALOG_PASS = 'the step passes once the operator answered the dialog in this turn';
 export const DRIFT_REASON = (v) => v.belongs_to
-  ? `the task does not fit the subject of topic ${v.topic || '-'} ("${v.subject || '-'}"): ${v.reason || 'a different subject'}; it belongs to the open topic ${v.belongs_to} ("${v.belongs_subject || '-'}"): tell the operator the message drifted and that topic ${v.belongs_to} has this work; send it there (workflow:comms) or let the operator continue in its thread, do not work on it here and do not offer this topic as the recommended option of a dialog (P-012, flow-public#59); if the operator explicitly wants it in this topic, repeat the step`
-  : `the task does not fit the subject of topic ${v.topic || '-'} ("${v.subject || '-'}"): ${v.reason || 'a different subject'}; save it (P-007), tell the operator the message drifted from the topic and offer a new topic (workflow:topic create), do not work on it here and do not offer this topic as the recommended option of a dialog (P-012); if the operator explicitly wants it in this topic, repeat the step`;
+  ? `the task does not fit the subject of topic ${v.topic || '-'} ("${v.subject || '-'}"): ${v.reason || 'a different subject'}; it belongs to the open topic ${v.belongs_to} ("${v.belongs_subject || '-'}"). Ask the operator in one AskUserQuestion where it goes, the options in this order: "Prepnúť na tému ${v.belongs_to}" (recommended: the work goes there, send it with workflow:comms or the operator continues in its thread), "Nová téma" (save the message P-007, workflow:topic create in a new thread), "Pokračovať v téme ${v.topic || '-'}" (never the recommended one); do not work on it before the answer (P-012, flow-public#59); ${DIALOG_PASS}`
+  : `the task does not fit the subject of topic ${v.topic || '-'} ("${v.subject || '-'}"): ${v.reason || 'a different subject'}. Ask the operator in one AskUserQuestion where it goes, the options in this order: "Nová téma" (recommended: save the message P-007, workflow:topic create in a new thread), "Pokračovať v téme ${v.topic || '-'}" (never the recommended one); do not work on it before the answer (P-012); ${DIALOG_PASS}`;
+
+// P-012 (operator 2026-11-17): a thread that holds no topic starts work. Work is a write (also into the work files, where a
+// thread without a topic leaves everything outside git), a skill script, an Artifact or a worker; the workflow's own
+// scripts are not.
+const WORKFLOW_RUN = /(?:skills[\\/]workflow[\\/]bin[\\/]|(?:^|[\s/])(?:topic|save|comms|error|work-dir)\.mjs\b)/;
+const SKILL_RUN = /\b(?:node|python3?|bash|sh|pwsh|powershell)(?:\.exe)?\s+(?:"[^"]*|'[^']*|\S*)(?:\.claude[\\/]skills|skills[\\/]agentic)[\\/]/i;
+export function noTopicWork(tool, toolInput = {}, cwd = process.cwd()) {
+  if (tool === 'Agent' || tool === 'Task') return 'starts a worker';
+  if (tool === 'Artifact' || /(^|__)html_preview$/.test(String(tool))) return 'shows a page to the operator';
+  if (FILE_TOOLS.includes(tool)) { const t = targetOf(tool, toolInput); return t ? `${tool} ${toPosix(path.resolve(cwd, gitBashPath(t)))}` : null; }
+  if (tool !== 'Bash' && tool !== 'PowerShell') return null;
+  const cmd = String(toolInput.command || '');
+  if (WORKFLOW_RUN.test(cmd)) return null;
+  const hit = [...shellWrites(cmd, cwd), ...bashEdits(cmd, cwd), ...bashTargets(cmd, cwd), ...gitWriteDirs(cmd, cwd)][0];
+  if (hit) return `writes ${toPosix(path.resolve(cwd, hit))}`;
+  return SKILL_RUN.test(cmd) ? 'runs a skill script' : null;
+}
+export const NO_TOPIC_REASON = ({ what, verdict, topics, work }) => {
+  const named = verdict?.belongs_to ? topics.find((t) => t.id === verdict.belongs_to) : null;
+  const holder = (t) => (t.holder?.thread ? 'held by another thread: its thread has the work, send it there with workflow:comms; a takeover only on the operator\'s yes, topic.mjs claim <id> --force --operator-approved' : 'free: topic.mjs claim <id>');
+  const others = topics.filter((t) => t !== named).slice(0, 5).map((t) => `${t.id} ("${String(t.subject).slice(0, 80)}")`).join(', ');
+  const options = [
+    named ? `"Pokračovať v téme ${named.id}" (recommended: ${verdict.reason || named.subject}; ${holder(named)})` : (others ? `"Pokračovať v existujúcej téme" with the topic named (open: ${others}; a free one topic.mjs claim <id>, one another thread holds: its thread has the work)` : null),
+    `"Nová téma"${named || others ? '' : ' (recommended)'} (topic.mjs create <id> --subject "..." --class ...)`,
+    `"Bez témy" (what the work leaves stays only in ${work}, outside git, nothing of it is saved, P-078)`,
+  ].filter(Boolean);
+  return `this thread holds no topic and this step ${what}. Ask the operator first in one AskUserQuestion where the work goes, the options in this order: ${options.join('; ')}. Then claim or create the chosen topic and run the step in it, or without a topic repeat the step; ${DIALOG_PASS}; the thread is not asked again after the choice "Bez témy" (P-012, P-078)`;
+};
 
 const WAIT_UNIT = { '': 1, s: 1, m: 60, h: 3600, d: 86400 };
 /**
@@ -1512,6 +1570,41 @@ export function closedTargetsNote(ctx, input) {
   return closed.length ? `refused in this turn (P-054): ${closed.join(', ')}; reaching them another way is a bypass; an answer of the operator in a dialog that names the target and allows it opens it (flow-public#46)` : null;
 }
 
+/**
+ * P-012: the topic choice of the running turn, as a deny reason or null. The judge (UserPromptSubmit, detached) found the
+ * task off the subject of the held topic: a write of the turn is refused until the operator answered a dialog in it (switch
+ * topic, new topic or continue); no verdict yet (late, failed, off): nothing is refused. A thread without a topic is asked
+ * where the work goes at its first step of work. Runs after every other check (a refusal for data protection or consent
+ * comes first) and locks no path (the step passes after the answer).
+ */
+function topicChoice(ctx, input, tool, toolInput, cwd) {
+  if (input.agent_id || input.agent_type || !ctx.brainDir || !ctx.thread) return null;
+  const st = readThreadState(ctx.brainDir, ctx.thread);
+  const turnKey = st.turn_started_at;
+  if (!turnKey) return null;
+  const answered = dialogAnsweredInTurn(ctx.brainDir, ctx.thread);
+  if (st.topic_gate === turnKey && !st.no_topic_ok) {
+    const what = noTopicWork(tool, toolInput, cwd);
+    let held = [];
+    try { held = heldTopics(ctx.brainDir, ctx.thread); } catch { held = []; }
+    if (what && !held.length) {
+      if (!answered) {
+        let topics = [];
+        try { topics = listTopics(ctx.brainDir).filter((t) => !isMainTopic(t) && t.subject); } catch { topics = []; }
+        return NO_TOPIC_REASON({ what, verdict: readDrift(ctx.brainDir, ctx.thread, turnKey), topics, work: topicWorkLabel(ctx.brainDir, ctx.projectDir) });
+      }
+      writeThreadState(ctx.brainDir, ctx.thread, { ...st, no_topic_ok: new Date().toISOString() });
+      return null;
+    }
+  }
+  const verdict = !answered ? readDrift(ctx.brainDir, ctx.thread, turnKey) : null;
+  if (verdict && verdict.fits === false && !verdict.no_topic && !DRIFT_REMEDY.test(driftRemedyText(tool, toolInput)) && driftWrite(tool, toolInput, cwd, ctx, input.session_id)) {
+    writeThreadState(ctx.brainDir, ctx.thread, { ...st, drift_denied_at: turnKey });
+    return DRIFT_REASON(verdict);
+  }
+  return null;
+}
+
 export function run(input) {
   const ctx = loadContext({ requireBrain: false });
   const tool = input.tool_name;
@@ -1613,18 +1706,6 @@ export function run(input) {
     if (st.turn_intent === 'misread' && st.misread_denied_at !== turnKey && misreadWorkStart(tool, toolInput)) {
       writeThreadState(ctx.brainDir, ctx.thread, { ...st, misread_denied_at: turnKey });
       return permissionOutput('deny', MISREAD_TURN_REASON);
-    }
-  }
-
-  // P-012: the judge (UserPromptSubmit, detached) found this turn's task off the subject of the held topic: the first write of the
-  // turn is refused once; a repeat passes (the operator may want it here). No verdict yet (late, failed, off): nothing is refused.
-  if (!input.agent_id && !input.agent_type && ctx.brainDir && ctx.thread) {
-    const st = readThreadState(ctx.brainDir, ctx.thread);
-    const turnKey = st.turn_started_at;
-    const verdict = turnKey && st.drift_denied_at !== turnKey ? readDrift(ctx.brainDir, ctx.thread, turnKey) : null;
-    if (verdict && verdict.fits === false && !DRIFT_REMEDY.test(driftRemedyText(tool, toolInput)) && driftWrite(tool, toolInput, cwd, ctx, input.session_id)) {
-      writeThreadState(ctx.brainDir, ctx.thread, { ...st, drift_denied_at: turnKey });
-      return permissionOutput('deny', DRIFT_REASON(verdict));
     }
   }
 
@@ -1735,9 +1816,16 @@ export function run(input) {
         writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), consent_targets: { turn: since, targets: [...kept, ...targets].slice(-50) } });
       }
     }
-    out = permissionOutput('deny', noAskReason(why), out.hookSpecificOutput.additionalContext || null);
+    let named = [];
+    try { named = consentTargets(tool, toolInput, cwd, anchors, policy); } catch { named = []; }
+    out = permissionOutput('deny', noAskReason(why, named), out.hookSpecificOutput.additionalContext || null);
   }
   const decision = out?.hookSpecificOutput?.permissionDecision;
+  // P-012: the choice of the topic, after every other check; its refusal locks no path.
+  if (decision !== 'deny' && decision !== 'ask') {
+    const choice = topicChoice(ctx, input, tool, toolInput, cwd);
+    if (choice) return permissionOutput('deny', choice);
+  }
   // P-001 bulk read of docs/principles/ is a hint, not a deny: the check reads the command text and cannot tell a
   // search over the directory from a mention of it, and a wrong deny stopped the work (operator 2026-11-08, hooks
   // review: heuristic checks hint, only structural ones deny). The hint rides on an allow, never on a deny or ask.

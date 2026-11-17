@@ -15,7 +15,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { readJson, PLUGIN_ROOT } from './util.mjs';
-import { machineName, servicesDir } from './config.mjs';
+import { machineName, servicesDir, threadStateFile } from './config.mjs';
+import { knownBrains } from './update.mjs';
 import { PERSONA_REPO_RE, PERSONA_PREFIX } from './persona-name.mjs';
 import { dataPath, layoutOf } from './layout.mjs';
 import { readTopicRecord, readHolderRecord, listTopicRecords } from './topic-files.mjs';
@@ -70,6 +71,36 @@ function defaultClient(projectDir) {
   return DEFAULT_CLIENTS.slice(1).find(rel) || DEFAULT_CLIENT;
 }
 
+const mailHomes = new Map();
+/**
+ * Brain whose mail settings (key, outbox) a thread uses when its session project has no brain (P-024): among the brains
+ * this machine started a session in that have mail settings, the one with this thread's state (it sent or read mail
+ * there; the newest); with `any` (an explicit comms command) else the first one of a non-pilot instance. Mail addressed
+ * to a thread is that thread's in any mailbox key of the instance. Nothing is written there by this choice. Cause
+ * (operator 2026-11-17, critical: mail not picked up is lost mail): a thread in a project without a brain got the bell
+ * `you have mail in topic thread/<id>` for a reply to its message and comms.mjs refused with "brain unavailable".
+ */
+export function threadMailBrain(thread, { any = false } = {}) {
+  if (!thread) return null;
+  const key = `${thread}\0${any}`;
+  if (mailHomes.has(key)) return mailHomes.get(key);
+  let pick = null;
+  try {
+    const conf = (b) => dataPath(b, 'local', 'comms.json');
+    const withMail = knownBrains().filter((b) => { try { return fs.existsSync(conf(b)); } catch { return false; } });
+    const at = (b) => { try { return fs.statSync(threadStateFile(b, thread)).mtimeMs; } catch { return -1; } };
+    const own = withMail.map((b) => [b, at(b)]).filter(([, t]) => t >= 0).sort((a, b) => b[1] - a[1]);
+    pick = own.length ? own[0][0] : any ? (withMail.find((b) => readJson(conf(b), {})?.instance !== 'pilot') || withMail[0] || null) : null;
+  } catch { pick = null; }
+  mailHomes.set(key, pick);
+  return pick;
+}
+
+/** Brain of the mail settings: the session's, else the thread's mail home (threadMailBrain). */
+export function mailBrain(ctx, opts) {
+  return ctx?.brainDir || ctx?.mailBrainDir || (ctx?.thread ? threadMailBrain(ctx.thread, opts) : null);
+}
+
 /** Resolve the comms settings of a project. Never throws. */
 export function commsSettings(ctx) {
   const raw = ctx.config?.comms;
@@ -80,9 +111,10 @@ export function commsSettings(ctx) {
   const clientRel = process.env.WORKFLOW_COMMS_CLIENT || cfg.client
     || defaultClient(projectDir);
   const client = path.resolve(projectDir, clientRel);
+  const home = mailBrain(ctx);
   const configFile = cfg.config
     ? path.resolve(projectDir, cfg.config)
-    : ctx.brainDir ? dataPath(ctx.brainDir, 'local', 'comms.json') : null;
+    : home ? dataPath(home, 'local', 'comms.json') : null;
   const out = {
     enabled: fs.existsSync(client),
     configured: explicit || raw !== undefined,
@@ -91,8 +123,9 @@ export function commsSettings(ctx) {
     instance: cfg.instance || null,
     configFile: configFile && fs.existsSync(configFile) ? configFile : null,
     project: commsProjectName(ctx),
-    outbox: ctx.brainDir ? dataPath(ctx.brainDir, 'local', 'outbox') : null,
-    clientDir: ctx.brainDir ? dataPath(ctx.brainDir, 'local', 'comms') : null,
+    outbox: home ? dataPath(home, 'local', 'outbox') : null,
+    clientDir: home ? dataPath(home, 'local', 'comms') : null,
+    mailHome: !ctx.brainDir && home ? home : null,
     waitMs: ctx.policy?.comms?.hook_wait_ms ?? 2000,
   };
   if (!out.enabled) out.reason = explicit ? `comms client not found at ${clientRel}` : 'comms not configured';
