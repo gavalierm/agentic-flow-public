@@ -38,6 +38,9 @@ test('classifyPrompt: only the exact whole prompt is a bell; a quoted template i
   // labels the wake service sends for a persona main thread and for a thread without a topic (audit M1 2026-11-11)
   for (const l of ['@alpha/main', '@beta/main', 'thread/mcp:f0a5bf5c-1234', 'thread/mcp:launch:12e5867c-aa', 'shop-web/faq']) assert.equal(classifyPrompt(`you have mail in topic ${l}`, policy), 'wake', l);
   assert.equal(classifyPrompt('you have mail in topic @', policy), null);
+  // the sender after the recipient (comms v2.0.17): still a bell; anything more is an operator prompt
+  for (const l of ['shop-web/faq from shop-api/schema', '@alpha/main from thread/mcp:f0a5bf5c-1234', 'thread/b2 from agent-bob']) assert.equal(classifyPrompt(`you have mail in topic ${l}`, policy), 'wake', l);
+  for (const l of ['alpha from', 'alpha from x y', 'alpha from x, read it']) assert.equal(classifyPrompt(`you have mail in topic ${l}`, policy), null, l);
   assert.deepEqual(parsePrompt('no reply m-123', policy), { kind: 'no-reply', id: 'm-123' });
   assert.deepEqual(parsePrompt('undelivered m-9', policy), { kind: 'undelivered', id: 'm-9' });
   assert.equal(classifyPrompt('there was no reply m-123 yesterday', policy), null);

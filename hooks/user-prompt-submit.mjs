@@ -49,6 +49,9 @@ const ID = '((?=[A-Za-z0-9_.:-]*\\d)[A-Za-z0-9][A-Za-z0-9_.:-]*)';
 // The wake service labels a bell `project/topic`, `@persona/topic` (main thread of a persona) or `thread/<thread id>` (ids
 // like `mcp:launch:<uuid>`): a label it sends is a bell, else the turn runs as the operator's (34 % of bells, audit M1 2026-11-11).
 const TOPIC = '@?[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.:-]*)?';
+// Optional sender of a wake (agentic-comms v2.0.17, operator 2026-11-17): `<wake_template> <to> from <from>`, where
+// <from> is the sender's topic, thread or key. Never the body (P-047).
+const FROM = '(?:\\s+from\\s+@?[A-Za-z0-9][A-Za-z0-9_.:@-]*(?:/[A-Za-z0-9][A-Za-z0-9_.:@-]*)?)?';
 
 /**
  * Kind of the prompt. Bells (wake, no-reply, undelivered, keepalive) are recognised ONLY when the whole prompt (trimmed)
@@ -59,7 +62,7 @@ export function parsePrompt(prompt, policy) {
   const p = String(prompt || '').trim();
   const cfg = policy?.prompt || {};
   const exact = (tpl, tail) => (tpl ? new RegExp(`^${escapeRe(String(tpl).trim()).replace(/ /g, '\\s+')}${tail}$`, 'i').exec(p) : null);
-  if (exact(cfg.wake_template, `\\s+${TOPIC}`)) return { kind: 'wake' };
+  if (exact(cfg.wake_template, `\\s+${TOPIC}${FROM}`)) return { kind: 'wake' };
   let m = exact(cfg.no_reply_template, `\\s+${ID}`);
   if (m) return { kind: 'no-reply', id: m[1] };
   m = exact(cfg.undelivered_template, `\\s+${ID}`);
