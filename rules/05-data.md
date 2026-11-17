@@ -5,4 +5,4 @@ Bezpečné je iba to, čo obnoví git. Zmazanie, prepísanie či netriviálna zm
 Zamietnutie (povolenia, hook) NEOBCHÁDZAJ iným príkazom s rovnakým účinkom; uveď ho vo výsledku, pokračuj inou prácou.
 
 ### P-052: Pracovné súbory a zdroje
-Pomocné a klony iba do pracovných súborov (cesta zo štartu, bez schválenia); nie `/tmp` ani `~`. Zdroj ulož hneď (`save source`), výsledok do `topics/<téma>/`, výstupy triedi `done --topic`. Zadanie pracovníka iba z `delegate.mjs prepare`.
+Pomocné a klony iba do pracovných súborov (cesta zo štartu, bez schválenia); nie `/tmp` ani `~`. Zdroj ulož hneď (`save source`); výsledok práce podľa P-007. Zadanie pracovníka iba z `delegate.mjs prepare`.
