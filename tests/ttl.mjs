@@ -129,6 +129,13 @@ export function selectSince(root, ref) {
   const changed = changedSince(root, ref);
   const core = all.filter((t) => t.keep).map((t) => t.file);
   const temporary = all.filter((t) => !t.keep).map((t) => t.file);
+  // The version line of package.json (every release changes it) is no change of the test infrastructure: it ran the whole
+  // suite at every release (170 s, 2026-11-17).
+  if (changed.has('package.json')) {
+    const base = git(root, ['merge-base', ref, 'HEAD']).trim();
+    const lines = git(root, ['diff', '-U0', base, '--', 'package.json']).split('\n').filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---) /.test(l));
+    if (lines.length && lines.every((l) => /^[+-]\s*"version":/.test(l))) changed.delete('package.json');
+  }
   const shared = SHARED.filter((f) => changed.has(f));
   let picked = temporary;
   if (!shared.length) {

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
 import { dialogAnsweredInTurn, loadContext, loadPolicy, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, brainWritable, personaWritableDirs, brainEntries, SCRATCH_DIR, resolveBrain, threadStateFile } from '../scripts/config.mjs';
-import { git, isInside, toPosix } from '../scripts/util.mjs';
+import { git, isInside, toPosix, PLUGIN_ROOT } from '../scripts/util.mjs';
 import { readDrift } from '../scripts/drift.mjs';
 import { parse, programIndex } from '../scripts/shell-parse.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
@@ -150,6 +150,23 @@ export function fullSuiteCommand(command, patterns) {
   }
   return null;
 }
+/**
+ * P-079 (operator 2026-11-17: several threads ran full suites at once and the machine did not keep up): a full test run in
+ * any project goes through the machine's queue, scripts/test-slot.mjs (one run at a time by default, below normal CPU
+ * priority). The command is rewritten in place (updatedInput); the agent does nothing. null: nothing to rewrite (no full
+ * run, or it already goes through the queue).
+ */
+export function slotShellRewrite(command, patterns) {
+  const cmd = String(command || '');
+  if (/test-slot\.mjs/.test(cmd)) return null;
+  const seg = fullSuiteCommand(cmd, patterns);
+  if (!seg) return null;
+  const at = cmd.indexOf(seg);
+  if (at < 0) return null;
+  const slot = toPosix(path.join(PLUGIN_ROOT, 'scripts', 'test-slot.mjs'));
+  return { command: `${cmd.slice(0, at)}node "${slot}" -- ${seg}${cmd.slice(at + seg.length)}`, run: seg };
+}
+
 /** P-076: a rule of deny_commands without its own reason still names the way that passes (the agent tried other forms). */
 export const DENIED_COMMAND_WAY = 'command form forbidden by the project: change one file with Edit (after Read), write a new file with Write, read with Read or Grep';
 export function deniedCommand(command, rules, cwd = '') {
@@ -1898,13 +1915,17 @@ function pathChecks(input, ctx, cwd) {
   }
 
   // The same for a shell command: the scratchpad path in it becomes the work dir (updatedInput), then the usual checks.
-  const padShell = (tool === 'Bash' || tool === 'PowerShell') ? shellScratchpadRewrite(toolInput.command, input.session_id, ctx) : null;
+  const shellTool = tool === 'Bash' || tool === 'PowerShell';
+  const padShell0 = shellTool ? shellScratchpadRewrite(toolInput.command, input.session_id, ctx) : null;
+  const slotted = shellTool ? slotShellRewrite(padShell0 ? padShell0.command : toolInput.command, ctx.policy?.harness?.worker_full_test_commands) : null;
+  const padShell = slotted ? { command: slotted.command, to: padShell0?.to || null, slot: slotted.run } : padShell0;
   if (padShell) {
     const updated = { ...toolInput, command: padShell.command };
     const out = pathChecks({ ...input, tool_input: updated }, ctx, cwd);
     const h = out?.hookSpecificOutput || {};
     if (h.permissionDecision === 'deny') return out;
-    const note = `the harness scratchpad is not used here: the command runs with ${padShell.to}/ in its place; files are there (work files, P-052)`;
+    const note = [padShell.to ? `the harness scratchpad is not used here: the command runs with ${padShell.to}/ in its place; files are there (work files, P-052)` : null,
+      padShell.slot ? `the full test run (${padShell.slot}) goes through the machine's test queue (one full run at a time, lower CPU priority, P-079); it may wait for a run of another thread` : null].filter(Boolean).join('; ');
     return { ...out, hookSpecificOutput: { ...h, hookEventName: 'PreToolUse', permissionDecision: h.permissionDecision || 'allow', permissionDecisionReason: h.permissionDecisionReason || note, additionalContext: [h.additionalContext, note].filter(Boolean).join('\n'), updatedInput: updated } };
   }
 

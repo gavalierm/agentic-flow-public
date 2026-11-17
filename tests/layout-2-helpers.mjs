@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { PLUGIN_ROOT, cleanEnv, initProject } from './helpers.mjs';
+import { PLUGIN_ROOT, cleanEnv, initProject, fixtureRoot } from './helpers.mjs';
 
 const BIN = (name) => path.join(PLUGIN_ROOT, 'bin', name);
 const HOOK = (name) => path.join(PLUGIN_ROOT, 'hooks', name);
@@ -49,18 +49,23 @@ function hooker(env, cwdDefault) {
  * <root>/origin.git, <root>/project (a code repo, layout 1 unless projectLayout 2) and <root>/brain made by
  * brain-init --layout 2 (or layout 1 with brainLayout 1), pushed to origin.
  */
-export function setup2({ thread = 'a1', brainLayout = 2, projectLayout = 1 } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-l2-'));
+function buildSetup2(root, { brainLayout, projectLayout }, env) {
   const origin = path.join(root, 'origin.git');
   gitq(root, 'init', '-q', '--bare', '-b', 'main', origin);
   const project = path.join(root, 'project');
   const brain = path.join(root, 'brain');
   initProject(project, { brainRel: '../brain' });
   if (projectLayout !== 1) makeLayout2Repo(project, projectLayout);
-  const env = cleanEnv({ WORKFLOW_THREAD_ID: thread });
   const r = spawnSync(process.execPath, [BIN('brain-init.mjs'), brain, '--remote', origin, '--project', project, '--layout', String(brainLayout)], { env, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`brain-init failed: ${r.stderr}`);
   gitq(brain, 'config', 'user.name', 't'); gitq(brain, 'config', 'user.email', 't@t');
+}
+
+/** The fixture of setup2 over `root` (built by buildSetup2, copied from its template, P-079). */
+function setup2At(root, thread, env) {
+  const origin = path.join(root, 'origin.git');
+  const project = path.join(root, 'project');
+  const brain = path.join(root, 'brain');
   return {
     root, origin, project, brain, env, thread,
     run: runner(env, project),
@@ -73,22 +78,32 @@ export function setup2({ thread = 'a1', brainLayout = 2, projectLayout = 1 } = {
   };
 }
 
+export function setup2({ thread = 'a1', brainLayout = 2, projectLayout = 1 } = {}) {
+  const env = cleanEnv({ WORKFLOW_THREAD_ID: thread });
+  const root = fixtureRoot(JSON.stringify({ f: 'setup2', thread, brainLayout, projectLayout }), (dir) => buildSetup2(dir, { brainLayout, projectLayout }, env));
+  return setup2At(root, thread, env);
+}
+
 /** Layout 3: brain (brain-init --layout 3) and the session project in layout 3; setup2 with both layouts 3. */
 export const setup3 = ({ thread = 'a1', projectLayout = 3 } = {}) => setup2({ thread, brainLayout: 3, projectLayout });
 
 /** A persona in layout 2: the repository is the brain (`"brain": "."`), made by brain-init --layout 2 and the adapter. */
 export function persona2({ thread = 'p1' } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-l2p-'));
-  const origin = path.join(root, 'origin.git');
-  gitq(root, 'init', '-q', '--bare', '-b', 'main', origin);
-  const dir = path.join(root, 'bob');
   const env = cleanEnv({ WORKFLOW_THREAD_ID: thread });
+  const root = fixtureRoot(JSON.stringify({ f: 'persona2', thread }), (top) => {
+    const origin = path.join(top, 'origin.git');
+    gitq(top, 'init', '-q', '--bare', '-b', 'main', origin);
+    const d = path.join(top, 'bob');
+    const build = runner(env, d);
+    const r = build('brain-init.mjs', [d, '--remote', origin, '--layout', '2'], { cwd: top });
+    if (r.status !== 0) throw new Error(r.out);
+    gitq(d, 'config', 'user.name', 't'); gitq(d, 'config', 'user.email', 't@t');
+    const a = build('adapter.mjs', ['claude-code', '--brain', '.']);
+    if (a.status !== 0) throw new Error(a.out);
+  });
+  const origin = path.join(root, 'origin.git');
+  const dir = path.join(root, 'bob');
   const run = runner(env, dir);
-  const r = run('brain-init.mjs', [dir, '--remote', origin, '--layout', '2'], { cwd: root });
-  if (r.status !== 0) throw new Error(r.out);
-  gitq(dir, 'config', 'user.name', 't'); gitq(dir, 'config', 'user.email', 't@t');
-  const a = run('adapter.mjs', ['claude-code', '--brain', '.']);
-  if (a.status !== 0) throw new Error(a.out);
   return { root, origin, dir, env, run, hook: hooker(env, dir), git: gitq, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
@@ -97,14 +112,17 @@ export function persona2({ thread = 'p1' } = {}) {
  * `projectLayout` and a second code repo `srv` in `repoLayout` with target branch main (repo knowledge, D-0002; plan O12).
  */
 export function domain2({ thread = 'd1', brainLayout = 1, projectLayout = 2, repoLayout = 2 } = {}) {
-  const fx = setup2({ thread, brainLayout, projectLayout });
-  fs.writeFileSync(path.join(fx.root, '.agentic-domain'), '{"brain":"brain"}');
-  const srv = path.join(fx.root, 'srv');
-  initProject(srv);
-  fs.writeFileSync(path.join(srv, '.workflow.json'), JSON.stringify({ brain: '../brain', target_branch: 'main' }) + '\n');
-  gitq(srv, 'commit', '-qam', 'target branch');
-  if (repoLayout === 2) makeLayout2Repo(srv);
-  return { ...fx, srv };
+  const env = cleanEnv({ WORKFLOW_THREAD_ID: thread });
+  const root = fixtureRoot(JSON.stringify({ f: 'domain2', thread, brainLayout, projectLayout, repoLayout }), (dir) => {
+    buildSetup2(dir, { brainLayout, projectLayout }, env);
+    fs.writeFileSync(path.join(dir, '.agentic-domain'), '{"brain":"brain"}');
+    const s = path.join(dir, 'srv');
+    initProject(s);
+    fs.writeFileSync(path.join(s, '.workflow.json'), JSON.stringify({ brain: '../brain', target_branch: 'main' }) + '\n');
+    gitq(s, 'commit', '-qam', 'target branch');
+    if (repoLayout === 2) makeLayout2Repo(s);
+  });
+  return { ...setup2At(root, thread, env), srv: path.join(root, 'srv') };
 }
 
 /**
@@ -113,31 +131,36 @@ export function domain2({ thread = 'd1', brainLayout = 1, projectLayout = 2, rep
  * (`project.git`, `web.git`) on branch main. thread(state) writes the state of the session thread (turn source, dialog).
  */
 export function domain3({ thread = 'a1', defaultRepo = null, web = true } = {}) {
-  const fx = setup3({ thread });
-  fs.writeFileSync(path.join(fx.root, '.agentic-domain'), '{"brain":"brain"}');
-  const withOrigin = (dir) => {
-    const bare = `${dir}.git`;
-    gitq(fx.root, 'init', '-q', '--bare', '-b', 'main', bare);
-    gitq(dir, 'remote', 'add', 'origin', bare);
-    gitq(dir, 'push', '-q', '-u', 'origin', 'main');
-    return bare;
-  };
-  const projectOrigin = withOrigin(fx.project);
-  let webDir = null;
-  let webOrigin = null;
-  if (web) {
-    webDir = path.join(fx.root, 'web');
-    initProject(webDir);
-    makeLayout3Repo(webDir);
-    webOrigin = withOrigin(webDir);
-  }
-  if (defaultRepo) {
-    const policy = path.join(fx.brain, 'policy.json');
-    fs.writeFileSync(policy, JSON.stringify({ ...JSON.parse(fs.readFileSync(policy, 'utf8')), default_repo: defaultRepo }, null, 2) + '\n');
-    gitq(fx.brain, 'add', '-A');
-    gitq(fx.brain, 'commit', '-q', '--no-verify', '-m', 'default repo');
-    gitq(fx.brain, 'push', '-q', 'origin', 'HEAD');
-  }
+  const env = cleanEnv({ WORKFLOW_THREAD_ID: thread });
+  const root = fixtureRoot(JSON.stringify({ f: 'domain3', thread, defaultRepo, web }), (dir) => {
+    buildSetup2(dir, { brainLayout: 3, projectLayout: 3 }, env);
+    fs.writeFileSync(path.join(dir, '.agentic-domain'), '{"brain":"brain"}');
+    const withOrigin = (repo) => {
+      const bare = `${repo}.git`;
+      gitq(dir, 'init', '-q', '--bare', '-b', 'main', bare);
+      gitq(repo, 'remote', 'add', 'origin', bare);
+      gitq(repo, 'push', '-q', '-u', 'origin', 'main');
+    };
+    withOrigin(path.join(dir, 'project'));
+    if (web) {
+      const w = path.join(dir, 'web');
+      initProject(w);
+      makeLayout3Repo(w);
+      withOrigin(w);
+    }
+    if (defaultRepo) {
+      const b = path.join(dir, 'brain');
+      const policy = path.join(b, 'policy.json');
+      fs.writeFileSync(policy, JSON.stringify({ ...JSON.parse(fs.readFileSync(policy, 'utf8')), default_repo: defaultRepo }, null, 2) + '\n');
+      gitq(b, 'add', '-A');
+      gitq(b, 'commit', '-q', '--no-verify', '-m', 'default repo');
+      gitq(b, 'push', '-q', 'origin', 'HEAD');
+    }
+  });
+  const fx = setup2At(root, thread, env);
+  const projectOrigin = `${fx.project}.git`;
+  const webDir = web ? path.join(root, 'web') : null;
+  const webOrigin = web ? `${webDir}.git` : null;
   const thread_ = (state = {}) => {
     const file = path.join(fx.brain, 'local', 'threads', `${thread}.json`);
     fs.mkdirSync(path.dirname(file), { recursive: true });

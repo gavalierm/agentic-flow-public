@@ -124,20 +124,33 @@ export function localTime(value, { timeZone } = {}) {
 export const GIT_NO_QUOTE = Object.freeze(['-c', 'core.quotepath=false']);
 
 /** Run git synchronously. Returns { status, stdout, stderr, ok }. Paths in the output are never quoted (GIT_NO_QUOTE). */
+// P-079 (speed): one brain write ran 49 git commands, ~8 ms each; the same queries came 5-6 times (remote get-url,
+// rev-parse of HEAD's branch, top level, git dir). Their answers stay the same while this process changes nothing of the
+// repo: kept per cwd until a command that can change them (checkout, remote, commit, config ...) runs through here.
+const GIT_STABLE = [['remote', 'get-url'], ['rev-parse', '--show-toplevel'], ['rev-parse', '--git-dir'], ['rev-parse', '--git-common-dir'], ['rev-parse', '--path-format=absolute', '--git-common-dir'], ['rev-parse', '--abbrev-ref', 'HEAD']];
+const GIT_CHANGES = new Set(['remote', 'checkout', 'switch', 'init', 'clone', 'worktree', 'commit', 'branch', 'symbolic-ref', 'config', 'merge', 'rebase', 'reset', 'pull', 'stash']);
+const gitMemo = new Map();
+const stableQuery = (args) => GIT_STABLE.some((q) => (q[0] === 'remote' ? args.length === 3 : args.length === q.length) && q.every((a, i) => args[i] === a));
+
 export function git(args, { cwd, env, input } = {}) {
+  const memo = !env && input === undefined && stableQuery(args) ? `${path.resolve(cwd || process.cwd())}\0${args.join('\0')}` : null;
+  if (memo && gitMemo.has(memo)) return { ...gitMemo.get(memo) };
+  if (GIT_CHANGES.has(args[0])) gitMemo.clear();
   const res = spawnSync('git', [...GIT_NO_QUOTE, ...args], {
     cwd,
     env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: '0' },
     encoding: 'utf8',
     input,
   });
-  return {
+  const out = {
     status: res.status,
     stdout: (res.stdout || '').trim(),
     stderr: (res.stderr || '').trim(),
     ok: res.status === 0,
     error: res.error,
   };
+  if (memo && out.ok) gitMemo.set(memo, out);
+  return out;
 }
 
 /** Retry a git call while it fails on index.lock (P-040 item 4). Synchronous with a short random wait. */

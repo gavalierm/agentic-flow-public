@@ -86,6 +86,7 @@ Každý princíp je v samostatnom súbore `P-NNN.md`. Agent číta jeden súbor,
 - [P-076](P-076.md): Charakter workflow: rýchly, svižný, organizovaný; hooky iba poistka (fast, brisk, organized), agent-alice/D-0094
 - [P-077](P-077.md): Návrh sa vykresľuje ako HTML (a proposal is rendered as HTML, not a Markdown file)
 - [P-078](P-078.md): Výsledok sa ukladá sám a nezastaráva (results are saved semi-automatically and stay current)
+- [P-079](P-079.md): Rýchlosť je požiadavka (speed is a requirement)
 
 ## Predvolené hodnoty politiky
 

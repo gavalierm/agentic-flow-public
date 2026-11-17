@@ -113,17 +113,62 @@ export function initProject(dir, { brainRel = '../brain', remote = null } = {}) 
  * Optional second clone: <root>/project-b + <root>/brain-b. The brain is in data layout `layout` (1 unless given; a new
  * brain without --layout is layout 3, tests/layout-2-helpers.mjs setup3).
  */
-export function setup({ thread = 'a1', remote = true, second = false, brainName = 'brain', layout = 1 } = {}) {
+// P-079 (speed): setup() built the repos and the brain anew for every test (~400 ms: git init, commits, brain-init.mjs,
+// push to the bare remote; ~330 tests). The first setup of a shape builds them once per test process; every setup copies
+// that template (~10 ms) and rewrites the absolute paths it holds (git config and logs of the brains).
+// WORKFLOW_TEST_FRESH_SETUP=1 builds every fixture anew.
+const TEMPLATES = new Map();
+function templateFiles(root) {
+  const hits = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { if (e.name !== 'objects') walk(p); } else if (e.isFile() && fs.readFileSync(p).includes(root)) hits.push(path.relative(root, p));
+    }
+  };
+  walk(root);
+  return hits;
+}
+export function fixtureRoot(key, build) {
+  if (process.env.WORKFLOW_TEST_FRESH_SETUP === '1') { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-test-')); build(root); return root; }
+  let t = TEMPLATES.get(key);
+  if (!t) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-tpl-'));
+    build(root);
+    t = { root, files: templateFiles(root) };
+    if (!TEMPLATES.size) process.on('exit', () => { for (const x of TEMPLATES.values()) fs.rmSync(x.root, { recursive: true, force: true }); });
+    TEMPLATES.set(key, t);
+  }
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-test-'));
+  fs.cpSync(t.root, root, { recursive: true });
+  for (const rel of t.files) { const f = path.join(root, rel); fs.writeFileSync(f, fs.readFileSync(f, 'utf8').split(t.root).join(root)); }
+  return root;
+}
+
+export function setup({ thread = 'a1', remote = true, second = false, brainName = 'brain', layout = 1 } = {}) {
+  const env = cleanEnv({ WORKFLOW_THREAD_ID: thread });
+  const root = fixtureRoot(JSON.stringify({ thread, remote, second, brainName, layout }), (dir) => {
+    const origin = path.join(dir, 'origin.git');
+    if (remote) gitq(dir, 'init', '-q', '--bare', '-b', 'main', origin);
+    const project = path.join(dir, 'project');
+    const brain = path.join(dir, brainName);
+    initProject(project, { brainRel: `../${brainName}` });
+    const r = spawnSync(process.execPath, [BIN('brain-init.mjs'), brain, ...(remote ? ['--remote', origin] : []), '--project', project, '--layout', String(layout)], { env, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`brain-init failed: ${r.stderr}`);
+    gitq(brain, 'config', 'user.name', 't'); gitq(brain, 'config', 'user.email', 't@t');
+    if (second) {
+      const projectB = path.join(dir, 'project-b');
+      const brainB = path.join(dir, 'brain-b');
+      initProject(projectB, { brainRel: '../brain-b' });
+      gitq(dir, 'clone', '-q', origin, brainB);
+      const r2 = spawnSync(process.execPath, [BIN('brain-init.mjs'), brainB, '--attach', '--project', projectB], { env, encoding: 'utf8' });
+      if (r2.status !== 0) throw new Error(`brain-init --attach failed: ${r2.stderr}`);
+      gitq(brainB, 'config', 'user.name', 't'); gitq(brainB, 'config', 'user.email', 't@t');
+    }
+  });
   const origin = path.join(root, 'origin.git');
-  if (remote) gitq(root, 'init', '-q', '--bare', '-b', 'main', origin);
   const project = path.join(root, 'project');
   const brain = path.join(root, brainName);
-  initProject(project, { brainRel: `../${brainName}` });
-  const env = cleanEnv({ WORKFLOW_THREAD_ID: thread });
-  const r = spawnSync(process.execPath, [BIN('brain-init.mjs'), brain, ...(remote ? ['--remote', origin] : []), '--project', project, '--layout', String(layout)], { env, encoding: 'utf8' });
-  if (r.status !== 0) throw new Error(`brain-init failed: ${r.stderr}`);
-  for (const b of [brain]) { gitq(b, 'config', 'user.name', 't'); gitq(b, 'config', 'user.email', 't@t'); }
   const fx = {
     root, origin, project, brain, env, thread,
     run(bin, args = [], opts = {}) {
@@ -158,11 +203,6 @@ export function setup({ thread = 'a1', remote = true, second = false, brainName 
   if (second) {
     fx.projectB = path.join(root, 'project-b');
     fx.brainB = path.join(root, 'brain-b');
-    initProject(fx.projectB, { brainRel: '../brain-b' });
-    gitq(root, 'clone', '-q', origin, fx.brainB);
-    const r2 = spawnSync(process.execPath, [BIN('brain-init.mjs'), fx.brainB, '--attach', '--project', fx.projectB], { env, encoding: 'utf8' });
-    if (r2.status !== 0) throw new Error(`brain-init --attach failed: ${r2.stderr}`);
-    gitq(fx.brainB, 'config', 'user.name', 't'); gitq(fx.brainB, 'config', 'user.email', 't@t');
     fx.envB = cleanEnv({ WORKFLOW_THREAD_ID: 'b2' });
     fx.runB = (bin, args = [], opts = {}) => fx.run(bin, args, { cwd: fx.projectB, env: { ...fx.envB, ...(opts.env || {}) }, ...opts });
     fx.runAsyncB = (bin, args = [], opts = {}) => fx.runAsync(bin, args, { cwd: fx.projectB, env: { ...fx.envB, ...(opts.env || {}) }, ...opts });
