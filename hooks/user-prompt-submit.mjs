@@ -28,7 +28,7 @@ export const HOOK_META = { event: 'UserPromptSubmit', class: 'e+c', limit: '2 li
 // report-06d22fbc: "propose a change, do not make it" with no exception made an agent ask "shall I send the report to that
 // thread too?" after the operator had already told it to report: a step the operator approved, or the change the question
 // plainly asks for, is done and announced, not turned into a question (P-059).
-export const QUESTION_TURN_LINE = 'the operator asks (question, explanation, check) and gives no instruction to change: answer it and propose a new change, do not make it (P-063); a step the operator already approved in this topic, or the one the question plainly asks for (a criticism of the channel when reporting is approved: send the mail there), is no new change: do it and say so, do not ask about it (P-059)';
+export const QUESTION_TURN_LINE = 'the operator asks (question, explanation, check) and gives no instruction to change: answer it and propose a new change, do not make it (P-063); a step the operator already approved in this topic, or the one the question plainly asks for (a criticism of the channel when reporting is approved: send the mail there), is no new change: do it and say so, do not ask about it (P-059); a proposal of the operator asked as a question („nemalo by…?“, „čo keby…?“) is approved once you verified it and agree: do it and say so, do not ask „súhlasíš s návrhom?“ (P-059)';
 
 const escapeRe = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // Pilot nudge-why 2026-11-14: a task quoting „to je chyba“ or saying „ak je to chyba hooku“ got „error reported“ although
