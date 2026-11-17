@@ -1092,6 +1092,27 @@ export function harnessScratchpadTarget(abs, sessionId, ctx, env = process.env) 
 }
 
 /**
+ * A shell command with the harness scratchpad of this session in it (the system prompt tells the model to use it): the
+ * scratchpad path becomes the work dir, as for Write (P-052; report 2026-11-17: `> …/scratchpad/access.txt` refused, one
+ * more turn, the agent asked why it was there). Only while the scratchpad holds no file (a file there keeps the refusal),
+ * so a read of a real file never moves. Returns { command, from, to } or null.
+ */
+export function shellScratchpadRewrite(command, sessionId, ctx, env = process.env) {
+  if (!ctx.projectDir || typeof command !== 'string') return null;
+  const re = /(?:[A-Za-z]:)?\/[^\s'"`;|&<>()]*?\/claude-\d+\/[^/\s'"`;|&<>()]+\/([0-9A-Fa-f-]{8,})\/scratchpad(?=[/\s'"`;|&<>()]|$)/g;
+  let from = null;
+  for (const m of command.matchAll(re)) {
+    if (!isTempPath(`${m[0].replace(/\/claude-\d+\/.*$/, '')}/x`, env) || (sessionId && m[1] !== sessionId)) continue;
+    if (from && from !== m[0]) return null;
+    from = m[0];
+  }
+  if (!from) return null;
+  try { if (fs.readdirSync(from).length) return null; } catch { /* not created yet: nothing to keep */ }
+  const to = toPosix(workDir(ctx));
+  return { command: command.split(from).join(to), from, to };
+}
+
+/**
  * `<repo>/agentic/` of a domain repo (or of its topic worktree) is written only by save (P-013, D-0002): format checks,
  * dedup and the commit into the repo happen there.
  */
@@ -1785,6 +1806,17 @@ function pathChecks(input, ctx, cwd) {
     const h = out?.hookSpecificOutput || {};
     if (h.permissionDecision === 'deny') return out;
     const note = `the harness scratchpad is not used here: this file is ${toPosix(padTo)}; read and edit it there (Read, cat), not in the scratchpad (work files in ${topicWorkLabel(ctx.brainDir, ctx.projectDir)}, P-052)`;
+    return { ...out, hookSpecificOutput: { ...h, hookEventName: 'PreToolUse', permissionDecision: h.permissionDecision || 'allow', permissionDecisionReason: h.permissionDecisionReason || note, additionalContext: [h.additionalContext, note].filter(Boolean).join('\n'), updatedInput: updated } };
+  }
+
+  // The same for a shell command: the scratchpad path in it becomes the work dir (updatedInput), then the usual checks.
+  const padShell = (tool === 'Bash' || tool === 'PowerShell') ? shellScratchpadRewrite(toolInput.command, input.session_id, ctx) : null;
+  if (padShell) {
+    const updated = { ...toolInput, command: padShell.command };
+    const out = pathChecks({ ...input, tool_input: updated }, ctx, cwd);
+    const h = out?.hookSpecificOutput || {};
+    if (h.permissionDecision === 'deny') return out;
+    const note = `the harness scratchpad is not used here: the command runs with ${padShell.to}/ in its place; files are there (work files, P-052)`;
     return { ...out, hookSpecificOutput: { ...h, hookEventName: 'PreToolUse', permissionDecision: h.permissionDecision || 'allow', permissionDecisionReason: h.permissionDecisionReason || note, additionalContext: [h.additionalContext, note].filter(Boolean).join('\n'), updatedInput: updated } };
   }
 

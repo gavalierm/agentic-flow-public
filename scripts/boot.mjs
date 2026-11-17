@@ -265,7 +265,7 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
     // brain in layout 2 holds them (D-0056), else the project repo.
     const v1 = hasScratch(topicHome(ctx.brainDir, ctx.projectDir));
     const here = toPosix(workDir(ctx));
-    version.push(`work files: ${here}/ (gitignored${v1 ? '' : `; per topic ${topicWorkLabel(ctx.brainDir, ctx.projectDir)}, the topic this thread holds or main`}); the harness "scratchpad directory" in the system temp dir is not used here: Write/Edit there go to ${v1 ? 'this scratch/' : 'this folder'} (read the file there), other writes outside the project are refused (P-052)`);
+    version.push(`work files: ${here}/ (gitignored${v1 ? '' : `; per topic ${topicWorkLabel(ctx.brainDir, ctx.projectDir)}, the topic this thread holds or main`}); the harness "scratchpad directory" in the system temp dir is not used here: Write/Edit and shell commands there go to ${v1 ? 'this scratch/' : 'this folder'} (read the file there), other writes outside the project (/tmp, $TMPDIR, mktemp) are refused (P-052)`);
   }
   version.push(...notices);
   parts.push(`${BOOT_MARKERS[5]}\n${version.join('\n')}`);
