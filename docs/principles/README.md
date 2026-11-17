@@ -84,6 +84,7 @@ Každý princíp je v samostatnom súbore `P-NNN.md`. Agent číta jeden súbor,
 - [P-073](P-073.md): Workflow a pošta sa vydávajú spolu (workflow and mail release together), agent-alice/D-0089
 - [P-074](P-074.md): Zmrazenie počas prestavby (freeze during a rebuild), agent-alice/D-0092
 - [P-076](P-076.md): Charakter workflow: rýchly, svižný, organizovaný; hooky iba poistka (fast, brisk, organized), agent-alice/D-0094
+- [P-077](P-077.md): Návrh sa vykresľuje ako HTML (a proposal is rendered as HTML, not a Markdown file)
 
 ## Predvolené hodnoty politiky
 

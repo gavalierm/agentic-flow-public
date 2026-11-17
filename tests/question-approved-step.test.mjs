@@ -17,6 +17,6 @@ test('question line: an approved step is done and announced, not asked about', (
 test('an operator proposal the agent verified and agrees with is approved (P-059)', async () => {
   const fs = await import('node:fs');
   const rules = fs.readFileSync(new URL('../rules/01-scope.md', import.meta.url), 'utf8');
-  assert.match(rules, /ktorú si overil a s ktorou súhlasíš, je schválená/);
+  assert.match(rules, /ktorý si overil a s ktorým súhlasíš, je schválený/);
   assert.match(QUESTION_TURN_LINE, /proposal of the operator asked as a question.*approved once you verified it and agree/);
 });

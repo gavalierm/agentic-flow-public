@@ -13,7 +13,7 @@ Zápis do brain ide výlučne cez `node ${CLAUDE_PLUGIN_ROOT}/bin/save.mjs`. Wri
 1. Postup (kroky, ako niečo urobiť) → `skill`
 2. Mení správanie agenta (MUSÍ/NESMIE, „odteraz rob…“) → `rule`; ak operátor mení platný princíp → `exception`
 3. Voľba medzi alternatívami → `decision` (rozhodnutia)
-4. Obsah s hodnotou sám o sebe (návod, opis, zoznam, report, analýza) → výsledok témy (`save.mjs result`, nižšie), nie pamäť; do `vystupy/<typ>/` cieľového repa ho zaradí triáž pri `done --topic`. Voľba, ktorá je obsahom dokumentu (špecifikácia, návrh), ostáva iba v dokumente, nie v `decision`
+4. Obsah s hodnotou sám o sebe (návod, opis, zoznam, report, analýza) → výsledok témy (`save.mjs result`, nižšie), nie pamäť; do `vystupy/<typ>/` cieľového repa ho zaradí triáž pri `done --topic`. Voľba, ktorá je obsahom dokumentu (špecifikácia, návrh), ostáva iba v dokumente, nie v `decision`; návrh pre operátora je stránka `.html`, nie `.md` (P-077)
 5. Opisný fakt o subjekte: človek (aj operátor) → `person` (osoby v repe operátora, nižšie); prostredie, nástroj, služba, projekt → `memory` (pamäť agenta)
 
 **B: Rozhodne agent sám?** Áno: fakt, návod, opis a voľba v jeho pravomoci (`decision --origin agent`). Nie: voľbu mimo mandátu (sekcia Zadanie) rozhodne operátor na otázku, zapíšeš jeho odpoveď.
