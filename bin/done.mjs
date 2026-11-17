@@ -321,7 +321,7 @@ function saveBeforeClose(ctx, id, { own = true } = {}) {
   }
   if (dirs.length) {
     const rel = (abs) => path.relative(ctx.brainDir, abs).split(path.sep).join('/');
-    fail(`done --topic ${id} refused: ${dirs.map((d) => `the handover of ${d.by} cites the folder ${rel(d.dir)}/ (${countFiles(d.dir)} file(s))`).join('; ')}. The work files of ${id} end with the topic (outside git): save what of the folder is needed (save.mjs result <file> --topic <that topic>; a file from outside: save.mjs source), then rewrite the line of the handover to the saved files (save.mjs handover), or remove the line when nothing of the folder is needed; then done --topic again (P-078, P-018)`);
+    fail(`done --topic ${id} refused: ${dirs.map((d) => `the handover of ${d.by} cites the folder ${rel(d.dir)}/ (${countFiles(d.dir)} file(s))`).join('; ')}. The work files of ${id} end with the topic (outside git): save what of the folder is needed (save.mjs result <file> --topic <that topic>; a file from outside: save.mjs source), then rewrite the line of the handover to the saved files (save.mjs handover <topic> --done-replace "..": the whole Hotové; --done only adds), or remove the line when nothing of the folder is needed; then done --topic again (P-078, P-018)`);
   }
 }
 

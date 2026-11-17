@@ -72,24 +72,40 @@ export function handoverBodies(text) {
 /**
  * A handover from the fields given (save handover without --file) over the current one: a section whose option is not
  * given keeps its current text; sections outside the six (except the generated reports) stay after them. Returns
- * { text, kept } (headings kept from the current handover). Cause (report 20261117T195322961Z, P-018):
+ * { text, kept, added } (headings kept from the current handover). Cause (report 20261117T195322961Z, P-018):
  * `save.mjs handover <topic> --questions "a; b"` wrote '-' into Zadanie, Hotové, Ďalší krok and Súbory (11.6 kB -> 413 B).
+ * Hotové is the history of the topic: --done adds its items after the current ones (an item already there is not added
+ * twice); `--done ""` empties it; --done-replace (fields.replaceDone) or --file rewrites it. The other sections are the current state and are replaced.
+ * Cause (thread parametre-produktov, 2026-11-17): `--done "<new item>"` replaced the 56 items of Hotové again and again;
+ * the agent restored them from git each time. `added` is the number of items --done added.
  */
 export function mergeHandover(current, fields) {
   const now = current ? handoverBodies(current) : new Map();
   const given = (k) => typeof fields[k] === 'string' || Array.isArray(fields[k]);
   const kept = [];
   const lines = [];
+  let added = null;
+  const items = (body) => (body || []).filter((l) => l.trim() && !/^-+$/.test(l.trim()));
   for (const [k, heading] of HANDOVER_KEYS) {
     let body;
-    if (given(k)) body = handoverBodies(renderHandover({ [k]: fields[k] })).get(heading);
+    if (k === 'done' && given(k) && !fields.replaceDone && items(now.get(heading)).length) {
+      const fresh = items(handoverBodies(renderHandover({ done: fields.done })).get(heading));
+      if (!fresh.length) body = ['-'];
+      else {
+        const old = items(now.get(heading));
+        const have = new Set(old.map((l) => l.trim()));
+        const extra = fresh.filter((l) => !have.has(l.trim()));
+        added = extra.length;
+        body = [...old, ...extra];
+      }
+    } else if (given(k)) body = handoverBodies(renderHandover({ [k]: fields[k] })).get(heading);
     else if (now.has(heading) && now.get(heading).some((l) => l.trim())) { body = now.get(heading); kept.push(heading.slice(3)); }
     else body = ['-'];
     lines.push(heading, ...body);
   }
   const six = new Set([...HANDOVER_KEYS.map(([, h]) => h), REPORTS_SECTION]);
   for (const [heading, body] of now) if (!six.has(heading)) { lines.push(heading, ...body); kept.push(heading.slice(3)); }
-  return { text: `${lines.join('\n')}\n`, kept };
+  return { text: `${lines.join('\n')}\n`, kept, added };
 }
 
 /** Lines of a generated section in a handover (heading included); 0 without it. */

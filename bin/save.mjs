@@ -14,7 +14,7 @@
 //   save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local] [--title "..."]
 //   save.mjs exception P-XXX --remove --reason "..." [--layer project|harness|machine|local]   removes its section (one commit; an empty file goes)
 //   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]' ...] (existing skill: --script or --description alone keeps the body; an edit needs --origin error|routine|operator, operator with --reason "operator <date>: ...") [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
-//   save.mjs handover <topic> (--task ".." --done "a; b" --next "a; b" --files "a; b" --questions "a; b" --tasks "a; b" | --file <path>)
+//   save.mjs handover <topic> (--task ".." --done "a; b" --next "a; b" --files "a; b" --questions "a; b" --tasks "a; b" [--done-replace "a; b"] | --file <path>)
 //                        six sections (P-011); --next (a step in Ďalší krok) is refused in a topic in mode discussion (spec 10.6)
 //   save.mjs docs [--message "..."]   persona only: commits the files written directly into docs/ (P-024)
 //   save.mjs person <alias|id> [--domain [<d>]] --content "..." | <id> --name "<name>" --content "..." [--aliases] [--domains] [--new]
@@ -1097,7 +1097,7 @@ function sourceLines(file, base, abs) {
 }
 
 const HANDOVER_FIELDS = ['task', 'done', 'next', 'files', 'questions', 'tasks'];
-const HANDOVER_OPTIONS = [...HANDOVER_FIELDS, 'file', 'project', 'repo'];
+const HANDOVER_OPTIONS = [...HANDOVER_FIELDS, 'done-replace', 'file', 'project', 'repo'];
 
 function saveHandover(ctx) {
   const repo = repoTarget(ctx);
@@ -1108,12 +1108,15 @@ function saveHandover(ctx) {
   // `--topic <id>` from memory got only the usage line: name the replacement, as comms send does (report-d718bc1f).
   const unknown = Object.keys(args).filter((k) => k !== '_' && !HANDOVER_OPTIONS.includes(k));
   const hint = (k) => (k === 'topic' ? ` (the topic is the first argument: save.mjs handover ${typeof args.topic === 'string' ? args.topic : '<topic>'} ...)` : '');
-  if (!topic && !unknown.length) fail('usage: save.mjs handover <topic> --task ".." --done "a; b" --next "a; b" --files "a; b" --questions "a; b" --tasks "a; b" | --file <path>');
-  if (unknown.length) fail(`save.mjs handover: unknown option ${unknown.map((k) => `--${k}${hint(k)}`).join(', ')}; nothing written, the current handover stays (usage: save.mjs handover <topic> --task ".." --done "a; b" --next "a; b" --files "a; b" --questions "a; b" --tasks "a; b" | --file <path>)`);
+  if (!topic && !unknown.length) fail('usage: save.mjs handover <topic> --task ".." --done "a; b" --next "a; b" --files "a; b" --questions "a; b" --tasks "a; b" [--done-replace "a; b"] | --file <path>');
+  if (unknown.length) fail(`save.mjs handover: unknown option ${unknown.map((k) => `--${k}${hint(k)}`).join(', ')}; nothing written, the current handover stays (usage: save.mjs handover <topic> --task ".." --done "a; b" --next "a; b" --files "a; b" --questions "a; b" --tasks "a; b" [--done-replace "a; b"] | --file <path>)`);
+  // --done adds to Hotové (the topic's history); --done-replace rewrites it (a line that must change, e.g. done --topic).
+  if (typeof args['done-replace'] === 'string' && typeof args.done === 'string') fail('save.mjs handover: --done adds to Hotové, --done-replace rewrites it; give one of them; nothing written, the current handover stays');
+  if (typeof args['done-replace'] === 'string') { args.done = args['done-replace']; args.replaceDone = true; }
   if (!args.file && !HANDOVER_FIELDS.some((k) => typeof args[k] === 'string')) fail('save.mjs handover: no content (--task, --done, --next, --files, --questions, --tasks or --file); nothing written, the current handover stays');
   // The structure check and the mode need no remote state: refuse before the first fetch.
   // Without --file only the sections given change; the others keep their current text (P-018, mergeHandover).
-  const fields = Object.fromEntries(HANDOVER_FIELDS.map((k) => [k, typeof args[k] === 'string' ? args[k] : undefined]));
+  const fields = { ...Object.fromEntries(HANDOVER_FIELDS.map((k) => [k, typeof args[k] === 'string' ? args[k] : undefined])), replaceDone: args.replaceDone === true };
   const merged = args.file ? null : mergeHandover(readText(path.join(ctx.brainDir, topicRel(ctx.brainDir, topic, 'handover')), ''), fields);
   const written = args.file ? fs.readFileSync(args.file, 'utf8') : merged.text;
   const refs = checkDecisionRefs(ctx, targetStore(ctx), [written]);
@@ -1133,6 +1136,7 @@ function saveHandover(ctx) {
   const res = brainWrite(ctx, { ops, message: `handover ${topic}`, presynced: true });
   out(formatWriteResult(res, [handoverRel]));
   if (merged?.kept.length) out(`kept from the current handover: ${merged.kept.join(', ')} (an option not given keeps its section; --<option> "" empties it)`);
+  if (merged && merged.added !== null) out(`Hotové: ${merged.added} item(s) added after the current ones (--done adds; --done-replace rewrites Hotové; --done "" empties it)`);
 }
 
 /**

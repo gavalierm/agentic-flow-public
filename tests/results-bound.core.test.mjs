@@ -79,7 +79,7 @@ test('done --topic saves before the work files end: a cited folder refuses the c
     assert.equal(inGit(fx, 'topics/b1/podklady.md'), '# Podklady', 'the work file b1 cites is saved into b1 before a1 ends');
     // The manager saves what is needed and rewrites the handover: the close goes on.
     assert.equal(fx.run('save.mjs', ['result', tmp(fx, 'a1', 'nazvoslovie/podklady.md'), '--topic', 'a1']).status, 0);
-    assert.equal(fx.run('save.mjs', ['handover', 'a1', '--task', 'T', '--done', 'podklady v podklady.md', '--next', '']).status, 0);
+    assert.equal(fx.run('save.mjs', ['handover', 'a1', '--task', 'T', '--done-replace', 'podklady v podklady.md', '--next', '']).status, 0);
     r = fx.run('done.mjs', [...DONE, '--topic-id', 'a1']);
     assert.equal(r.status, 0, r.out);
     assert.match(r.out, /\? podklady\.md/, 'the saved result goes to the triage');
