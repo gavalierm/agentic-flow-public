@@ -4,44 +4,73 @@
     {
       "id": "t3-clear-cursor",
       "title": "After /clear T3 keeps resuming the session it opened first; the hook links <cursor>.jsonl to the new session's transcript",
-      "upstream": { "repo": "pingdotgg/t3code", "issue": 24152, "fix_pr": 24168 },
-      "files": ["scripts/t3-clear.mjs", "hooks/session-start.mjs", "scripts/boot.mjs"],
+      "upstream": {
+        "repo": "pingdotgg/t3code",
+        "issue": 24152,
+        "fix_pr": 35054
+      },
+      "files": [
+        "scripts/t3-clear.mjs",
+        "hooks/session-start.mjs",
+        "scripts/boot.mjs"
+      ],
       "depends_on": [
         "provider log <t3-home>/logs/provider/events.<thread, ':' -> '-'>.log with lines `[<ISO time>] ...\"type\":\"query.open\",\"options\":{...\"resume\":\"<session id>\"`",
         "T3 resumes the session id it opened with (claudeAgent resume cursor)",
         "T3 sets T3CODE_THREAD_ID in the agent's environment",
         "Claude Code appends to <session>.jsonl in place (Windows without Developer Mode: hard link instead of symlink, made by a detached process once the new transcript exists)"
       ],
-      "auto": ["provider-log", "upstream"],
-      "pilot": "pilot thread: say a code word, /clear, ask for a second word, restart the query (interrupt or T3 restart); the thread must answer from the session after /clear",
-      "remove_when": "fix PR merged and contained in the installed T3 version; then remove the marked code and this entry"
+      "auto": [
+        "fixed-in"
+      ],
+      "pilot": null,
+      "remove_when": "no machine runs T3 < 0.1.10; then remove the marked code (clearSession, t3_cursor) and this entry; realSessionDirs in t3-clear.mjs is not part of this workaround and stays",
+      "fixed_in": "0.1.10",
+      "verified": "2026-11-17, T3 0.1.10: pilot thread (code word, /clear, second word, interrupt) answered from the session after /clear; the provider log resumed the new session id (pingdotgg/t3code#35054 merged 2026-11-12). From 0.1.10 scripts/t3-clear.mjs leaves /clear alone (T3_CLEAR_FIXED)."
     },
     {
       "id": "t3-cli-title",
       "title": "The hook cannot rename a thread; it reads the title via the T3 CLI and asks the agent to rename (P-036); topics start threads via the CLI",
       "upstream": null,
-      "files": ["scripts/thread-title.mjs", "scripts/topic.mjs"],
-      "depends_on": [
-        "`t3 thread show --json <thread>` prints {\"thread\":{\"threadId\",\"title\"}}",
-        "`t3 thread show --json <thread>` prints thread.archived (true for an archived thread) and fails naming a missing thread (not found): the limit of automatic topics leaves those holders out (scripts/intake.mjs activeCodeTopics)",
-        "`t3 thread start --json` prints the new thread's id"
+      "files": [
+        "scripts/thread-title.mjs",
+        "scripts/topic.mjs"
       ],
-      "auto": ["cli-show"],
+      "depends_on": [
+        "`t3 thread show --json <thread>` prints {\"thread\":{\"threadId\",\"title\",\"archived\"}}",
+        "`t3 thread show --json <missing thread>` exits non-zero naming it gone (0.1.10: \"Thread <id> is no longer available.\"): scripts/thread-title.mjs THREAD_GONE; the limit of automatic topics leaves those holders out",
+        "`t3 thread start --json --title <title>` prints the new thread's id"
+      ],
+      "auto": [
+        "cli-show",
+        "cli-gone"
+      ],
       "pilot": "pilot: `topic create` from a thread holding a topic opens a new T3 thread titled by the topic",
-      "remove_when": "hooks can rename threads (no CLI dependency)"
+      "remove_when": "hooks can rename threads (no CLI dependency)",
+      "verified": "2026-11-17, T3 0.1.10: `t3 thread start --title` opened a thread with that title, `thread show --json` printed title and archived, a missing thread answered \"is no longer available\" with exit 1"
     },
     {
       "id": "t3-cli-effort",
       "title": "`t3 thread start` sets provider and model of a topic class (D-0021) but has no --effort; topic create/thread print a line to set the effort with t3_thread_configure",
-      "upstream": { "repo": "pingdotgg/t3code", "issue": 29863, "fix_pr": null },
-      "files": ["scripts/topic.mjs"],
+      "upstream": {
+        "repo": "pingdotgg/t3code",
+        "issue": 29863,
+        "fix_pr": null,
+        "state": "closed as not planned 2026-11-17"
+      },
+      "files": [
+        "scripts/topic.mjs"
+      ],
       "depends_on": [
         "`t3 thread start` takes `--provider <instance id>` with `--model <slug>`",
         "t3_thread_configure takes threadId and modelSelection {instanceId, model, options: [{id: \"effort\", value}]}"
       ],
-      "auto": [],
-      "pilot": "pilot: `t3 thread start --help` after a T3 upgrade; if it lists --effort, pass it from the class and drop the t3_thread_configure line",
-      "remove_when": "`t3 thread start` takes --effort (T3 issue #29863 closed and in the installed T3)"
+      "auto": [
+        "cli-effort"
+      ],
+      "pilot": null,
+      "remove_when": "`t3 thread start` takes --effort (the automatic check cli-effort then says REMOVE); upstream closed the request as not planned, so the workaround is expected to stay",
+      "verified": "2026-11-17, T3 0.1.10: `t3 thread start --help` lists --title, --provider, --model, --worktree, --branch, --wait, --json and no --effort"
     }
   ]
 }

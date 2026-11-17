@@ -37,7 +37,7 @@ export function readThreadTitle(ctx, run = spawnSync) {
 }
 
 // As the mail's wake module reads a ring that fails for good (agentic-comms PERMANENT_RING_FAILURE).
-const THREAD_GONE = /archived|not found|no longer available|does not exist|no such thread|unknown thread/i;
+export const THREAD_GONE = /archived|not found|no longer available|does not exist|no such thread|unknown thread/i;
 
 /**
  * State of thread `thread` in T3, read as the mail's wake adapter reads it (`thread.archived` of `t3 thread show --json`):

@@ -7,7 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { RESUME_RE } from './t3-clear.mjs';
+import { RESUME_RE, versionAtLeast } from './t3-clear.mjs';
+import { THREAD_GONE } from './thread-title.mjs';
 
 export const REGISTRY = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 't3-workarounds.json');
 export const MARKER_RE = /T3-WORKAROUND\(([a-z0-9-]+)\)/g;
@@ -79,6 +80,33 @@ export function checkCliShow(t3Bin, thread, run = spawnSync) {
   return ['FAIL', `${t3Bin} thread show --json ${thread}: no thread.title in the output`];
 }
 
+/** A missing thread must be named as gone (thread-title.mjs THREAD_GONE): the limit of automatic topics leaves its holder out. */
+export function checkCliGone(t3Bin, run = spawnSync) {
+  const r = run(t3Bin, ['thread', 'show', '--json', '00000000-0000-4000-8000-000000000000'], { encoding: 'utf8', timeout: 15000 });
+  if (r.error) return ['FAIL', `${t3Bin} thread show: ${r.error.message}`];
+  const text = `${r.stdout || ''}${r.stderr || ''}`.trim();
+  if (r.status !== 0 && THREAD_GONE.test(text)) return ['OK', `${t3Bin} thread show names a missing thread as gone ("${text.split('\n')[0].slice(0, 80)}")`];
+  return ['FAIL', `${t3Bin} thread show of a missing thread: exit ${r.status}, "${text.split('\n')[0].slice(0, 80)}" does not match THREAD_GONE (thread-title.mjs)`];
+}
+
+/** `t3 thread start --help`: --effort listed means the t3_thread_configure line can go (T3 issue #29863). */
+export function checkCliEffort(t3Bin, run = spawnSync) {
+  const r = run(t3Bin, ['thread', 'start', '--help'], { encoding: 'utf8', timeout: 15000 });
+  if (r.error || r.status !== 0) return ['FAIL', `${t3Bin} thread start --help: ${(r.error?.message || r.stderr || `exit ${r.status}`).trim().split('\n')[0]}`];
+  const help = `${r.stdout || ''}${r.stderr || ''}`;
+  if (!/--provider\b/.test(help) || !/--model\b/.test(help)) return ['FAIL', `${t3Bin} thread start --help lists no --provider/--model (topic.mjs passes them)`];
+  if (/--effort\b/.test(help)) return ['REMOVE', `${t3Bin} thread start takes --effort: pass it from the class in topic.mjs and drop the t3_thread_configure line`];
+  return ['OK', `${t3Bin} thread start has --provider and --model, no --effort; the t3_thread_configure line stays`];
+}
+
+/** The installed T3 against the version that fixed the bug (`fixed_in`): the workaround code turns itself off from it. */
+export function checkFixedIn(w, version) {
+  if (!w.fixed_in) return ['FAIL', 'automatic check "fixed-in" without fixed_in in the registry'];
+  if (!version) return ['PENDING', `T3 version unknown (server-runtime.json); the workaround is off from T3 ${w.fixed_in}`];
+  if (versionAtLeast(version, w.fixed_in)) return ['OK', `T3 ${version} contains the fix (${w.fixed_in}): the workaround is off here; remove its code once no machine runs T3 < ${w.fixed_in}`];
+  return ['OK', `T3 ${version} < ${w.fixed_in}: the workaround stays active; upgrade T3 to drop it`];
+}
+
 /** Thread id of the newest provider log (events.mcp-<uuid>.log -> mcp:<uuid>). */
 export function newestThread(t3Home) {
   const dir = path.join(t3Home, 'logs', 'provider');
@@ -99,9 +127,12 @@ export async function checkAll({ t3Home = path.join(os.homedir(), '.t3', 'userda
       if (a === 'provider-log') add(w.id, checkProviderLog(t3Home, from));
       else if (a === 'upstream') add(w.id, upstream ? await checkUpstream(w.upstream, fetchImpl) : ['PENDING', 'upstream check skipped']);
       else if (a === 'cli-show') add(w.id, checkCliShow(t3Bin, thread ?? newestThread(t3Home), run));
+      else if (a === 'cli-gone') add(w.id, checkCliGone(t3Bin, run));
+      else if (a === 'cli-effort') add(w.id, checkCliEffort(t3Bin, run));
+      else if (a === 'fixed-in') add(w.id, checkFixedIn(w, rt.version));
       else add(w.id, ['FAIL', `unknown automatic check "${a}"`]);
     }
-    add(w.id, ['MANUAL', w.pilot]);
+    if (w.pilot) add(w.id, ['MANUAL', w.pilot]);
   }
   return { version: rt.version, results };
 }

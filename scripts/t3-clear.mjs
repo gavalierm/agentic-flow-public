@@ -7,6 +7,8 @@
 // to the transcript in place, so both names keep sharing it across turns and resumes (checked 2026-11-09). A hard link
 // needs the new transcript, which may not exist yet at SessionStart; it is never pre-created (Claude then refuses the
 // session id, checked 2026-11-09): a detached process waits for it and links then.
+// T3 0.1.10 resumes the session /clear started itself (pingdotgg/t3code#35054, pilot 2026-11-17): from that version the
+// redirect is off (T3_CLEAR_FIXED); the code goes once no machine runs an older T3.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,6 +17,24 @@ import { fileURLToPath } from 'node:url';
 
 const SELF = fileURLToPath(import.meta.url);
 export const LINK_LATER_MS = 15 * 60 * 1000;
+export const T3_CLEAR_FIXED = '0.1.10';
+
+/** Data dir of the T3 server (T3CODE_HOME/userdata, else ~/.t3/userdata). */
+export const t3Home = (env = process.env) => path.join(env.T3CODE_HOME || path.join(os.homedir(), '.t3'), 'userdata');
+
+/** Version of the running T3 server from <t3-home>/server-runtime.json, null when unknown. */
+export function t3ServerVersion(home = t3Home()) {
+  try { return JSON.parse(fs.readFileSync(path.join(home, 'server-runtime.json'), 'utf8')).serverVersion ?? null; } catch { return null; }
+}
+
+/** a >= b for dotted versions (0.1.10 > 0.1.9); false when either is unknown. */
+export function versionAtLeast(a, b) {
+  if (!a || !b) return false;
+  const x = String(a).replace(/^v/, '').split(/[.-]/).map((n) => parseInt(n, 10) || 0);
+  const y = String(b).replace(/^v/, '').split(/[.-]/).map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(x.length, y.length); i += 1) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
+  return true;
+}
 
 /**
  * Point <dir>/<cursor>.jsonl at <dir>/<sid>.jsonl (the old name must already be free): symlink, else hard link.
@@ -113,8 +133,10 @@ export function realSessionDirs(dir, ids) {
   return notes;
 }
 
-function clearSession(input, state, { thread, logDir, now = new Date(), symlink, spawnLater = spawnLinkLater } = {}) {
+function clearSession(input, state, { thread, logDir, now = new Date(), symlink, spawnLater = spawnLinkLater, t3Version } = {}) {
   const source = input.source || 'startup';
+  // T3 that resumes the cleared session itself: no cursor, no link (a link would hide the old transcript from T3's fork).
+  if (versionAtLeast(t3Version === undefined ? t3ServerVersion() : t3Version, T3_CLEAR_FIXED)) return { state, note: null };
   const sid = input.session_id;
   if (!SID.test(sid || '')) return { state, note: null };
   if (source === 'startup') return { state: { ...state, t3_cursor: sid }, note: null };
