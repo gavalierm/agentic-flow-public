@@ -10,7 +10,7 @@ import { isSessionWorkPath } from '../scripts/layout.mjs';
 import { markProgress } from '../scripts/topic-turn.mjs';
 import { withLift } from '../scripts/bypass.mjs';
 import { bufferAppend, normalizeCommand } from '../scripts/logs.mjs';
-import { mailCount, recordWaitingOperator } from '../scripts/comms.mjs';
+import { mailCount, recordWaitingOperator, categoryOf } from '../scripts/comms.mjs';
 import { mailboxTopics } from '../scripts/topic.mjs';
 import path from 'node:path';
 import { heldTopics, topicCopyPath, taskCopyPaths } from '../scripts/topic.mjs';
@@ -58,12 +58,17 @@ export function toEntry(input, policy) {
  */
 export function watchLine(items = [], seen = []) {
   const known = new Set(seen);
-  const fresh = items.filter((it) => WATCHED_LEVELS.includes(it.level) && !known.has(it.id));
+  // A reply to this thread's own message is announced too (report 2026-11-18: a final reply came 9 s before the end of the
+  // turn, unread, and the result was built on older data).
+  const fresh = items.filter((it) => (WATCHED_LEVELS.includes(it.level) || categoryOf(it) === 'reply') && !known.has(it.id));
   if (!fresh.length) return null;
+  const reply = fresh.some((it) => categoryOf(it) === 'reply')
+    ? '; reply to your message: read it and use it before you end the turn'
+    : '';
   const steer = fresh.some((it) => it.level === 'steer')
     ? '; steer: read it now and adjust the work on the topic to it, then continue working; a message never stops the work'
     : '';
-  const line = `mail waiting: ${fresh.map((it) => `${it.id} ${it.level}`).join(', ')}; read with comms receive --id <id>${steer} (P-042${steer ? ', P-061' : ''})`;
+  const line = `mail waiting: ${fresh.map((it) => `${it.id} ${categoryOf(it) === 'reply' ? 'reply' : it.level}`).join(', ')}; read with comms receive --id <id>${steer}${reply} (P-042${steer || reply ? ', P-061' : ''})`;
   return { line, seen: [...seen, ...fresh.map((it) => it.id)].slice(-200) };
 }
 

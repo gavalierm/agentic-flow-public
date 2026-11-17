@@ -22,7 +22,7 @@ import { loadContext, readThreadState, writeThreadState } from '../scripts/confi
 import { logDecision } from '../scripts/denials.mjs';
 import { flushBuffer, proposalKey } from '../scripts/logs.mjs';
 import { unpushedCount, brainSync, oldestUnpushedAgeMs } from '../scripts/brain.mjs';
-import { recordTurn, isMainTopic, readObligations, ageText, OWED_PREFIX, OWED_LINE, unansweredOwed } from '../scripts/comms.mjs';
+import { recordTurn, isMainTopic, readObligations, ageText, OWED_PREFIX, OWED_LINE, unansweredOwed, categoryOf } from '../scripts/comms.mjs';
 import { heldTopics, isDiscussionMode } from '../scripts/topic.mjs';
 import { fieldsOp } from '../scripts/topic-files.mjs';
 import { syncResults, savedLine } from '../scripts/results.mjs';
@@ -70,13 +70,18 @@ export const DIALOG_REASON = 'the state is "otázka" and this turn was not start
 export const fakeNotification = (text) => /^[ \t>]*<task-notification\b[^>]*>/im.test(String(text || '').replace(/```[\s\S]*?```/g, ' '));
 export const FAKE_NOTIFICATION_REASON = 'the reply contains a <task-notification> block: only the harness writes it, the end of a background job is never predicted in the reply. Remove the block and anything built on it; wait for the real notification (t3_background_wait with the task id, or end the turn with "**Stav:** čakám (na <job>)") and continue only after it (P-020, P-019)';
 
+// Report 2026-11-18: a final reply to the thread's own message waited unread at the end of the turn and the turn ended
+// "hotovo" on older data. The end is refused once while a reply waits in the inbox (read it, then end).
+export const UNREAD_REPLY_REASON = (ids) => `a reply to your message waits unread: ${ids.join(', ')}; read it with comms receive --id <id> and use it in the result before you end the turn; then write the reply and its **Stav:** line again (P-042, P-061)`;
+
 export { OWED_PREFIX, OWED_LINE, unansweredOwed };
 
 const count = (items) => (Array.isArray(items) ? items.length : 0);
 
 /** The first skeleton or fact violation of the reply (spec 10.3 points 1 to 4), or null. */
-export function violationOf({ msg, reply, work, facts, alarms, factsState, turnSource, dialog }) {
+export function violationOf({ msg, reply, work, facts, alarms, factsState, turnSource, dialog, unreadReplies = [] }) {
   if (fakeNotification(msg)) return FAKE_NOTIFICATION_REASON;
+  if (unreadReplies.length) return UNREAD_REPLY_REASON(unreadReplies);
   if (!reply.state) return NO_STATE_REASON;
   if (reply.onlyProtocol) return STATE_ONLY_REASON;
   if (reply.oldForm.length) return OLD_FORM_REASON(reply.oldForm);
@@ -159,6 +164,7 @@ export function run(input) {
   const res = readObligations(ctx, { held });
   const mail = res.ok && !(res.data?.offline && !res.data?.cached) ? res.data : null;
   const picked = unansweredOwed(mail);
+  const unreadReplies = (mail?.inbox?.ids || []).filter((it) => it && categoryOf(it) === 'reply').map((it) => it.id);
   // Once per queued line: a stop that finds the same reminder still waiting does not queue it again.
   if (picked.length && !(readThreadState(ctx.brainDir, ctx.thread).pending_signals || []).some((sig) => sig.startsWith(OWED_PREFIX))) signals.push(OWED_LINE(picked, mail.offline ? ageText(mail.age_s) : null));
   // A task whose end the harness already notified rings nobody: its waker is spent (operator 2026-11-13).
@@ -178,7 +184,7 @@ export function run(input) {
   // Only whether a dialog was asked in this turn (PreToolUse keeps its time), not its content (10.3 item 3).
   const dialog = !!before.dialog_at && (!before.turn_started_at || before.dialog_at >= before.turn_started_at);
   // A harness that sends no reply text (field missing) cannot be checked; the second attempt of a turn passes (10.3).
-  const violation = typeof msg === 'string' && !input.stop_hook_active ? violationOf({ msg, reply, work, facts, alarms, factsState, turnSource, dialog }) : null;
+  const violation = typeof msg === 'string' && !input.stop_hook_active ? violationOf({ msg, reply, work, facts, alarms, factsState, turnSource, dialog, unreadReplies }) : null;
   if (violation) {
     // A blocked stop keeps the agent working: the turn record stays open and nothing of the state is written.
     flush();
