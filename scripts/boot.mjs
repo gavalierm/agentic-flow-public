@@ -9,7 +9,7 @@ import { buildIndexes, shownIndexes, topicLine } from './index.mjs';
 import { recordAuthors, foreignAuthor } from './authors.mjs';
 import { heldTopics, mailboxTopics } from './topic.mjs';
 import { handoverAgeLine } from './compact.mjs';
-import { noMailConfigLine, mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics, isMainTopic, noticesCount, discussionMail } from './comms.mjs';
+import { noMailConfigLine, maintainerMailLine, mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics, isMainTopic, noticesCount, discussionMail } from './comms.mjs';
 import { syncBrainSkills } from './skills-sync.mjs';
 import { policyIgnoredLine } from './policy-layers.mjs';
 import { gitAccessProblem } from './brain.mjs';
@@ -190,6 +190,9 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   // failed and nothing said why. One line with the fix while the mail client exists and the config does not.
   const noMail = noMailConfigLine(ctx);
   if (noMail) status += `\n${noMail}`;
+  // Operator 2026-11-18: a report that fell back to an issue is no silent end; the broken mail to the maintainer is said.
+  const toMaintainer = maintainerMailLine();
+  if (toMaintainer) status += `\n${toMaintainer}`;
   // Spec 10.7: no status block; the first reply of a thread that holds a topic starts with the line of the topic's name.
   const named = info.held.find((t) => !isMainTopic(t)) || info.held[0];
   if (ctx.thread && named) status += `\nyour first reply in this session starts with the line "${ctx.projectName} / ${named.id}" (spec 10.7)`;

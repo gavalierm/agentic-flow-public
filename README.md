@@ -242,6 +242,7 @@ Zapnutie v projekte (všetky kroky mimo bežiacej session):
    ```
 
    (`instance` je voliteľná; `"comms": false` poštu vypne; `"project"` prepíše názov projektu v adrese správ, predvolene názov priečinka projektu).
+   Stroj, ktorý používa server pošty na inom stroji (tunel), nastav raz pre všetky brainy: `node <plugin>/bin/project.mjs mail-machine --url https://<server>/ --instance-id <id> --key-file <súbor s kľúčom od správcu>` zapíše `~/.config/agentic-flow/comms.json` (práva 600) a overí `health`; brain bez vlastného `local/comms.json` ho použije. Odpovede tomuto stroju prinesie budenie čítajúce ten server: `node <klon agentic-comms>/bin/wake.mjs install --config ~/.config/agentic-flow/comms.json`.
 2. Založ inštanciu pošty a kľúč tohto projektu: `node ../agentic-comms/bin/comms.mjs init --instance pilot --sender <nazov-projektu>` (druhý a ďalší projekt: `comms key add --sender ...`). Kľúč a identifikátor inštancie zapíš do **`<brain>/local/comms.json`** (necommitovaný súbor; `local/` je v `.gitignore` brain):
 
    ```json

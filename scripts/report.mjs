@@ -11,7 +11,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh } from './github.mjs';
 import { recordIssue } from './issue-watch.mjs';
-import { commsSettings, runClient, parseAddress } from './comms.mjs';
+import { commsSettings, runClient, parseAddress, markMaintainerMail, MAIL_FIX } from './comms.mjs';
 import { PLUGIN_ROOT, toPosix } from './util.mjs';
 import { channelOf } from './config.mjs';
 import { parseFrontmatter, asList } from './frontmatter.mjs';
@@ -300,13 +300,17 @@ export async function report(ctx, { text, title, fromId, to } = {}, env = proces
   }
   const mail = mailReport(ctx, `title: ${title}\n\n${text}`, { key: reportTopic(title, ctx, env) });
   if (mail.ok) {
+    markMaintainerMail(null, env);
     writeReport(ctx, mail.id, { text, title, at: new Date().toISOString(), to: mail.to });
     const pre = why.length ? `${why.join('; ')}; ` : '';
     return { reported: true, line: `${pre}reported: mail ${mail.id} -> ${mail.to} (the maintainer thread); sent once: without pickup by ${mail.expires_at || 'the deadline'} the bell says no reply / undelivered, then error.mjs report --from ${mail.id} files it as an issue (P-003)` };
   }
   why.push(mail.why);
   const line = await issueLine(ctx, title, text, m, env, why, null);
-  if (line) return { reported: true, line };
+  // Operator 2026-11-18: the issue is a fallback, not the channel; an agent that took it quietly left the broken mail
+  // unfixed. The machine keeps the mark (session start says it until a report is mailed again) and the line asks for it.
+  markMaintainerMail(mail.why, env);
+  if (line) return { reported: true, line: `${line}. The mail to the maintainer does NOT work (${mail.why}): say it to the operator in this reply; ${taskLine(ctx, `pošta k správcovi workflow nefunguje (${mail.why}): nastav poštu stroja, ${MAIL_FIX()}`)}` };
   const file = draft(ctx, title, text, why);
   const item = `hlásenie chyby workflow sa nedalo odoslať ani založiť ako issue (${title}): koncept ${file}`;
   return { reported: false, line: `NOT reported: ${why.join('; ')}. ${taskLine(ctx, item)}; do not write "reported" (spec 7.5, P-019)` };

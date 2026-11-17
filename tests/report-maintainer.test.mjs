@@ -69,6 +69,8 @@ test('no maintainer thread on the mail server: the report goes to a public issue
     const r = fx.report(['--title', 'skript zlyhal', '--text', 'chyba: x; príčina: y; uložené: z']);
     assert.equal(r.status, 0, r.out);
     assert.match(r.out, /reported: issue https:\/\/github\.com\/example\/flow\/issues\/999 \(no maintainer thread on this mail server/);
+    // Operator 2026-11-18: the issue is a fallback, not a quiet end: the broken mail is said with a task for the operator.
+    assert.match(r.out, /The mail to the maintainer does NOT work .*say it to the operator in this reply; task for the operator .*mail-machine/);
     assert.equal(fx.ghCalls().length, 1);
   } finally { fx.cleanup(); }
 });

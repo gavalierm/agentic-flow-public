@@ -12,6 +12,7 @@
 //     project  project name used in mail addresses, default: project directory name
 // Environment: WORKFLOW_COMMS_CLIENT overrides the client path (tests, machine-specific installs).
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { readJson, PLUGIN_ROOT, toPosix } from './util.mjs';
@@ -101,6 +102,36 @@ export function mailBrain(ctx, opts) {
   return ctx?.brainDir || ctx?.mailBrainDir || (ctx?.thread ? threadMailBrain(ctx.thread, opts) : null);
 }
 
+/**
+ * Mail config of this machine (~/.config/agentic-flow/comms.json: { url, key, instance_id } of a remote server, or
+ * { instance, key, instance_id }): a brain without its own <brain>/local/comms.json uses it, so a machine that reaches
+ * another server (a tunnel) is set up once, not per brain (operator 2026-11-18: install and migration left brains
+ * without mail, flow-public#103). `project.mjs mail-machine` writes it.
+ */
+export const machineMailFile = (env = process.env) => env.WORKFLOW_MACHINE_COMMS || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'comms.json');
+
+/** The machine's mark that mail to the maintainer failed and a report went to an issue (operator 2026-11-18). */
+export const maintainerMailFile = (env = process.env) => env.WORKFLOW_MAINTAINER_MAIL || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'maintainer-mail.json');
+
+export const MAIL_FIX = () => `the mail of this machine must reach the maintainer's mail server: node ${toPosix(path.join(PLUGIN_ROOT, 'bin', 'project.mjs'))} mail-machine --url <server url> --instance-id <id> --key-file <file with the key the maintainer issued>, then error.mjs report again`;
+
+/** Mark (why) or clear (null) that mail to the maintainer does not work. Never throws. */
+export function markMaintainerMail(why, env = process.env, now = new Date()) {
+  const file = maintainerMailFile(env);
+  try {
+    if (!why) { fs.rmSync(file, { force: true }); return; }
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify({ broken_at: now.toISOString(), why: String(why).slice(0, 300) })}\n`);
+  } catch { /* the line of the report says it anyway */ }
+}
+
+/** Session start: mail to the maintainer failed (reports go to GitHub issues): a line with the fix, or null. */
+export function maintainerMailLine(env = process.env) {
+  const rec = readJson(maintainerMailFile(env), null);
+  if (!rec?.broken_at) return null;
+  return `mail to the maintainer does NOT work since ${rec.broken_at} (${rec.why || 'unknown'}): error reports go to GitHub issues only as a fallback; tell the operator in your reply and keep the fix in Úlohy pre operátora: ${MAIL_FIX()}`;
+}
+
 /** Resolve the comms settings of a project. Never throws. */
 export function commsSettings(ctx) {
   const raw = ctx.config?.comms;
@@ -112,9 +143,11 @@ export function commsSettings(ctx) {
     || defaultClient(projectDir);
   const client = path.resolve(projectDir, clientRel);
   const home = mailBrain(ctx);
+  const brainFile = home ? dataPath(home, 'local', 'comms.json') : null;
+  const machineFile = machineMailFile();
   const configFile = cfg.config
     ? path.resolve(projectDir, cfg.config)
-    : home ? dataPath(home, 'local', 'comms.json') : null;
+    : brainFile && fs.existsSync(brainFile) ? brainFile : fs.existsSync(machineFile) ? machineFile : brainFile;
   const out = {
     enabled: fs.existsSync(client),
     configured: explicit || raw !== undefined,
@@ -140,7 +173,7 @@ export function noMailConfigLine(ctx) {
   if (!ctx?.brainDir || ctx.config?.comms === false || ctx.config?.comms?.config) return null;
   const s = commsSettings(ctx);
   if (!s.enabled || s.configFile) return null;
-  return `mail: NOT set up for this brain (no ${toPosix(dataPath(ctx.brainDir, 'local', 'comms.json'))}): every mail call goes to instance default without a key; issue the key: node ${toPosix(path.join(PLUGIN_ROOT, 'bin', 'project.mjs'))} mail ${toPosix(ctx.projectDir)} (flow-public#103)`;
+  return `mail: NOT set up for this brain (no ${toPosix(dataPath(ctx.brainDir, 'local', 'comms.json'))}, no ${toPosix(machineMailFile())}): every mail call goes to instance default without a key; a mail server on this machine: node ${toPosix(path.join(PLUGIN_ROOT, 'bin', 'project.mjs'))} mail ${toPosix(ctx.projectDir)}; another server (tunnel), once for the machine: node ${toPosix(path.join(PLUGIN_ROOT, 'bin', 'project.mjs'))} mail-machine --url <server url> --instance-id <id> --key-file <file> (flow-public#103)`;
 }
 
 export function commsConfigured(ctx) {

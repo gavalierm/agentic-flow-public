@@ -17,7 +17,7 @@ import { brainInit } from '../bin/brain-init.mjs';
 import { brainSync } from './brain.mjs';
 import { ensureLineEndings, EOL_RULE } from './eol.mjs';
 import { redactUrl } from './secrets.mjs';
-import { servicesClient } from './comms.mjs';
+import { servicesClient, machineMailFile } from './comms.mjs';
 import { gh, ghOwner, ghOwnedRepos, ghOwnerRepos, ghRootNames, grantAgentAccess, checkOwner, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_AGENT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
 
 export const DEFAULT_ROOT = path.join(os.homedir(), 'agentic');
@@ -560,9 +560,31 @@ export function formatInventory(inv) {
  * it: the project's topics were not registered and its mail stayed in local/outbox (alice 2026-11-11). The key is never
  * printed; a brain that has the config keeps it.
  */
+/**
+ * The mail config of this machine (machineMailFile, mode 600): a remote server (url) or an instance, its id and the key
+ * read from a file (the key is never an argument or printed). Checked with `health`: the server must answer with that id.
+ */
+export function setMachineMail({ url = null, instance = null, instanceId, keyFile, client = servicesClient(), run = spawnSync }) {
+  if (!instanceId || !keyFile || (!url && !instance)) throw new Error('usage: project.mjs mail-machine (--url <server url> | --instance <name>) --instance-id <id> --key-file <file>');
+  const key = fs.readFileSync(keyFile, 'utf8').trim();
+  if (!key) throw new Error(`${keyFile}: empty`);
+  const file = machineMailFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify({ ...(url ? { url } : { instance }), key, instance_id: instanceId }, null, 2)}\n`, { mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch { /* Windows */ }
+  if (!exists(client)) return `mail: machine config written (${toPosix(file)}); not checked (mail client ${toPosix(client)} not found)`;
+  const h = run(process.execPath, [client, 'health', '--config', file], { encoding: 'utf8', timeout: 15000 });
+  let got = null; try { got = JSON.parse(String(h.stdout || '')).instance_id; } catch { got = null; }
+  return got === instanceId
+    ? `mail: machine config written (${toPosix(file)}), the server answers (instance ${instanceId}); brains without their own <brain>/local/comms.json use it`
+    : `mail: machine config written (${toPosix(file)}), but the server did NOT answer with instance ${instanceId} (${String(h.stderr || h.stdout || `exit ${h.status}`).trim().split('\n')[0]}): check --url and the key`;
+}
+
 export function issueMailKey({ projectDir, brainDir, sessionBrain, client = servicesClient(), run = spawnSync }) {
   const target = dataPath(brainDir, 'local', 'comms.json');
   if (exists(target)) return `mail: config exists (<brain>/${LAYOUT.local}/comms.json)`;
+  // A machine set up once for its mail server (a tunnel, project.mjs mail-machine) serves every brain without its own.
+  if (exists(machineMailFile())) return `mail: the machine's config serves this brain (${toPosix(machineMailFile())})`;
   const sender = path.basename(projectDir);
   const how = `issue a key with node ${toPosix(client)} key add --instance <instance> --sender ${sender} and write {instance, key, instance_id} to ${toPosix(target)} (mode 600)`;
   const src = sessionBrain ? readJson(dataPath(sessionBrain, 'local', 'comms.json'), null) : null;
