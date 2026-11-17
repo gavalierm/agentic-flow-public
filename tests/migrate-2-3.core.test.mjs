@@ -1,4 +1,4 @@
-// keep: core
+// keep: guarded
 // migrate.mjs --to 3 (flow v2, spec 11, plan B17): a domain moves from data layout 2 to 3 at once, one commit in each
 // repository; a revert of these commits brings layout 2 back; --check of layout 3 finds what is left; outputs and sources
 // of the brain go to a project repo only by a confirmed row; facts about people leave memory only after people.mjs

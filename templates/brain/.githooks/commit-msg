@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Git hook launcher (P-040). Runs the Node shim next to it; logic lives in the workflow plugin.
-const { spawnSync } = require('node:child_process');
+// Git hook launcher (P-040). Runs the Node shim next to it in this process (one node per hook, not three: each commit of a
+// brain paid ~0.3 s for the chain, P-079); logic lives in the workflow plugin.
 const path = require('node:path');
-const res = spawnSync(process.execPath, [path.join(__dirname, 'commit-msg.mjs'), ...process.argv.slice(2)], { stdio: 'inherit' });
-process.exit(res.status === null ? 1 : res.status);
+const { pathToFileURL } = require('node:url');
+import(pathToFileURL(path.join(__dirname, 'commit-msg.mjs')).href).catch((e) => { process.stderr.write(`brain commit-msg: ${e?.stack || e}\n`); process.exit(1); });

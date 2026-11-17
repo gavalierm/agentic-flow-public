@@ -1,4 +1,4 @@
-// keep: core
+// keep: guarded
 // Spec 6, 4 (REPO OPERÁTORA), 11.8; plan B9, O9, O10: persons in osoby/ of the operator repo, found by alias within a
 // domain, INDEX.md generated on every write, collection of the people records of every brain of the machine without loss.
 import { test } from 'node:test';

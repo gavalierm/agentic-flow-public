@@ -1,5 +1,5 @@
 // Thin shim (P-040): calls the check script of the installed workflow plugin. No check logic here.
-import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -10,5 +10,6 @@ if (!fs.existsSync(script)) {
   process.stderr.write(`brain pre-commit: workflow plugin not found at ${root} (clone it to ~/.claude/skills/workflow or set WORKFLOW_PLUGIN_ROOT)\n`);
   process.exit(1);
 }
-const res = spawnSync(process.execPath, [script, 'pre-commit', ...process.argv.slice(2)], { stdio: 'inherit' });
-process.exit(res.status === null ? 1 : res.status);
+// In this process (P-079): the check runs as its own main (argv[1] is the script); its exit code is the hook's.
+process.argv = [process.argv[0], script, 'pre-commit', ...process.argv.slice(2)];
+await import(pathToFileURL(script).href);

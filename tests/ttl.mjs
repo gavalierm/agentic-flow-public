@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // Test headers and their TTL (D-0061, D-0062). Every test file names in its first lines what it is:
 //   // keep: core          a core test: it guards against irreversible damage or data loss, or checks a base flow
+//   // keep: guarded       a lasting test run only when the code it guards changes (operator 2026-11-17, P-079: a costly
+//                          test of a rarely changed part, e.g. a migration, ran at every release); never expires
 //   // ttl: YYYY-MM-DD     any other test (a test of one fix): it is removed by `expire` after that day
 // A new non-core test gets a ttl 30 days after it is written.
 //   node tests/ttl.mjs check                       lists files without a valid header (exit 1) and the expired ones
 //   node tests/ttl.mjs expire [--dry] [--today D]  git rm of every expired test in one commit; prints them
 //   node tests/ttl.mjs run [--since <ref>]         the suite through scripts/test-slot.mjs (npm test); with --since only the
-//                                                  core tests and the temporary tests whose guarded code changed (D-0085)
+//                                                  core tests and the guarded and temporary tests whose guarded code
+//                                                  changed (D-0085)
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -15,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_TTL_DAYS = 30;
 const HEAD_LINES = 5;
-const KEEP = /^\/\/ keep: core$/;
+const KEEP = /^\/\/ keep: (core|guarded)$/;
 const TTL = /^\/\/ ttl: (\d{4}-\d{2}-\d{2})$/;
 
 /** Test files npm test runs (tests/**\/*.test.mjs), repo-relative, sorted. */
@@ -37,13 +40,15 @@ const validDate = (s) => { const d = new Date(`${s}T00:00:00Z`); return !Number.
 /** Header of a test file: { keep } or { ttl } or { error } (the text says what to add). */
 export function header(text) {
   const lines = text.split('\n').slice(0, HEAD_LINES).map((l) => l.trimEnd());
-  const keep = lines.some((l) => KEEP.test(l));
+  const kinds = lines.map((l) => KEEP.exec(l)).filter(Boolean).map((m) => m[1]);
+  const keep = kinds.length > 0;
   const ttls = lines.map((l) => TTL.exec(l)).filter(Boolean).map((m) => m[1]);
-  if (keep && ttls.length) return { error: 'has both "// keep: core" and "// ttl:"; keep one' };
-  if (keep) return { keep: true };
+  if (keep && ttls.length) return { error: `has both "// keep: ${kinds[0]}" and "// ttl:"; keep one` };
+  if (kinds.length > 1) return { error: 'has more than one "// keep:" line' };
+  if (keep) return kinds[0] === 'core' ? { keep: true } : { guarded: true };
   if (ttls.length > 1) return { error: 'has more than one "// ttl:" line' };
   if (ttls.length) return validDate(ttls[0]) ? { ttl: ttls[0] } : { error: `ttl ${ttls[0]} is not a valid date` };
-  return { error: `no header: add "// keep: core" (core test) or "// ttl: YYYY-MM-DD" (test of a fix, ${DEFAULT_TTL_DAYS} days from today) in the first ${HEAD_LINES} lines` };
+  return { error: `no header: add "// keep: core" (core test), "// keep: guarded" (lasting, run when its code changes) or "// ttl: YYYY-MM-DD" (test of a fix, ${DEFAULT_TTL_DAYS} days from today) in the first ${HEAD_LINES} lines` };
 }
 
 export const today = () => new Date().toISOString().slice(0, 10);
@@ -128,6 +133,7 @@ export function selectSince(root, ref) {
   const all = survey(root);
   const changed = changedSince(root, ref);
   const core = all.filter((t) => t.keep).map((t) => t.file);
+  // Guarded lasting tests are picked like the temporary ones (they only never expire).
   const temporary = all.filter((t) => !t.keep).map((t) => t.file);
   // The version line of package.json (every release changes it) is no change of the test infrastructure: it ran the whole
   // suite at every release (170 s, 2026-11-17).
@@ -154,7 +160,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const bad = all.filter((t) => t.error);
     for (const t of bad) console.log(`${t.file}: ${t.error}`);
     for (const t of all.filter((x) => x.expired)) console.log(`${t.file}: expired (ttl ${t.ttl}), removed by: node tests/ttl.mjs expire`);
-    console.log(`${all.length} test file(s): ${all.filter((t) => t.keep).length} core, ${all.filter((t) => t.ttl).length} with ttl, ${bad.length} without a valid header`);
+    console.log(`${all.length} test file(s): ${all.filter((t) => t.keep).length} core, ${all.filter((t) => t.guarded).length} guarded, ${all.filter((t) => t.ttl).length} with ttl, ${bad.length} without a valid header`);
     process.exit(bad.length ? 1 : 0);
   } else if (cmd === 'expire') {
     try {
@@ -173,7 +179,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       let s;
       try { s = selectSince(ROOT, since); } catch (e) { console.error(`run: ${e.message}`); process.exit(2); }
       const why = s.shared.length ? `; shared infrastructure changed: ${s.shared.join(', ')}` : '';
-      console.log(`tests: core ${s.core.length} + changed ${s.picked.length} of ${s.temporary.length} temporary (since ${since}${why})`);
+      console.log(`tests: core ${s.core.length} + changed ${s.picked.length} of ${s.temporary.length} guarded or temporary (since ${since}${why})`);
       files = s.files;
     }
     const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'test-slot.mjs'), '--', 'node', '--test', ...files], { cwd: ROOT, stdio: 'inherit' });

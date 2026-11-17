@@ -283,8 +283,10 @@ export async function startComms(fx, { senders = ['alice'], brains = null } = {}
     },
     async stop() {
       if (!child) return;
+      if (child.exitCode !== null || child.signalCode !== null) { child = null; return; }
       child.kill('SIGTERM');
-      await new Promise((resolve) => { child.once('exit', resolve); setTimeout(resolve, 2000); });
+      // The fallback timer is cleared: left running, it held every test file with mail 2 s after its last test (P-079).
+      await new Promise((resolve) => { const t = setTimeout(resolve, 2000); child.once('exit', () => { clearTimeout(t); resolve(); }); });
       child = null;
     },
     /** Move the outage backoff (and an old client's 60 s cache) into the past so the next count asks the service. */

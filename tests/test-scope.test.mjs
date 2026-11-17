@@ -20,7 +20,8 @@ function fixture() {
   git('init', '-q');
   commit({ 'src/a.mjs': '1\n', 'src/b.mjs': '1\n', 'src/other.mjs': '1\n', 'tests/helpers.mjs': '\n', 'tests/core.test.mjs': '// keep: core\n' }, 'base');
   commit({ 'tests/a.test.mjs': '// ttl: 2026-12-15\n', 'src/a.mjs': '2\n', 'docs/a.md': 'x\n', 'tests/helpers.mjs': '//\n' }, 'fix a');
-  commit({ 'tests/b.test.mjs': "// ttl: 2026-12-15\nimport { x } from '../src/b.mjs';\n" }, 'test b');
+  // b is a lasting guarded test (keep: guarded): picked as a temporary one, never expires.
+  commit({ 'tests/b.test.mjs': "// keep: guarded\nimport { x } from '../src/b.mjs';\n" }, 'test b');
   git('tag', 'base');
   return { dir, git, write, commit };
 }

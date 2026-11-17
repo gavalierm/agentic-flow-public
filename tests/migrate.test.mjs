@@ -1,4 +1,4 @@
-// keep: core
+// keep: guarded
 // Phase 3 of the data mechanics (D-0048): migrate.mjs moves one repository from data layout 1 to layout 2.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

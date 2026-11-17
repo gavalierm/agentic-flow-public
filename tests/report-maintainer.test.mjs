@@ -1,4 +1,4 @@
-// keep: core
+// keep: guarded
 // Spec 7.4 and 7.5 (operator 2026-11-16): the workflow maintainer is one T3 thread outside the workflow; the mail server
 // names it (instance.json maintainer.thread) and error.mjs report mails it once (comms send --maintainer). Without a
 // maintainer thread on the server, or when the thread is gone (no reply / undelivered -> report --from), the report goes

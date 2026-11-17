@@ -16,6 +16,7 @@ test('every test file of the repo has "// keep: core" or "// ttl: YYYY-MM-DD" in
 
 test('header: keep, ttl, and a clear message for a missing, double or invalid header', () => {
   assert.deepEqual(header('// keep: core\nimport x;\n'), { keep: true });
+  assert.deepEqual(header('// keep: guarded\nimport x;\n'), { guarded: true });
   assert.deepEqual(header('// what it tests\n// ttl: 2026-12-14\n'), { ttl: '2026-12-14' });
   assert.match(header('// a test\nimport x;\n').error, /add "\/\/ keep: core".*"\/\/ ttl: YYYY-MM-DD"/);
   assert.match(header('// keep: core\n// ttl: 2026-12-14\n').error, /both/);
