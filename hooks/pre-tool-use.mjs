@@ -1094,16 +1094,20 @@ export function noTopicWork(tool, toolInput = {}, cwd = process.cwd()) {
   if (hit) return `writes ${toPosix(path.resolve(cwd, hit))}`;
   return SKILL_RUN.test(cmd) ? 'runs a skill script' : null;
 }
-export const NO_TOPIC_REASON = ({ what, verdict, topics, work }) => {
+// Work needs a topic (operator 2026-11-17: "ako môže existovať vlákno bez témy … ak téma neexistuje, má sa vynútiť"): there
+// is no choice without a topic; the step passes only once this thread holds one. A thread asked twice, could not take the
+// topic another thread held and the operator answered "Bez témy": the work stayed only in the work files, the handover
+// empty, the next session knew nothing of it.
+export const NO_TOPIC_REASON = ({ what, verdict, topics, work, answered = false }) => {
+  if (answered) return `this thread holds no topic and this step ${what}; the operator answered: claim or create the chosen topic first (topic.mjs claim <id>, topic.mjs create <id> --subject "..." --class ...; a topic another thread holds only on the operator's choice "Prevziať tému": topic.mjs claim <id> --force --operator-approved), then run the step in it; work needs a topic, outside one it would stay only in ${work}, outside git (P-012, P-078)`;
   const named = verdict?.belongs_to ? topics.find((t) => t.id === verdict.belongs_to) : null;
-  const holder = (t) => (t.holder?.thread ? 'held by another thread: its thread has the work, send it there with workflow:comms; a takeover only on the operator\'s yes, topic.mjs claim <id> --force --operator-approved' : 'free: topic.mjs claim <id>');
-  const others = topics.filter((t) => t !== named).slice(0, 5).map((t) => `${t.id} ("${String(t.subject).slice(0, 80)}")`).join(', ');
-  const options = [
-    named ? `"Pokračovať v téme ${named.id}" (recommended: ${verdict.reason || named.subject}; ${holder(named)})` : (others ? `"Pokračovať v existujúcej téme" with the topic named (open: ${others}; a free one topic.mjs claim <id>, one another thread holds: its thread has the work)` : null),
-    `"Nová téma"${named || others ? '' : ' (recommended)'} (topic.mjs create <id> --subject "..." --class ...)`,
-    `"Bez témy" (what the work leaves stays only in ${work}, outside git, nothing of it is saved, P-078)`,
-  ].filter(Boolean);
-  return `this thread holds no topic and this step ${what}. Ask the operator first in one AskUserQuestion where the work goes, the options in this order: ${options.join('; ')}. Then claim or create the chosen topic and run the step in it, or without a topic repeat the step; ${DIALOG_PASS}; the thread is not asked again after the choice "Bez témy" (P-012, P-078)`;
+  const others = topics.filter((t) => t !== named).slice(0, 5).map((t) => `${t.id} ("${String(t.subject).slice(0, 80)}"${t.holder?.thread ? ', held by another thread' : ', free'})`).join(', ');
+  const options = named && named.holder?.thread
+    ? [`"Pokračovať vo vlákne témy ${named.id}" (recommended: ${verdict.reason || named.subject}; another thread holds it: the operator continues there, this turn ends without the work)`,
+      `"Prevziať tému ${named.id}" (the other thread loses it: topic.mjs claim ${named.id} --force --operator-approved)`]
+    : [named ? `"Pokračovať v téme ${named.id}" (recommended: ${verdict.reason || named.subject}; topic.mjs claim ${named.id})` : (others ? `"Pokračovať v existujúcej téme" with the topic named (open: ${others}; a free one topic.mjs claim <id>; one another thread holds: "Prevziať tému <id>", topic.mjs claim <id> --force --operator-approved)` : null)];
+  options.push(`"Nová téma"${named || others ? '' : ' (recommended)'} (topic.mjs create <id> --subject "..." --class ...)`);
+  return `this thread holds no topic and this step ${what}. Work needs a topic. Ask the operator first in one AskUserQuestion which topic the work goes to, the options in this order: ${options.filter(Boolean).join('; ')}; there is no option without a topic. Then claim or create the chosen topic and run the step in it; the step passes once this thread holds a topic (P-012, P-078)`;
 };
 
 const WAIT_UNIT = { '': 1, s: 1, m: 60, h: 3600, d: 86400 };
@@ -1600,18 +1604,15 @@ function topicChoice(ctx, input, tool, toolInput, cwd) {
   const turnKey = st.turn_started_at;
   if (!turnKey) return null;
   const answered = dialogAnsweredInTurn(ctx.brainDir, ctx.thread);
-  if (st.topic_gate === turnKey && !st.no_topic_ok) {
+  if (st.topic_gate === turnKey) {
     const what = noTopicWork(tool, toolInput, cwd);
     let held = [];
     try { held = heldTopics(ctx.brainDir, ctx.thread); } catch { held = []; }
+    // Work needs a topic: refused until this thread holds one, also after the answer (no choice without a topic).
     if (what && !held.length) {
-      if (!answered) {
-        let topics = [];
-        try { topics = listTopics(ctx.brainDir).filter((t) => !isMainTopic(t) && t.subject); } catch { topics = []; }
-        return NO_TOPIC_REASON({ what, verdict: readDrift(ctx.brainDir, ctx.thread, turnKey), topics, work: topicWorkLabel(ctx.brainDir, ctx.projectDir) });
-      }
-      writeThreadState(ctx.brainDir, ctx.thread, { ...st, no_topic_ok: new Date().toISOString() });
-      return null;
+      let topics = [];
+      if (!answered) try { topics = listTopics(ctx.brainDir).filter((t) => !isMainTopic(t) && t.subject); } catch { topics = []; }
+      return NO_TOPIC_REASON({ what, verdict: answered ? null : readDrift(ctx.brainDir, ctx.thread, turnKey), topics, work: topicWorkLabel(ctx.brainDir, ctx.projectDir), answered });
     }
   }
   const verdict = !answered ? readDrift(ctx.brainDir, ctx.thread, turnKey) : null;

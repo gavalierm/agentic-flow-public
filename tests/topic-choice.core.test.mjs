@@ -2,8 +2,9 @@
 // P-012 (operator 2026-11-17: "ak sa téma nezhoduje alebo sa zmenila, nech flow spraví výzvu, či zmeniť tému alebo pokračovať
 // v už existujúcej"): a thread without a topic is asked where the work goes at its first step of work (a write, also into the
 // work files, a skill script, an Artifact, a worker), the open topic the judge names first; the workflow's own scripts pass;
-// the step passes only after the operator answered a dialog, and "Bez témy" is not asked again. A task off the held topic
-// is refused likewise until the operator answered (no plain repeat).
+// work needs a topic (operator 2026-11-17: "ak téma neexistuje, má sa vynútiť"): there is no choice without a topic, the
+// step passes only once the thread holds one, also after the answer. A task off the held topic is refused until the
+// operator answered (no plain repeat).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -19,7 +20,7 @@ const verdict = (fx, v) => { const f = driftFile(fx.brain, fx.thread); fs.mkdirS
 const pre = (fx, tool, input) => fx.hook('pre-tool-use.mjs', { tool_name: tool, tool_input: input }, OFF).json.hookSpecificOutput || {};
 const answered = (fx) => patchState(fx, { dialog_answered_at: new Date(Date.parse(state(fx).turn_started_at) + 1000).toISOString() });
 
-test('a thread without a topic: the first step of work asks where it goes; workflow scripts pass; after the answer "Bez témy" it is not asked again', () => {
+test('a thread without a topic: the first step of work asks which topic; workflow scripts pass; the step passes only once the thread holds a topic', () => {
   const fx = setup();
   try {
     // Another thread holds the topic the task continues.
@@ -32,13 +33,15 @@ test('a thread without a topic: the first step of work asks where it goes; workf
     assert.match(d.permissionDecisionReason, /holds no topic and this step runs a skill script/);
     assert.match(d.permissionDecisionReason, /AskUserQuestion/);
     assert.match(d.permissionDecisionReason, /"Nová téma"/);
-    assert.match(d.permissionDecisionReason, /"Bez témy" \(what the work leaves stays only in/);
+    assert.doesNotMatch(d.permissionDecisionReason, /"Bez témy"/, 'no choice without a topic');
+    assert.match(d.permissionDecisionReason, /there is no option without a topic/);
     assert.match(d.permissionDecisionReason, /uprava-skillu \("Úprava skillu/, 'the open topics are named');
     // The judge named the open topic: it is the recommended option, with what to do about its holder.
     verdict(fx, { fits: false, no_topic: true, reason: 'príprava stroja na skill', belongs_to: 'uprava-skillu', topic: null });
     d = pre(fx, 'Write', { file_path: path.join(fx.project, 'notes.md'), content: 'x' });
     assert.equal(d.permissionDecision, 'deny');
-    assert.match(d.permissionDecisionReason, /"Pokračovať v téme uprava-skillu" \(recommended: príprava stroja na skill; held by another thread/);
+    assert.match(d.permissionDecisionReason, /"Pokračovať vo vlákne témy uprava-skillu" \(recommended: príprava stroja na skill; another thread holds it/);
+    assert.match(d.permissionDecisionReason, /"Prevziať tému uprava-skillu" \(the other thread loses it: topic\.mjs claim uprava-skillu --force --operator-approved\)/);
     // A plain repeat does not pass; the workflow's own scripts do (claim or create the chosen topic).
     assert.equal(pre(fx, 'Write', { file_path: path.join(fx.project, 'notes.md'), content: 'x' }).permissionDecision, 'deny');
     assert.notEqual(pre(fx, 'Bash', { command: 'node ~/.claude/skills/workflow/bin/topic.mjs create nova --subject "Nová" --class ops' }).permissionDecision, 'deny');
@@ -46,12 +49,15 @@ test('a thread without a topic: the first step of work asks where it goes; workf
     assert.match(pre(fx, 'Artifact', { file_path: path.join(fx.project, 'page.html') }).permissionDecisionReason || '', /this step shows a page to the operator/);
     assert.match(pre(fx, 'mcp__t3-code__html_preview', { path: path.join(fx.project, 'page.html') }).permissionDecisionReason || '', /this step shows a page to the operator/);
     assert.match(pre(fx, 'Agent', { description: 'x', prompt: `work files only in ${path.join(fx.project, 'scratch')}/` }).permissionDecisionReason || '', /this step starts a worker/);
-    // The operator answered "Bez témy": the step passes and the thread is not asked again.
+    // The operator answered: still no step without a topic; the next operator task is gated again.
     answered(fx);
-    assert.notEqual(pre(fx, 'Write', { file_path: path.join(fx.project, 'notes.md'), content: 'x' }).permissionDecision, 'deny');
-    assert.ok(state(fx).no_topic_ok);
+    d = pre(fx, 'Write', { file_path: path.join(fx.project, 'notes.md'), content: 'x' });
+    assert.equal(d.permissionDecision, 'deny', 'work needs a topic, also after the answer');
+    assert.match(d.permissionDecisionReason, /claim or create the chosen topic first/);
     fx.hook('user-prompt-submit.mjs', { prompt: 'a ďalšiu dávku' }, OFF);
-    assert.ok(!state(fx).topic_gate);
+    assert.ok(state(fx).topic_gate, 'every operator task of a thread without a topic is gated');
+    // The thread creates the topic: the step passes.
+    assert.equal(fx.run('topic.mjs', ['create', 'davka', '--subject', 'Dávka', '--class', 'ops']).status, 0);
     assert.notEqual(pre(fx, 'Bash', { command: 'node .claude/skills/nahodenie-produktu/publish-batch.mjs d1' }).permissionDecision, 'deny');
   } finally { fx.cleanup(); }
 });

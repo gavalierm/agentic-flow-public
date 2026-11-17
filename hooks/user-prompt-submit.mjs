@@ -406,8 +406,8 @@ export function run(input) {
   }
   // P-012 (operator 2026-11-17): an operator task in a thread that holds no topic at all (not the persona main thread): the
   // first step that starts work asks the operator where it goes (PreToolUse, `topic_gate`), the judge names the open topic
-  // it continues. Once the operator chose to work without a topic (`no_topic_ok`), the thread is not asked again.
-  const gate = !!state && turnSource === 'operator' && kind === null && !turnIntent && !(info.held || []).length && !state.no_topic_ok;
+  // it continues. Work needs a topic: there is no choice without one (operator 2026-11-17), every operator task is gated.
+  const gate = !!state && turnSource === 'operator' && kind === null && !turnIntent && !(info.held || []).length;
   if (gate) startDriftJudge({ brainDir: ctx.brainDir, thread: ctx.thread, startedAt, task: ownWords(input.prompt), ...noTopicJob(listTopics(ctx.brainDir).filter((t) => !isMainTopic(t))) });
   // Spec 10.2: the operator's message in the thread is progress (the continuation count starts from zero); a harness
   // notice alone (a task end) is none.
