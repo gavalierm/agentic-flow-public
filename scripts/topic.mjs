@@ -223,7 +223,7 @@ function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedK
   const { kind } = resolveClass(ctx, cls, askedKind);
   // Spec 3.4: a new thread only on the explicit request of the operator or the supervisor, and the record names who asked.
   const forNewThread = !!forThread || newThread;
-  if (forNewThread) requestedBy = threadRequester(requestedBy);
+  if (forNewThread) requestedBy = threadRequester(requestedBy, ctx.policy);
   // A persona has no project code (P-025): a code topic from its session without --project went to the persona repo
   // instead of the managed project (bob 2026-11-03, t3-workarounds-check in bob, not the managed project).
   if (kind === 'code' && !explicitProject && isPersonaProject(ctx)) throw new Error(`code topic ${id} would be created in persona project ${path.basename(ctx.projectDir)}: a persona has no project code (P-025). Pass --project <managed project dir> (or --project ${ctx.projectDir} if the persona repo itself is the code)`);
@@ -332,9 +332,14 @@ function sharedDomainBrain(ctx) {
 export const THREAD_REQUESTERS = ['operator', 'supervisor'];
 
 /** The requester of a new thread, else the refusal (spec 3.4: nobody else starts a thread, a topic manager only subagents). */
-export function threadRequester(requestedBy) {
+export function threadRequester(requestedBy, policy = null) {
   const r = typeof requestedBy === 'string' ? requestedBy.trim() : '';
   if (!THREAD_REQUESTERS.includes(r)) throw new Error(`a new thread starts only on the explicit request of the operator or the supervisor (spec 3.4): pass --requested-by ${THREAD_REQUESTERS.join('|')}; a topic manager starts only subagents, a topic of its own work it claims itself (--here)`);
+  // No supervisor is set by default (operator 2026-11-17: the workflow is led by the maintainer's session, not a persona).
+  if (r === 'supervisor' && policy) {
+    const sup = supervisorOf(policy);
+    if (!sup.persona && !sup.comms) throw new Error('--requested-by supervisor: this brain has no supervisor (policy supervisor, brain.mjs supervisor); the request came from the operator: --requested-by operator');
+  }
   return r;
 }
 
@@ -478,7 +483,7 @@ export function topicRepoContext(ctx, topic) {
  */
 export function startThreadForTopic(ctx, id, { task = null, mode, run, forThread = null, requestedBy = null } = {}) {
   guardThread(ctx, 'thread', { allowWake: true, codeStart: !forThread });
-  requestedBy = threadRequester(requestedBy);
+  requestedBy = threadRequester(requestedBy, ctx.policy);
   if (!topicExists(ctx.brainDir, id)) throw new Error(`topic ${id} does not exist (archived or never created)`);
   const holder = readHolder(ctx.brainDir, id);
   if (holder.thread) return { ok: false, reason: `topic ${id} ${heldBy(holder)}; a new thread needs a free topic: write to the holder (comms send --to ${topicMailProject(ctx.brainDir, id) || commsProjectName(ctx)}/${id}) or ask the operator about a takeover (P-037)` };

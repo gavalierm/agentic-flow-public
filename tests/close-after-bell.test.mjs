@@ -63,6 +63,8 @@ test('a turn the supervisor\'s message started may close the topic within the ma
   const fx = setup();
   const stateFile = path.join(fx.root, 'stub-state.json');
   Object.assign(fx.env, { WORKFLOW_COMMS_CLIENT: STUB, STUB_COMMS_STATE: stateFile, STUB_COMMS_LOG: path.join(fx.root, 'stub-log.jsonl') });
+  // The plugin names no supervisor (operator 2026-11-17): a brain that has one sets it.
+  fs.writeFileSync(path.join(fx.brain, 'policy.json'), JSON.stringify({ supervisor: { persona: 'alice', comms: '@alice/main' } }));
   try {
     // class ops (mode off): a topic in mode discussion is closed only on the operator's instruction (spec 10.6 item 4)
     assert.equal(fx.run('topic.mjs', ['create', 'd', '--subject', 'D', '--class', 'ops']).status, 0);

@@ -111,7 +111,7 @@ test('two domains in layout 2 and 3: each kind of finding, the discussion topic 
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
-test('the wake job mails the supervisor once per new finding; a failed mail is tried again', () => {
+test('the wake job mails the maintainer once per new finding (no supervisor by default); a failed mail is tried again', () => {
   const fx = setup();
   try {
     const m = machine(fx.root);
@@ -122,10 +122,10 @@ test('the wake job mails the supervisor once per new finding; a failed mail is t
     const wake = (now) => fx.run('overview.mjs', ['wake', '--project', fx.project, '--root', m.root, '--now', iso(now)], { env });
     let r = wake(m.now + H);
     assert.equal(r.status, 0, r.out);
-    assert.match(r.stdout, /overview: 2 new finding\(s\) mailed to @alice\/main/);
+    assert.match(r.stdout, /overview: 2 new finding\(s\) mailed to the maintainer/);
     assert.equal(sends().length, 1);
     const argv = sends()[0].argv || sends()[0];
-    assert.ok(JSON.stringify(argv).includes('"--persona","alice"') && JSON.stringify(argv).includes('"--supersede-key","overview"') && JSON.stringify(argv).includes('"assist"'), JSON.stringify(sends()[0]));
+    assert.ok(JSON.stringify(argv).includes('"--maintainer"') && JSON.stringify(argv).includes('"--supersede-key","overview"') && JSON.stringify(argv).includes('"assist"'), JSON.stringify(sends()[0]));
     assert.match(JSON.stringify(sends()[0]), /stuck: Alfa\/brain\/a-stuck/);
     // the same findings: no mail
     r = wake(m.now + 2 * H);
@@ -136,7 +136,7 @@ test('the wake job mails the supervisor once per new finding; a failed mail is t
     fs.writeFileSync(stateFile, JSON.stringify({ sends: sends(), send_fail: true }));
     r = wake(m.now + 14 * H);
     assert.equal(r.status, 1, r.out);
-    assert.match(r.stderr, /2 new finding\(s\), mail to @alice\/main failed/);
+    assert.match(r.stderr, /2 new finding\(s\), mail to the maintainer failed/);
     fs.writeFileSync(stateFile, JSON.stringify({ sends: sends() }));
     r = wake(m.now + 14 * H);
     assert.equal(r.status, 0, r.out);

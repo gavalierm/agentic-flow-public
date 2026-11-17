@@ -217,7 +217,7 @@ if (process.argv[1]?.endsWith('delegate.mjs')) try {
         impl.task
           ? '- Zmeny commituj sám v tomto worktree tasku (`git commit`; každý commit pushne hook post-commit). Nepushuj, nezlučuj (merge, rebase), netaguj ani neresetuj: hook to odmietne; zlúčenie do vetvy témy (`topic.mjs task-merge`) a vydanie robí vlákno témy po kontrole (spec 3.7, D-0020).'
           : '- Necommituj, nepushuj, nezlučuj (merge, rebase) ani netaguj: hook to v kópii odmietne; commit, zlúčenie a vydanie robí vlákno témy po kontrole (D-0020).',
-        '- Spúšťaj iba testy, ktorých sa zmena týka (`node --test <súbor>`, `pytest <súbor>`), nie celú sadu: hook ju odmietne a vlákno témy ju spustí raz pred zlúčením (P-071).',
+        '- Nový test píš iba vtedy, keď ho toto zadanie menuje (P-020: test je trvalý artefakt, nie dôkaz práce; operátor 2026-11-17: testy každej drobnosti spomalili vývoj zo sekúnd na hodiny). Každý testovací súbor, ktorého sa zmena týka, spusti raz po poslednej úprave (`node --test <súbor>`, `pytest <súbor>`), nie po každom kroku a nie celú sadu: hook ju odmietne a vlákno témy ju spustí raz (P-071).',
         '- Nezapisuj do brain (P-013, P-025).',
         '- Vráť súhrn zmien (súbor a jedna veta ku každému) a spustené testy s výsledkom (počty prešlo/zlyhalo).', '');
     }

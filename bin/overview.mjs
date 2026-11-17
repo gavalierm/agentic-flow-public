@@ -55,14 +55,16 @@ try {
       const sup = supervisorOf(ctx.policy);
       const s = commsSettings(ctx);
       const addr = sup.comms ? parseAddress(sup.comms, s.project) : null;
-      if (!addr) fail(`overview: ${fresh.length} new finding(s), but no supervisor address (brain.mjs supervisor --comms <address>); nothing sent`);
-      const to = addr.persona ? ['--persona', addr.persona] : ['--project', addr.project, '--topic', addr.topic];
+      // No supervisor (the default, operator 2026-11-17: the workflow is led by the maintainer's session, not by a persona;
+      // the plugin's example persona sent the overview to a mailbox nobody reads): the maintainer thread the mail names.
+      const to = !addr ? ['--maintainer'] : addr.persona ? ['--persona', addr.persona] : ['--project', addr.project, '--topic', addr.topic];
+      const dest = addr ? sup.comms : 'the maintainer';
       const text = [`Prehľad supervisora (overview.mjs, spec 3.9): ${fresh.length} nový nález(y), spolu ${res.findings.length}.`, ...res.findings.map((f) => `- ${findingLine(f)}`)].join('\n');
       const sent = runClient(ctx, ['send', '--text', '-', '--level', 'assist', ...to, '--supersede-key', 'overview'], { input: text, timeoutMs: 10000 });
-      if (!sent.ok) fail(`overview: ${fresh.length} new finding(s), mail to ${sup.comms} failed (${sent.error}); the next run tries again`);
+      if (!sent.ok) fail(`overview: ${fresh.length} new finding(s), mail to ${dest} failed (${sent.error}); the next run tries again`);
       // Only a sent mail records the findings: a failed one is tried again at the next run.
       writeOverviewState({ keys, at: new Date(now).toISOString() });
-      out(`overview: ${fresh.length} new finding(s) mailed to ${sup.comms}${sent.data?.id ? ` (${sent.data.id})` : ''}`);
+      out(`overview: ${fresh.length} new finding(s) mailed to ${dest}${sent.data?.id ? ` (${sent.data.id})` : ''}`);
     }
   } else {
     fail('usage: overview.mjs [--root <dir>] | wake [--project <dir>]');

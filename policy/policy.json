@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "supervisor": { "persona": "alice", "comms": "@alice/main" },
+  "supervisor": {},
   "limits": {
     "memory_index_lines": 50,
     "decision_index_lines": 50,

@@ -14,7 +14,7 @@ function threadStub(fx) {
   const input = path.join(fx.root, 'first-message.txt');
   const stub = path.join(fx.root, 'fake-t3.sh');
   fs.writeFileSync(stub, `#!/bin/sh\ncat > '${input}'\necho '{"threadId":"t-new"}'\n`, { mode: 0o755 });
-  fs.writeFileSync(path.join(fx.brain, 'policy.json'), JSON.stringify({ topics: { thread_start_command: `${stub} --json` } }));
+  fs.writeFileSync(path.join(fx.brain, 'policy.json'), JSON.stringify({ topics: { thread_start_command: `${stub} --json` }, supervisor: { persona: 'alice', comms: '@alice/main' } }));
   return input;
 }
 

@@ -114,7 +114,7 @@ Hodnoty určil agent (operátor delegoval rozhodnutie, 2026-10-31). Sú to vých
 | Limit zobudení | 6 za hodinu na dvojicu tém, stop pri 2 rovnakých správach za sebou | P-043 | slučku prezradí skôr opakovanie než počet |
 | Zobudenia pokračovaním bez postupu (`topics.continue_max`) | 3 | P-026 | potom zaseknutie: kroky idú do Otvorených otázok (spec 10.2) |
 | Prehľad supervisora (`overview.interval_min`) | 30 min | P-037 | skript bez agenta zobudí supervisora iba pri novom náleze (zaseknutie, nečinný zámok, téma na uzavretie) |
-| Supervisor (`supervisor`) | `{"persona": "alice", "comms": "@alice/main"}` | P-047 | jeho správa je pokyn nadriadeného; brain ho môže prepísať |
+| Supervisor (`supervisor`) | `{}` (žiadny: workflow neriadi persona, ale session správcu; operátor 2026-11-17) | P-047 | správa nastaveného supervisora je pokyn nadriadeného; brain ho môže nastaviť (`brain.mjs supervisor`); bez neho ide prehľad `overview.mjs wake` správcovi (`send --maintainer`) |
 | Čakanie hooku na poštu | najviac 2 s | P-041 | výpadok pošty nesmie spomaliť ťah |
 | Počet správ pre stavový riadok | živo; po výpadku posledná hodnota a nový pokus najskôr po 60 s | P-041, P-023 | výpadok nesmie spomaliť každý prompt |
 | Režim držiteľa | `operator` | P-037 | bezpečnejšie predvolenie |
