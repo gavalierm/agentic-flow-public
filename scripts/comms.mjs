@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { readJson, PLUGIN_ROOT } from './util.mjs';
+import { readJson, PLUGIN_ROOT, toPosix } from './util.mjs';
 import { machineName, servicesDir, threadStateFile } from './config.mjs';
 import { knownBrains } from './update.mjs';
 import { PERSONA_REPO_RE, PERSONA_PREFIX } from './persona-name.mjs';
@@ -130,6 +130,17 @@ export function commsSettings(ctx) {
   };
   if (!out.enabled) out.reason = explicit ? `comms client not found at ${clientRel}` : 'comms not configured';
   return out;
+}
+
+/**
+ * flow-public#103: the brain of this session has no <brain>/local/comms.json (no sender key) while the mail client exists:
+ * the client calls instance `default` without a key and every call fails. A line with the fix, or null.
+ */
+export function noMailConfigLine(ctx) {
+  if (!ctx?.brainDir || ctx.config?.comms === false || ctx.config?.comms?.config) return null;
+  const s = commsSettings(ctx);
+  if (!s.enabled || s.configFile) return null;
+  return `mail: NOT set up for this brain (no ${toPosix(dataPath(ctx.brainDir, 'local', 'comms.json'))}): every mail call goes to instance default without a key; issue the key: node ${toPosix(path.join(PLUGIN_ROOT, 'bin', 'project.mjs'))} mail ${toPosix(ctx.projectDir)} (flow-public#103)`;
 }
 
 export function commsConfigured(ctx) {
