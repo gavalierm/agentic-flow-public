@@ -82,6 +82,22 @@ export function republishDeny(ctx, input) {
   return url ? REPUBLISH_REASON(p.file, url) : null;
 }
 
+export const NEW_ARTIFACT_REASON = (own) => `a new artifact, and this topic already has ${own.length} published page(s): ${own.slice(-5).map((a) => `${toPosix(a.file)} -> ${a.url}`).join('; ')}. Same work or subject as one of them: publish with its url (overwrite it; read it first with action read if this context has not published it). Other work and you are sure: repeat this publish. Not sure: ask the operator in the dialog, new page or overwrite which one. An artifact cannot be deleted from a T3 thread, so a needless one stays (operator 2026-11-18: two nearly identical reports)`;
+
+/**
+ * PreToolUse: the first publish of a new page (no url, path not recorded) in a topic that already has published pages is
+ * refused once per path with those pages; a repeat of the same path passes (the agent is sure). Returns the reason or null.
+ * `asked` is the list of paths already refused in this thread.
+ */
+export function newArtifactDeny(ctx, input, asked = []) {
+  if (!ctx.brainDir || !ctx.thread) return null;
+  const p = pagePublish(input);
+  if (!p || p.url || asked.includes(p.file) || recordedUrl(ctx.brainDir, p.file)) return null;
+  const key = recordKey(ctx.brainDir, ctx.thread);
+  const own = readArtifacts(ctx.brainDir).filter((a) => a.key === key && a.url && a.file !== p.file);
+  return own.length ? { file: p.file, reason: NEW_ARTIFACT_REASON(own) } : null;
+}
+
 /** SessionStart compact: the artifacts this thread's topic published, so the summary does not lose their addresses. */
 export function artifactsNote(ctx) {
   if (!ctx.brainDir || !ctx.thread) return null;

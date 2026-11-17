@@ -39,7 +39,7 @@ export function dataIndexWrite(absPaths) {
 import { heldTopics, listTopics, topicCopyPath,expectedImplementation, implementMarkers, IMPLEMENT_CLASSES } from '../scripts/topic.mjs';
 import { logDecision } from '../scripts/denials.mjs';
 import { taskCopyPaths } from '../scripts/topic.mjs';
-import { republishDeny } from '../scripts/artifacts.mjs';
+import { republishDeny, newArtifactDeny } from '../scripts/artifacts.mjs';
 import { analyze, bypassOf, bypassReason, callKey, closedTargets, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, namesPath, openByAnswers, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, transcriptTurnText, turnLifts, awaitTranscriptToolUse, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-036', 'P-052', 'P-053', 'P-041', 'P-054'] };
@@ -1634,6 +1634,16 @@ export function run(input) {
   // report-80357d47: a recorded artifact path published without url would get a new address (scripts/artifacts.mjs).
   const republish = tool === 'Artifact' ? republishDeny(ctx, input) : null;
   if (republish) return permissionOutput('deny', republish);
+  // Operator 2026-11-18: a new page in a topic with pages asks first, once per path (new or overwrite; sure → repeat).
+  if (tool === 'Artifact' && ctx.brainDir && ctx.thread) {
+    const st = readThreadState(ctx.brainDir, ctx.thread);
+    const asked = Array.isArray(st.new_artifact_asked) ? st.new_artifact_asked : [];
+    const fresh = newArtifactDeny(ctx, input, asked);
+    if (fresh) {
+      writeThreadState(ctx.brainDir, ctx.thread, { ...st, new_artifact_asked: [...asked, fresh.file].slice(-20) });
+      return permissionOutput('deny', fresh.reason);
+    }
+  }
 
   // P-061 (operator 2026-11-08): a question to the operator is asked in the dialog, so T3 shows the thread as "Awaiting Input";
   // a text question was lost in the thread among the mail turns. The time is kept for the Stop hook (question asked this turn).

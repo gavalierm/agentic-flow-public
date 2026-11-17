@@ -68,6 +68,10 @@ test('point 3: in a question turn the first write passes; the line in the contex
 test('point 4: the rule judge reads the project exceptions: a conflict with a principle under an exception is no conflict', () => {
   const fx = setup();
   try {
+    // The core rules are near their limit; this test is about the judge, not the limit (the limit has its own test).
+    const pol = path.join(fx.brain, 'policy.json');
+    const cur = fs.existsSync(pol) ? JSON.parse(fs.readFileSync(pol, 'utf8')) : {};
+    fs.writeFileSync(pol, JSON.stringify({ ...cur, limits: { ...(cur.limits || {}), rules_chars: 20000 } }));
     const promptFile = path.join(fx.root, 'judge-prompt.txt');
     const verdict = JSON.stringify({ overlaps: [], conflicts: [{ id: 'P-010', how: 'other index limit' }], code_instead: '' });
     const judge = { env: { WORKFLOW_RULE_JUDGE: 'on', WORKFLOW_RULE_JUDGE_CMD: `cat > '${promptFile}'; echo '${verdict}'` } };
