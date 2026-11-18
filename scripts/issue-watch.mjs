@@ -99,6 +99,16 @@ export function undeliveredIssues(base) {
   return Object.entries(readIssues(base)).filter(([, r]) => r && r.undelivered).map(([key, r]) => ({ key, ...r }));
 }
 
+/**
+ * The undelivered records one thread sees and clears (a project 2026-11-18: the status line of every thread of the brain
+ * counted three answers of another topic, and its error.mjs watch would have cleared them): those of a topic it holds;
+ * the thread of main also those whose topic has no holder any more (closed) or none at all. `hasHolder(id)`: the topic is held.
+ */
+export function undeliveredFor(base, { held = [], main = false, hasHolder = () => true } = {}) {
+  const ids = new Set(held.map((t) => t.id));
+  return undeliveredIssues(base).filter((r) => ids.has(r.topic) || (main && (!r.topic || !hasHolder(r.topic))));
+}
+
 function log(base, line) {
   try {
     fs.mkdirSync(dataPath(base, 'local'), { recursive: true });

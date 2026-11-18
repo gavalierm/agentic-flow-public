@@ -12,9 +12,9 @@ import { handoverAgeLine } from './compact.mjs';
 import { noMailConfigLine, maintainerMailLine, mailCount, formatMail, mailNoticeLine, registerTopic, commsConfigured, closeArchivedTopics, isMainTopic, noticesCount, discussionMail } from './comms.mjs';
 import { syncBrainSkills } from './skills-sync.mjs';
 import { policyIgnoredLine } from './policy-layers.mjs';
-import { gitAccessProblem } from './brain.mjs';
+import { gitAccessProblem, readHolder } from './brain.mjs';
 import { readTopics } from './records.mjs';
-import { undeliveredIssues } from './issue-watch.mjs';
+import { undeliveredIssues, undeliveredFor } from './issue-watch.mjs';
 import { sessionKnowledgeSources, skillSources, knowledgeKinds } from './repo-knowledge.mjs';
 import { dataPath, dataRel, dataLayoutVersion, layoutOf, topicHome, topicWorkLabel, hasData, hasScratch, layoutRefusal, dataName } from './layout.mjs';
 import { workDir, workTopic } from './topic-files.mjs';
@@ -40,7 +40,7 @@ export function statusInfo(ctx, { discussion = false, since = null } = {}) {
   const thread = ctx.thread || '- (no stable id: start via thread.mjs or T3; topics cannot be claimed)';
   // Answers on the reporter's own issues the check could not ring (project without persona, its topic closed; 3c.2).
   let issues = 0;
-  try { issues = undeliveredIssues(ctx.brainDir || ctx.projectDir).length; } catch { /* only a notice */ }
+  try { issues = ctx.brainDir ? undeliveredFor(ctx.brainDir, { held, main: held.some(isMainTopic), hasHolder: (id) => !!readHolder(ctx.brainDir, id) }).length : undeliveredIssues(ctx.projectDir).length; } catch { /* only a notice */ }
   return {
     line: `thread ${thread} | topic ${topic} | ${formatMail(mail)}${notices ? ` | notices: ${notices} open (comms notices; decide only on operator instruction, P-046)` : ''}${issues ? ` | issues: ${issues} answer(s) on your reports not delivered by mail: run error.mjs watch now, it prints each one once (read it on GitHub, then error.mjs confirm|reopen <url>)` : ''}`,
     held,

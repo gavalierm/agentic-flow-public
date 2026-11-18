@@ -19,9 +19,11 @@ import { listFailures, formatFailures, resolveFailuresOp, restoreFailuresOp } fr
 import { find, formatMatches } from '../scripts/find.mjs';
 import { readSkills } from '../scripts/records.mjs';
 import { tokens } from '../scripts/keys.mjs';
-import { brainWrite } from '../scripts/brain.mjs';
+import { brainWrite, readHolder } from '../scripts/brain.mjs';
+import { heldTopics } from '../scripts/topic.mjs';
+import { isMainTopic } from '../scripts/comms.mjs';
 import { report, scrub } from '../scripts/report.mjs';
-import { confirmIssue, reopenIssue, watchIssues, undeliveredIssues, updateIssue, baseOf } from '../scripts/issue-watch.mjs';
+import { confirmIssue, reopenIssue, watchIssues, undeliveredIssues, undeliveredFor, updateIssue, baseOf } from '../scripts/issue-watch.mjs';
 
 // P-003 step 5: every error goes to the workflow maintainer, or the lesson stays in one brain.
 const REPORT_LINE = 'then report the error to the workflow maintainer: error.mjs report --title "<short>" --text "chyba: ...; príčina: ...; uložené: ..."; only its line "reported: ..." means reported (P-003)';
@@ -73,8 +75,11 @@ try {
     const r = await watchIssues({ force: !!args.force });
     for (const l of r.lines) out(l);
     // Rings without a mail address (project without persona, its topic closed): shown here once, then cleared (3c.2).
+    // Only the records of this thread's topics (main: also those whose topic closed); another topic's answers stay for it.
     const base = baseOf(ctx);
-    for (const u of undeliveredIssues(base)) {
+    const held = ctx.brainDir && ctx.thread ? heldTopics(ctx.brainDir, ctx.thread) : [];
+    const mine = ctx.brainDir && ctx.thread ? undeliveredFor(base, { held, main: held.some(isMainTopic), hasHolder: (id) => !!readHolder(ctx.brainDir, id) }) : undeliveredIssues(base);
+    for (const u of mine) {
       out(`undelivered: ${u.url}: comments ${(u.undelivered.comments || []).join(', ') || '-'}, state ${u.undelivered.state || '-'} (${u.undelivered.why}); read it on GitHub, then error.mjs confirm|reopen ${u.url} --text "..."`);
       updateIssue(base, u.key, { undelivered: null });
     }
