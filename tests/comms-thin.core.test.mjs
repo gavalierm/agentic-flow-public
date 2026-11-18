@@ -226,7 +226,7 @@ test('after an outage the mail\'s answer replaces the backup: owed offline from 
   } finally { await comms.stop(); fx.cleanup(); }
 });
 
-test('send --maintainer goes to the maintainer thread; --to thread/<id> is refused without a held message; a reply to a message delivered to a thread resolves in that thread (a shop repo 2026-11-16)', () => {
+test('send --maintainer goes to the maintainer thread; --to thread/<id> goes as a thread address (--to-thread); a reply to a message delivered to a thread resolves in that thread (a shop repo 2026-11-16)', () => {
   const fx = stubbed({
     message: { 'm-th1': { id: 'm-th1', status: 'picked', level: 'assist', to_thread: 'th-reporter', picked_at: '2026-11-01T10:00:00.000Z' } },
     sends: [], resolves: [],
@@ -237,10 +237,13 @@ test('send --maintainer goes to the maintainer thread; --to thread/<id> is refus
     assert.match(r.stdout, /sent \S+ \(assist\) -> maintainer/);
     const send = fx.stub.calls('send').at(-1);
     assert.ok(send.includes('--maintainer') && !send.includes('--project'), JSON.stringify(send));
+    // Operator 2026-11-18: thread/<id> is a thread address (the server takes it only from the maintainer's thread).
     r = fx.run('comms.mjs', ['send', '--level', 'assist', '--to', 'thread/abc', '--text', 'x']);
-    assert.equal(r.status, 1);
-    assert.match(r.stderr, /a thread is a mailbox you read .* send --maintainer/);
-    assert.equal(fx.stub.calls('send').length, 1, 'nothing sent');
+    assert.equal(r.status, 0, r.out);
+    const toThread = fx.stub.calls('send').at(-1);
+    assert.deepEqual(toThread.slice(toThread.indexOf('--to-thread'), toThread.indexOf('--to-thread') + 2), ['--to-thread', 'abc'], JSON.stringify(toThread));
+    assert.ok(!toThread.includes('--project') && !toThread.includes('--maintainer'));
+    assert.equal(fx.run('comms.mjs', ['send', '--maintainer', '--to', 'thread/abc', '--level', 'assist', '--text', 'x']).status, 1);
     assert.equal(fx.run('comms.mjs', ['send', '--maintainer', '--to', 'x/y', '--level', 'assist', '--text', 'x']).status, 1);
     r = fx.run('comms.mjs', ['send', '--reply-to', 'm-th1', '--state', 'hotovo', '--text', 'ďakujem']);
     assert.equal(r.status, 0, r.out);

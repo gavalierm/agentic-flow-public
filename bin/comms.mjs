@@ -13,7 +13,7 @@
 //   comms.mjs settle --id <id>[,<id>]                   a message of your mailbox answered another way: done without a reply (settled)
 //   comms.mjs ack --id <id>[,<id>]                      a picked message that needs no answer: done (acked); not after an interim answer
 //   comms.mjs withdraw --id <id>                        take back a message you sent that has no final answer (done, withdrawn)
-//   comms.mjs send --level blocker|steer|assist (--to [<project>/]<topic> | --to @<persona>/main | --maintainer) (--text "..." | --file <path>) [--ttl 5m|30m] [--from <held topic>] [--key <key>]
+//   comms.mjs send --level blocker|steer|assist (--to [<project>/]<topic> | --to @<persona>/main | --maintainer | --to thread/<id> (maintainer only)) (--text "..." | --file <path>) [--ttl 5m|30m] [--from <held topic>] [--key <key>]
 //   comms.mjs send --reply-to <id> --state hotovo|otázka|čakám [--wait-for "<what>"] [--cancels <id of your final reply>] [--text ...]
 //                                                       the answer with its state (P-061), one operation of the mail (resolve): one final
 //                                                       `hotovo` per message, a reply is never answered; --cancels replaces your final reply
@@ -394,10 +394,14 @@ function cmdSend(ctx) {
   if (level) clientArgs.push('--level', level);
   let destination;
   const to = String(args.to || args.topic || '');
-  // thread/<id> is the mailbox a bell names (receive reads it), no address: the mail would hold it as an unknown topic and
-  // ask the operator (a shop repo 2026-11-16).
-  if (/^thread\//.test(to)) fail(`--to ${to}: a thread is a mailbox you read (comms receive), not an address; the workflow maintainer: send --maintainer --level assist --text "..."; an answer to a message: send --reply-to <id> --state hotovo --text "..."; nothing sent`);
-  if (args.maintainer) {
+  // thread/<id> (operator 2026-11-18): a new message to a thread by its id; the mail server takes it only from the
+  // maintainer's thread (403 otherwise), so a topic thread still writes the maintainer with --maintainer.
+  const threadTo = /^thread\/(.+)$/.exec(to);
+  if (threadTo) {
+    if (args.maintainer) fail('--maintainer and --to exclude each other; nothing sent');
+    clientArgs.push('--to-thread', threadTo[1]);
+    destination = to;
+  } else if (args.maintainer) {
     if (to) fail('--maintainer and --to exclude each other; nothing sent');
     // The maintainer's T3 thread, named by the mail server (instance.json maintainer.thread), as error.mjs report sends.
     clientArgs.push('--maintainer');
