@@ -572,7 +572,8 @@ function typeTriage(ctx, id, files, main) {
     if (refusal) fail(`${refusal}\nA new type of outputs is the operator's choice (spec 5.3): propose ${plan.newTypes.map((t) => `vystupy/${t}/`).join(', ')} in the dialog; nothing written, nothing moved, the topic stays open`);
   }
   const base = topicRel(ctx.brainDir, id);
-  const root = dataRel(main?.dir || ctx.brainDir, 'outputs');
+  // Only a plan with outputs needs the target repo's outputs (a brain of data 2.1 has none; all lines "zanikne" failed there).
+  const root = plan.outputs.length ? dataRel(main.dir, 'outputs') : null;
   const targets = new Map();
   const moves = [];
   for (const o of plan.outputs) {

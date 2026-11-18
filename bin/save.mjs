@@ -30,6 +30,7 @@
 //                        project repo; a folder in one commit with names by the rule of names (the mapping is printed)
 //   save.mjs source --record <file> --from <where> [--topic <id>] [--description "..."]   a file over the limit: its record
 //   save.mjs source --check [--repo <name>]   files in the sources over the limit (exit 1)
+//   save.mjs share <skill>[,<skill>] --to <brain dir>   a saved agentic skill into another brain: one checked commit, pushed
 //   save.mjs result <file> [--topic <id>] [--as <name>] [--replace]   a result of the topic's work worth keeping, into
 //                        topics/<topic>/ of the brain (spec 5; the SubagentStop hook writes none, O13)
 import fs from 'node:fs';
@@ -37,8 +38,8 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { lfBytes } from '../scripts/eol.mjs';
 import { spawnSync } from 'node:child_process';
-import { parseArgs, fail, today, readText, listFiles, relPosix } from '../scripts/util.mjs';
-import { loadContext, isWakeTurn, dialogAnsweredInTurn, machineName, foreignProjectCwd, resolveBrain, brainExists, projectPolicy, inSubagent } from '../scripts/config.mjs';
+import { parseArgs, fail, today, readText, listFiles, relPosix, git } from '../scripts/util.mjs';
+import { loadContext, isWakeTurn, dialogAnsweredInTurn, machineName, foreignProjectCwd, resolveBrain, brainExists, projectPolicy, inSubagent, loadPolicy } from '../scripts/config.mjs';
 import { brainWrite, formatWriteResult, syncAndCheckHolder, checkHolder, withBrainLock, hasRemote, brainSync, verifyHeldLocks, lockLostText } from '../scripts/brain.mjs';
 import { parseFrontmatter, serializeFrontmatter, asList } from '../scripts/frontmatter.mjs';
 import { makeKey, normalizeKey, hasDiacritics, isValidId, KEY_TYPES } from '../scripts/keys.mjs';
@@ -1324,14 +1325,48 @@ function saveResult(ctx) {
   if (owner) out(`bound to ${owner.from}: its changes are saved at the end of each turn (P-078)`);
 }
 
+/**
+ * A saved agentic skill into another brain (a project, 2026-11-18: a skill went to a peer's brain by `git commit
+ * --no-verify`, so every transfer asked the operator for a dialog against a standing order): save.mjs share <skill>[,<skill>]
+ * --to <brain dir>. The files of each skill (as saved in this brain) replace the skill in the other brain in one commit made
+ * by the brain script, checked by its pre-commit (P-040) and pushed; nothing else of the other brain changes.
+ */
+function saveShare(ctx) {
+  const names = String(rest[0] || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const to = typeof args.to === 'string' ? path.resolve(args.to) : null;
+  if (!names.length || !to) fail('usage: save.mjs share <skill>[,<skill>] --to <brain dir>');
+  if (!ctx.brainDir) fail('save.mjs share: this session has no brain to take the skill from');
+  if (path.resolve(to) === path.resolve(ctx.brainDir)) fail('save.mjs share: --to is this brain; a skill of this brain is saved with save.mjs skill');
+  if (!brainExists(to) || !fs.existsSync(path.join(to, '.githooks'))) fail(`save.mjs share: ${toPosixPath(to)} is no brain of the workflow (topics/, .git and .githooks/); nothing written`);
+  const ops = [];
+  for (const name of names) {
+    const rel = dataRel(ctx.brainDir, 'skills', AGENTIC_OWNER, name);
+    const src = path.join(ctx.brainDir, rel);
+    if (!fs.existsSync(path.join(src, 'SKILL.md'))) fail(`save.mjs share: no agentic skill ${name} in this brain (${toPosixPath(src)}); save it first (save.mjs skill)`);
+    if (git(['status', '--porcelain', '--', rel], { cwd: ctx.brainDir }).stdout.trim()) fail(`save.mjs share: ${rel} has changes not saved in this brain; the saved state is shared (save.mjs skill first)`);
+    const destRel = dataRel(to, 'skills', AGENTIC_OWNER, name);
+    const list = (d) => (fs.existsSync(d) ? fs.readdirSync(d, { recursive: true }).map(String).filter((f) => fs.statSync(path.join(d, f)).isFile() && !f.split(/[\\/]/).includes('__pycache__')).map(toPosixPath) : []);
+    const files = list(src);
+    for (const f of files) {
+      const buf = fs.readFileSync(path.join(src, f));
+      ops.push({ path: `${destRel}/${f}`, content: f.endsWith('.md') ? buf.toString('utf8') : buf });
+    }
+    for (const f of list(path.join(to, destRel))) if (!files.includes(f)) ops.push({ path: `${destRel}/${f}`, remove: true });
+  }
+  const sha = git(['rev-parse', '--short', 'HEAD'], { cwd: ctx.brainDir }).stdout.trim();
+  const res = brainWrite({ brainDir: to, thread: ctx.thread, policy: loadPolicy(to) }, { ops, message: `share skill ${names.join(', ')} from ${path.basename(ctx.brainDir)} (${sha})` });
+  out(res.committed ? formatWriteResult(res, [`${toPosixPath(to)}: skill ${names.join(', ')}`]) : `nothing to share: skill ${names.join(', ')} in ${toPosixPath(to)} is the same as here`);
+  if (res.committed) out('the other machine gets it after a pull and a new session (skills are deployed at session start)');
+}
+
 try {
   const ctx = loadContext({ project: args.project });
   const foreign = foreignProjectCwd(ctx, args.project);
   if (foreign) fail(foreign);
   // Spec 11.10, plan O18: the guard of the session start, again before a write (a session started before the migration).
   if (ctx.brainDir && ctx.projectDir) { const refusal = layoutRefusal(ctx.brainDir, ctx.projectDir); if (refusal) fail(`save.mjs refused, nothing written: ${refusal}`); }
-  const handlers = { memory: saveMemory, decision: saveDecision, rule: saveRule, exception: saveException, skill: saveSkill, handover: saveHandover, docs: saveDocs, move: saveMove, person: savePerson, source: saveSource, result: saveResult };
-  if (!handlers[category]) fail('usage: save.mjs memory|decision|rule|exception|skill|handover|docs|move|person|source|result ...');
+  const handlers = { memory: saveMemory, decision: saveDecision, rule: saveRule, exception: saveException, skill: saveSkill, handover: saveHandover, docs: saveDocs, move: saveMove, person: savePerson, source: saveSource, result: saveResult, share: saveShare };
+  if (!handlers[category]) fail('usage: save.mjs memory|decision|rule|exception|skill|handover|docs|move|person|source|result|share ...');
   if (args.repo !== undefined && !['memory', 'decision', 'rule', 'skill', 'handover', 'move', 'source'].includes(category)) fail(`--repo: ${category} lives in brain only (memory, decision, rule, skill, handover, move and source take --repo)`);
   // Spec 4.2.4 (plan B5): a thread that holds a topic pulls and verifies its locks before any write; a lost one stops the
   // save with nothing written, whatever it writes (not only the files of the topic).
