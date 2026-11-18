@@ -38,13 +38,19 @@ const WEB_TOOLS = ['WebFetch', 'WebSearch'];
 export const WATCH_INTERVAL_MS = 15_000;
 export const WATCHED_LEVELS = ['blocker', 'steer'];
 
+/** curl -o /dev/null on Windows Git Bash with MSYS_NO_PATHCONV=1 exits 23 (it cannot write to a literal /dev/null) after a
+ * correct status code: no failure (a project 2026-11-18, 12 entries in one day). */
+export function curlNullWrite(command, error) {
+  return /\bcurl\b/.test(command) && /-o\s*\/dev\/null\b/.test(command) && /^Exit code 23\b/m.test(error);
+}
+
 export function toEntry(input, policy) {
   const agent = input.agent_id || 'main';
   const tool = input.tool_name;
   const command = String(input.tool_input?.command || '');
   const response = input.tool_response || {};
   const failed = input.hook_event_name === 'PostToolUseFailure' || response.interrupted === true || /^Exit code [1-9]/m.test(String(response.stderr || response.error || ''));
-  if (failed) {
+  if (failed && !curlNullWrite(command, String(input.error || response.error || response.stderr || ''))) {
     const error = String(input.error || response.error || response.stderr || response.stdout || '').trim();
     return { kind: 'fail', agent, tool, command: command || tool, error };
   }

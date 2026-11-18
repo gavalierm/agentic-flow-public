@@ -176,6 +176,7 @@ export function noiseFailure(line) {
   const what = head.split(' ').slice(3).join(' ');
   if (/^(WebFetch|WebSearch)\b/.test(what) && NET_ERROR.test(err)) return true;
   if (/^worker-result\b/.test(what) && (NO_FAILURE.test(err) || (WEB_ONLY.test(err) && !/hook|workflow|skill|pravidl|zamiet/i.test(err)))) return true;
+  if (/^Exit code 23\b/.test(err.trim()) && /\bcurl\b/.test(what) && /-o\s*\/dev\/null\b/.test(what)) return true;
   if (/^Exit code \d+$/.test(err.trim()) && (/\/tmp(\/|\b)/.test(what) || (/^Exit code 1$/.test(err.trim()) && /(^|\|\s*|&&\s*|;\s*)grep\b[^|]*$/.test(what)))) return true;
   return false;
 }
