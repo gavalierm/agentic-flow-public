@@ -298,7 +298,11 @@ export async function report(ctx, { text, title, fromId, to } = {}, env = proces
     why.push(direct.why);
     if (direct.notice) runClient(ctx, ['decide', '--notice', direct.notice, '--decision', 'discard']);
   }
-  const mail = mailReport(ctx, `title: ${title}\n\n${text}`, { key: reportTopic(title, ctx, env) });
+  // The key names the brain, not the project or topic that reports (operator 2026-11-18: the maintainer took a report of
+  // one project's topic for another project): the mail to the maintainer names them (private mail; the issue does not).
+  let fromLine = '';
+  try { const p = commsSettings(ctx).project; const t = ctx.brainDir && ctx.thread ? heldTopics(ctx.brainDir, ctx.thread).find((x) => !isMainTopic(x))?.id : null; if (p) fromLine = `from: ${p}${t ? `/${t}` : ''}\n`; } catch { fromLine = ''; }
+  const mail = mailReport(ctx, `title: ${title}\n${fromLine}\n${text}`, { key: reportTopic(title, ctx, env) });
   if (mail.ok) {
     markMaintainerMail(null, env);
     writeReport(ctx, mail.id, { text, title, at: new Date().toISOString(), to: mail.to });

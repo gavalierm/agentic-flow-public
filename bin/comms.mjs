@@ -537,7 +537,8 @@ function mailContext() {
     const home = ctx.thread ? threadMailBrain(ctx.thread, { any: true }) : null;
     if (!home) throw new Error(`${err.message}; no brain on this machine has mail settings for thread ${ctx.thread || '(no thread id)'}: run comms from the project of the topic (--project <dir>)`);
     ctx.mailBrainDir = home;
-    process.stderr.write(`mail of thread ${ctx.thread} with the settings of ${toPosix(home)} (no brain in ${toPosix(ctx.projectDir)})\n`);
+    const own = process.env.WORKFLOW_COMMS_CONFIG;
+    process.stderr.write(`mail of thread ${ctx.thread} with the settings of ${toPosix(home)} (no brain in ${toPosix(ctx.projectDir)})${own ? `, key of ${toPosix(own)}` : `; a send is signed with the key of that brain (a key of its own: WORKFLOW_COMMS_CONFIG=<config file>)`}\n`);
     return ctx;
   }
 }

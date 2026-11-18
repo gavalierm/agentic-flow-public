@@ -145,8 +145,12 @@ export function commsSettings(ctx) {
   const home = mailBrain(ctx);
   const brainFile = home ? dataPath(home, 'local', 'comms.json') : null;
   const machineFile = machineMailFile();
+  // WORKFLOW_COMMS_CONFIG: the mail config of a session without a brain of its own (the maintainer's thread, operator
+  // 2026-11-18): without it such a session took the key of a brain it only reads mail through and signed as that brain.
+  const envFile = process.env.WORKFLOW_COMMS_CONFIG || null;
   const configFile = cfg.config
     ? path.resolve(projectDir, cfg.config)
+    : envFile ? path.resolve(envFile)
     : brainFile && fs.existsSync(brainFile) ? brainFile : fs.existsSync(machineFile) ? machineFile : brainFile;
   const out = {
     enabled: fs.existsSync(client),

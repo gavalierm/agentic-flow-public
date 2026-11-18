@@ -585,7 +585,9 @@ export function issueMailKey({ projectDir, brainDir, sessionBrain, client = serv
   if (exists(target)) return `mail: config exists (<brain>/${LAYOUT.local}/comms.json)`;
   // A machine set up once for its mail server (a tunnel, project.mjs mail-machine) serves every brain without its own.
   if (exists(machineMailFile())) return `mail: the machine's config serves this brain (${toPosix(machineMailFile())})`;
-  const sender = path.basename(projectDir);
+  // The key is the brain's and signs every project of it (a domain, 2026-11-18: a brain of two projects signed all its
+  // threads with the name of the project that set the mail up): the sender is the brain's name, not the project's.
+  const sender = path.basename(path.resolve(brainDir));
   const how = `issue a key with node ${toPosix(client)} key add --instance <instance> --sender ${sender} and write {instance, key, instance_id} to ${toPosix(target)} (mode 600)`;
   const src = sessionBrain ? readJson(dataPath(sessionBrain, 'local', 'comms.json'), null) : null;
   if (!src?.instance || !src?.instance_id) return `mail: NOT set up (this session has no mail config with instance and instance_id): ${how}`;

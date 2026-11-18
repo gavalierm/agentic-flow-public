@@ -61,3 +61,27 @@ test('a wake job of a brain served by the machine config goes into its wake.jobs
   assert.equal(ensureJob(ctx, job).changed, false, 'the same job is not written twice');
   fs.rmSync(file);
 });
+
+test('the key of a brain is issued with the brain\'s name, not the name of the project that set the mail up', () => {
+  const brain = path.join(root, 'shared-brain'); const project = path.join(root, 'second-project'); const session = path.join(root, 'session-brain');
+  for (const d of [brain, project]) fs.mkdirSync(d, { recursive: true });
+  const src = dataPath(session, 'local', 'comms.json');
+  fs.mkdirSync(path.dirname(src), { recursive: true }); fs.writeFileSync(src, '{"instance":"prod","instance_id":"i1"}');
+  const client = path.join(root, 'client.mjs'); fs.writeFileSync(client, '');
+  const calls = [];
+  const run = (_node, argv) => { calls.push(argv); return argv[1] === 'key' ? { status: 0, stdout: '{"key":"k1"}' } : { status: 0, stdout: '{"instance_id":"i1"}' }; };
+  assert.match(issueMailKey({ projectDir: project, brainDir: brain, sessionBrain: session, client, run }), /key issued for sender shared-brain/);
+  assert.deepEqual(calls[0].slice(1), ['key', 'add', '--instance', 'prod', '--sender', 'shared-brain']);
+});
+
+test('a session without a brain of its own signs with WORKFLOW_COMMS_CONFIG, not with the key of the brain it reads mail through', () => {
+  const home = path.join(root, 'home-brain'); const own = path.join(root, 'own', 'comms.json');
+  const cfg = dataPath(home, 'local', 'comms.json');
+  fs.mkdirSync(path.dirname(cfg), { recursive: true }); fs.writeFileSync(cfg, '{}');
+  fs.mkdirSync(path.dirname(own), { recursive: true }); fs.writeFileSync(own, '{}');
+  const client = path.join(root, 'c2.mjs'); fs.writeFileSync(client, '');
+  const ctx = { brainDir: null, mailBrainDir: home, projectDir: root, config: { comms: { client } } };
+  assert.equal(commsSettings(ctx).configFile, cfg);
+  process.env.WORKFLOW_COMMS_CONFIG = own;
+  try { assert.equal(commsSettings(ctx).configFile, own); } finally { delete process.env.WORKFLOW_COMMS_CONFIG; }
+});
