@@ -15,7 +15,7 @@
 // name with an upper case first letter; repositories stay lower case.
 //   project.mjs root [<dir>]                                         show the projects root of this machine, or save it
 //     (~/.config/agentic-flow/projects-root); the first explicit --root of restore, connect or create saves it too
-//   project.mjs mail-machine (--url <server url> | --instance <name>) --instance-id <id> --key-file <file>
+//   project.mjs mail-machine (--url <server url> | --instance <name>) --instance-id <id> --key-file <file> [--client <comms.mjs>]
 //     mail config of this machine (~/.config/agentic-flow/comms.json, mode 600): every brain without its own uses it
 //   project.mjs mail <dir>                                         sender key and <brain>/local/comms.json of a project
 //     whose brain has no mail config (connect and create do it themselves)
@@ -36,6 +36,7 @@ import { parseArgs, fail, toPosix, readJson, PLUGIN_ROOT } from '../scripts/util
 import { loadContext, loadPolicy, inSubagent, isWakeTurn, readThreadState, writeThreadState, WORKFLOW_CONFIG } from '../scripts/config.mjs';
 import { setupT3, startWelcome, pendingT3Line } from '../scripts/t3-setup.mjs';
 import { brainWrite, formatWriteResult } from '../scripts/brain.mjs';
+import { commsSettings, servicesClient } from '../scripts/comms.mjs';
 import { setWizard } from '../scripts/wizard.mjs';
 import { probe, restore, connect, create, issueMailKey, setMachineMail, inventory, formatInventory, projectRoots, machineRoot, setMachineRoot, rootFile } from '../scripts/project.mjs';
 
@@ -202,7 +203,11 @@ try {
     else out(list(t3Step([dir], typeof args.name === 'string' ? args.name : path.basename(path.dirname(dir)))));
   } else if (cmd === 'mail-machine') {
     guardWrite();
-    try { out(`- ${setMachineMail({ url: args.url || null, instance: args.instance || null, instanceId: args['instance-id'], keyFile: args['key-file'] })}`); } catch (err) { fail(err.message); }
+    // The health check uses the mail client this machine has: --client, the installed release, else the one the session's
+    // project uses (doma-pc 2026-11-18: the client was a clone elsewhere and the check was skipped).
+    const sessionClient = (() => { try { return commsSettings(loadContext({ requireBrain: false })).client; } catch { return null; } })();
+    const client = [args.client, servicesClient(), sessionClient].find((c) => c && fs.existsSync(c)) || servicesClient();
+    try { out(`- ${setMachineMail({ url: args.url || null, instance: args.instance || null, instanceId: args['instance-id'], keyFile: args['key-file'], client })}`); } catch (err) { fail(err.message); }
   } else if (cmd === 'mail') {
     if (!target) fail('usage: project.mjs mail <dir>');
     guardWrite();

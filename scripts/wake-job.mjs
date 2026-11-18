@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { commsSettings } from './comms.mjs';
+import { commsSettings, machineMailFile } from './comms.mjs';
 import { JOB_NAME } from './issue-watch.mjs';
 import { overviewIntervalMs } from './overview.mjs';
 import { PLUGIN_ROOT, readJson, toPosix } from './util.mjs';
@@ -120,6 +120,18 @@ export function ensureJob(ctx, job, { env = process.env, platform = process.plat
     const p = jobPlan(Array.isArray(config?.wake?.jobs) ? config.wake.jobs : [], job);
     if (p.what === 'same') return { changed: false, line: `wake job ${job.name}: already in ${cfgShown} (wake.jobs)` };
     if (p.what === 'kept') return { changed: false, line: `wake job ${job.name}: kept in ${cfgShown} (wake.jobs; its script ${toPosix(p.script).replace(home, '~')} exists)` };
+    // The machine config is the workflow's own file (project.mjs mail-machine): its wake.jobs are written here, one job
+    // per name for the machine (doma-pc 2026-11-18: written by hand, and overview-<project> per project collided).
+    if (path.resolve(configFile) === path.resolve(machineMailFile(env))) {
+      const wake = config?.wake && typeof config.wake === 'object' ? config.wake : {};
+      const jobs = Array.isArray(wake.jobs) ? wake.jobs : [];
+      const next = { ...config, wake: { ...wake, jobs: p.i === -1 ? [...jobs, job] : jobs.map((j, k) => (k === p.i ? { ...j, ...job } : j)) } };
+      const tmp = `${configFile}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+      try { fs.chmodSync(tmp, 0o600); } catch { /* Windows */ }
+      fs.renameSync(tmp, configFile);
+      return { changed: true, line: `wake job ${job.name}: ${p.i === -1 ? 'added to' : 'updated in'} ${cfgShown} (wake.jobs, every ${intervalS} s); the wake reads the jobs at its start: restart it (wake.mjs install --config ${cfgShown})` };
+    }
     return { changed: false, line: `wake job ${job.name}: the mail config is the file ${cfgShown} (a wake started with --config reads its "wake": {"jobs": [...]}, not wake.json): nothing written; ${p.what === 'add' ? 'add' : 'replace the job of that name with'} this job in that list and restart wake: ${JSON.stringify(job)}` };
   }
   if (!wakeInstalled(file, instance, env, platform)) return { changed: false, line: `wake job ${job.name}: wake not installed on this machine (${shown} missing), nothing written; after comms wake install run this again` };

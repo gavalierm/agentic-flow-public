@@ -42,3 +42,22 @@ test('a failed mail to the maintainer is said at every session start until a rep
   markMaintainerMail(null);
   assert.equal(maintainerMailLine(), null);
 });
+
+test('a wake job of a brain served by the machine config goes into its wake.jobs, once per name (doma-pc 2026-11-18)', async () => {
+  const { ensureJob } = await import('../scripts/wake-job.mjs');
+  const brain = path.join(root, 'brain-w'); const project = path.join(root, 'proj-w');
+  fs.mkdirSync(brain); fs.mkdirSync(project);
+  const client = path.join(root, 'comms-w.mjs'); fs.writeFileSync(client, '');
+  const file = process.env.WORKFLOW_MACHINE_COMMS;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '{"url":"https://posta.example/","key":"k","instance_id":"i1"}');
+  const ctx = { brainDir: brain, projectDir: project, config: { comms: { client } } };
+  const job = { name: 'overview', command: 'node /x/overview.mjs wake', interval_ms: 60000 };
+  const r = ensureJob(ctx, job);
+  assert.equal(r.changed, true, r.line);
+  const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual(cfg.wake.jobs, [job]);
+  assert.equal(cfg.key, 'k', 'the key and url stay');
+  assert.equal(ensureJob(ctx, job).changed, false, 'the same job is not written twice');
+  fs.rmSync(file);
+});
