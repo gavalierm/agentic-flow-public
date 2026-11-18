@@ -2,6 +2,7 @@
 // Bug 2026-11-15 (D-0065 follow-up): the persona brain is also the skill source of domain repos that are not personas
 // (agentic-flow, agentic-comms). Their copies kept absolute paths <persona project>/.claude/skills/<name>/ while the persona
 // deploys that skill as <persona>-<name>/, so `resolve.sh: No such file`. No copy may point to a missing skill folder.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

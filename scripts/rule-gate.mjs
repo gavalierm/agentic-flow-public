@@ -125,8 +125,8 @@ export function judgeRule(rule, corpus, { spawn } = {}) {
   const prompt = judgePrompt(rule, corpus);
   const custom = process.env.WORKFLOW_RULE_JUDGE_CMD;
   const res = custom
-    ? spawn('sh', ['-c', custom], { input: prompt, encoding: 'utf8', timeout: 120_000 })
-    : spawn('claude', ['-p', '--model', 'haiku', '--setting-sources', '', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json', '--json-schema', JSON.stringify(JUDGE_SCHEMA)], { input: prompt, encoding: 'utf8', timeout: 120_000, cwd: '/' });
+    ? spawn('sh', ['-c', custom], { input: prompt, encoding: 'utf8', timeout: 120_000, windowsHide: true })
+    : spawn('claude', ['-p', '--model', 'haiku', '--setting-sources', '', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json', '--json-schema', JSON.stringify(JUDGE_SCHEMA)], { input: prompt, encoding: 'utf8', timeout: 120_000, cwd: '/', windowsHide: true });
   if (res.status !== 0 || !res.stdout) return lexical();
   try {
     let data = JSON.parse(res.stdout);

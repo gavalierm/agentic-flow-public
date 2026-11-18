@@ -1,6 +1,7 @@
 // ttl: 2026-12-18
 // Operator 2026-11-18: two nearly identical reports, and an artifact cannot be deleted from a T3 thread. A new page in a
 // topic that already has pages is refused once per path with those pages; a repeat, an update (url) or a first page passes.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

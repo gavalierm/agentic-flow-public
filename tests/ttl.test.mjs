@@ -1,6 +1,7 @@
 // keep: core
 // Test headers (D-0061, D-0062): every test file is a core test or carries its ttl; expire removes the expired ones
 // with git rm in a commit of their own.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

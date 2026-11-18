@@ -1,6 +1,7 @@
 // ttl: 2026-12-14
 // migrate.mjs: an unknown option is refused and --help prints the usage (both ran the preview of the cwd repository);
 // a brain without policy.json in layout 1 is a brain, not a project repo (a domain brain previewed 0 moves).
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

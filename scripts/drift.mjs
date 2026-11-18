@@ -3,7 +3,10 @@
 // <brain>/local/drift/<thread>.json (a file of its own: a read-modify-write of the thread state by the running turn
 // would overwrite a late verdict). PreToolUse reads the verdict and refuses the first write of the turn once.
 // A missing, late or failed verdict refuses nothing (an outage must not block work).
-// WORKFLOW_DRIFT_JUDGE=off disables the judge; WORKFLOW_DRIFT_JUDGE_CMD is a command (gets the prompt on stdin, prints the JSON).
+// Off by default (operator 2026-11-18: it ran a `claude -p` process at nearly every operator task, ~760 in 3 days, for
+// about 3 refusals; P-079): P-012 is a priority rule for the agent. WORKFLOW_DRIFT_JUDGE=on enables it;
+// WORKFLOW_DRIFT_JUDGE_CMD is a command (gets the prompt on stdin, prints the JSON) and enables it unless =off.
+export const driftJudgeOn = (env = process.env) => env.WORKFLOW_DRIFT_JUDGE === 'on' || (!!env.WORKFLOW_DRIFT_JUDGE_CMD && env.WORKFLOW_DRIFT_JUDGE !== 'off');
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -97,13 +100,15 @@ export function driftPrompt({ subject, topicTask = null, state, next, handover, 
 }
 
 /** Run the judge; returns { fits, reason } or null when it ran no verdict (off, CLI missing or failing). */
+// windowsHide: this runs in the detached judge, which has no console on Windows; a console program it starts without
+// windowsHide opens its own visible window that takes the keyboard focus (operator report 2026-11-18).
 export function judgeDrift(job, { run = spawnSync } = {}) {
-  if (process.env.WORKFLOW_DRIFT_JUDGE === 'off') return null;
+  if (!driftJudgeOn()) return null;
   const prompt = driftPrompt(job);
   const custom = process.env.WORKFLOW_DRIFT_JUDGE_CMD;
   const res = custom
-    ? run('sh', ['-c', custom], { input: prompt, encoding: 'utf8', timeout: 90_000 })
-    : run('claude', ['-p', '--model', 'haiku', '--setting-sources', '', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json', '--json-schema', JSON.stringify(SCHEMA)], { input: prompt, encoding: 'utf8', timeout: 90_000, cwd: '/' });
+    ? run('sh', ['-c', custom], { input: prompt, encoding: 'utf8', timeout: 90_000, windowsHide: true })
+    : run('claude', ['-p', '--model', 'haiku', '--setting-sources', '', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'json', '--json-schema', JSON.stringify(SCHEMA)], { input: prompt, encoding: 'utf8', timeout: 90_000, cwd: '/', windowsHide: true });
   if (!res || res.status !== 0 || !res.stdout) return null;
   try {
     let data = JSON.parse(res.stdout);
@@ -130,7 +135,7 @@ export function judgeDrift(job, { run = spawnSync } = {}) {
  * Returns false when no judge starts (off, nothing to compare).
  */
 export function startDriftJudge(job) {
-  if (process.env.WORKFLOW_DRIFT_JUDGE === 'off' || !job.brainDir || !job.thread || !job.task) return false;
+  if (!driftJudgeOn() || !job.brainDir || !job.thread || !job.task) return false;
   if (!job.subject && !(job.others || []).length) return false;
   try {
     const child = spawn(process.execPath, [SELF], { detached: true, stdio: 'ignore', windowsHide: true, env: { ...process.env, [JOB_ENV]: JSON.stringify(job) } });

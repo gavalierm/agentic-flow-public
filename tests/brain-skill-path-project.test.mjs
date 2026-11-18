@@ -3,6 +3,7 @@
 // paths "<brain repo>/.claude/skills/<name>/..." unchanged, but the persona deploys them as <persona>-<name>, so the copy
 // called a script that does not exist. Those paths now name the prefixed folder; relative paths, other repos, a name that
 // is not a brain skill and the persona's own deploy stay as before.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

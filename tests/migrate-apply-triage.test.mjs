@@ -1,6 +1,7 @@
 // ttl: 2026-12-15
 // migrate.mjs --apply with --triage and no --confirmed is refused and changes nothing (flow-public#90: the proposals were
 // committed as triaz-ostava and the repository marked layout 2).
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

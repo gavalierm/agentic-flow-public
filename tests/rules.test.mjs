@@ -1,5 +1,6 @@
 // keep: core
 // P-035, P-022: layered rules.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

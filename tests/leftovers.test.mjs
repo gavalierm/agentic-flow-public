@@ -2,6 +2,7 @@
 // Leftovers outside git after a move of the data (doma-pc 2026-11-16): junk (__pycache__, *.pyc, .DS_Store) is removed
 // with the folders it leaves empty, tracked files and work are never touched; other files of an old folder are grouped per
 // entry with size; docs/ of a project repo counts only its junk (a code repo may keep its own build output there).
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

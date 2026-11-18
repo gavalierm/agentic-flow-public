@@ -2,6 +2,7 @@
 // flow-public#103, operator 2026-11-18: a brain without <brain>/local/comms.json sent every mail call to instance default
 // without a key, nothing said so, and a report that fell back to an issue was taken quietly. Session start names a brain
 // without mail; a machine config serves every brain without its own; a failed mail to the maintainer stays said.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

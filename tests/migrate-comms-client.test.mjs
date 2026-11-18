@@ -1,6 +1,7 @@
 // ttl: 2026-12-17
 // flow-public#100: migrate refused the uncommitted tree for an untracked comms/ in the brain root without saying it is the
 // mail client; the agent removed it and the mail stopped. The refusal names the client and the way that keeps it.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

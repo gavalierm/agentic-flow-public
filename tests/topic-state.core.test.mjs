@@ -3,6 +3,7 @@
 // and Úlohy pre operátora, running alarms), over several topics, with the earliest alarm; of the mail only the awaiting
 // answers with a next check enter. The fields of v2 (`turn`, `mode`, `repos`) go into the topic record in one op with
 // the holder and keep every other field, `state` (working | paused | closed) included.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

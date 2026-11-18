@@ -2,6 +2,7 @@
 // A temporary test runs only when the code it guards changes (agent-alice/D-0085): npm test -- --since <ref> runs the core
 // tests always, a temporary test when its guarded file (outside tests/ and *.md of the commit that added it, or a direct
 // relative import) or the test itself changed in <ref>..HEAD or uncommitted, and everything when tests/helpers.mjs changed.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

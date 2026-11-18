@@ -2,6 +2,7 @@
 // D-0065: a persona (brain ".", repo agent-<name>) deploys its own brain skills as <name>-<skill>: the name: field, the
 // absolute paths <project>/.claude/skills/<skill>/ and mentions "skill `<skill>`" of the copy get the prefix, the brain
 // keeps the names; old unprefixed copies go with the marker; a project that is not a persona keeps the names.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

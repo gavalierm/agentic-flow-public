@@ -1,6 +1,7 @@
 // keep: core
 // What a deploy ignore file excludes (gitignore order, the last matching rule wins) and when wrangler deploys the root:
 // nothing of the workflow may be deployed (operator 2026-11-16), outside git neither (local/, topics/<t>/tmp/).
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

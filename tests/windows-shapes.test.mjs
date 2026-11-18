@@ -2,6 +2,7 @@
 // Windows shapes of the changes of 2026-11-17 (a domain on Windows, Git Bash and PowerShell; optimistic: checked on any OS):
 // a handover cites work files with backslashes and an absolute path with a space (D:\Claude projekty\…), a skill script
 // runs with a quoted Windows path or node.exe, a step starts with a quoted cd or Set-Location.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

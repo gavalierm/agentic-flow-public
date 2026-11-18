@@ -7,9 +7,6 @@ Tému drží jedno vlákno (zámok); `claim --force` iba na výslovný pokyn ope
 ### P-011: Handover
 Téma má jeden handover so sekciami Zadanie, Hotové, Ďalší krok, Súbory, Otvorené otázky, Úlohy pre operátora (iba to, čo ďalšia session potrebuje), `save handover` po každej zmene stavu a pred `/clear`. Ďalší krok je iba krok vykonateľný bez odpovede (aj viac položiek); čo na odpoveď čaká, patrí do Otvorených otázok. Zmenu Zadania (operátor vo vlákne, pokyn supervisora) zapíš hneď s pôvodom. Pri prevzatí porovnaj „Hotové“ so súbormi a vetvami; pri rozchode sa spýtaj.
 
-### P-012: Odbočenie z témy
-Správu mimo témy či bez témy ulož (P-007), dialógom ponúkni tému; kým nezvolí, NERIEŠ.
-
 ### P-026: Pokračovanie
 Ďalší krok v handoveri NIE JE dôvod ukončiť ťah: urob ho, inak skonči podľa P-061 a workflow vlákno zobudí „continue from handover“. Po kompakcii je podkladom handover; novú session navrhni až po `done --topic`.
 

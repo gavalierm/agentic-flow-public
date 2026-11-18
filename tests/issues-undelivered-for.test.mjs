@@ -1,6 +1,7 @@
 // ttl: 2027-05-18
 // A project 2026-11-18: every thread of a brain counted the undelivered answers of another topic in its status line, and its
 // error.mjs watch would have cleared them. A thread sees only those of a topic it holds; main also those of a closed topic.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

@@ -3,6 +3,7 @@
 // forms "$H/<repo>/.claude/skills/<name>", "$HOME/...", "~/...", a relative ".claude/skills/<name>" and the persona repo
 // under another root, so scripts and cron failed. Every reference to an own skill folder of the persona is rewritten;
 // another project's skills and a name that is not an own skill stay. The deploy warns about crontab lines with an old path.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

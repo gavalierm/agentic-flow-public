@@ -1,6 +1,7 @@
 // keep: core
 // T3 0.1.10 (pilot 2026-11-17): T3 resumes the session /clear started (t3code#35054), so the /clear redirect is off from
 // that version; `t3 thread start` still has no --effort (t3code#29863 closed as not planned), checked from --help.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

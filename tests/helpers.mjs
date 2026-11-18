@@ -1,4 +1,5 @@
 // Test fixtures: temporary project + brain + bare origin, all under os.tmpdir(). No dependencies.
+import './tmp-scope.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

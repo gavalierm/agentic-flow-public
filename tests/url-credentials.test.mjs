@@ -2,6 +2,7 @@
 // A remote address is printed without its credentials: the origin of a nested clone in the migrate preview (observed
 // 2026-11-14: https://x-access-token:<token>@github.com/... in the output) and the origin of a repository in the project
 // listing show https://***@host/...; an address without credentials stays unchanged.
+import './tmp-scope.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
