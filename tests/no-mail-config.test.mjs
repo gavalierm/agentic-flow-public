@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { noMailConfigLine, commsSettings, markMaintainerMail, maintainerMailLine } from '../scripts/comms.mjs';
 import { issueMailKey } from '../scripts/project.mjs';
 import { dataPath } from '../scripts/layout.mjs';
@@ -84,4 +85,15 @@ test('a session without a brain of its own signs with WORKFLOW_COMMS_CONFIG, not
   assert.equal(commsSettings(ctx).configFile, cfg);
   process.env.WORKFLOW_COMMS_CONFIG = own;
   try { assert.equal(commsSettings(ctx).configFile, own); } finally { delete process.env.WORKFLOW_COMMS_CONFIG; }
+});
+
+test('a thread without a brain on a machine with only the machine config reads its mail (not refused for want of a brain)', () => {
+  const dir = path.join(root, 'bare'); fs.mkdirSync(dir, { recursive: true });
+  const machine = path.join(root, 'only-machine', 'comms.json');
+  fs.mkdirSync(path.dirname(machine), { recursive: true }); fs.writeFileSync(machine, '{"url":"http://127.0.0.1:9/","key":"k","instance_id":"i"}');
+  const env = { ...process.env, WORKFLOW_MACHINE_COMMS: machine, WORKFLOW_THREAD_ID: 't-bare', WORKFLOW_PIN_FILE: path.join(root, 'no-pin.json'), WORKFLOW_ROOT_FILE: path.join(root, 'no-root') };
+  delete env.WORKFLOW_COMMS_CONFIG;
+  const r = spawnSync(process.execPath, [path.join(import.meta.dirname, '..', 'bin', 'comms.mjs'), 'list'], { cwd: dir, env, encoding: 'utf8' });
+  assert.match(r.stderr, /with the machine's config .*only-machine\/comms\.json/);
+  assert.doesNotMatch(r.stderr, /no brain on this machine has mail settings/);
 });

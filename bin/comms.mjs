@@ -23,13 +23,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, fail, readStdin, localTime, toPosix } from '../scripts/util.mjs';
 import { loadContext, inSubagent, readThreadState, writeThreadState, mainCheckout, resolveDomain } from '../scripts/config.mjs';
-import { commsSettings, commsProjectName, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, categoryLabel, LEVELS, dropNoticesCache, readObligations, ageText, supervisorOf, fromSupervisor, threadMailBrain } from '../scripts/comms.mjs';
+import { commsSettings, commsProjectName, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, categoryLabel, LEVELS, dropNoticesCache, readObligations, ageText, supervisorOf, fromSupervisor, threadMailBrain, machineMailFile } from '../scripts/comms.mjs';
 import { readTopic, readTopicRecord, mailboxTopics, heldTopics, heldBy, topicMailProject, listTopics } from '../scripts/topic.mjs';
 import { readHolder, isHolderOf } from '../scripts/brain.mjs';
 import { validWaker, TIMER_CMD } from '../scripts/waker.mjs';
 import { STATES } from '../scripts/protocol.mjs';
 import { markProgress } from '../scripts/topic-turn.mjs';
-import { LAYOUT } from '../scripts/layout.mjs';
+import { LAYOUT, dataPath } from '../scripts/layout.mjs';
 
 const FINAL_STATE = STATES[0];
 /** Final statuses of a message in the mail (model 2, 1a): a 409 with one of them means it is already settled. */
@@ -168,7 +168,7 @@ const fromOf = (w) => (w.from_project && w.from_topic ? `${w.from_project}/${w.f
 function cmdStatus(ctx) {
   const s = commsSettings(ctx);
   out(`comms: ${s.enabled ? 'enabled' : `off (${s.reason})`}`);
-  out(`client: ${s.clientRel}${s.instance ? ` | instance ${s.instance}` : ''}${s.configFile ? ` | config <brain>/${LAYOUT.local}/comms.json` : ' | config: none (key missing?)'} | project ${s.project}`);
+  out(`client: ${s.clientRel}${s.instance ? ` | instance ${s.instance}` : ''}${s.configFile ? ` | config ${ctx.brainDir && path.resolve(s.configFile) === path.resolve(dataPath(ctx.brainDir, 'local', 'comms.json')) ? `<brain>/${LAYOUT.local}/comms.json` : toPosix(s.configFile)}` : ' | config: none (key missing?)'} | project ${s.project}`);
   if (!s.enabled) return;
   const h = runClient(ctx, ['health']);
   out(h.ok ? `service: ok (instance_id ${h.data.instance_id}, version ${h.data.version || '?'}, model ${h.data.model ?? '?'})` : `service: ${h.error}`);
@@ -534,6 +534,13 @@ function mailContext() {
   } catch (err) {
     if (!/^brain unavailable/.test(err.message) || cmd === 'register') throw err;
     const ctx = loadContext({ project: args.project, requireBrain: false });
+    // The machine's config (a tunnel, project.mjs mail-machine) is this machine's key: a thread without a brain uses it, it
+    // is not refused for want of a brain with its own config (operator 2026-11-18: a new thread on such a machine).
+    // The brain the thread sent from (its thread state there) stays first: its key is the one the thread signed with.
+    if (!process.env.WORKFLOW_COMMS_CONFIG && !(ctx.thread && threadMailBrain(ctx.thread)) && fs.existsSync(machineMailFile())) {
+      process.stderr.write(`mail of thread ${ctx.thread || '(no thread id)'} with the machine's config ${toPosix(machineMailFile())} (no brain in ${toPosix(ctx.projectDir)})\n`);
+      return ctx;
+    }
     const home = ctx.thread ? threadMailBrain(ctx.thread, { any: true }) : null;
     if (!home) throw new Error(`${err.message}; no brain on this machine has mail settings for thread ${ctx.thread || '(no thread id)'}: run comms from the project of the topic (--project <dir>)`);
     ctx.mailBrainDir = home;
