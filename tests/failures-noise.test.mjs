@@ -3,7 +3,7 @@
 // a failure that may hold a lesson is never dropped (it stays for the thread's own triage, not a question to the operator).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { noiseFailure } from '../scripts/logs.mjs';
+import { noiseFailure, failureSession } from '../scripts/logs.mjs';
 import { curlNullWrite } from '../hooks/post-tool-use.mjs';
 
 const L = (what, err) => `2026-11-01T10:00:00.000Z a1 s1 ${what} :: ${err}`;
@@ -26,4 +26,9 @@ test('curl -o /dev/null exiting 23 (Windows Git Bash) is no failure; another cur
   assert.ok(curlNullWrite('curl -s -o /dev/null -w "%{http_code}" https://x', 'Exit code 23\n200'));
   assert.ok(!curlNullWrite('curl -s -o out.html https://x', 'Exit code 23'));
   assert.ok(!curlNullWrite('curl -s -o /dev/null https://x', 'Exit code 6'));
+});
+
+test('failureSession: a thread counts only its own failures (operator 2026-11-19: not another thread\'s)', () => {
+  assert.equal(failureSession(L('git commit -q -m x', 'Exit code 1')), 's1');
+  assert.equal(failureSession('2026-11-01T10:00:00.000Z worker sess-9 worker-result :: x'), 'sess-9');
 });

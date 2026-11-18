@@ -473,8 +473,10 @@ export function flushBuffer(ctx, sessionId, { sync = true, ops: extra = [], mess
   // without a lesson (an external site unreachable, a worker result without a failure, a one-off script in the work
   // files) is dropped by code; the rest is the thread's own mandated work, never a question to the operator.
   const noise = oldFailures.filter(noiseFailure);
-  const lessons = oldFailures.length - noise.length;
-  if (lessons) signals.push(`failures.log: ${lessons} unprocessed failure(s) older than ${policy.logs.failure_signal_days} days: after the current unit of work triage them yourself (error.mjs list; a lesson → skill or rule, then error.mjs resolve; none → error.mjs resolve); mandated by the workflow, not out of scope and not a question to the operator (P-002, P-003)`);
+  // Operator 2026-11-19: a thread triages only its own failures, never those of other threads ("preco nejake vlakno
+  // triedi bordel ineho vlakna"); the noise drop above stays brain-wide, it is code, not a thread's work.
+  const lessons = oldFailures.filter((l) => !noiseFailure(l) && failureSession(l) === sessionId).length;
+  if (lessons) signals.push(`failures.log: ${lessons} unprocessed failure(s) of this session older than ${policy.logs.failure_signal_days} days: after the current unit of work triage them yourself (error.mjs list --session ${sessionId}; only these, not failures of other sessions; a lesson → skill or rule, then error.mjs resolve; none → error.mjs resolve); mandated by the workflow, not out of scope and not a question to the operator (P-002, P-003)`);
 
   const ops = [appendOp('sequences.log', seqEntries, { brainDir }), appendOp('failures.log', newFails, { brainDir }), ...(noise.length ? [dropOp('failures.log', noise, brainDir)] : [])].filter((o) => o.append);
   ops.push(...rotationOps(brainDir, policy.logs.rotation_days), ...extra);
@@ -502,6 +504,9 @@ export function existingNames(brainDir, logName) {
 export function removeNames(brainDir, logName, names) {
   return dropOp(logName, names, brainDir);
 }
+
+/** Session field of a failure line (`<time> <agent> <session> <command> :: <error>`). */
+export const failureSession = (line) => String(line).split(' ')[2];
 
 export function listFailures(brainDir) {
   return readLog(brainDir, 'failures.log');

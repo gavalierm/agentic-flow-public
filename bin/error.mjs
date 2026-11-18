@@ -15,7 +15,7 @@
 //   error.mjs watch [--force]                     -> check the watched issues now; prints the rings without a mail address
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { listFailures, formatFailures, resolveFailuresOp, restoreFailuresOp } from '../scripts/logs.mjs';
+import { listFailures, failureSession, formatFailures, resolveFailuresOp, restoreFailuresOp } from '../scripts/logs.mjs';
 import { find, formatMatches } from '../scripts/find.mjs';
 import { readSkills } from '../scripts/records.mjs';
 import { tokens } from '../scripts/keys.mjs';
@@ -37,6 +37,7 @@ try {
   if (cmd === 'list') {
     let lines = listFailures(ctx.brainDir);
     if (args.agent) lines = lines.filter((l) => l.split(' ')[1] === args.agent);
+    if (args.session && args.session !== true) lines = lines.filter((l) => failureSession(l) === String(args.session));
     out(lines.length ? formatFailures(lines) : 'no unprocessed failures');
     if (lines.length) out('after saving the lesson (save skill ... --origin error): error.mjs resolve <id> [<id> ...] (the id after the number; numbers shift)');
   } else if (cmd === 'check') {

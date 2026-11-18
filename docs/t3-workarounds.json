@@ -71,6 +71,28 @@
       "pilot": null,
       "remove_when": "`t3 thread start` takes --effort (the automatic check cli-effort then says REMOVE); upstream closed the request as not planned, so the workaround is expected to stay",
       "verified": "2026-11-17, T3 0.1.10: `t3 thread start --help` lists --title, --provider, --model, --worktree, --branch, --wait, --json and no --effort"
+    },
+    {
+      "id": "t3-stale-session",
+      "title": "After a send with fresh context T3 leaves the old Claude session running; a background-task wake of it routes the next prompt back there. UserPromptSubmit gives that session the turns the other session of the thread wrote since its last prompt",
+      "upstream": {
+        "repo": "pingdotgg/t3code",
+        "issue": 38764,
+        "fix_pr": null
+      },
+      "files": [
+        "scripts/t3-stale-session.mjs",
+        "hooks/user-prompt-submit.mjs"
+      ],
+      "depends_on": [
+        "T3 sets T3CODE_THREAD_ID in the agent's environment; every Claude session of one T3 thread shares its thread state",
+        "UserPromptSubmit input has session_id and transcript_path",
+        "Claude transcript lines carry type user/assistant, timestamp, isSidechain, isMeta and message.content"
+      ],
+      "auto": [],
+      "pilot": "pilot: in a thread start a background command that runs ~2 min and end the turn; send a message with fresh context, then a second one; after the command's notification send a third: if T3 routes it to the old session, its context starts with \"T3 session split\" and the agent knows the second message",
+      "remove_when": "T3 keeps a fresh-context conversation on its new session (pingdotgg/t3code#38764 fixed); then remove scripts/t3-stale-session.mjs, its call in hooks/user-prompt-submit.mjs, the test and this entry",
+      "verified": "2026-11-19, T3 0.1.10: a replay of the 2026-11-18 incident transcripts gave the old session the operator's two prompts and the reply with options A/B (16 ms); a thread with one session reads no transcript"
     }
   ]
 }

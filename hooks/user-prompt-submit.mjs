@@ -22,6 +22,7 @@ import { startDriftJudge, ownWords, driftJob, noTopicJob } from '../scripts/drif
 import { listTopics, mailboxTopics } from '../scripts/topic.mjs';
 import { brainWrite } from '../scripts/brain.mjs';
 import { verifyLocks, LOCK_LOST_LINE, countContinue, continueMax, STUCK_LINE } from '../scripts/topic-turn.mjs';
+import { staleSessionCatchUp } from '../scripts/t3-stale-session.mjs';
 
 export const HOOK_META = { event: 'UserPromptSubmit', class: 'e+c', limit: '2 lines', principles: ['P-012', 'P-023', 'P-036', 'P-038', 'P-043', 'P-044', 'P-047', 'P-003', 'P-013', 'P-008'] };
 
@@ -466,11 +467,13 @@ export function run(input) {
   const progress = turnSource === 'operator' && ownPlain(input.prompt) ? { progress_at: startedAt } : {};
   // D-0039: the operator's own words (this prompt and the one before) let a dialog use the marks the operator used.
   const operatorPrompts = state && turnSource === 'operator' && typeof input.prompt === 'string' ? { operator_prompts: [input.prompt.slice(0, 20000), ...(state.operator_prompts || []).slice(0, 1)] } : {};
-  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...state, ...keepTimer, ...progress, ...taskSpent, ...(upd?.patch || {}), ...operatorPrompts, turn_started_at: startedAt, topic_gate: gate ? startedAt : null, ...(title?.patch || {}), turn_source: turnSource, turn_supervisor: supervisorMail, discussion, turn_intent: turnIntent, turn_protocol_only: protocolOnly, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, mail_held_signaled: heldKey, mail_cursor: cursor, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
+  // T3-WORKAROUND(t3-stale-session) t3code#38764: turns another Claude session of this T3 thread wrote since this session's last prompt.
+  const split = state && process.env.T3CODE_THREAD_ID ? staleSessionCatchUp(input, state) : { patch: {}, block: '' };
+  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...state, ...split.patch, ...keepTimer, ...progress, ...taskSpent, ...(upd?.patch || {}), ...operatorPrompts, turn_started_at: startedAt, topic_gate: gate ? startedAt : null, ...(title?.patch || {}), turn_source: turnSource, turn_supervisor: supervisorMail, discussion, turn_intent: turnIntent, turn_protocol_only: protocolOnly, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, mail_held_signaled: heldKey, mail_cursor: cursor, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
   if (extras.length) lines.push(extras.join('; '));
   const limited = enforceLines(lines.join('\n'), ctx.policy?.limits?.hook_signal_lines ?? 2);
   // Nothing new: empty context (contextOutput leaves additionalContext out).
-  return contextOutput('UserPromptSubmit', limited.text + rulesBlock);
+  return contextOutput('UserPromptSubmit', limited.text + rulesBlock + (split.block ? `\n\n${split.block}` : ''));
 }
 
 if (isMain(import.meta.url)) {
