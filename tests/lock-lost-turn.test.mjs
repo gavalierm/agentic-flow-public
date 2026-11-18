@@ -28,7 +28,7 @@ test('Stop after a takeover: the lock is checked after the pull, nothing is writ
   const fx = takenOver();
   try {
     const before = onOrigin(fx, 'topics/alpha/topic.json');
-    const r = fx.hook('stop.mjs', { last_assistant_message: 'Krok rozbehnutý.\n\n**Handover:**\n1. alpha → krok A\n\n**Stav:** čakám (na pokračovanie)', rawHandover: true });
+    const r = fx.hook('stop.mjs', { last_assistant_message: 'Krok rozbehnutý.\n\n**Handover:**\n1. alpha → krok A\n\n**Stav:** čakám (na pokračovanie)', raw: true });
     assert.equal(r.json.decision, undefined, JSON.stringify(r.json));
     assert.equal(onOrigin(fx, 'topics/alpha/topic.json'), before, 'the old holder wrote no state');
     assert.doesNotMatch(fx.read('topics/alpha/topic.json'), /"turn": \{\s*"state": "čakám"/);

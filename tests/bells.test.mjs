@@ -65,7 +65,7 @@ test('wake bell: triage only with new mail, else one line ending the turn; a quo
   try {
     assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'discussion']).status, 0);
     let r = fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' });
-    assert.equal(r.context.split('\n')[1], 'wake: no new mail; end the turn with only your **Handover:** section and **Stav:** line (P-061)');
+    assert.equal(r.context.split('\n')[1], 'wake: no new mail; end the turn with only your **Stav:** line (P-061)');
     assert.equal(fx.state().turn_source, 'wake');
     fx.stub.set({ messages: [{ id: 'm1', level: 'blocker' }] });
     fs.rmSync(path.join(fx.brain, 'local', 'comms'), { recursive: true, force: true });

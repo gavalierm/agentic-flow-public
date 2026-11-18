@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 // Stop: the end of a turn (flow v2 spec 10). The hook never reads the text of the result (10.3, 10.4); it checks only:
 // 1. the skeleton: the state line `**Stav:** hotovo|otázka|čakám (na <čo>)`, the headings and numbered items of the blocks
-//    **Otázky na operátora:** / **Úlohy pre operátora:** (old forms and an empty heading are skeleton errors, plan O3), the
-//    section **Handover:** with a line `<téma> → <krok>` (or `<téma> → žiadny`) for every held topic, else
-//    `**Handover:** žiadny`, and as many block items as the handover sections Otvorené otázky and Úlohy pre operátora hold;
+//    **Otázky na operátora:** / **Úlohy pre operátora:** (old forms and an empty heading are skeleton errors, plan O3) and as
+//    many block items as the handover sections Otvorené otázky and Úlohy pre operátora hold; the reply needs no **Handover:**
+//    section (operator 2026-11-18), an old one passes and is no part of the answer;
 // 2. the state against the facts (10.2): a next step in a handover or an alarm armed by code -> čakám, else an item in those
 //    sections -> otázka, else hotovo (scripts/topic-state.mjs, scripts/topic-turn.mjs);
 // 3. the dialog: in a turn the operator did not start (bell, mail, continuation) with the state otázka, the first question
 //    of a topic outside mode discussion is asked with AskUserQuestion (10.3 item 3, 10.6);
 // 4. a forged harness notification (a <task-notification> block in the reply).
-// A last message that is only the skeleton (no result before **Handover:**) is a skeleton error (the answer stayed folded away,
-// flow-public#37; plan O3). At most one block per turn (10.3): the second attempt passes (stop_hook_active), whatever it holds.
+// A last message that is only the skeleton (no result before the state line) is a skeleton error (the answer stayed folded
+// away, flow-public#37; plan O3), except in a turn the prompt hook told to end with only the state line (turn_protocol_only).
+// At most one block per turn (10.3): the second attempt passes (stop_hook_active), whatever it holds.
 // A released turn writes the state and the alarm time of each held topic into `.tema.json` (only when they changed, in the
 // commit of the buffered logs, plan risk 4.7), after the pull that checks the lock (4.2.4; a lost topic is not written), and
 // closes the turn record (P-043): with a timer its step and time; with a next step the continuation (resume_at = end of the
@@ -26,7 +27,7 @@ import { recordTurn, isMainTopic, readObligations, ageText, OWED_PREFIX, OWED_LI
 import { heldTopics, isDiscussionMode } from '../scripts/topic.mjs';
 import { fieldsOp } from '../scripts/topic-files.mjs';
 import { syncResults, savedLine } from '../scripts/results.mjs';
-import { parseReply, HANDOVER_LINE, HANDOVER_NONE_LINE, PROTOCOL_EXAMPLE, handoverMatches } from '../scripts/protocol.mjs';
+import { parseReply, PROTOCOL_EXAMPLE } from '../scripts/protocol.mjs';
 import { summaryState, WAITING, DONE } from '../scripts/topic-state.mjs';
 import { snapshotThisTurn } from '../scripts/snapshot.mjs';
 import { threadAlarms, topicFacts, turnUpdate, stuckNow, verifyLocks, LOCK_LOST_LINE, CONTINUE_RESUME_MS } from '../scripts/topic-turn.mjs';
@@ -37,25 +38,21 @@ export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to
 
 // T3 shows the operator only the last message of a turn and folds the earlier ones under "Worked for …": a note written
 // after a block hid the answer (operator 2026-11-03: "the payload I want is hidden, I get the operational message").
-export const FINAL_REPLY = 'The operator sees only your last message of this turn (earlier ones are folded away): end with the complete answer (the result, links, items for the operator; corrected where it changed), its **Handover:** section and its state line, never with only the state line. Never write about this hook, a timer, a waker or IDs (P-061)';
+export const FINAL_REPLY = 'The operator sees only your last message of this turn (earlier ones are folded away): end with the complete answer (the result, links, items for the operator; corrected where it changed) and its state line, never with only the state line. Never write about this hook, a timer, a waker or IDs (P-061)';
 // flow-public#37: after a block the reply was only its state line and the result stayed in an earlier, folded message.
-export const STATE_ONLY_REASON = 'the last message of this turn is only its skeleton (the **Handover:** section and the state line): the answer stays in an earlier message the operator does not see; write the complete answer above the skeleton in this last message (spec 10.3 item 1, P-061, flow-public#37)';
+export const STATE_ONLY_REASON = 'the last message of this turn is only its skeleton (the state line): the answer stays in an earlier message the operator does not see; write the complete answer above the skeleton in this last message (spec 10.3 item 1, P-061, flow-public#37)';
 
 const STATES_HELP = 'The state comes from the facts, not from the text (spec 10.2): otázka = an item in the handover sections Otvorené otázky or Úlohy pre operátora (the blocks **Otázky na operátora:** and **Úlohy pre operátora:** are their content), also when a next step goes on (the continuation runs anyway); čakám = no such item, and a held topic\'s handover has a next step ("**Stav:** čakám (na pokračovanie)") or an alarm armed by code runs (timer.mjs, a background task, mail you sent that waits for an answer); hotovo = none of that. A step is only the handover\'s Ďalší krok (save.mjs handover --next), a step that waits for the operator\'s answer is a question';
-export const NO_STATE_REASON = `the final reply has no state line: end it with exactly one line "**Stav:** hotovo", "**Stav:** otázka" or "**Stav:** čakám (na <what>)", after the section ${HANDOVER_LINE} (P-061), e.g. ${PROTOCOL_EXAMPLE}. ${STATES_HELP}`;
-// D-0040 (operator 2026-11-13): items and steps are numbered, the handover is its own section, the state line is bold.
+export const NO_STATE_REASON = `the final reply has no state line: end it with exactly one line "**Stav:** hotovo", "**Stav:** otázka" or "**Stav:** čakám (na <what>)" (P-061), e.g. ${PROTOCOL_EXAMPLE}. ${STATES_HELP}`;
+// D-0040 (operator 2026-11-13): items are numbered, the state line is bold.
 const OLD_FORM_PARTS = {
   state: 'the state line is bold: "**Stav:** hotovo|otázka|čakám (na <what>)", not "Stav: …"',
   items: 'the items under **Otázky na operátora:** and **Úlohy pre operátora:** are a numbered list ("1. <…>", "2. <…>" on their own lines), not "- [ ] <…>", "- <…>" or text after the heading',
-  handover: `the handover is its own section, not the line "Handover: <topic> – <step>": the heading **Handover:** and under it one numbered line per held topic "1. <topic> → <next step>", or "${HANDOVER_NONE_LINE}" when the thread holds none`,
-  'handover-items': 'the lines under **Handover:** are numbered: "1. <topic> → <next step>"',
 };
 export const OLD_FORM_REASON = (parts) => `the reply ends in the old form of the protocol: ${parts.map((p) => OLD_FORM_PARTS[p]).join('; ')}. Rewrite the end of the reply in this form, e.g. ${PROTOCOL_EXAMPLE} (P-061, D-0040)`;
 export const LEGACY_HEADING_REASON = 'the reply uses the old heading **Operátor:**: split it into **Otázky na operátora:** (decisions and confirmations only the operator has) and **Úlohy pre operátora:** (steps only the operator does: login, install, a click in a UI); omit the heading that has no item (P-061)';
 export const EMPTY_SECTION_REASON = (heading) => `the reply has the heading ${heading} with no item: omit a section that has nothing in it, and write it only with numbered items "1. <…>" (P-061)`;
 export const NO_WAIT_TARGET_REASON = 'the reply declares "**Stav:** čakám" but not what it waits for: write the state line as "**Stav:** čakám (na <what>)", e.g. "**Stav:** čakám (na pokračovanie)" (P-061)';
-// Operator: he could not tell what continues after /clear or in a new session. The section before the state line names every topic the thread holds, or says it holds none (D-0040).
-export const HANDOVER_REASON = (topics, said) => `the final reply has ${said ? `a wrong **Handover:** section ("${said.text.slice(0, 80)}"${said.items.length ? `, lines: ${said.items.map((i) => i.topic ? `${i.topic} → …` : `"${String(i.text).slice(0, 60)}" (not "<topic> → <step>")`).join(', ')}` : ''})` : 'no **Handover:** section'}: right before the state line comes the section ${HANDOVER_LINE} (what continues after /clear or in a new session), ${topics.length ? `and it must have a line for every topic this thread holds: ${topics.map((t) => `${t.id} (saved next step: ${t.next ? `"${String(t.next).slice(0, 160)}"` : 'none, "→ žiadny"'})`).join('; ')}` : `this thread holds no topic, so write exactly "${HANDOVER_NONE_LINE}"`} (spec 10.2, D-0040)`;
 export const HANDOVER_SECTIONS_REASON = (id) => `the handover of topic ${id} lacks the section "## Otvorené otázky" or "## Úlohy pre operátora": save it again with save.mjs handover (six sections, P-011); the state of the topic is computed from them (spec 10.2)`;
 export const COUNT_REASON = (said, saved, topics) => `the blocks of the reply do not match the handover: **Otázky na operátora:** has ${said.questions} item(s) and the section Otvorené otázky ${topics ? `of the held topics ${saved.questions}` : '0 (this thread holds no topic)'}; **Úlohy pre operátora:** has ${said.tasks} item(s) and the section Úlohy pre operátora ${topics ? saved.tasks : 0}. The blocks are the content of these sections, so they survive a takeover and a new session: save the handover with the items (save.mjs handover <topic> --questions "<a>; <b>" --tasks "<c>") or write the blocks as saved; ${topics ? 'an item that is answered or done leaves both' : 'a question or task for the operator needs a held topic (spec 10.1)'} (spec 10.2, 10.3 item 1)`;
 const factsText = (facts, alarms) => [
@@ -80,16 +77,16 @@ export { OWED_PREFIX, OWED_LINE, unansweredOwed };
 const count = (items) => (Array.isArray(items) ? items.length : 0);
 
 /** The first skeleton or fact violation of the reply (spec 10.3 points 1 to 4), or null. */
-export function violationOf({ msg, reply, work, facts, alarms, factsState, turnSource, dialog, unreadReplies = [] }) {
+export function violationOf({ msg, reply, facts, alarms, factsState, turnSource, dialog, unreadReplies = [], protocolOnly = false }) {
   if (fakeNotification(msg)) return FAKE_NOTIFICATION_REASON;
   if (unreadReplies.length) return UNREAD_REPLY_REASON(unreadReplies);
   if (!reply.state) return NO_STATE_REASON;
-  if (reply.onlyProtocol) return STATE_ONLY_REASON;
+  // A turn told to end with only the state line (wake without mail, paused topic) has no answer to hide.
+  if (reply.onlyProtocol && !protocolOnly) return STATE_ONLY_REASON;
   if (reply.oldForm.length) return OLD_FORM_REASON(reply.oldForm);
   if (reply.legacyOperator) return LEGACY_HEADING_REASON;
   if (reply.emptySection) return EMPTY_SECTION_REASON(reply.emptySection);
   if (reply.state === WAITING && !reply.waitFor) return NO_WAIT_TARGET_REASON;
-  if (!handoverMatches(reply.handover, work.map((t) => t.id))) return HANDOVER_REASON(work, reply.handover);
   const broken = facts.find((f) => f.facts.questions === null || f.facts.tasks === null);
   if (broken) return HANDOVER_SECTIONS_REASON(broken.topic.id);
   const saved = { questions: facts.reduce((n, f) => n + f.facts.questions, 0), tasks: facts.reduce((n, f) => n + f.facts.tasks, 0) };
@@ -186,7 +183,7 @@ export function run(input) {
   // Only whether a dialog was asked in this turn (PreToolUse keeps its time), not its content (10.3 item 3).
   const dialog = !!before.dialog_at && (!before.turn_started_at || before.dialog_at >= before.turn_started_at);
   // A harness that sends no reply text (field missing) cannot be checked; the second attempt of a turn passes (10.3).
-  const violation = typeof msg === 'string' && !input.stop_hook_active ? violationOf({ msg, reply, work, facts, alarms, factsState, turnSource, dialog, unreadReplies }) : null;
+  const violation = typeof msg === 'string' && !input.stop_hook_active ? violationOf({ msg, reply, facts, alarms, factsState, turnSource, dialog, unreadReplies, protocolOnly: before.turn_protocol_only === true }) : null;
   if (violation) {
     // A blocked stop keeps the agent working: the turn record stays open and nothing of the state is written.
     flush();

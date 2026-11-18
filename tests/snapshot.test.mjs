@@ -9,7 +9,7 @@ import path from 'node:path';
 import { setup } from './helpers.mjs';
 
 const stateOf = (fx) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'threads', 'a1.json'), 'utf8'));
-const stop = (fx, state) => fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: `Uložené.\n\n**Handover:**\n1. alpha → krok A\n\n**Stav:** ${state}`, rawHandover: true }).json;
+const stop = (fx, state) => fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: `Uložené.\n\n**Handover:**\n1. alpha → krok A\n\n**Stav:** ${state}`, raw: true }).json;
 
 test('snapshot: a handover of this turn, no continuation after it, the handover after /clear, the next turn goes on', () => {
   const fx = setup();

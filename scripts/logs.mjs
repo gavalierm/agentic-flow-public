@@ -164,6 +164,22 @@ export function appendOp(logName, entries, { date = today(), brainDir = null } =
 }
 
 /** Removal by appending: names (procedures, derivations, sequences) or whole failure lines. */
+// A failure without a lesson, by its text (`<time> <agent> <session> <command or tool> :: <error>`): an external site
+// unreachable (DNS, refused, certificate, timeout, HTTP 4xx/5xx of a fetch), a worker result that reports no failure, or a
+// command run in the work files that exited non-zero (fixed in its session), or a grep that found nothing (exit 1).
+// A worker result about external pages only (not found, blocked, empty) is the site's state, not a lesson.
+const NET_ERROR = /(getaddrinfo|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|certificate|socket hang up|timed? ?out|\b(40[0-9]|429|5\d\d)\b)/i;
+const WEB_ONLY = /(WebFetch|WebSearch|curl|\\b40[34]\\b|nenájden|nedohľadan|prázdn[aá] stránk|Cloudflare|Incapsula|\\bDNS\\b|vyhľadávan)/i;
+const NO_FAILURE = /(žiadn[ey]\b.{0,40}nezlyhal|nič nezlyhalo|nothing failed|no failures?\b|failures?:\s*(none|žiadne|-)\s*$)/i;
+export function noiseFailure(line) {
+  const [head, err = ''] = String(line).split(' :: ');
+  const what = head.split(' ').slice(3).join(' ');
+  if (/^(WebFetch|WebSearch)\b/.test(what) && NET_ERROR.test(err)) return true;
+  if (/^worker-result\b/.test(what) && (NO_FAILURE.test(err) || (WEB_ONLY.test(err) && !/hook|workflow|skill|pravidl|zamiet/i.test(err)))) return true;
+  if (/^Exit code \d+$/.test(err.trim()) && (/\/tmp(\/|\b)/.test(what) || (/^Exit code 1$/.test(err.trim()) && /(^|\|\s*|&&\s*|;\s*)grep\b[^|]*$/.test(what)))) return true;
+  return false;
+}
+
 export function dropOp(logName, whats, brainDir = null) {
   const kind = kindOf(logName);
   return { path: machineLogPath(today(), machineName(), brainDir), append: whats.map((w) => `drop ${kind} ${w}\n`).join('') };
@@ -452,9 +468,14 @@ export function flushBuffer(ctx, sessionId, { sync = true, ops: extra = [], mess
     const d = Date.parse(l.slice(0, 10));
     return !Number.isNaN(d) && Date.now() - d > policy.logs.failure_signal_days * 864e5;
   });
-  if (oldFailures.length) signals.push(`failures.log: ${oldFailures.length} unprocessed failure(s) older than ${policy.logs.failure_signal_days} days; run error skill (P-030)`);
+  // Operator 2026-11-18: what the flow can settle safely it settles itself, the operator is not asked. An old failure
+  // without a lesson (an external site unreachable, a worker result without a failure, a one-off script in the work
+  // files) is dropped by code; the rest is the thread's own mandated work, never a question to the operator.
+  const noise = oldFailures.filter(noiseFailure);
+  const lessons = oldFailures.length - noise.length;
+  if (lessons) signals.push(`failures.log: ${lessons} unprocessed failure(s) older than ${policy.logs.failure_signal_days} days: after the current unit of work triage them yourself (error.mjs list; a lesson → skill or rule, then error.mjs resolve; none → error.mjs resolve); mandated by the workflow, not out of scope and not a question to the operator (P-002, P-003)`);
 
-  const ops = [appendOp('sequences.log', seqEntries, { brainDir }), appendOp('failures.log', newFails, { brainDir })].filter((o) => o.append);
+  const ops = [appendOp('sequences.log', seqEntries, { brainDir }), appendOp('failures.log', newFails, { brainDir }), ...(noise.length ? [dropOp('failures.log', noise, brainDir)] : [])].filter((o) => o.append);
   ops.push(...rotationOps(brainDir, policy.logs.rotation_days), ...extra);
   const res = ops.length ? brainWrite(ctx, { ops, internal: true, sync, message: message ? `${message}; logs flush ${sessionId}` : `logs flush ${sessionId}` }) : { committed: false, unpushed: 0 };
   fs.rmSync(bufferFile(brainDir, sessionId), { force: true });

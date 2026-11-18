@@ -4,8 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { heldTopics } from '../scripts/topic.mjs';
-import { isMainTopic } from '../scripts/comms.mjs';
 import { flowModel, commsModel, resolve as resolveComms } from '../scripts/comms-pair.mjs';
 import { brainId } from '../scripts/brain-id.mjs';
 import { machineName } from '../scripts/config.mjs';
@@ -45,17 +43,10 @@ export function toProtocol(msg) {
   return out.join('\n');
 }
 
-/** The reply (in the protocol form, toProtocol) with the true **Handover:** section inserted before its last line when that is a
- * state line without a Handover section before it. */
-export function withHandover(msg, brainDir, thread) {
+/** The reply in the protocol form (toProtocol) when its last line is a state line, else as written. */
+export function inProtocol(msg) {
   const lines = toProtocol(msg).split('\n');
-  if (!/^stav\s*:/i.test(lines[lines.length - 1].replace(/[*_`>]/g, '').trim())) return msg;
-  if (lines.slice(0, -1).some((l) => /^\*\*Handover:\*\*/.test(l.trim()))) return lines.join('\n');
-  const before = lines.slice(0, -1).filter((l) => l.trim()).pop() || '';
-  let ids = [];
-  try { ids = heldTopics(brainDir, thread).filter((t) => !isMainTopic(t)).map((t) => t.id); } catch { /* no brain */ }
-  const section = ids.length ? ['**Handover:**', ...ids.map((id, i) => `${i + 1}. ${id} → ďalší krok`)] : ['**Handover:** žiadny'];
-  return [...lines.slice(0, -1), ...(before ? ['', ...section, ''] : [...section, '']), lines[lines.length - 1]].join('\n');
+  return /^stav\s*:/i.test(lines[lines.length - 1].replace(/[*_`>]/g, '').trim()) ? lines.join('\n') : msg;
 }
 
 /** Files of the repo at root as git sees them: tracked, and untracked that are not ignored, present on disk (absolute paths).
@@ -187,11 +178,10 @@ export function setup({ thread = 'a1', remote = true, second = false, brainName 
       });
     },
     hook(name, input, opts = {}) {
-      // P-061: a final reply ends with `Handover: …` before its `Stav:` line. A Stop test that does not test that line gets the true one
-      // (every held work topic, else `žiadny`); `rawHandover: true` leaves the reply as written.
-      const { rawHandover, ...rest } = input;
+      // P-061: a short test reply (`Stav: …`, `- [ ] …`) goes to Stop in the protocol form; `raw: true` leaves it as written.
+      const { raw, ...rest } = input;
       input = rest;
-      if (name === 'stop.mjs' && !rawHandover && typeof input.last_assistant_message === 'string') input = { ...input, last_assistant_message: withHandover(input.last_assistant_message, (opts.cwd && opts.cwd === fx.projectB) ? fx.brainB : brain, (opts.env || {}).WORKFLOW_THREAD_ID ?? env.WORKFLOW_THREAD_ID) };
+      if (name === 'stop.mjs' && !raw && typeof input.last_assistant_message === 'string') input = { ...input, last_assistant_message: inProtocol(input.last_assistant_message) };
       const res = spawnSync(process.execPath, [HOOK(name), ...(opts.args || [])], { cwd: opts.cwd || project, env: { ...env, CLAUDE_PROJECT_DIR: opts.cwd || project, ...(opts.env || {}) }, encoding: 'utf8', input: JSON.stringify({ session_id: 's1', cwd: opts.cwd || project, ...input }) });
       let json = {};
       try { json = JSON.parse(res.stdout.trim() || '{}'); } catch { json = { raw: res.stdout }; }

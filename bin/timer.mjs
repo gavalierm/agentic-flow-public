@@ -58,7 +58,7 @@ try {
     const clamped = ms < TIMER_MIN_MS || ms > TIMER_MAX_MS ? ` (clamped to ${TIMER_MIN_MS / 60_000}m..${TIMER_MAX_MS / 3600_000}h)` : '';
     const check = until ? `; code runs the check (exit 0 = met, at most ${UNTIL_TIMEOUT_MS / 1000} s) at each time without a turn and rings the step when it holds or at ${localTime(deadline)}` : '';
     const others = threadTimers(readThreadState(ctx.brainDir, ctx.thread)).filter((x) => x !== t && !(x.at === t.at && x.set_at === t.set_at)).length;
-    out(`timer set: ${localTime(t.at)}${clamped}; then: ${t.then}${check}${others ? `; ${others} other timer(s) of this thread stay (timer.mjs show, timer.mjs cancel <n>)` : ''}. The wake module rings this thread then; end the turn with your **Handover:** section (a numbered line "1. <topic> → <next step>") and "**Stav:** čakám (na <what>)" (P-061)`);
+    out(`timer set: ${localTime(t.at)}${clamped}; then: ${t.then}${check}${others ? `; ${others} other timer(s) of this thread stay (timer.mjs show, timer.mjs cancel <n>)` : ''}. The wake module rings this thread then; end the turn with "**Stav:** čakám (na <what>)" (P-061)`);
   } else if (cmd === 'show') {
     const all = threadTimers(readThreadState(ctx.brainDir, ctx.thread));
     out(all.length ? all.map((t, i) => `${i + 1}. ${line(t)}`).join('\n') : 'no timer');

@@ -60,7 +60,7 @@ export function welcomeMessage(name, repo, { adopted = false } = {}) {
     'Záznamy brainu (pamäť, rozhodnutia, pravidlá, skilly) hľadaj cez find. Súbory repa (výstupy vystupy/, zdroje zdroje/, témy) a obsah dát hľadaj cez catalog.mjs find a show. Oba vrátia cesty a popisy. Potom čítaj iba to, čo zhrnutie potrebuje, po jednom. Ak hook čítanie zamietne, choď cestou, ktorú menuje, a nehľadaj inú.',
     // Spec 10.1: a thread without a held topic has no blocks Otázky and Úlohy; the proposal is part of the result text and
     // the operator chooses the topic with his next message (Alice 2026-11-09: the welcome thread created the topic itself).
-    'Tému nezakladaj ani nezaberaj: voľbu má operátor. Návrh témy (<id> – <predmet>) napíš do textu odpovede, bez bloku "**Otázky na operátora:**" (vlákno nedrží tému), a odpoveď skonči riadkami "**Handover:** žiadny" a "**Stav:** hotovo".',
+    'Tému nezakladaj ani nezaberaj: voľbu má operátor. Návrh témy (<id> – <predmet>) napíš do textu odpovede, bez bloku "**Otázky na operátora:**" (vlákno nedrží tému), a odpoveď skonči riadkom "**Stav:** hotovo".',
   ].join('\n');
 }
 

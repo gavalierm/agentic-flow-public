@@ -163,16 +163,17 @@ test('the answer to a sender whose topic is closed settles the original and says
 // --- Stop hook: the reply protocol of spec 10.3 (skeleton, state against facts, dialog, one block per turn) ---------------
 // The text of the result is never read (10.4); a state comes from the handover and the alarms, not from the state line.
 const topicRecord = (fx, id) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'topics', id, 'topic.json'), 'utf8'));
-const stopRaw = (fx, msg, extra = {}) => fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg, rawHandover: true, ...extra }).json;
+const stopRaw = (fx, msg, extra = {}) => fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: msg, raw: true, ...extra }).json;
 const turnOf = (fx, source) => { const st = readState(fx.brain, 'a1'); fs.writeFileSync(stateFile(fx.brain, 'a1'), JSON.stringify({ ...st, turn_source: source, turn_started_at: new Date().toISOString() })); };
 
-test('Stop 10.3 item 1: skeleton — state line, Handover line of every held topic (also "→ žiadny"), blocks as many items as the handover sections', () => {
+test('Stop 10.3 item 1: skeleton — state line, no Handover section needed (an old one passes), blocks as many items as the handover sections', () => {
   const fx = setup();
   try {
     assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'ops']).status, 0);
     fx.hook('user-prompt-submit.mjs', { prompt: 'pracuj' });
     assert.match(stopRaw(fx, 'Hotové.').reason, /no state line/);
-    assert.match(stopRaw(fx, 'Hotové.\n\n**Stav:** hotovo').reason, /no \*\*Handover:\*\* section.*alpha/);
+    // Operator 2026-11-18: the reply needs no **Handover:** section; an old one still passes
+    assert.equal(stopRaw(fx, 'Hotové.\n\n**Stav:** hotovo').decision, undefined);
     assert.match(stopRaw(fx, 'Hotové.\n\nHandover: alpha – nič\nStav: hotovo').reason, /old form of the protocol/);
     assert.equal(stopRaw(fx, 'Hotové.\n\n**Handover:**\n1. alpha → žiadny\n\n**Stav:** hotovo').decision, undefined);
     // a block item the handover does not hold is refused; saved in Otvorené otázky it passes (the operator started the turn)
@@ -188,7 +189,7 @@ test('Stop 10.3 item 1: skeleton — state line, Handover line of every held top
     const fy = setup({ thread: 'z9' });
     try {
       fy.hook('user-prompt-submit.mjs', { prompt: 'ahoj' });
-      assert.match(fy.hook('stop.mjs', { last_assistant_message: '**Otázky na operátora:**\n1. Aká téma?\n\n**Handover:** žiadny\n\n**Stav:** otázka', rawHandover: true }).json.reason, /needs a held topic/);
+      assert.match(fy.hook('stop.mjs', { last_assistant_message: '**Otázky na operátora:**\n1. Aká téma?\n\n**Handover:** žiadny\n\n**Stav:** otázka', raw: true }).json.reason, /needs a held topic/);
     } finally { fy.cleanup(); }
   } finally { fx.cleanup(); }
 });
@@ -224,6 +225,7 @@ test('Stop 10.3: a last message of only the skeleton is blocked on the first att
     fx.hook('user-prompt-submit.mjs', { prompt: 'pracuj' });
     const skeleton = '**Handover:**\n1. alpha → žiadny\n\n**Stav:** hotovo';
     assert.match(stopRaw(fx, skeleton).reason, /only its skeleton/);
+    assert.match(stopRaw(fx, '**Stav:** hotovo').reason, /only its skeleton/, 'only the state line is the skeleton too');
     // after the block the agent ends again with only the skeleton: no second block in this turn, the turn closes
     assert.equal(stopRaw(fx, skeleton, { stop_hook_active: true }).decision, undefined);
     assert.equal(topicRecord(fx, 'alpha').turn.state, 'hotovo');
@@ -231,6 +233,11 @@ test('Stop 10.3: a last message of only the skeleton is blocked on the first att
     // a second attempt that breaks the skeleton otherwise passes too
     fx.hook('user-prompt-submit.mjs', { prompt: 'pracuj' });
     assert.equal(stopRaw(fx, 'Hotové.', { stop_hook_active: true }).decision, undefined);
+    // a turn the prompt hook tells to end with only the state line (wake without mail, no close to repeat) passes with it at once
+    const { last_close: _, ...st } = readState(fx.brain, 'a1');
+    fs.writeFileSync(stateFile(fx.brain, 'a1'), JSON.stringify(st));
+    assert.match(fx.hook('user-prompt-submit.mjs', { prompt: 'you have mail in topic alpha' }).context, /end the turn with only your \*\*Stav:\*\* line/);
+    assert.equal(stopRaw(fx, '**Stav:** hotovo').decision, undefined);
   } finally { fx.cleanup(); }
 });
 

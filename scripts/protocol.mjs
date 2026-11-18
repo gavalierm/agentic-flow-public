@@ -1,8 +1,8 @@
 // P-061, spec 10: the reply protocol. The end of a turn is declared in a fixed skeleton, the result text above it is free:
 // the last line of the final reply is `**Stav:** hotovo|otázka|čakám (na <čo>)`; what waits on the operator is a numbered
 // list under `**Otázky na operátora:**` (decisions, confirmations) or `**Úlohy pre operátora:**` (steps only the operator
-// does); before the state line the section `**Handover:**` has one numbered line `<téma> → <ďalší krok>` (or
-// `<téma> → žiadny`) per held topic, or reads `**Handover:** žiadny` (D-0040). Code reads only this skeleton and checks the
+// does). The reply needs no `**Handover:**` section (operator 2026-11-18: the next step is the handover file); an old one
+// before the state line is still parsed, so it is no part of the answer. Code reads only this skeleton and checks the
 // declared state against facts (handover, alarms; spec 10.3); the text of the result is never read (spec 10.4: a sentence
 // is no step, the step is only the handover's Ďalší krok).
 
@@ -12,13 +12,8 @@ const ASCII = { hotovo: 'hotovo', otazka: 'otázka', cakam: 'čakám' };
 
 export const STATE_LINE = '**Stav:** hotovo | otázka | čakám (na <čo>)';
 export const WAIT_LINE = '**Stav:** čakám (na <čo>)';
-// The section before the state line: what continues after /clear or in a new session (operator: he could not tell), one
-// numbered line per topic the thread holds, or none (D-0040).
-export const HANDOVER_MARK = '**Handover:**';
-export const HANDOVER_LINE = '**Handover:** with one numbered line per held topic, "1. <téma> → <ďalší krok v skratke>" ("1. <téma> → žiadny" for a topic without a step)';
-export const HANDOVER_NONE_LINE = '**Handover:** žiadny';
 /** The end of a reply in the protocol (D-0040), quoted in hook messages. */
-export const PROTOCOL_EXAMPLE = '"**Otázky na operátora:**\\n1. <otázka>\\n\\n**Handover:**\\n1. <téma> → <ďalší krok>\\n\\n**Stav:** otázka"';
+export const PROTOCOL_EXAMPLE = '"**Otázky na operátora:**\\n1. <otázka>\\n\\n**Stav:** otázka"';
 
 /** What a `čakám` state line waits for: "(na pracovníka)" or "na pracovníka" -> "na pracovníka"; null without letters. */
 function waitTarget(rest) {
@@ -61,8 +56,8 @@ function blockItems(body, re, flags = {}) {
   return out;
 }
 
-// The handover section (D-0040): the bold heading `**Handover:**` with `žiadny` after it, or with numbered lines
-// `<téma> → <ďalší krok>` under it up to the state line. The single line `Handover: <téma> – <krok>` is the old form.
+// The old handover section (D-0040, no longer asked for): the heading `**Handover:**` (or the line `Handover: <téma> – <krok>`)
+// with list lines under it up to the state line. Parsed only so it is no part of the answer body.
 const HANDOVER_HEAD = /^[ \t>]*[*_]*handover[*_]*[ \t]*:[*_]*[ \t]*(.*)$/i;
 const HANDOVER_NEW_HEAD = /^[ \t>]*\*\*handover:\*\*[ \t]*(.*)$/i;
 const ARROW = /^[`*_]*([^\s`*_→]+)[`*_]*[ \t]*(?:→|->)[ \t]*(\S.*)$/;
@@ -94,8 +89,9 @@ function handoverSection(before) {
  * (plus the items of the old **Operátor:** heading, `legacyOperator: true`; null without any heading); `emptySection`,
  * the heading that has no item or null; `question`, the first question (else the first task) item, up to its question
  * mark when it has one, or null; for `čakám`
- * what it waits for (`waitFor`, null when the line does not say it). Only `čakám` may carry text after the word. `handover`: the last non-empty line before the state line
- * when it is `Handover: …` (markdown stripped), else null.
+ * what it waits for (`waitFor`, null when the line does not say it). Only `čakám` may carry text after the word. `handover`:
+ * an old Handover section before the state line, else null (tolerated, never required); `onlyProtocol`: nothing but the
+ * state line (and such a section) in the reply.
  */
 export function parseReply(text) {
   const out = { state: null, handover: null, oldForm: [], onlyProtocol: false, question: null, waitFor: null, operator: null, questions: null, tasks: null, legacyOperator: false, emptySection: null };
@@ -115,11 +111,7 @@ export function parseReply(text) {
   }
   const before = lines.slice(0, -1);
   const { section, start } = m ? handoverSection(before) : { section: null, start: before.length };
-  if (section) {
-    out.handover = section;
-    if (section.old) out.oldForm.push('handover');
-    else if (section.unnumbered) out.oldForm.push('handover-items');
-  }
+  if (section) out.handover = section;
   out.onlyProtocol = !!m && !before.slice(0, start).join('').trim();
   const body = before.slice(0, start).join('\n');
   const prose = body.replace(/```[\s\S]*?```/g, '');
@@ -140,14 +132,4 @@ export function parseReply(text) {
     out.question = (qi >= 0 ? q.slice(0, qi + 1) : q).replace(/\s+/g, ' ').trim().slice(-200);
   }
   return out;
-}
-
-/** Does the Handover section (parseReply().handover) have a line `<id> → <step>` for every topic in `ids`, every line in
- * that form, or say žiadny with no line when `ids` is empty? */
-export function handoverMatches(handover, ids) {
-  if (!handover || typeof handover !== 'object' || handover.old) return false;
-  if (!ids.length) return handover.none && !handover.items.length;
-  if (handover.none || handover.items.some((i) => !i.topic)) return false;
-  const topics = handover.items.map((i) => i.topic.toLowerCase());
-  return ids.every((id) => topics.includes(String(id).toLowerCase()));
 }

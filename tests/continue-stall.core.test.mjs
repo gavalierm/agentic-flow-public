@@ -17,7 +17,7 @@ const STUB = path.join(PLUGIN_ROOT, 'tests', 'fixtures', 'comms-stub.mjs');
 const END = '**Handover:**\n1. alpha → krok A\n\n**Stav:** čakám (na pokračovanie)';
 const stateOf = (fx) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'local', 'threads', 'a1.json'), 'utf8'));
 const turnOf = (fx) => JSON.parse(fs.readFileSync(path.join(fx.brain, 'topics', 'alpha', 'topic.json'), 'utf8')).turn || {};
-const stop = (fx) => fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: `Pracujem.\n\n${END}`, rawHandover: true }).json;
+const stop = (fx) => fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: `Pracujem.\n\n${END}`, raw: true }).json;
 const wake = (fx) => fx.hook('user-prompt-submit.mjs', { prompt: CONTINUE });
 
 function topic() {

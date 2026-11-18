@@ -192,7 +192,7 @@ export function refusedCommand(argv = process.argv) {
 export function bellContinuation(brainDir, thread, step = refusedCommand()) {
   if (!brainDir || !thread || !step) return '';
   setTimer(brainDir, thread, { delayMs: BELL_CONTINUE_MS, minMs: 0, then: `${step} (odmietnutý v ťahu zo zvončeka, P-047)` });
-  return `; the continuation is set in ${BELL_CONTINUE_MS / 1000} s (a thread timer with this step): end the turn now with your **Handover:** section and "**Stav:** čakám (na pokračovanie z handoveru)"; the next turn continues from handover, where P-047 does not lock, and runs the step there`;
+  return `; the continuation is set in ${BELL_CONTINUE_MS / 1000} s (a thread timer with this step): end the turn now with "**Stav:** čakám (na pokračovanie z handoveru)"; the next turn continues from handover, where P-047 does not lock, and runs the step there`;
 }
 
 /** The prompt hook runs the condition within its 15 s (hooks.json); a slower check counts as not met yet. */
