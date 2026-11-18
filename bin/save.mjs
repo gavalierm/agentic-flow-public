@@ -780,6 +780,19 @@ function editBasis(name) {
   return `operator: ${String(args.reason).replace(/^operator\b[:\s]*/i, '').slice(0, 120)}`;
 }
 
+/**
+ * Whether a skill body still calls its own script `base`: a bare name or a path through this skill's folder counts, a
+ * path through another skill's folder (`<other-skill>/<base>`, the script moved there) does not (a project 2026-11-18).
+ */
+export function namesOwnScript(text, base, skillName) {
+  const esc = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const m of String(text).matchAll(new RegExp(`(?:([\\w.-]+)/)?${esc}(?![\\w.-])`, 'g'))) {
+    if (m.index > 0 && /[\w.-]/.test(text[m.index - 1]) && !m[1]) continue; // part of a longer name
+    if (!m[1] || m[1] === skillName) return true;
+  }
+  return false;
+}
+
 function saveSkill(ctx) {
   const [name] = rest;
   // report-5d6c4ce2: the usage listed only the new-skill form, so an agent editing an existing skill passed a
@@ -863,7 +876,7 @@ function saveSkill(ctx) {
       if (scriptFiles.includes(base)) fail(`--remove-script ${base}: also given in --script; one of them`);
       if (!fs.existsSync(path.join(skillDir, base))) fail(`--remove-script ${base}: skill ${name} has no such file (${toPosixPath(path.relative(ctx.brainDir, skillDir))}/)`);
       // The body must not call a script that goes: the deployed path would point at nothing.
-      if (ops[0].content.includes(base)) fail(`--remove-script ${base}: SKILL.md still names it; change the body in the same call (--sed or --content --replace), nothing saved`);
+      if (namesOwnScript(ops[0].content, base, path.basename(skillDir))) fail(`--remove-script ${base}: SKILL.md still names it; change the body in the same call (--sed or --content --replace), nothing saved`);
       ops.push({ path: `${path.posix.dirname(toPosixPath(rel))}/${base}`, remove: true });
     }
   }

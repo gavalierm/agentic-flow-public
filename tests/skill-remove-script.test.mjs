@@ -20,7 +20,8 @@ test('skill --remove-script removes the file; a script still named in the body o
     assert.ok(fs.existsSync(path.join(dir, 'gone.sh')));
     r = fx.run('save.mjs', ['skill', 'rs-demo', '--origin', 'routine', '--remove-script', 'nope.sh']);
     assert.notEqual(r.status, 0, 'no such file');
-    r = fx.run('save.mjs', ['skill', 'rs-demo', '--origin', 'routine', '--sed', 's/ a potom `sh gone.sh`//', '--remove-script', 'gone.sh']);
+    // a path through another skill's folder (the script moved there) is not a call of this skill's script
+    r = fx.run('save.mjs', ['skill', 'rs-demo', '--origin', 'routine', '--sed', 's/`sh gone.sh`/`sh \\/p\\/.claude\\/skills\\/other-skill\\/gone.sh`/', '--remove-script', 'gone.sh']);
     assert.equal(r.status, 0, r.out);
     assert.ok(!fs.existsSync(path.join(dir, 'gone.sh')));
     assert.ok(fs.existsSync(path.join(dir, 'keep.sh')));
