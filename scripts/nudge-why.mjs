@@ -6,7 +6,7 @@
 // timers did not ring while the turn was open, and the operator found it only in the morning.
 import fs from 'node:fs';
 import { localTime } from './util.mjs';
-import { threadTimers, finishedTasks } from './waker.mjs';
+import { threadTimers, finishedTasks, awaitingWaker } from './waker.mjs';
 
 /** A tool call whose result came this long after it (or not yet) waited on the operator: an approval window or a dialog. */
 export const WAIT_GAP_MS = 15 * 60_000;
@@ -117,7 +117,12 @@ export function diagnose({ thread, state = {}, turn = null, wakeState = null, wa
   else if (endAt) {
     const wakers = (state.wakers || []).filter((w) => w.recurring || (w.until && Date.parse(w.until) > endAt));
     const timersAfter = threadTimers(state).filter((x) => Date.parse(x.at) > endAt);
-    const waker = close.resume_at ? `timer ${t(close.resume_at)}` : timersAfter.length ? `timer ${t(timersAfter[0].at)}` : wakers.length ? `${wakers[0].kind}${wakers[0].until ? ` until ${t(wakers[0].until)}` : ''}` : 'none';
+    // The mail rings the thread too: an answer it waits for, or a message the wake module holds for it (discussion, limit,
+    // a running turn, a queued ring); "waker: none" there sent the diagnosis the wrong way (2026-11-18).
+    const awaited = awaitingWaker(mail?.obligations);
+    const heldFor = Object.values(wakeState?.held || {}).find((h) => h && h.holder === thread);
+    const waker = close.resume_at ? `timer ${t(close.resume_at)}` : timersAfter.length ? `timer ${t(timersAfter[0].at)}` : wakers.length ? `${wakers[0].kind}${wakers[0].until ? ` until ${t(wakers[0].until)}` : ''}`
+      : awaited ? `mail (answer to ${awaited.id} awaited, wait until ${t(awaited.at)})` : heldFor ? `mail held by the wake module (${heldFor.held_reason || 'discussion'}: ${heldFor.message_id || '?'})` : 'none';
     facts.push(`last turn: ended ${t(endAt)}, Stav: ${endState || '(none recorded)'}, waker: ${waker}${close.next ? `; next: ${clip(close.next, 120)}` : ''}`);
     if (endState === 'čakám' && waker === 'none') causes.push({ kind: 'no-waker', workflow: true, text: `the turn ended ${t(endAt)} with "Stav: čakám" and no waker: nothing could ring the thread` });
     if (endState === 'otázka') causes.push({ kind: 'question', workflow: false, text: `the turn ended ${t(endAt)} with a question for the operator ("Stav: otázka"): it waited on the operator's answer` });
@@ -197,7 +202,7 @@ export function diagnose({ thread, state = {}, turn = null, wakeState = null, wa
     if (late.length) causes.push({ kind: 'mail-not-picked', workflow: false, text: `${late.length} message(s) waited unpicked past the pickup deadline${late.some((m) => m.expired_at) ? ` (since ${t(late.map((m) => m.expired_at).filter(Boolean).sort()[0])})` : ''}` });
   } else facts.push(`mail: not checked${mail?.note ? ` (${mail.note})` : ''}`);
   const held = Object.values(wakeState?.held || {}).filter((h) => h && h.holder === thread);
-  if (held.length) facts.push(`mail held by the wake module (discussion with the operator, no bell): ${held.slice(0, 5).map((h) => `${h.message_id} ${h.level || ''} to ${h.project || '?'}/${h.topic || '?'} since ${t(h.held_at || h.created_at)}`).join('; ')}`);
+  if (held.length) facts.push(`mail held by the wake module (no bell yet): ${held.slice(0, 5).map((h) => `${h.message_id} ${h.level || ''} (${h.held_reason || 'discussion'}) to ${h.project || '?'}/${h.topic || '?'} since ${t(h.held_at || h.created_at)}`).join('; ')}`);
   // What the thread owes is the mail's (`owed`, P-072): picked without an answer.
   const unanswered = (mail?.obligations?.owed || []).filter((w) => w.status === 'picked');
   if (unanswered.length) facts.push(`picked mail without an answer: ${unanswered.map((w) => w.id).join(', ')}`);

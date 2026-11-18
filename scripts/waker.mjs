@@ -40,6 +40,7 @@ function taskIds(ti, resp, respText) {
 }
 
 const FINAL_STATUS = /^(completed|failed|killed|stopped|cancell?ed|error|timeout|timed_out)$/i;
+const INTERIM = /waiting on its own background work|background work of its own still running|result below may be interim|will notify again/i;
 
 /** Ids of the tasks whose end the harness notified in `text` (a prompt or the session transcript): a <task-notification>
  * with a final <status>. A notification comes as a prompt when the thread is idle, inside the running turn otherwise. */
@@ -53,7 +54,11 @@ export function finishedTasks(text) {
     const from = m.index + m[0].length;
     const head = s.slice(from, from + 4000).split(/<result>|<\/task-notification>|<task-id>/)[0];
     const status = /<status>([\w-]+)<\/status>/.exec(head)?.[1];
-    if (status && FINAL_STATUS.test(status)) out.add(m[1]);
+    // "completed" of an agent still waiting on its own background work, or resumed with late messages, is interim: the same
+    // id notifies again (a project 2026-11-18: the waker went, "continue from handover" rang three times in 2 min).
+    // The last notification of an id decides.
+    if (INTERIM.test(head)) out.delete(m[1]);
+    else if (status && FINAL_STATUS.test(status)) out.add(m[1]);
   }
   return out;
 }

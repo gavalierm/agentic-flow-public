@@ -124,14 +124,15 @@ export function run(input) {
   if (!ctx.brainDir) { close(); return {}; }
   const signals = [];
   // One brain write per turn for the buffered logs (P-030); `ops` (the topic state) go into the same commit and are pushed.
-  const flush = (ops = [], message = null) => {
+  const flush = (ops = [], message = null, { retry = false } = {}) => {
     try {
       const res = flushBuffer(ctx, input.session_id, { sync: ops.length > 0, ops, message });
       signals.push(...res.signals);
       if (res.sync?.conflict) signals.push(`conflict: ${res.sync.conflict.join(', ')} (brain not merged, P-040)`);
       else if (res.sync?.error && res.sync.error !== 'no remote origin') signals.push(`unpushed: ${res.sync.unpushed ?? unpushedCount(ctx.brainDir)} (${res.sync.error})`);
-      if (ops.length) return;
+      if (ops.length) return null;
     } catch (err) {
+      if (retry) return err.message.split('\n')[0];
       signals.push(`${ops.length ? 'logs and topic state' : 'logs'} not written: ${err.message.split('\n')[0]}`);
     }
     // The log commit stays local: it goes out with the next brain write or here once the oldest unpushed commit is
@@ -211,10 +212,17 @@ export function run(input) {
     const results = synced.filter((x) => !lost.has(x.id));
     let ops = [];
     try { ops = write.map((u) => fieldsOp(ctx.brainDir, u.id, { turn: u.patch })); } catch (err) { signals.push(`topic state not written: ${err.message.split('\n')[0]}`); }
+    const stateOps = [...ops];
+    const stateMessage = write.length ? `turn ${write.map((u) => `${u.id} ${u.patch.state || 'state'}`).join(', ')}` : null;
     ops.push(...results.flatMap((x) => x.res.ops));
-    for (const x of results) { const line = savedLine(x.id, x.res); if (line) signals.push(line); }
-    const message = [write.length ? `turn ${write.map((u) => `${u.id} ${u.patch.state || 'state'}`).join(', ')}` : null, results.length ? `results ${results.map((x) => `${x.id}: ${x.res.saved.map((r) => r.name).join(', ') || 'bindings'}`).join('; ')} (P-078)` : null].filter(Boolean).join('; ');
-    flush(ops, ops.length ? message : null);
+    const message = [stateMessage, results.length ? `results ${results.map((x) => `${x.id}: ${x.res.saved.map((r) => r.name).join(', ') || 'bindings'}`).join('; ')} (P-078)` : null].filter(Boolean).join('; ');
+    // A result the brain refuses (a work file named against P-049, a project 2026-11-18: ~10 turns without logs and topic
+    // state) never takes the logs and the state with it: they are written without the results, the refusal is a step.
+    const failed = results.length ? flush(ops, ops.length ? message : null, { retry: true }) : (flush(ops, ops.length ? message : null), null);
+    if (failed) {
+      signals.push(`results of ${results.map((x) => x.id).join(', ')} not saved (P-078): ${failed}. Fix it in this turn: correct the work file the line names (a name: english lowercase, no spaces, then cite the new name in the handover with save.mjs handover; a content: as the line says); the logs and the topic state are written, the end of the next turn saves the result`);
+      flush(stateOps, stateOps.length ? stateMessage : null);
+    } else for (const x of results) { const line = savedLine(x.id, x.res); if (line) signals.push(line); }
   } else flush();
   queue();
   const st = readThreadState(ctx.brainDir, ctx.thread);

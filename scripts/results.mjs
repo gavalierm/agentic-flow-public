@@ -63,6 +63,14 @@ export function stalePages(brainDir, id, sinceMs) {
 // `topics\` on still names the file) count as well.
 const CITE_RE = /(?:^|[\s`'"(\[<])((?:[^\s`'"()\[\]<>,;]*[\\/])?tmp[\\/][^\s`'"()\[\]<>,;]*)/g;
 
+const THROWAWAY = new Set(['test', 'tests', 'skuska', 'skusky', 'skusobny', 'zaloha', 'zalohy', 'backup', 'backups', 'bak', 'export', 'exports', 'exportu', 'download', 'downloads', 'stiahnute', 'stiahnuta', 'dump', 'orig']);
+/** A work file that is a test, backup, export or download by its name or folder (`rel` inside tmp/). */
+export function throwawayWork(rel) {
+  if (!rel) return false;
+  const tokens = rel.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().split(/[\/._\s-]+/);
+  return tokens.some((t) => THROWAWAY.has(t)) || /\.(bak|orig|log|tmp)$/i.test(rel);
+}
+
 /** Work files and folders a text cites, resolved for topic `id`: { files: [abs], dirs: [abs] } (existing ones only). */
 export function citedWork(brainDir, id, text) {
   const files = new Set();
@@ -207,7 +215,11 @@ export function syncResults(brainDir, id, { policy = {}, extra = [], handover = 
   }
   const text = handover ?? (() => { try { return fs.readFileSync(path.join(topicDir, L.handover), 'utf8'); } catch { return ''; } })();
   const cited = citedWork(brainDir, id, text);
-  for (const f of cited.files) bind(f, 'handover');
+  // A cited test, backup, export or download is no result: the handover names it as where it lies, not as the state of the
+  // work (a project 2026-11-18: a downloaded page, a test CSV and a 60 MB export were copied into git). An explicit save
+  // (save.mjs result) or a page shown to the operator still binds it; a binding made before stays.
+  const bound = byFrom();
+  for (const f of cited.files) if (bound.has(tmpOwner(brainDir, f)?.from) || !throwawayWork(tmpOwner(brainDir, f)?.rel)) bind(f, 'handover');
   // Older results without a binding: the one work file of the same name is their source; none = checked (from null).
   let names = null;
   const unbound = savedNames().filter((n) => !(n in bindings));

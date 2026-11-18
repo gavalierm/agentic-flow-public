@@ -42,6 +42,9 @@ test('compactNudge: at 80 % of the window once, only with a held topic', () => {
   assert.equal(compactNudge({ tokens: 190000, window: 200000, held, state: { compact_nudged: true } }), null);
   assert.equal(compactNudge({ tokens: 190000, window: 200000, held: [] }), null);
   assert.equal(compactNudge({ tokens: null, window: 200000, held }), null);
+  // over the policy window the context runs on the large one: no "~223k of 200k" (2026-11-18)
+  assert.equal(compactNudge({ tokens: 223000, window: 200000, held }), null);
+  assert.match(compactNudge({ tokens: 850000, window: 200000, held }).line, /~850k of 1000k tokens/);
 });
 
 test('the summary prompt keeps operator messages verbatim and has no line limit; Codex uses the same text and no PreCompact hook', () => {

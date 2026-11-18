@@ -36,7 +36,8 @@ test('a saved result follows its work file; shown, cited and older same-name wor
     assert.equal(inGit(fx, 'topics/t1/stranka.html'), '<p>v1</p>', 'the shown page is saved at once');
     assert.equal(fx.json('topics/t1/.tema.json').results['stranka.html'].url, 'https://claude.ai/artifact/AbC123');
     write(tmp(fx, 't1', 'gen/gen-page.mjs'), 'console.log(1)\n');
-    assert.equal(fx.run('save.mjs', ['handover', 't1', '--task', 'T', '--done', 'stránka z tmp/gen/gen-page.mjs', '--next', '']).status, 0);
+    assert.equal(fx.run('save.mjs', ['handover', 't1', '--task', 'T', '--done', 'stránka z tmp/gen/gen-page.mjs; záloha v tmp/zalohy/export-1.csv', '--next', '']).status, 0);
+    write(tmp(fx, 't1', 'zalohy/export-1.csv'), 'a;b\n');
     write(path.join(fx.brain, 'topics', 't1', 'velkosti.html'), 'old\n');
     gitq(fx.brain, 'add', '-A'); gitq(fx.brain, 'commit', '-q', '--no-verify', '-m', 'older result');
     write(tmp(fx, 't1', 'velkosti.html'), 'new, marked invalid\n');
@@ -48,6 +49,7 @@ test('a saved result follows its work file; shown, cited and older same-name wor
     assert.equal(inGit(fx, 'topics/t1/gen-page.mjs'), 'console.log(1)', 'a work file the handover cites is saved');
     assert.equal(inGit(fx, 'topics/t1/velkosti.html'), 'new, marked invalid', 'an older result follows the one work file of its name');
     assert.ok(!fx.exists('topics/t1/pomocny.txt'), 'an intermediate file nobody named stays in the work files');
+    assert.ok(!fx.exists('topics/t1/export-1.csv'), 'a cited backup or export is no result (2026-11-18)');
     const bound = fx.json('topics/t1/.tema.json').results;
     assert.equal(bound['gen-page.mjs'].via, 'handover');
     assert.equal(bound['velkosti.html'].via, 'inferred');

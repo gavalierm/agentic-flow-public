@@ -42,7 +42,7 @@ export function statusInfo(ctx, { discussion = false, since = null } = {}) {
   let issues = 0;
   try { issues = undeliveredIssues(ctx.brainDir || ctx.projectDir).length; } catch { /* only a notice */ }
   return {
-    line: `thread ${thread} | topic ${topic} | ${formatMail(mail)}${notices ? ` | notices: ${notices} open (comms notices; decide only on operator instruction, P-046)` : ''}${issues ? ` | issues: ${issues} answer(s) not rung (error.mjs watch)` : ''}`,
+    line: `thread ${thread} | topic ${topic} | ${formatMail(mail)}${notices ? ` | notices: ${notices} open (comms notices; decide only on operator instruction, P-046)` : ''}${issues ? ` | issues: ${issues} answer(s) on your reports not delivered by mail: run error.mjs watch now, it prints each one once (read it on GitHub, then error.mjs confirm|reopen <url>)` : ''}`,
     held,
     mail,
     notices,

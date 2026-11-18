@@ -16,6 +16,16 @@ test('finishedTasks: a final status in the head counts also with a long result; 
   assert.deepEqual([...finishedTasks(JSON.stringify({ content: note('a4', 'completed', long) }))], ['a4']);
 });
 
+test('finishedTasks: "completed" of an agent waiting on its own background work or resumed is interim; the last notification decides', () => {
+  const interim = note('b1', 'completed', 'čakám').replace('Agent "x" finished', 'Agent "x" is waiting on its own background work')
+    .replace('A task-notification fires each time this agent stops.', 'This agent stopped with background work of its own still running. It may resume on its own; the result below may be interim.');
+  const resumed = note('b1', 'completed', 'hotovo').replace('this agent stops.', 'this agent stops. The agent is being resumed with them and will notify again.');
+  assert.deepEqual([...finishedTasks(interim)], []);
+  assert.deepEqual([...finishedTasks([note('b1', 'completed', 'x'), interim].join('\n'))], []);
+  assert.deepEqual([...finishedTasks([interim, resumed].join('\n'))], []);
+  assert.deepEqual([...finishedTasks([interim, note('b1', 'completed', 'hotovo')].join('\n'))], ['b1']);
+});
+
 test('withoutFinished: a waker whose tasks all ended goes, one with a running task stays', () => {
   const wakers = [{ kind: 'agent', tasks: ['a1'] }, { kind: 'agent', tasks: ['a1', 'a2'] }, { kind: 'scheduler', recurring: true }];
   assert.deepEqual(withoutFinished(wakers, new Set(['a1'])), wakers.slice(1));

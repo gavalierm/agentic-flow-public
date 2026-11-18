@@ -12,6 +12,9 @@ import { topicDir } from './topic.mjs';
 import { layoutOf } from './layout.mjs';
 
 export const NUDGE_RATIO = 0.8;
+/** The large context window (1M): a context over the policy window runs on it, auto-compaction did not come at the policy
+ * window (a project 2026-11-18: "~223k of 200k", later 468k, the line repeated for tens of turns). */
+export const LARGE_WINDOW = 1_000_000;
 const TAIL_BYTES = 1024 * 1024;
 
 /** The summary as a state (Claude Code PreCompact stdout, Codex compact_prompt). No line limit: a terse summary lost the work. */
@@ -83,6 +86,7 @@ export function contextTokens(transcriptPath) {
  */
 export function compactNudge({ tokens, window, state = {}, held = [], ratio = NUDGE_RATIO }) {
   if (!tokens || !window || state.compact_nudged || !held.length) return null;
+  if (tokens > window) window = Math.max(window, LARGE_WINDOW);
   if (tokens < window * ratio) return null;
   const id = held[0].id;
   const k = (n) => `${Math.round(n / 1000)}k`;
