@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { domain3, gitq } from './layout-2-helpers.mjs';
+import { syncResults } from '../scripts/results.mjs';
 
 const write = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
 const tmp = (fx, id, rel) => path.join(fx.brain, 'topics', id, 'tmp', ...rel.split('/'));
@@ -70,13 +71,19 @@ test('done --topic saves before the work files end: a cited folder refuses the c
     const other = { env: { WORKFLOW_THREAD_ID: 'b-thread' } };
     let r0 = fx.run('topic.mjs', ['create', 'b1', '--subject', 'Názvy', '--class', 'ops'], other);
     assert.equal(r0.status, 0, r0.out);
-    r0 = fx.run('save.mjs', ['handover', 'b1', '--task', 'T', '--done', `podklady: ${path.basename(fx.brain)}/topics/a1/tmp/nazvoslovie/podklady.md`, '--next', ''], other);
+    // b1 cites its own work file too, named against P-049 (a project 2026-11-18: it refused the close of a1).
+    write(tmp(fx, 'b1', 'SKILL-navrh.md'), '# Návrh\n');
+    r0 = fx.run('save.mjs', ['handover', 'b1', '--task', 'T', '--done', `podklady: ${path.basename(fx.brain)}/topics/a1/tmp/nazvoslovie/podklady.md; návrh tmp/SKILL-navrh.md`, '--next', ''], other);
     assert.equal(r0.status, 0, r0.out);
     let r = fx.run('done.mjs', [...DONE, '--topic-id', 'a1']);
     assert.equal(r.status, 1, r.out);
     assert.match(r.stderr, /the handover of a1 cites the folder topics\/a1\/tmp\/nazvoslovie\/ \(2 file\(s\)\)/);
     assert.ok(fs.existsSync(tmp(fx, 'a1', 'nazvoslovie/raw.json')), 'nothing of the work files is removed');
     assert.equal(inGit(fx, 'topics/b1/podklady.md'), '# Podklady', 'the work file b1 cites is saved into b1 before a1 ends');
+    assert.ok(!fx.exists('topics/b1/SKILL-navrh.md') && !fx.exists('topics/b1/skill-navrh.md'), 'nothing else of b1 is synced by the close of a1');
+    // b1's own sync saves it under a name by P-049.
+    const b1 = syncResults(fx.brain, 'b1', {});
+    assert.deepEqual(b1.saved.map((x) => x.name), ['skill-navrh.md']);
     // The manager saves what is needed and rewrites the handover: the close goes on.
     assert.equal(fx.run('save.mjs', ['result', tmp(fx, 'a1', 'nazvoslovie/podklady.md'), '--topic', 'a1']).status, 0);
     assert.equal(fx.run('save.mjs', ['handover', 'a1', '--task', 'T', '--done-replace', 'podklady v podklady.md', '--next', '']).status, 0);

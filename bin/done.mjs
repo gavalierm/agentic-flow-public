@@ -311,7 +311,7 @@ function saveBeforeClose(ctx, id, { own = true } = {}) {
     for (const d of cited.dirs.filter(mine)) dirs.push({ by: t.id, dir: d });
     const files = cited.files.filter(mine);
     if (!files.length) continue;
-    const res = syncResults(ctx.brainDir, t.id, { policy: ctx.policy, handover: t.handover, extra: files.map((abs) => ({ abs, via: 'handover' })) });
+    const res = syncResults(ctx.brainDir, t.id, { policy: ctx.policy, handover: t.handover, extra: files.map((abs) => ({ abs, via: 'handover' })), onlyExtra: true });
     if (res.ops.length) writes.push({ id: t.id, res });
   }
   if (writes.length) {

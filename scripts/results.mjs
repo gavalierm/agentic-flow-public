@@ -13,7 +13,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { dataPath, dataRel, layoutOf, hasScratch } from './layout.mjs';
 import { fieldsOp, readTopicRecord, oneTopicFile } from './topic-files.mjs';
-import { maxBytes } from './materialy.mjs';
+import { maxBytes, normalizeName } from './materialy.mjs';
 import { readArtifacts, pagePublish } from './artifacts.mjs';
 import { toPosix } from './util.mjs';
 
@@ -118,10 +118,11 @@ export function countFiles(dir) {
 
 /**
  * One sync of the results of topic `id` (P-078): ops for changed or new results and the bindings field, and what happened.
- * `extra`: [{ abs, via, url }] to bind now (a publish, a preview, save.mjs result). Returns
+ * `extra`: [{ abs, via, url }] to bind now (a publish, a preview, save.mjs result); `onlyExtra`: sync only those (done --topic
+ * of another topic saves its own files into this one, nothing else of this topic: a project 2026-11-18). Returns
  * { ops, saved: [{ name, via, from }], skipped: [{ from, reason }], dirs: [abs] }.
  */
-export function syncResults(brainDir, id, { policy = {}, extra = [], handover = null, now = Date.now() } = {}) {
+export function syncResults(brainDir, id, { policy = {}, extra = [], handover = null, onlyExtra = false, now = Date.now() } = {}) {
   const empty = { ops: [], saved: [], skipped: [], dirs: [] };
   if (!resultsActive(brainDir) || !id || !readTopicRecord(brainDir, id)) return empty;
   const L = layoutOf(brainDir);
@@ -150,7 +151,8 @@ export function syncResults(brainDir, id, { policy = {}, extra = [], handover = 
       const twin = h && savedNames().find((n) => !bindings[n]?.from && sha(readBuf(resultPath(n)) || Buffer.alloc(0)) === h);
       if (twin) return twin;
     }
-    const base = wanted || path.basename(abs);
+    // P-049: a result is a name the workflow gives (SKILL-navrh.md of a work file refused the commit of a whole close).
+    const base = wanted || normalizeName(path.basename(abs));
     const ext = path.extname(base);
     const stem = base.slice(0, base.length - ext.length);
     const parent = path.basename(path.dirname(abs));
@@ -166,6 +168,19 @@ export function syncResults(brainDir, id, { policy = {}, extra = [], handover = 
     return null;
   };
 
+  const copy = (n, b) => {
+    const src = readBuf(path.join(brainDir, ...b.from.split('/')));
+    if (!src) return;
+    if (src.length > max) { skipped.push({ from: b.from, reason: `${(src.length / 1048576).toFixed(0)} MB over the limit ${max / 1048576} MB` }); return; }
+    const cur = readBuf(resultPath(n));
+    if (cur && sha(cur) === sha(src)) return;
+    // A result written after its source changed last (a pull of another machine's save, a manual save) is not overwritten
+    // by an older work file; the source wins once it changes again.
+    if (cur && !newer(path.join(brainDir, ...b.from.split('/')), resultPath(n))) return;
+    ops.push({ path: dataRel(brainDir, 'topics', id, n), content: src });
+    saved.push({ name: n, via: b.via, from: b.from, fresh: !cur });
+  };
+
   const bind = (abs, via, { url = null, name = null } = {}) => {
     const owner = tmpOwner(brainDir, abs);
     if (!owner) return;
@@ -179,6 +194,12 @@ export function syncResults(brainDir, id, { policy = {}, extra = [], handover = 
   };
 
   for (const e of extra) bind(path.resolve(e.abs), e.via, { url: e.url || null, name: e.name || null });
+  const only = onlyExtra ? new Set(extra.map((e) => tmpOwner(brainDir, path.resolve(e.abs))?.from).filter(Boolean)) : null;
+  if (only) {
+    for (const [n, b] of Object.entries(bindings)) if (b?.from && only.has(b.from)) copy(n, b);
+    if (JSON.stringify(bindings) !== JSON.stringify(before)) ops.push(fieldsOp(brainDir, id, { [RESULTS_FIELD]: bindings }));
+    return { ops, saved, skipped, dirs: [] };
+  }
   // Pages published from the work files of this topic, or by its thread from elsewhere in the work files.
   for (const a of readArtifacts(brainDir)) {
     const owner = tmpOwner(brainDir, a.file);
@@ -202,19 +223,7 @@ export function syncResults(brainDir, id, { policy = {}, extra = [], handover = 
     }
   }
   // Copy every bound source that differs from its result (a source that is gone keeps the result as it is).
-  for (const [n, b] of Object.entries(bindings)) {
-    if (!b?.from) continue;
-    const src = readBuf(path.join(brainDir, ...b.from.split('/')));
-    if (!src) continue;
-    if (src.length > max) { skipped.push({ from: b.from, reason: `${(src.length / 1048576).toFixed(0)} MB over the limit ${max / 1048576} MB` }); continue; }
-    const cur = readBuf(resultPath(n));
-    if (cur && sha(cur) === sha(src)) continue;
-    // A result written after its source changed last (a pull of another machine's save, a manual save) is not overwritten
-    // by an older work file; the source wins once it changes again.
-    if (cur && !newer(path.join(brainDir, ...b.from.split('/')), resultPath(n))) continue;
-    ops.push({ path: dataRel(brainDir, 'topics', id, n), content: src });
-    saved.push({ name: n, via: b.via, from: b.from, fresh: !cur });
-  }
+  for (const [n, b] of Object.entries(bindings)) if (b?.from) copy(n, b);
   if (JSON.stringify(bindings) !== JSON.stringify(before)) ops.push(fieldsOp(brainDir, id, { [RESULTS_FIELD]: bindings }));
   return { ops, saved, skipped, dirs: cited.dirs };
 }
