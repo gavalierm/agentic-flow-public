@@ -115,7 +115,7 @@ const workPathMessage = (p) => `fixed work files path ${p}: the folder depends o
  * -> findings [{ level, line, code, message }]. layout: data layout of the topic home (2: fixed work paths are errors);
  * scriptTexts: { <file>: content } of scripts being saved (others are read from dir). Pure apart from filesystem reads.
  */
-export function checkSkill({ name, dir, text, owner, projectDir, home = os.homedir(), limit = 300, pendingScripts = [], known = null, layout = null, scriptTexts = {} }) {
+export function checkSkill({ name, dir, text, owner, projectDir, home = os.homedir(), limit = 300, pendingScripts = [], removedScripts = [], known = null, layout = null, scriptTexts = {} }) {
   const findings = [];
   const add = (level, line, code, message) => findings.push({ level, line, code, message });
   // Work files per topic (no scratch/: layouts 2, 3): a fixed work files path is an error (P-068).
@@ -138,7 +138,7 @@ export function checkSkill({ name, dir, text, owner, projectDir, home = os.homed
 
   const principles = principleIds();
   const wf = new Set(workflowSkillNames());
-  const own = [...new Set([...(dir && fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /\.(mjs|js|sh|py)$/.test(f)) : []), ...pendingScripts])];
+  const own = [...new Set([...(dir && fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /\.(mjs|js|sh|py)$/.test(f)) : []), ...pendingScripts])].filter((f) => !removedScripts.includes(f));
   const referenced = new Set();
   const lines = body.split('\n');
   let additions = 0;

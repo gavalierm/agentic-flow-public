@@ -13,7 +13,7 @@
 //   save.mjs rule <name> [--repo [<repo>]] --content "..." (--enforced-by <file>[:<symbol>][,...] | --unenforced "<why code cannot check it>") [--title "..."] | --remove --reason "..."
 //   save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local] [--title "..."]
 //   save.mjs exception P-XXX --remove --reason "..." [--layer project|harness|machine|local]   removes its section (one commit; an empty file goes)
-//   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]' ...] (existing skill: --script or --description alone keeps the body; an edit needs --origin error|routine|operator, operator with --reason "operator <date>: ...") [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
+//   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--remove-script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]' ...] (existing skill: --script or --description alone keeps the body; an edit needs --origin error|routine|operator, operator with --reason "operator <date>: ...") [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
 //   save.mjs handover <topic> (--task ".." --done "a; b" --next "a; b" --files "a; b" --questions "a; b" --tasks "a; b" [--done-replace "a; b"] | --file <path>)
 //                        six sections (P-011); --next (a step in Ďalší krok) is refused in a topic in mode discussion (spec 10.6)
 //   save.mjs docs [--message "..."]   persona only: commits the files written directly into docs/ (P-024)
@@ -799,8 +799,11 @@ function saveSkill(ctx) {
   // --script alone adds or updates the scripts of an existing skill and keeps its body (report-dffad7fe: an agent
   // passed a dummy --sed 's/^/^/' to save only a script and the edit put a ^ in front of the body). --description alone
   // likewise changes only the description (workflow-dev 2026-11-14: it was refused and the body had to be re-sent).
-  const scriptOnly = sed === null && args.content === undefined && !args.replace && (asList(args.script).length > 0 || Boolean(args.description));
-  if (sed === null && args.content === undefined && !scriptOnly) fail('--content required (or --sed s/<pattern>/<replacement>/ to edit an existing skill, or --script / --description alone to add a script to it or change its description)');
+  // --remove-script drops scripts of an existing skill (a project 2026-11-18: scripts moved to another skill stayed in the
+  // old one, in its deployed copy and, by share, in the other brain; only --remove of the whole skill existed).
+  const removeList = asList(args['remove-script']).map((x) => path.basename(String(x)));
+  const scriptOnly = sed === null && args.content === undefined && !args.replace && (asList(args.script).length > 0 || removeList.length > 0 || Boolean(args.description));
+  if (sed === null && args.content === undefined && !scriptOnly) fail('--content required (or --sed s/<pattern>/<replacement>/ to edit an existing skill, or --script / --remove-script / --description alone to change its scripts or description)');
   const skills = readSkills(ctx.brainDir);
   const hit = skills.find((s) => s.skillName === name || s.aliases.map(normalizeKey).includes(normalizeKey(name)))
     || find(ctx.brainDir, name).map((m) => skills.find((s) => s.path === m.path)).find(Boolean);
@@ -853,8 +856,19 @@ function saveSkill(ctx) {
   }
   // Skill health (skill workflow:skill-check): a broken skill is not saved.
   const skillDir = path.join(ctx.brainDir, path.dirname(rel));
-  const scriptTexts = Object.fromEntries(ops.slice(1).map((o) => [path.posix.basename(o.path), o.content]));
-  const found = checkSkill({ name: path.basename(path.dirname(rel)), dir: skillDir, text: ops[0].content, owner: rel.split('/')[1], projectDir: ctx.projectDir, limit: ctx.policy?.limits?.skill_description_chars ?? 300, pendingScripts: scripts.map((s) => path.posix.basename(s)), layout: workLayout(ctx), scriptTexts });
+  if (removeList.length) {
+    if (!hit) fail(`--remove-script: skill ${name} does not exist`);
+    for (const base of removeList) {
+      if (base === 'SKILL.md') fail('--remove-script: SKILL.md is the skill itself; remove the whole skill with --remove --reason "..."');
+      if (scriptFiles.includes(base)) fail(`--remove-script ${base}: also given in --script; one of them`);
+      if (!fs.existsSync(path.join(skillDir, base))) fail(`--remove-script ${base}: skill ${name} has no such file (${toPosixPath(path.relative(ctx.brainDir, skillDir))}/)`);
+      // The body must not call a script that goes: the deployed path would point at nothing.
+      if (ops[0].content.includes(base)) fail(`--remove-script ${base}: SKILL.md still names it; change the body in the same call (--sed or --content --replace), nothing saved`);
+      ops.push({ path: `${path.posix.dirname(toPosixPath(rel))}/${base}`, remove: true });
+    }
+  }
+  const scriptTexts = Object.fromEntries(ops.slice(1).filter((o) => !o.remove).map((o) => [path.posix.basename(o.path), o.content]));
+  const found = checkSkill({ name: path.basename(path.dirname(rel)), dir: skillDir, text: ops[0].content, owner: rel.split('/')[1], projectDir: ctx.projectDir, limit: ctx.policy?.limits?.skill_description_chars ?? 300, pendingScripts: scripts.map((s) => path.posix.basename(s)), removedScripts: removeList, layout: workLayout(ctx), scriptTexts });
   const errors = found.filter((x) => x.level === 'error');
   if (errors.length) fail(`skill check: ${errors.map((x) => `${x.line ? `line ${x.line} ` : ''}${x.message}`).join('; ')}; nothing saved (workflow:skill-check)`);
   for (const w of found.filter((x) => x.level === 'warn')) out(`skill check warn: ${w.line ? `line ${w.line} ` : ''}${w.message}`);
@@ -864,6 +878,7 @@ function saveSkill(ctx) {
   finish(ctx, res, [rel, ...scripts]);
   const notDeployed = deploySkills(ctx);
   out(hit ? `${sed !== null ? 'edited' : 'refactored'} existing skill ${hit.skillName}` : `new skill ${name} (origin: ${origin})`);
+  if (removeList.length) out(`removed from skill ${name}: ${removeList.join(', ')} (brain and deployed copy; save.mjs share removes them in the other brain too)`);
   // D-0065: in a persona its own skill is deployed as <persona>-<name>; the brain keeps the name.
   const deployedName = deployedSkillName(ctx.projectDir, name);
   out(notDeployed ? `not deployed to the project (${notDeployed}); it reaches the project at the next session start` : `deployed to ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR))}${deployedName !== name ? ` as skill ${deployedName}` : ''}`);
