@@ -1,5 +1,5 @@
 ### P-036: Téma
-Jednotkou paralelnej práce je téma (`workflow:topic`). Kódová téma pracuje iba vo svojom worktree na vetve `topic/<id>`; do cieľovej vetvy každého cieľového repa ju zlúči `done` i `done --topic` bez otázky (chránenú vetvu iba žiadosťou o zlúčenie).
+Jednotkou paralelnej práce je téma (`workflow:topic`). Kódová téma pracuje iba vo svojom worktree na vetve `topic/<id>`; do cieľovej vetvy každého repa ju zlúči `done` i `done --topic` bez otázky (chránenú vetvu iba žiadosťou o zlúčenie).
 
 ### P-037: Držiteľ témy
 Tému drží jedno vlákno (zámok); `claim --force` iba na výslovný pokyn operátora. Pri `lock lost` (zápis to overí) na téme ďalej NEPRACUJ.

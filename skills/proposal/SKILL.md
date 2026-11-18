@@ -1,11 +1,19 @@
 ---
 name: proposal
-description: Použi, keď operátorovi predkladáš návrh (riešenie, plán, architektúru, porovnanie možností, špecifikáciu, rešerš so záverom) alebo report výsledku práce. Je to jedna HTML stránka zobrazená vo vlákne, nie súbor .md ani dlhý text odpovede (P-077).
+description: Použi, keď operátorovi predkladáš návrh (riešenie, plán, porovnanie možností, špecifikáciu, rešerš so záverom) alebo report výsledku práce, aj keď operátor povie „report“. Forma: ASCII diagram, HTML stránka alebo Artifact podľa obsahu; nie súbor .md ani dlhý text (P-077).
 ---
 
 # proposal – návrh ako HTML stránka (P-077)
 
-Operátor návrh prezerá, nečíta. Návrh do 5 riadkov ostáva v texte odpovede; dlhší je stránka.
+Operátor návrh aj report prezerá, nečíta. Slovo „report“ od operátora znamená jednu z týchto foriem; zvolíš ju sám podľa obsahu (operátor 2026-11-18):
+
+| Forma | Kedy |
+|---|---|
+| ASCII diagram v odpovedi (blok kódu, do ~20 riadkov) | tok, štruktúra, stav či porovnanie, ktoré sa zmestia na jednu obrazovku; návrh do 5 riadkov ostáva textom |
+| HTML stránka vo vlákne (kroky 1–6) | väčší návrh či report na jedno prezretie v tejto téme |
+| Artifact (stránka na claude.ai, nástroj Artifact) | operátor ju otvorí znova, pošle ďalej alebo sa bude dopĺňať (jeden dokument, aktualizácia jeho `url`, „Report výsledku“ bod 4) |
+
+Bez nástroja Artifact platí HTML stránka.
 
 1. Súbor: `<pracovné súbory>/navrh-<názov>.html` (cesta pracovných súborov zo štartu, P-052). Súbor `.md` s návrhom nevzniká.
 2. Obsah v tomto poradí, bez opakovania kontextu, ktorý operátor pozná:

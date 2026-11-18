@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { heldTopics } from '../scripts/topic.mjs';
 import { isMainTopic } from '../scripts/comms.mjs';
 import { flowModel, commsModel, resolve as resolveComms } from '../scripts/comms-pair.mjs';
+import { brainId } from '../scripts/brain-id.mjs';
+import { machineName } from '../scripts/config.mjs';
 
 export const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = (name) => path.join(PLUGIN_ROOT, 'bin', name);
@@ -269,9 +271,16 @@ export async function startComms(fx, { senders = ['alice'], brains = null } = {}
     fs.writeFileSync(path.join(project, 'local', 'workflow.json'), JSON.stringify({ comms: { client: path.relative(project, client).split(path.sep).join('/') } }) + '\n');
   }
   let child = null;
+  // Mail model 3: a raw client call names the sender's brain and the machine the workflow gives its client (scripts/comms.mjs).
+  const brainOf = (sender) => pairs.find((p) => p[2] === sender)?.[1] || null;
+  const machine = machineName(cleanEnv());
   const comms = {
     client, dataDir, keys, instanceId: init.json.instance_id,
-    cli(args, sender = senders[0]) { return commsCli(client, [...args, '--data-dir', dataDir, '--key', keys[sender], '--no-start']); },
+    cli(args, sender = senders[0]) {
+      const b = brainOf(sender);
+      const who = args.includes('--brain') || !b ? [] : ['--brain', brainId(b), '--brain-name', path.basename(b)];
+      return commsCli(client, [...args, '--data-dir', dataDir, '--key', keys[sender], '--no-start', ...who, ...(args.includes('--machine') ? [] : ['--machine', machine])]);
+    },
     async start() {
       child = spawn(process.execPath, [client, 'serve', '--data-dir', dataDir], { stdio: 'ignore' });
       const deadline = Date.now() + 5000;
@@ -297,9 +306,13 @@ export async function startComms(fx, { senders = ['alice'], brains = null } = {}
       for (const k of Object.keys(cache)) { if (cache[k].at) cache[k].at -= 120000; if (cache[k].failed_at) cache[k].failed_at -= 120000; }
       fs.writeFileSync(file, JSON.stringify(cache));
     },
+    /** The record of <project>/<topic> (model 3: files are named by a hash of the key): the open one, else the newest. */
     topic(project, topic) {
-      const f = path.join(dataDir, 'topics', `${project}__${topic}.json`);
-      return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : null;
+      const dir = path.join(dataDir, 'topics');
+      const recs = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter((f) => f.endsWith('.json'))
+        .map((f) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch { return null; } })
+        .filter((r) => r && r.project === project && r.topic === topic);
+      return recs.find((r) => r.state !== 'closed') || recs.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))[0] || null;
     },
   };
   await comms.start();

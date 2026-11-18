@@ -21,6 +21,7 @@ import { knownBrains } from './update.mjs';
 import { PERSONA_REPO_RE, PERSONA_PREFIX } from './persona-name.mjs';
 import { dataPath, layoutOf } from './layout.mjs';
 import { readTopicRecord, readHolderRecord, listTopicRecords } from './topic-files.mjs';
+import { brainId, brainName } from './brain-id.mjs';
 
 /**
  * Default client locations relative to the project, first existing wins. Recommended layout (pilot 2026-11-01): mail is
@@ -232,9 +233,32 @@ export const MODEL_CHECK_TTL_MS = 60_000;
 export const MODEL_CHECK_FILE = 'model-check.json';
 const modelChecks = new Map();
 
+/** Client options that name a topic mailbox or address (mail model 3: they need the brain of this session). */
+const TOPIC_OPTIONS = ['--project', '--topics', '--to', '--persona'];
+
+/**
+ * Brain and machine of this session for the client (mail model 3): COMMS_BRAIN and COMMS_BRAIN_NAME when the session has
+ * a brain (empty otherwise: the maintainer's thread has none), COMMS_MACHINE always machineName() (the one machine source,
+ * also of wake.json). A brain without an id (shallow clone, no commit) fails only a call that names a topic; a thread-only
+ * call goes without the brain. Returns { env } or { error }.
+ */
+export function clientIdentity(ctx, args = []) {
+  const env = { COMMS_MACHINE: machineName(), COMMS_BRAIN: '', COMMS_BRAIN_NAME: '' };
+  if (!ctx?.brainDir) return { env };
+  try {
+    env.COMMS_BRAIN = brainId(ctx.brainDir);
+    env.COMMS_BRAIN_NAME = brainName(ctx.brainDir);
+  } catch (err) {
+    if (args[0] === 'register-topic' || args.some((a) => TOPIC_OPTIONS.includes(a))) return { error: err.message };
+  }
+  return { env };
+}
+
 function spawnClient(ctx, s, args, { timeoutMs, input, thread } = {}) {
   const wait = timeoutMs ?? s.waitMs;
   const th = thread === undefined ? ctx.thread : thread;
+  const who = clientIdentity(ctx, args);
+  if (who.error) return { ok: false, code: 1, data: null, error: who.error, unavailable: false };
   const common = ['--timeout', String(wait)];
   if (s.configFile) common.push('--config', s.configFile);
   if (s.instance) common.push('--instance', s.instance);
@@ -246,7 +270,7 @@ function spawnClient(ctx, s, args, { timeoutMs, input, thread } = {}) {
     input,
     timeout: wait + 1500,
     // The mail service records the workflow version per persona and machine (`comms clients`).
-    env: { ...process.env, COMMS_THREAD_ID: th || '', COMMS_WORKFLOW_VERSION: workflowVersion() || '' },
+    env: { ...process.env, ...who.env, COMMS_THREAD_ID: th || '', COMMS_WORKFLOW_VERSION: workflowVersion() || '' },
   });
   const parse = (t) => { try { return JSON.parse(String(t || '').trim()); } catch { return null; } };
   if (res.error || res.status === null) {
@@ -289,7 +313,7 @@ export function modelMismatch(ctx, s = commsSettings(ctx)) {
 
 /**
  * Run the comms client once. Returns { ok, code, data, error, unavailable, model }. A mail of another model (modelMismatch)
- * runs nothing: `{ ok: false, code: 3, model: true, error: "comms model … ≠ 2: update mail and workflow together" }`.
+ * runs nothing: `{ ok: false, code: 3, model: true, error: "comms model … ≠ <COMMS_MODEL>: update mail and workflow together" }`.
  * Exit codes of the client: 0 ok, 1 rejected/usage, 2 comms unavailable, 3 other instance or other model.
  * `thread`: the thread the call is for (default ctx.thread; null: none, e.g. the view of another topic).
  */
@@ -304,7 +328,7 @@ export function runClient(ctx, args, { timeoutMs, input, thread } = {}) {
 /** Obligations query of held topics (section 2): work topics as `<project>/<topic>`, topic main as the persona mailbox. */
 export function obligationsArgs(ctx, held = []) {
   const s = commsSettings(ctx);
-  const topics = held.filter((t) => !isMainTopic(t)).map((t) => `${s.project}/${t.id}`);
+  const topics = held.filter((t) => !isMainTopic(t)).map((t) => `${topicProject(s, t)}/${t.id}`);
   const a = ['obligations'];
   if (topics.length) a.push('--topics', [...new Set(topics)].join(','));
   if (held.some(isMainTopic)) a.push('--persona', s.project);
@@ -354,7 +378,7 @@ export function mailQueries(ctx, held = []) {
   // The persona's main thread (topic `main`, P-045) reads the mailbox `@<persona>/main` in the mail service.
   const queries = held.map((t, i) => (isMainTopic(t)
     ? { persona: s.project, thread: i === 0 ? ctx.thread : null }
-    : { project: s.project, topic: t.id, thread: i === 0 ? ctx.thread : null }));
+    : { project: topicProject(s, t), topic: t.id, thread: i === 0 ? ctx.thread : null }));
   if (!queries.length && ctx.thread) queries.push({ project: null, topic: null, thread: ctx.thread });
   return queries;
 }
@@ -539,7 +563,7 @@ export function recordTurn(ctx, state, held = [], { openedAt = null, next = null
     const h = held[0];
     const args = ['turn', '--state', state, '--machine', String(h?.holder?.machine || machineName())];
     if (h) {
-      if (!isMainTopic(h)) args.push('--project', s.project, '--topic', h.id);
+      if (!isMainTopic(h)) args.push('--project', topicProject(s, h), '--topic', h.id);
       if (h.holder?.mode === 'operator' || h.holder?.mode === 'auto') args.push('--holder-mode', h.holder.mode);
     }
     const timeoutMs = Math.min(s.waitMs, 1000);
@@ -593,12 +617,15 @@ export function recordWaitingOperator(ctx, waiting, openedAt = null) {
 export function registerTopic(ctx, topicId, { holder = undefined, subject, takeover = false, release = false, close = false } = {}) {
   const s = commsSettings(ctx);
   if (!s.enabled) return { ok: false, reason: s.reason, topic: topicId, project: s.project, skipped: true };
-  const topic = subject ? { subject } : (ctx.brainDir ? readTopicRecord(ctx.brainDir, topicId) || readTopicRecord(ctx.brainDir, topicId, { closed: true }) || {} : {});
+  const record = ctx.brainDir ? readTopicRecord(ctx.brainDir, topicId) || readTopicRecord(ctx.brainDir, topicId, { closed: true }) || {} : {};
+  const topic = subject ? { ...record, subject } : record;
   // Topic `main` of a persona is its main thread `@<persona>/main` in the mail service (P-045).
   const main = isMainTopic({ id: topicId, ...topic });
+  // D-0035: a topic that records its project is registered there, else under the session's project (mail model 3).
+  const project = topicProject(s, topic);
   const args = main
     ? ['register-topic', '--persona', s.project, '--main']
-    : ['register-topic', '--project', s.project, '--topic', topicId, '--subject', topic.subject || topicId];
+    : ['register-topic', '--project', project, '--topic', topicId, '--subject', topic.subject || topicId];
   const hj = ctx.brainDir ? readHolderRecord(ctx.brainDir, topicId) : {};
   // Holder from holder.json (P-037): a free topic (no thread there) is never registered to the calling thread.
   const h = holder === undefined ? (hj.thread || null) : holder;
@@ -614,8 +641,9 @@ export function registerTopic(ctx, topicId, { holder = undefined, subject, takeo
   }
   if (takeover) args.push('--takeover');
   const res = runClient(ctx, args);
-  if (!res.ok) return { ok: false, reason: res.error, topic: topicId, project: s.project, unavailable: res.unavailable };
-  return { ok: true, created: !!res.data.created, topic: main ? 'main' : topicId, project: main ? `@${s.project}` : s.project, holder: h || null };
+  if (!res.ok) return { ok: false, reason: res.error, topic: topicId, project, unavailable: res.unavailable };
+  // Mail model 3: a registration on another machine moves the topic (I11); the answer names where it came from.
+  return { ok: true, created: !!res.data.created, topic: main ? 'main' : topicId, project: main ? `@${s.project}` : project, holder: h || null, moved: res.data.moved || null, moved_from: res.data.moved_from || null };
 }
 
 /**
@@ -630,7 +658,8 @@ export function closeArchivedTopics(ctx) {
   // Layout 1: the folders of topics/archive; layout 2: the topics with state closed (they stay in temy/).
   const closed = listTopicRecords(ctx.brainDir, { closed: true }).map((t) => t.id).filter((id) => id !== MAIN_TOPIC);
   if (!closed.length) return [];
-  const res = readObligations(ctx, { topics: closed.map((id) => `${s.project}/${id}`), thread: null });
+  const recs = new Map(listTopicRecords(ctx.brainDir, { closed: true }).map((t) => [t.id, t]));
+  const res = readObligations(ctx, { topics: closed.map((id) => `${topicProject(s, recs.get(id))}/${id}`), thread: null });
   if (!res.ok || res.data?.offline) return [];
   const open = new Set((res.data.topics || []).filter((t) => t.registered && t.state !== 'closed').map((t) => t.topic));
   const out = [];
@@ -649,12 +678,58 @@ export function isMainTopic(t) {
   return !!t && t.id === MAIN_TOPIC && t.kind === 'main';
 }
 
+/** Mail project of a topic: the project its record names (D-0035), else the session's mail project. */
+export function topicProject(s, t) {
+  return (t && typeof t.project === 'string' && t.project) || s.project;
+}
+
+/**
+ * Mail address (mail model 3, agentic-comms docs/MODEL.md): `@<persona>[/main]`, or a topic
+ * `[<brain>[@<machine>]:]<project>/<topic>` (brain = id or unique brain name), or `[<project>/]<topic>` (a bare topic is
+ * this project and brain). Returns { persona } | { brain, machine, project, topic }, or null.
+ */
 export function parseAddress(to, defaultProject) {
   const raw = String(to || '').trim();
   // Persona main thread (P-045): `@<persona>/main` or `@<persona>`.
   const p = /^@([a-z0-9][a-z0-9._-]*)(?:\/main)?$/i.exec(raw);
   if (p) return { persona: p[1] };
+  const q = /^([a-z0-9][a-z0-9._-]*)(?:@([a-z0-9][a-z0-9._-]*))?:([a-z0-9][a-z0-9._-]*)\/([a-z0-9][a-z0-9-]*)$/i.exec(raw);
+  if (q) return { brain: q[1], machine: q[2] || null, project: q[3], topic: q[4] };
   const m = /^(?:([a-z0-9][a-z0-9._-]*)\/)?([a-z0-9][a-z0-9-]*)$/i.exec(raw);
   if (!m) return null;
-  return { project: m[1] || defaultProject, topic: m[2] };
+  return { brain: null, machine: null, project: m[1] || defaultProject, topic: m[2] };
+}
+
+/** The address as text: `@<persona>/main`, `[<brain>[@<machine>]:]<project>/<topic>`. */
+export function formatAddress(a) {
+  if (!a) return '';
+  if (a.persona) return `@${a.persona}/main`;
+  return `${a.brain ? `${a.brain}${a.machine ? `@${a.machine}` : ''}:` : ''}${a.project}/${a.topic}`;
+}
+
+/** Client options of a send to an address: `--persona`, a brain-qualified `--to`, else `--project --topic`. */
+export function addressArgs(a) {
+  if (a.persona) return ['--persona', a.persona];
+  return a.brain ? ['--to', formatAddress(a)] : ['--project', a.project, '--topic', a.topic];
+}
+
+/**
+ * Lines of a send the mail resolved (mail model 3): `resolved` (a topic of another brain, step 3 of the resolution), or
+ * a 409 `ambiguous` (the topic is open in several brains; nothing was written) with the exact addresses to send again.
+ */
+export function resolvedNote(data) {
+  return data?.resolved ? ` (resolved: ${data.resolved})` : '';
+}
+export function ambiguousLine(res) {
+  const d = res?.data?.details || res?.data || {};
+  const list = Array.isArray(d.ambiguous) ? d.ambiguous : null;
+  if (!list?.length) return null;
+  const forms = list.map((e) => {
+    // `<brain_name> (<brain>)@<machine>`: the id is unique, the machine names one record.
+    // An older topic without a brain (`- (-)@…`) has no address of its own: the operator decides it (notice legacy-topic).
+    const m = /^(.*?)\s*\(([^)]+)\)@(.+)$/.exec(String(e));
+    if (!m || m[2] === '-') return null;
+    return `--to ${m[2]}${m[3] && m[3] !== '?' ? `@${m[3]}` : ''}:${d.project}/${d.topic}`;
+  }).filter(Boolean);
+  return `topic ${d.project}/${d.topic} is open in ${list.length} brains (${list.join(', ')}); nothing sent; send again with one of: ${forms.join(', ') || '(none has a brain: ask the operator)'}`;
 }

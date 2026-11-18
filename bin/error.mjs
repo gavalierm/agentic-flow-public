@@ -7,7 +7,7 @@
 //   error.mjs report --title "..." --text "..."   -> report to the maintainer's T3 thread (the mail server names it), sent once
 //                                                by mail; no maintainer thread: an issue in the public workflow repo; both
 //                                                unavailable: a draft in the held topic and a task for the operator (spec 7.3 to 7.5, P-003)
-//   error.mjs report --to <[project/]topic> --title "..." --text "..." -> to the thread that did the work; maintainer only if unreachable
+//   error.mjs report --to <[brain[@machine]:]project/topic | [project/]topic> --title "..." --text "..." -> to the thread that did the work; maintainer only if unreachable
 //   error.mjs report --from <message id>         -> a mailed report without pickup (no reply / undelivered: the thread is gone):
 //                                                an issue in the public workflow repo, never mailed again (spec 7.4)
 //   error.mjs confirm <issue url> --text "..."    -> the fix works in the reported scenario: comment, the watch ends (3c)

@@ -16,7 +16,7 @@
 //                                                         layout 3 with the commands. Exit 1 while a finding is left.
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
-import { runClient, commsSettings, supervisorOf, parseAddress } from '../scripts/comms.mjs';
+import { runClient, commsSettings, supervisorOf, parseAddress, addressArgs } from '../scripts/comms.mjs';
 import { overview, overviewLines, findingLine, findingKey, newFindings, readOverviewState, writeOverviewState } from '../scripts/overview.mjs';
 import { preRelease, preReleaseLines } from '../scripts/pre-release.mjs';
 
@@ -57,7 +57,8 @@ try {
       const addr = sup.comms ? parseAddress(sup.comms, s.project) : null;
       // No supervisor (the default, operator 2026-11-17: the workflow is led by the maintainer's session, not by a persona;
       // the plugin's example persona sent the overview to a mailbox nobody reads): the maintainer thread the mail names.
-      const to = !addr ? ['--maintainer'] : addr.persona ? ['--persona', addr.persona] : ['--project', addr.project, '--topic', addr.topic];
+      // policy supervisor.comms: `@<persona>/main`, `[<project>/]<topic>` or `<brain>[@<machine>]:<project>/<topic>` (mail model 3).
+      const to = !addr ? ['--maintainer'] : addressArgs(addr);
       const dest = addr ? sup.comms : 'the maintainer';
       const text = [`Prehľad supervisora (overview.mjs, spec 3.9): ${fresh.length} nový nález(y), spolu ${res.findings.length}.`, ...res.findings.map((f) => `- ${findingLine(f)}`)].join('\n');
       const sent = runClient(ctx, ['send', '--text', '-', '--level', 'assist', ...to, '--supersede-key', 'overview'], { input: text, timeoutMs: 10000 });

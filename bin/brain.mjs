@@ -132,7 +132,7 @@ try {
       if (v === true || v === '') fail('usage: brain.mjs supervisor [--persona <name>|none] [--comms <project>/<topic>|@<persona>/main|none]');
       if (v === 'none') next[key] = null;
       else if (key === 'persona' && !/^[a-z0-9][a-z0-9._-]*$/i.test(v)) fail(`--persona ${v}: expected the persona name the supervisor's mail is sent as, or none`);
-      else if (key === 'comms' && !(String(v).includes('/') && parseAddress(v, null)?.topic) && !parseAddress(v, null)?.persona) fail(`--comms ${v}: expected <project>/<topic> or @<persona>/main of the supervisor, or none`);
+      else if (key === 'comms' && !(String(v).includes('/') && parseAddress(v, null)?.topic) && !parseAddress(v, null)?.persona) fail(`--comms ${v}: expected [<brain>[@<machine>]:]<project>/<topic> or @<persona>/main of the supervisor, or none`);
       else next[key] = v;
     }
     const res = brainWrite({ brainDir: ctx.brainDir, thread: ctx.thread, policy: loadPolicy(ctx.brainDir) }, {

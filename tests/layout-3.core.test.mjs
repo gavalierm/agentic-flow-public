@@ -113,7 +113,10 @@ test('brain-init without --layout makes a brain of layout 3 from templates/brain
     const brain = path.join(root, 'b');
     const r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'brain-init.mjs'), brain], { env: cleanEnv({}), encoding: 'utf8' });
     assert.equal(r.status, 0, r.stderr);
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(brain, 'policy.json'), 'utf8')), { data_layout: '2.1' });
+    // Mail model 3: a new brain has its own random brain_id (scripts/brain-id.mjs).
+    const { brain_id: id, ...policy } = JSON.parse(fs.readFileSync(path.join(brain, 'policy.json'), 'utf8'));
+    assert.deepEqual(policy, { data_layout: '2.1' });
+    assert.match(id, /^[0-9a-f]{12}$/);
     for (const d of ['topics', 'memory', 'decisions', 'rules', 'skills/agentic', 'exceptions', 'logs']) assert.ok(fs.existsSync(path.join(brain, d)), d);
     for (const d of ['.brain', 'vystupy', 'zdroje', 'temy']) assert.ok(!fs.existsSync(path.join(brain, d)), d);
     assert.match(fs.readFileSync(path.join(brain, '.gitignore'), 'utf8'), /^topics\/\*\/tmp\/$/m);

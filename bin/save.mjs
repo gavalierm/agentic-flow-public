@@ -40,6 +40,8 @@ import { lfBytes } from '../scripts/eol.mjs';
 import { spawnSync } from 'node:child_process';
 import { parseArgs, fail, today, readText, listFiles, relPosix, git } from '../scripts/util.mjs';
 import { loadContext, isWakeTurn, dialogAnsweredInTurn, machineName, foreignProjectCwd, resolveBrain, brainExists, projectPolicy, inSubagent, loadPolicy } from '../scripts/config.mjs';
+import { isMainTopic, commsProjectName } from '../scripts/comms.mjs';
+import { brainId } from '../scripts/brain-id.mjs';
 import { brainWrite, formatWriteResult, syncAndCheckHolder, checkHolder, withBrainLock, hasRemote, brainSync, verifyHeldLocks, lockLostText } from '../scripts/brain.mjs';
 import { parseFrontmatter, serializeFrontmatter, asList } from '../scripts/frontmatter.mjs';
 import { makeKey, normalizeKey, hasDiacritics, isValidId, KEY_TYPES } from '../scripts/keys.mjs';
@@ -1344,6 +1346,12 @@ function saveShare(ctx) {
   if (path.resolve(to) === path.resolve(ctx.brainDir)) fail('save.mjs share: --to is this brain; a skill of this brain is saved with save.mjs skill');
   if (!brainExists(to) || !fs.existsSync(path.join(to, '.githooks'))) fail(`save.mjs share: ${toPosixPath(to)} is no brain of the workflow (topics/, .git and .githooks/); nothing written`);
   const ops = [];
+  // The copy names the topic that develops the skill, as a mail address (operator 2026-11-18: a thread of the other brain
+  // reported a fault of the skill, did not know which thread develops it, and the report reached nobody).
+  const dev = heldTopics(ctx.brainDir, ctx.thread).filter((t) => !isMainTopic(t));
+  // Mail model 3: `<brain id>:<project>/<topic>`, so the report reaches that brain's topic, not one of the same name.
+  const devProject = dev.length === 1 ? (typeof dev[0].project === 'string' && dev[0].project) || commsProjectName(ctx) : null;
+  const devAt = devProject ? `${brainId(ctx.brainDir)}:${devProject}/${dev[0].id}` : null;
   for (const name of names) {
     const rel = dataRel(ctx.brainDir, 'skills', AGENTIC_OWNER, name);
     const src = path.join(ctx.brainDir, rel);
@@ -1354,14 +1362,16 @@ function saveShare(ctx) {
     const files = list(src);
     for (const f of files) {
       const buf = fs.readFileSync(path.join(src, f));
-      ops.push({ path: `${destRel}/${f}`, content: f.endsWith('.md') ? buf.toString('utf8') : buf });
+      let content = f.endsWith('.md') ? buf.toString('utf8') : buf;
+      if (f === 'SKILL.md' && devAt) { const fm = parseFrontmatter(content); content = serializeFrontmatter({ ...fm.data, developed_in: devAt }, fm.body); }
+      ops.push({ path: `${destRel}/${f}`, content });
     }
     for (const f of list(path.join(to, destRel))) if (!files.includes(f)) ops.push({ path: `${destRel}/${f}`, remove: true });
   }
   const sha = git(['rev-parse', '--short', 'HEAD'], { cwd: ctx.brainDir }).stdout.trim();
   const res = brainWrite({ brainDir: to, thread: ctx.thread, policy: loadPolicy(to) }, { ops, message: `share skill ${names.join(', ')} from ${path.basename(ctx.brainDir)} (${sha})` });
   out(res.committed ? formatWriteResult(res, [`${toPosixPath(to)}: skill ${names.join(', ')}`]) : `nothing to share: skill ${names.join(', ')} in ${toPosixPath(to)} is the same as here`);
-  if (res.committed) out('the other machine gets it after a pull and a new session (skills are deployed at session start)');
+  if (res.committed) out(`the other machine gets it after a pull and a new session (skills are deployed at session start)${devAt ? `; the copy names its developer: developed_in ${devAt} (a report on it: error.mjs report --to ${devAt})` : ''}`);
 }
 
 try {

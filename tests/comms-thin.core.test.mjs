@@ -1,8 +1,8 @@
 // keep: core
-// Mail model 2 (D-0087, D-0089, D-0090, P-072, P-073): the workflow is a thin client of the mail. It keeps no state of a
+// Mail model 2, now 3 (D-0087, D-0089, D-0090, P-072, P-073): the workflow is a thin client of the mail. It keeps no state of a
 // message (no list of picked messages, no reply wait, no timer or waker bound to a message, no file with a message's
 // state): what the thread owes and awaits is the mail's `obligations`; Stop reminds from `owed`, the mail's wait for an
-// answer is the sender's waker; a mail of another model (`/health` without `model 2`) fails loudly and nothing is written
+// answer is the sender's waker; a mail of another model (`/health` without `model 3`) fails loudly and nothing is written
 // or queued; the first run hands the local waits of model 1 over to the mail and cleans the thread states (4b step 5);
 // after an outage the mail's answer replaces the backup (3c).
 import { test } from 'node:test';
@@ -15,7 +15,7 @@ import { MAIL_STATE_FIELDS } from '../scripts/comms-migrate.mjs';
 
 const STUB = path.join(PLUGIN_ROOT, 'tests', 'fixtures', 'comms-stub.mjs');
 const skipMail = commsClient() ? false : 'agentic-comms not found next to the plugin (AGENTIC_COMMS_DIR)';
-const MISMATCH = 'comms model ? ≠ 2: update mail and workflow together';
+const MISMATCH = 'comms model ? ≠ 3: update mail and workflow together';
 
 function stubbed(state = {}) {
   const fx = setup();
@@ -161,9 +161,9 @@ test('a mail of another model fails loudly: nothing is written or queued, the st
     assert.deepEqual([...new Set(fx.stub.calls().map((a) => a[0]))], ['health']);
     assert.deepEqual(fx.stub.get().sends, []);
     assert.ok(!fs.existsSync(path.join(fx.brain, 'local', 'outbox')) || !fs.readdirSync(path.join(fx.brain, 'local', 'outbox')).length);
-    fx.stub.set({ model: 3 });
+    fx.stub.set({ model: 2 });
     fs.rmSync(path.join(fx.brain, 'local', 'comms'), { recursive: true, force: true });
-    assert.match(fx.run('comms.mjs', ['status']).stdout, /^service: comms model 3 ≠ 2: update mail and workflow together$/m);
+    assert.match(fx.run('comms.mjs', ['status']).stdout, /^service: comms model 2 ≠ 3: update mail and workflow together$/m);
   } finally { fx.cleanup(); }
 });
 

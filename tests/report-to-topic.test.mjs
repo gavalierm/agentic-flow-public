@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
 
-// Fake mail client of mail model 2: records each call, a send to `work-topic` or to the maintainer thread (--maintainer) is
+// Fake mail client of mail model 3: records each call, a send to `work-topic` or to the maintainer thread (--maintainer) is
 // delivered, any other topic is held.
 const FAKE = `
 const fs = require('node:fs');
@@ -15,7 +15,7 @@ const a = process.argv.slice(2);
 const input = a.includes('-') ? fs.readFileSync(0, 'utf8') : '';
 fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify({ a, input }) + '\\n');
 const topic = a.includes('--maintainer') ? 'maintainer' : a[a.indexOf('--topic') + 1];
-if (a[0] === 'health') process.stdout.write(JSON.stringify({ ok: true, instance_id: 'fake', model: 2 }));
+if (a[0] === 'health') process.stdout.write(JSON.stringify({ ok: true, instance_id: 'fake', model: 3 }));
 else if (a[0] === 'send') {
   const ok = topic === 'work-topic' || topic === 'maintainer';
   process.stdout.write(JSON.stringify(ok ? { id: 'm-' + topic, status: 'pending' } : { id: 'm-held', status: 'held', notice_id: 'n1' }));

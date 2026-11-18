@@ -9,6 +9,7 @@
 // --persona: the repository (remote and directory) must be named agent-<name>.
 // --attach makes the git hooks executable; hooks git keeps as 100644 (a brain made on Windows) get 100755 in a brain
 // script commit, so the brain stays clean. project.mjs connect and restore attach their brain the same way.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -67,6 +68,11 @@ export function brainInit(target, { attach = false, adopt = false, remote = null
   if (!isRepo) {
     if (exists(brainDir) && fs.readdirSync(brainDir).length) throw new Error(`${brainDir} exists and is not empty`);
     copyDir(template, brainDir, { filter: (p) => path.basename(p) !== 'README.md' || path.dirname(p) === template });
+    // Mail model 3: the brain's own id (scripts/brain-id.mjs); random, so a copy of the template is another brain.
+    const policyFile = dataPath(brainDir, 'policy');
+    const policy = exists(policyFile) ? JSON.parse(fs.readFileSync(policyFile, 'utf8')) : {};
+    fs.mkdirSync(path.dirname(policyFile), { recursive: true });
+    fs.writeFileSync(policyFile, `${JSON.stringify({ ...policy, brain_id: crypto.randomBytes(6).toString('hex') }, null, 2)}\n`);
     const init = git(['init', '--quiet', '-b', 'main'], { cwd: brainDir });
     if (!init.ok) throw new Error(`git init failed: ${init.stderr}`);
     created.push('repository');

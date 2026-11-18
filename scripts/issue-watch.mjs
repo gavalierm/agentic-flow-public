@@ -6,7 +6,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { loadContext, machineName } from './config.mjs';
-import { runClient, commsProjectName, isMainTopic } from './comms.mjs';
+import { runClient, commsProjectName, isMainTopic, formatAddress } from './comms.mjs';
+import { brainId } from './brain-id.mjs';
 import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh, readToken } from './github.mjs';
 import { heldTopics } from './topic.mjs';
 import { readJson, nowIso, toPosix } from './util.mjs';
@@ -75,9 +76,14 @@ export function recordIssue(ctx, issue, env = process.env) {
   const now = nowIso();
   const key = issueKey(issue.slug, issue.number);
   const mailProject = commsProjectName(ctx);
+  // Mail model 3: the reporter's brain (its topic is brain + project + topic); a record without it is sent to the bare
+  // address, which the mail resolves to the sender's own brain first.
+  let brain = null;
+  try { brain = ctx.brainDir ? brainId(ctx.brainDir) : null; } catch { brain = null; }
+  const topicProject = held.length && !isMainTopic(held[0]) && typeof held[0].project === 'string' && held[0].project ? held[0].project : null;
   const rec = updateIssue(base, key, {
     url: issue.url, repo: issue.slug, number: issue.number, issue_id: issue.id || null, reporter_login: issue.login || null,
-    own_comment_ids: [], topic, thread: ctx.thread || null, machine: machineName(env),
+    own_comment_ids: [], topic, ...(topicProject ? { topic_project: topicProject } : {}), brain, thread: ctx.thread || null, machine: machineName(env),
     persona_main: ctx.persona ? `@${mailProject}/main` : null, mail_project: mailProject,
     last_comment_id: 0, last_checked_at: now, etag: null, state: 'open', status: 'waiting', undelivered: null, created_at: now,
   });
@@ -122,12 +128,16 @@ function tokenOf(env) {
 }
 const shortPath = (p, env) => toPosix(p).replace(toPosix(env.HOME || os.homedir()), '~');
 
-/** Mail address of a record: its topic, `main` = the persona main thread; none without topic and persona. */
+/**
+ * Mail address of a record: its topic (mail model 3: `--to <brain>:<project>/<topic>` when the record names its brain),
+ * `main` = the persona main thread; none without topic and persona.
+ */
 function addressArgs(rec, { fallback = false } = {}) {
   const persona = /^@([^/]+)/.exec(rec.persona_main || '')?.[1] || null;
   if (fallback || !rec.topic) return persona ? ['--persona', persona] : null;
   if (rec.topic === 'main') return ['--persona', rec.mail_project];
-  return ['--project', rec.mail_project, '--topic', rec.topic];
+  const project = rec.topic_project || rec.mail_project;
+  return rec.brain ? ['--to', formatAddress({ brain: rec.brain, project, topic: rec.topic })] : ['--project', project, '--topic', rec.topic];
 }
 
 export function ringText(rec, { comments = [], state = null }) {

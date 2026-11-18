@@ -13,7 +13,7 @@ import { pathToFileURL } from 'node:url';
 import { readJson } from './util.mjs';
 import { dataPath } from './layout.mjs';
 import { writeThreadState } from './config.mjs';
-import { commsSettings, modelMismatch } from './comms.mjs';
+import { commsSettings, modelMismatch, clientIdentity } from './comms.mjs';
 
 export const MODEL2_MARKER = 'model-2.json';
 /** Thread-state fields of model 1 that held the state of a message (3a). */
@@ -91,7 +91,7 @@ export function adoptWaits(ctx, items, s = commsSettings(ctx)) {
   const cfg = { config: s.configFile || undefined, instance: s.instance || undefined, outbox: s.outbox || undefined, clientDir: s.clientDir || undefined, timeout: s.waitMs };
   const r = spawnSync(process.execPath, ['--input-type=module', '-e', ADOPT, pathToFileURL(lib).href, JSON.stringify(cfg), JSON.stringify(items)], {
     cwd: ctx.projectDir, encoding: 'utf8', timeout: s.waitMs * Math.max(1, items.length) + 3000,
-    env: { ...process.env, COMMS_THREAD_ID: '' },
+    env: { ...process.env, ...clientIdentity(ctx).env, COMMS_THREAD_ID: '' },
   });
   try { return JSON.parse(String(r.stdout || '').trim()); } catch { return { error: (r.stderr || '').trim().split('\n').pop() || `exit ${r.status}` }; }
 }

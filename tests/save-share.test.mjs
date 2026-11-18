@@ -42,5 +42,10 @@ test('share: the saved skill goes into the other brain by a checked commit, push
     // The same again: nothing to commit.
     r = fx.run('save.mjs', ['share', 'demo-steps', '--to', peer.brain]);
     assert.equal(r.status, 0, r.out); assert.match(r.out, /nothing to share/);
+    // Shared from the thread of a topic: the copy names that topic as its developer (a report on it reaches that thread).
+    assert.equal(fx.run('topic.mjs', ['create', 'skill-dev', '--subject', 'S', '--class', 'ops']).status, 0);
+    r = fx.run('save.mjs', ['share', 'demo-steps', '--to', peer.brain]);
+    assert.equal(r.status, 0, r.out); assert.match(r.out, /developed_in [0-9a-f]{12}:[^ ]+\/skill-dev/);
+    assert.match(peer.read(path.join(rel, 'SKILL.md')), /^developed_in: "?[0-9a-f]{12}:[^\n"]+\/skill-dev"?$/m);
   } finally { fx.cleanup(); peer.cleanup(); }
 });

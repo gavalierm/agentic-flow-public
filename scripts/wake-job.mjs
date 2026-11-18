@@ -11,6 +11,7 @@ import { commsSettings, machineMailFile } from './comms.mjs';
 import { JOB_NAME } from './issue-watch.mjs';
 import { overviewIntervalMs } from './overview.mjs';
 import { PLUGIN_ROOT, readJson, toPosix } from './util.mjs';
+import { machineName } from './config.mjs';
 
 const DEFAULT_INTERVAL_S = 900;
 
@@ -108,7 +109,19 @@ export function ensureOverviewJob(ctx, { env = process.env, pluginRoot = PLUGIN_
   return ensureJob(ctx, { name: OVERVIEW_JOB, command, interval_ms: overviewIntervalMs(ctx.policy) }, { env, platform });
 }
 
-/** Merge `job` into the wake configuration of this machine (see ensureIssueWatchJob). */
+/** Machine name as the mail normalizes it (agentic-comms normalizeMachine): wake.json `machine` is compared in this form. */
+export const mailMachine = (name) => (name == null || name === '' ? null : String(name).trim().toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '') || null);
+
+/**
+ * Mail model 3: the wake of this machine has the machine of the workflow (machineName(), the one source; the client gets
+ * it as COMMS_MACHINE), so the topic records, the turns and the wake name the same machine. Null: `machine` is right.
+ */
+function wakeMachineFix(wake, env) {
+  const want = machineName(env);
+  return mailMachine(wake?.machine) === mailMachine(want) ? null : want;
+}
+
+/** Merge `job` into the wake configuration of this machine (see ensureIssueWatchJob); it also sets `machine` (model 3). */
 export function ensureJob(ctx, job, { env = process.env, platform = process.platform } = {}) {
   const { file, instance, configFile, config } = wakeFile(ctx, env);
   const home = toPosix(env.HOME || os.homedir());
@@ -118,19 +131,23 @@ export function ensureJob(ctx, job, { env = process.env, platform = process.plat
     // The wake of this mail config reads the jobs from this file; it is the operator's (key, url): never written here.
     const cfgShown = toPosix(configFile).replace(home, '~');
     const p = jobPlan(Array.isArray(config?.wake?.jobs) ? config.wake.jobs : [], job);
-    if (p.what === 'same') return { changed: false, line: `wake job ${job.name}: already in ${cfgShown} (wake.jobs)` };
-    if (p.what === 'kept') return { changed: false, line: `wake job ${job.name}: kept in ${cfgShown} (wake.jobs; its script ${toPosix(p.script).replace(home, '~')} exists)` };
+    const own = path.resolve(configFile) === path.resolve(machineMailFile(env));
+    const machine = own ? wakeMachineFix(config?.wake, env) : null;
+    if (p.what === 'same' && !machine) return { changed: false, line: `wake job ${job.name}: already in ${cfgShown} (wake.jobs)` };
+    if (p.what === 'kept' && !machine) return { changed: false, line: `wake job ${job.name}: kept in ${cfgShown} (wake.jobs; its script ${toPosix(p.script).replace(home, '~')} exists)` };
     // The machine config is the workflow's own file (project.mjs mail-machine): its wake.jobs are written here, one job
     // per name for the machine (doma-pc 2026-11-18: written by hand, and overview-<project> per project collided).
-    if (path.resolve(configFile) === path.resolve(machineMailFile(env))) {
+    if (own) {
       const wake = config?.wake && typeof config.wake === 'object' ? config.wake : {};
       const jobs = Array.isArray(wake.jobs) ? wake.jobs : [];
-      const next = { ...config, wake: { ...wake, jobs: p.i === -1 ? [...jobs, job] : jobs.map((j, k) => (k === p.i ? { ...j, ...job } : j)) } };
+      const merged = p.what === 'same' || p.what === 'kept' ? jobs : p.i === -1 ? [...jobs, job] : jobs.map((j, k) => (k === p.i ? { ...j, ...job } : j));
+      const next = { ...config, wake: { ...wake, ...(machine ? { machine } : {}), jobs: merged } };
       const tmp = `${configFile}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
       try { fs.chmodSync(tmp, 0o600); } catch { /* Windows */ }
       fs.renameSync(tmp, configFile);
-      return { changed: true, line: `wake job ${job.name}: ${p.i === -1 ? 'added to' : 'updated in'} ${cfgShown} (wake.jobs, every ${intervalS} s); the wake reads the jobs at its start: restart it (wake.mjs install --config ${cfgShown})` };
+      const what = p.what === 'same' || p.what === 'kept' ? `machine ${machine} set in` : `${p.i === -1 ? 'added to' : 'updated in'}`;
+      return { changed: true, line: `wake job ${job.name}: ${what} ${cfgShown} (wake.jobs, every ${intervalS} s${machine ? `; wake.machine ${machine}` : ''}); the wake reads the jobs at its start: restart it (wake.mjs install --config ${cfgShown})` };
     }
     return { changed: false, line: `wake job ${job.name}: the mail config is the file ${cfgShown} (a wake started with --config reads its "wake": {"jobs": [...]}, not wake.json): nothing written; ${p.what === 'add' ? 'add' : 'replace the job of that name with'} this job in that list and restart wake: ${JSON.stringify(job)}` };
   }
@@ -142,10 +159,12 @@ export function ensureJob(ctx, job, { env = process.env, platform = process.plat
   }
   const jobs = Array.isArray(data.jobs) ? data.jobs : [];
   const { i, what, script, cur } = jobPlan(jobs, job);
-  if (what === 'same') return { changed: false, line: `wake job ${job.name}: already in ${shown}` };
+  const machine = wakeMachineFix(data, env);
+  if (what === 'same' && !machine) return { changed: false, line: `wake job ${job.name}: already in ${shown}` };
   // Another plugin clone of this machine (stable, a dev clone) put its job there: one job checks all projects, so it stays.
-  if (what === 'kept') return { changed: false, line: `wake job ${job.name}: kept in ${shown} (its script ${toPosix(script).replace(home, '~')} exists; every ${Math.round(Number(cur.interval_ms) / 1000) || '?'} s)` };
-  const next = { ...data, jobs: i === -1 ? [...jobs, job] : jobs.map((j, k) => (k === i ? { ...j, ...job } : j)) };
+  if (what === 'kept' && !machine) return { changed: false, line: `wake job ${job.name}: kept in ${shown} (its script ${toPosix(script).replace(home, '~')} exists; every ${Math.round(Number(cur.interval_ms) / 1000) || '?'} s)` };
+  const merged = what === 'same' || what === 'kept' ? jobs : i === -1 ? [...jobs, job] : jobs.map((j, k) => (k === i ? { ...j, ...job } : j));
+  const next = { ...data, ...(machine ? { machine } : {}), jobs: merged };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
   // The rename puts a new file in place: keep the permission bits of the old one (the instance's wake.json is 0600),
@@ -154,5 +173,6 @@ export function ensureJob(ctx, job, { env = process.env, platform = process.plat
   fs.writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode });
   fs.chmodSync(tmp, mode);
   fs.renameSync(tmp, file);
-  return { changed: true, line: `wake job ${job.name}: ${i === -1 ? 'added to' : 'updated in'} ${shown} (every ${intervalS} s; wake restarts on the change)` };
+  const done = what === 'same' || what === 'kept' ? `machine ${machine} set in` : i === -1 ? 'added to' : 'updated in';
+  return { changed: true, line: `wake job ${job.name}: ${done} ${shown} (every ${intervalS} s${machine ? `; machine ${machine}` : ''}; wake restarts on the change)` };
 }

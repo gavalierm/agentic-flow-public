@@ -11,7 +11,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh } from './github.mjs';
 import { recordIssue } from './issue-watch.mjs';
-import { commsSettings, runClient, parseAddress, markMaintainerMail, MAIL_FIX } from './comms.mjs';
+import { commsSettings, runClient, parseAddress, formatAddress, addressArgs, ambiguousLine, markMaintainerMail, MAIL_FIX } from './comms.mjs';
 import { PLUGIN_ROOT, toPosix } from './util.mjs';
 import { channelOf } from './config.mjs';
 import { parseFrontmatter, asList } from './frontmatter.mjs';
@@ -209,13 +209,15 @@ export function mailTopicReport(ctx, text, to) {
   const s = commsSettings(ctx);
   if (!s.enabled) return { ok: false, why: `mail not configured (${s.reason || 'off'})` };
   const addr = parseAddress(to, s.project);
-  if (!addr || addr.persona) return { ok: false, why: `bad topic address ${to} (use [<project>/]<topic>)` };
-  const res = runClient(ctx, ['send', '--text', '-', '--level', 'assist', '--project', addr.project, '--topic', addr.topic], { input: text });
-  if (!res.ok) return { ok: false, why: `mail to ${to} ${res.error || 'failed'}` };
+  if (!addr || addr.persona) return { ok: false, why: `bad topic address ${to} (use [<brain>[@<machine>]:]<project>/<topic> or [<project>/]<topic>)` };
+  // Mail model 3: a brain-qualified address (developed_in of a shared skill) goes as the client's --to; a bare one is
+  // resolved by the mail (own brain first, else the one brain that has the topic open).
+  const res = runClient(ctx, ['send', '--text', '-', '--level', 'assist', ...addressArgs(addr)], { input: text });
+  if (!res.ok) return { ok: false, why: ambiguousLine(res) || `mail to ${to} ${res.error || 'failed'}` };
   const d = res.data || {};
   if (d.queued) return { ok: false, why: `mail to ${to} unavailable (queued in the outbox)`, queued: d.id || null };
-  if (d.status !== 'pending' || !d.id) return { ok: false, why: `topic ${addr.project}/${addr.topic} not reachable by mail (message ${d.status || '?'})`, notice: d.status === 'held' ? d.notice_id || null : null };
-  return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${addr.project}/${addr.topic}` };
+  if (d.status !== 'pending' || !d.id) return { ok: false, why: `topic ${formatAddress(addr)} not reachable by mail (message ${d.status || '?'})`, notice: d.status === 'held' ? d.notice_id || null : null };
+  return { ok: true, id: d.id, expires_at: d.expires_at || null, to: `${formatAddress(addr)}${d.resolved ? ` (${d.resolved})` : ''}` };
 }
 
 /** The heading of the operator's tasks in the handover (spec 7.4, 7.5; the section B2 adds to save handover). */

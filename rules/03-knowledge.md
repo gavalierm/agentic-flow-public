@@ -5,7 +5,7 @@ A: presnú vedomosť zapíš hneď: fakt o subjekte → pamäť agenta, o člove
 Do brain zapisuj iba cez `workflow:save`; Write a Edit do `<brain>` sú zakázané. „Ulož“ s cieľom, „zapamätaj si“, „volám sa“ → `save` hneď; bez cieľa navrhni cieľ a ulož po potvrdení.
 
 ### P-003: Chyba sa stáva skillom
-Po chybe oprav, nájdi funkčný postup a ulož ho cez `workflow:error` (skill, pri správaní pravidlo) s riadkom „nie <zlý spôsob>, lebo <prečo>“. Pred novým skillom `find`; existujúci dopĺňaj. Poučenie z práce domény patrí do brainu domény, supervisora do jeho brainu. Chybu workflow či pošty NEOPRAVUJ: lokálne poučenie (ako ju obísť) ulož do brainu domény a nahlás ju správcovi workflow (`workflow:error`), aj opravenú.
+Po chybe oprav, nájdi funkčný postup a ulož ho cez `workflow:error` (skill, pri správaní pravidlo) s riadkom „nie <zlý spôsob>, lebo <prečo>“. Pred novým skillom `find`; existujúci dopĺňaj. Poučenie z práce domény patrí do brainu domény, supervisora do jeho brainu. Chybu workflow či pošty NEOPRAVUJ: lokálne poučenie (ako ju obísť) ulož do brainu domény a nahlás správcovi (`workflow:error`), aj opravenú.
 
 ### P-005: Opakovaný postup
 Postup s >3 krokmi bez skillu ide pri `done` do `procedures.log`; pri treťom výskyte (aj sekvencia, P-030) skill sám vytvor alebo doplň existujúci a oznám to jedným riadkom; súhlas operátora NEŽIADAJ. Zamietnutý postup sa znova nevytvára.

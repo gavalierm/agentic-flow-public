@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Mail for the main agent and read-only subagents (P-041, P-042, P-044, P-047, P-072). Thin wrapper over the comms client
-// of agentic-comms (mail model 2) with the project's configuration (scripts/comms.mjs); the message body is printed as data.
+// of agentic-comms (mail model 3) with the project's configuration (scripts/comms.mjs); the message body is printed as data.
 // The state of a message (pending, picked, waiting, done, ...) is the mail's alone (P-072): this command keeps no list of
 // picked messages, no reply wait and no timer bound to a message; what the thread owes and awaits is `obligations`.
 // Levels (2026-11-02): blocker | steer | assist; `info` is removed. The TTL is the pickup deadline (`receive`), not the answer.
@@ -13,18 +13,19 @@
 //   comms.mjs settle --id <id>[,<id>]                   a message of your mailbox answered another way: done without a reply (settled)
 //   comms.mjs ack --id <id>[,<id>]                      a picked message that needs no answer: done (acked); not after an interim answer
 //   comms.mjs withdraw --id <id>                        take back a message you sent that has no final answer (done, withdrawn)
-//   comms.mjs send --level blocker|steer|assist (--to [<project>/]<topic> | --to @<persona>/main | --maintainer | --to thread/<id> (maintainer only)) (--text "..." | --file <path>) [--ttl 5m|30m] [--from <held topic>] [--key <key>]
+//   comms.mjs send --level blocker|steer|assist (--to [<brain>[@<machine>]:]<project>/<topic> | [<project>/]<topic> | --to @<persona>/main | --maintainer | --to thread/<id> (maintainer only)) (--text "..." | --file <path>) [--ttl 5m|30m] [--from <held topic>] [--key <key>]
 //   comms.mjs send --reply-to <id> --state hotovo|otázka|čakám [--wait-for "<what>"] [--cancels <id of your final reply>] [--text ...]
 //                                                       the answer with its state (P-061), one operation of the mail (resolve): one final
 //                                                       `hotovo` per message, a reply is never answered; --cancels replaces your final reply
-//   comms.mjs notices [--all] | decide --notice <id> --decision <id> [--target <project>/<topic>]
+//   comms.mjs notices [--all] | decide --notice <id> --decision <id> [--target [<brain>[@<machine>]:]<project>/<topic>]
 //   comms.mjs register [<topic>]                        idempotent registration of held topics in the mail service
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, fail, readStdin, localTime, toPosix } from '../scripts/util.mjs';
-import { loadContext, inSubagent, readThreadState, writeThreadState, mainCheckout, resolveDomain } from '../scripts/config.mjs';
-import { commsSettings, commsProjectName, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, isMainTopic, categoryLabel, LEVELS, dropNoticesCache, readObligations, ageText, supervisorOf, fromSupervisor, threadMailBrain, machineMailFile } from '../scripts/comms.mjs';
-import { readTopic, readTopicRecord, mailboxTopics, heldTopics, heldBy, topicMailProject, listTopics } from '../scripts/topic.mjs';
+import { loadContext, inSubagent, readThreadState, writeThreadState } from '../scripts/config.mjs';
+import { commsSettings, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, formatAddress, addressArgs, resolvedNote, ambiguousLine, topicProject, isMainTopic, categoryLabel, LEVELS, dropNoticesCache, readObligations, ageText, supervisorOf, fromSupervisor, threadMailBrain, machineMailFile } from '../scripts/comms.mjs';
+import { readTopic, mailboxTopics, heldTopics, heldBy, topicMailProject } from '../scripts/topic.mjs';
+import { brainId, brainName } from '../scripts/brain-id.mjs';
 import { readHolder, isHolderOf } from '../scripts/brain.mjs';
 import { validWaker, TIMER_CMD } from '../scripts/waker.mjs';
 import { STATES } from '../scripts/protocol.mjs';
@@ -32,7 +33,7 @@ import { markProgress } from '../scripts/topic-turn.mjs';
 import { LAYOUT, dataPath } from '../scripts/layout.mjs';
 
 const FINAL_STATE = STATES[0];
-/** Final statuses of a message in the mail (model 2, 1a): a 409 with one of them means it is already settled. */
+/** Final statuses of a message in the mail (1a): a 409 with one of them means it is already settled. */
 const FINAL_STATUSES = ['done', 'discarded', 'superseded', 'undelivered'];
 /** State of a reply; one sent without a state (a client from before reply states) is final. */
 const replyStateOf = (m) => (STATES.includes(m.reply_state) ? m.reply_state : FINAL_STATE);
@@ -46,69 +47,23 @@ function guardMain(action) {
   if (inSubagent()) fail(`comms ${action} refused in subagent: only the main agent communicates; subagents only read (P-025)`);
 }
 
-/**
- * Mail project of the brain's own project, where a topic without a recorded project lives (D-0035): a persona brain is its
- * own project (`alice`, also for a thread of its topic in another project); another brain keeps the session's project.
- */
-function brainHomeProject(brainDir, sessionProject) {
-  try {
-    const home = loadContext({ project: mainCheckout(brainDir), requireBrain: false });
-    if (home.persona && home.brainDir && path.resolve(home.brainDir) === path.resolve(mainCheckout(brainDir))) return commsProjectName(home);
-  } catch { /* not a project of its own */ }
-  return sessionProject;
-}
-
-/**
- * Open work topics of this brain with the id of `addr` registered in a project other than `addr.project` (a topic without
- * a recorded project is in the brain's own project, D-0035), as mail addresses `<project>/<topic>`. Both directions of a
- * wrong project (`alice/<topic of agentic-flow>`, `agentic-flow/<topic of alice>`) use this one check. Only for an address
- * in a project of this persona (its own project, the session's or one its topics name): a topic of another persona's
- * project with the same id is not ours to judge.
- */
-function topicElsewhere(brainDir, addr, sessionProject) {
-  const home = brainHomeProject(brainDir, sessionProject);
-  const topics = listTopics(brainDir).filter((t) => !isMainTopic(t));
-  const mailProject = (t) => (typeof t.project === 'string' && t.project ? t.project : home);
-  if (!new Set([home, sessionProject, ...topics.map(mailProject)]).has(addr.project)) return [];
-  if (topics.some((t) => t.id === addr.topic && mailProject(t) === addr.project)) return [];
-  return [...new Set(topics.filter((t) => t.id === addr.topic).map(mailProject))].map((project) => `${project}/${addr.topic}`);
-}
-
-/**
- * The address names the brain repo of another domain (`<domain brain>/<topic>`) and that brain records the topic under its
- * mail project (topic create, report-3c65fd98): the mail address `<project>/<topic>`, else null. Only a recorded project
- * decides; the domains are the siblings of this project's domain.
- */
-function topicInOtherBrain(ctx, addr) {
-  if (!addr?.project || !addr.topic || /[\\/]/.test(addr.project) || addr.project.startsWith('.')) return null;
-  let domain = null;
-  try { domain = resolveDomain(mainCheckout(ctx.projectDir), undefined, { field: false }); } catch { return null; }
-  if (!domain?.root) return null;
-  const root = path.dirname(domain.root);
-  let entries = [];
-  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return null; }
-  for (const e of entries) {
-    if (!e.isDirectory() || e.name.startsWith('.')) continue;
-    const dir = path.join(root, e.name, addr.project);
-    if (!fs.existsSync(dir) || (ctx.brainDir && path.resolve(dir) === path.resolve(ctx.brainDir))) continue;
-    let t = null;
-    try { t = readTopicRecord(dir, addr.topic); } catch { t = null; }
-    if (t && typeof t.project === 'string' && t.project && t.project !== addr.project) return `${t.project}/${addr.topic}`;
-  }
-  return null;
-}
-
 /** Topic record with its kind (topic main reads `@<persona>/main`); a topic without a record keeps only its id. */
 function topicOf(ctx, id) {
   const t = ctx.brainDir ? readTopic(ctx.brainDir, id) : null;
   return { ...(t || {}), id, state: t?.state || 'working' };
 }
 
+/** This brain's id, or null when it cannot be told (the client call that needs it says why). */
+function ownBrainId(ctx) {
+  try { return brainId(ctx.brainDir); } catch { return null; }
+}
+
 function queries(ctx) {
   if (args.topic) {
     const t = readTopic(ctx.brainDir, String(args.topic));
-    if (isMainTopic(t)) return [{ persona: commsSettings(ctx).project, thread: ctx.thread }];
-    return [{ project: commsSettings(ctx).project, topic: String(args.topic), thread: ctx.thread }];
+    const s = commsSettings(ctx);
+    if (isMainTopic(t)) return [{ persona: s.project, thread: ctx.thread }];
+    return [{ project: topicProject(s, t), topic: String(args.topic), thread: ctx.thread }];
   }
   return mailQueries(ctx, mailboxTopics(ctx));
 }
@@ -173,7 +128,7 @@ function cmdStatus(ctx) {
   const h = runClient(ctx, ['health']);
   out(h.ok ? `service: ok (instance_id ${h.data.instance_id}, version ${h.data.version || '?'}, model ${h.data.model ?? '?'})` : `service: ${h.error}`);
   const hd = mailboxTopics(ctx);
-  out(`mailbox: ${hd.length ? hd.map((t) => `${s.project}/${t.id}`).join(', ') : '(no held topic)'}${ctx.thread ? ` + replies to thread ${ctx.thread}` : ''}`);
+  out(`mailbox: ${hd.length ? hd.map((t) => `${topicProject(s, t)}/${t.id}`).join(', ') : '(no held topic)'}${ctx.thread ? ` + replies to thread ${ctx.thread}` : ''}`);
   if (h.model) return;
   // What the thread owes and awaits is the mail's (P-072); during an outage the client's last answer, marked offline.
   const res = readObligations(ctx, { held: hd });
@@ -345,7 +300,7 @@ const SEND_SUGGEST = { body: 'text', message: 'text', category: 'level', kind: '
 function cmdSend(ctx) {
   guardMain('send');
   const unknown = Object.keys(args).filter((k) => k !== '_' && !SEND_OPTIONS.includes(k));
-  if (unknown.length) fail(`comms send: unknown option ${unknown.map((k) => `--${k}${SEND_SUGGEST[k] ? ` (use --${SEND_SUGGEST[k]})` : ''}`).join(', ')}; nothing sent (usage: send --level blocker|steer|assist --to [<project>/]<topic> | --maintainer --text "..." | --file <path>; reply: send --reply-to <id> --state hotovo|otázka|čakám --text "...")`);
+  if (unknown.length) fail(`comms send: unknown option ${unknown.map((k) => `--${k}${SEND_SUGGEST[k] ? ` (use --${SEND_SUGGEST[k]})` : ''}`).join(', ')}; nothing sent (usage: send --level blocker|steer|assist --to [<brain>[@<machine>]:]<project>/<topic> | [<project>/]<topic> | --maintainer --text "..." | --file <path>; reply: send --reply-to <id> --state hotovo|otázka|čakám --text "...")`);
   const replyTo = args['reply-to'] !== undefined && args['reply-to'] !== true ? String(args['reply-to']) : null;
   let level = args.level === true ? undefined : args.level;
   // A reply names its state (P-061), with no default: a reply sent as final by default was the fault (2026-11-11).
@@ -410,36 +365,31 @@ function cmdSend(ctx) {
     const addr = parseAddress(args.to || args.topic, s.project);
     // D-0035: a bare topic of this brain created for another project (--project) lives there in the mail service.
     if (addr?.topic && !String(args.to || args.topic).includes('/') && ctx.brainDir) addr.project = topicMailProject(ctx.brainDir, addr.topic) || addr.project;
-    if (!addr) fail('usage: comms.mjs send --level <level> --to [<project>/]<topic> | @<persona>/main | --maintainer --text "..."  |  --reply-to <id>');
-    // The topic of this persona lives in another of its projects: the sender's address error is not an unregistered topic
-    // for the operator to decide (P-045, P-046); name the right address and send nothing (2026-11-14: alice/data-migrate
-    // was held while the topic ran as agentic-flow/data-migrate, and agentic-flow/workflow-dev while it ran as maintainer/workflow-dev).
-    if (addr.topic && ctx.brainDir) {
-      const elsewhere = topicElsewhere(ctx.brainDir, addr, s.project);
-      if (elsewhere.length === 1) fail(`topic ${addr.topic} is ${elsewhere[0]}: send to ${elsewhere[0]}; nothing sent`);
-      if (elsewhere.length > 1) fail(`topic ${addr.topic} is ${elsewhere.join(', ')}: send to one of ${elsewhere.join(', ')}; nothing sent`);
-      const other = elsewhere.length ? null : topicInOtherBrain(ctx, addr);
-      if (other) fail(`topic ${addr.topic} is ${other} (${addr.project} is the brain repo, not its mail project): send to ${other}; nothing sent`);
-    }
+    if (!addr) fail('usage: comms.mjs send --level <level> --to [<brain>[@<machine>]:]<project>/<topic> | [<project>/]<topic> | @<persona>/main | --maintainer --text "..."  |  --reply-to <id>');
+    // Mail model 3: a topic of another brain is the mail's to resolve (own brain first, else the one open elsewhere, more:
+    // 409 with the addresses); the address names the brain (`<brain>[@<machine>]:<project>/<topic>`) when it matters.
     if (addr.persona) {
-      clientArgs.push('--persona', addr.persona);
       destination = `@${addr.persona}/main`;
     } else {
       // A message to a topic this thread holds lands back in this thread: the work belongs here, not in the mail
       // (alice 2026-11-02: an error report to maintainer/workflow-dev woke its own sender).
-      if (addr.project === s.project && ctx.brainDir && ctx.thread && heldTopics(ctx.brainDir, ctx.thread).some((t) => t.id === addr.topic)) {
+      const own = !addr.brain || (ctx.brainDir && [ownBrainId(ctx), brainName(ctx.brainDir)].includes(addr.brain));
+      if (own && ctx.brainDir && ctx.thread && heldTopics(ctx.brainDir, ctx.thread).some((t) => t.id === addr.topic && topicProject(s, t) === addr.project)) {
         fail(`this thread holds ${addr.project}/${addr.topic}: the message would come back to you; handle it here instead of sending it (P-041)`);
       }
-      clientArgs.push('--project', addr.project, '--topic', addr.topic);
-      destination = `${addr.project}/${addr.topic}`;
+      destination = formatAddress(addr);
     }
+    clientArgs.push(...addressArgs(addr));
   }
   // TTL is the pickup deadline (service defaults and maxima: blocker 5m, steer 5m, assist 30m; a shorter --ttl only).
   if (args.ttl !== undefined && args.ttl !== true) clientArgs.push('--ttl', String(args.ttl));
   if (key) clientArgs.push('--supersede-key', key);
   const from = fromTopic(ctx);
-  if (from) clientArgs.push('--from-project', s.project, '--from-topic', from);
-  const data = must(runClient(ctx, clientArgs, { input: String(text) }));
+  if (from) clientArgs.push('--from-project', topicProject(s, readTopic(ctx.brainDir, from)), '--from-topic', from);
+  const sent = runClient(ctx, clientArgs, { input: String(text) });
+  // 409 ambiguous (model 3): the topic is open in several brains; nothing was written, the line names each exact address.
+  if (!sent.ok && sent.data?.status === 409) { const line = ambiguousLine(sent); if (line) fail(line); }
+  const data = must(sent);
   // The reply to this message rings this thread; its session project may have no brain (another cwd next time): the
   // thread's state in this brain makes it the thread's mail home (threadMailBrain), also for the bell hook.
   if (ctx.brainDir && ctx.thread && !inSubagent()) { try { const st = readThreadState(ctx.brainDir, ctx.thread); writeThreadState(ctx.brainDir, ctx.thread, { ...st, mail_sent_at: new Date().toISOString() }); } catch { /* only a hint */ } }
@@ -447,7 +397,7 @@ function cmdSend(ctx) {
     out(`comms unavailable: message queued in <brain>/local/outbox and sent with the next successful call (${destination})`);
   } else {
     const sentLevel = data.level || level;
-    out(`sent ${data.id} (${sentLevel}) -> ${destination}${fromNote(ctx, from)}${data.status === 'held' ? `; topic not registered: held, operator notice ${data.notice_id} (new topic? / redirect, P-045)` : ''}`);
+    out(`sent ${data.id} (${sentLevel}) -> ${destination}${resolvedNote(data)}${fromNote(ctx, from)}${data.status === 'held' ? `; topic not registered: held, operator notice ${data.notice_id} (new topic? / redirect, P-045)` : ''}`);
   }
   // The server takes the message but nobody can pick it up now (persona without a main thread): say so at sending, not
   // 30 min later from the no-reply bell (5 of 5 such messages expired unread, audit M5 2026-11-11).
@@ -500,12 +450,18 @@ function cmdNotices(ctx) {
 
 function cmdDecide(ctx) {
   guardMain('decide');
-  if (!args.notice || !args.decision) fail('usage: comms.mjs decide --notice <id> --decision <id> [--target <project>/<topic>] (operator instruction only, P-046)');
+  if (!args.notice || !args.decision) fail('usage: comms.mjs decide --notice <id> --decision <id> [--target [<brain>[@<machine>]:]<project>/<topic>] (operator instruction only, P-046)');
   const a = ['decide', '--notice', String(args.notice), '--decision', String(args.decision)];
-  if (args.target) a.push('--target', String(args.target));
-  const data = must(runClient(ctx, a));
+  if (args.target) {
+    const t = parseAddress(String(args.target), commsSettings(ctx).project);
+    if (!t || t.persona) fail(`--target ${args.target}: use [<brain>[@<machine>]:]<project>/<topic>`);
+    a.push('--target', formatAddress(t));
+  }
+  const res = runClient(ctx, a);
+  if (!res.ok && res.data?.status === 409) { const line = ambiguousLine(res); if (line) fail(line.replace('nothing sent', 'nothing decided').replace(/--to /g, '--target ')); }
+  const data = must(res);
   dropNoticesCache(ctx);
-  out(`notice ${data.notice_id}: ${data.decision}${data.delivered_to ? ` -> ${data.delivered_to}` : ''}`);
+  out(`notice ${data.notice_id}: ${data.decision}${data.delivered_to ? ` -> ${data.delivered_to}` : ''}${resolvedNote(data)}`);
 }
 
 function cmdRegister(ctx) {
@@ -519,7 +475,7 @@ function cmdRegister(ctx) {
     if (!holder.thread) fail(`topic ${id} is not held: claim it first (topic.mjs claim ${id}, P-037)`);
     if (!isHolderOf(holder, ctx.thread)) fail(`topic ${id} is ${heldBy(holder)}, not this thread: claim it with topic.mjs claim ${id} (P-037) to register it here`);
     const r = registerTopic(ctx, id, { holder: holder.thread });
-    out(r.ok ? `registered ${r.project}/${r.topic} (holder ${r.holder || '-'}${r.created ? ', new' : ''})` : `not registered ${id}: ${r.reason}`);
+    out(r.ok ? `registered ${r.project}/${r.topic} (holder ${r.holder || '-'}${r.created ? ', new' : ''}${r.moved_from ? `, moved from ${r.moved_from}${r.moved?.length ? ` with ${r.moved.length} message(s)` : ''}` : ''})` : `not registered ${id}: ${r.reason}`);
   }
 }
 

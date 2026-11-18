@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Stub of the agentic-comms client of mail model 2 for workflow tests (WORKFLOW_COMMS_CLIENT). State in STUB_COMMS_STATE (JSON):
+// Stub of the agentic-comms client of mail model 3 for workflow tests (WORKFLOW_COMMS_CLIENT). State in STUB_COMMS_STATE (JSON):
 //   { messages: [{ id, level, topic?, reply_to?, ... }] (the pending inbox), down: bool,
-//     model: 2 (default; null: a mail without `model` in /health, e.g. 0.4.x; another number: another model),
+//     model: 3 (default; null: a mail without `model` in /health, e.g. 0.4.x; another number: another model),
 //     owed: [{ id, level, status: picked|waiting, ... }], awaiting: [{ id, to, level, status, wait_due_at, ... }],
 //     recent: [{ seq, kind, id, line }] (rows after --since), topics: { '<p>/<t>': { state, registered } } (obligations.topics),
 //     backup: { ... } (obligations while down: the client's backup, offline), by_topic: true (the inbox lists only the
@@ -19,7 +19,11 @@
 //     message[<message_id>].status to pending, a discard to discarded), decide_fail: true (decide exits 1), decide_expired: true (decide exits 1 with
 //     409 and details.expired_at: the held message expired), send_held_to: ['<p>/<t>' | '@<persona>', ...] (send to that
 //     address: held + notice), send_queued: true (mail unavailable: the client queued the send in its outbox, exit 0),
-//     key: '<key>' (key add answers it, default k-stub) }
+//     key: '<key>' (key add answers it, default k-stub),
+//     registers: [] (each register-topic: argv + who, appended), send_resolved: '<brain_name>@<machine>' (send answers
+//     resolved: a topic of another brain), send_ambiguous: ['<brain_name> (<brain>)@<machine>', ...] (send: 409 ambiguous) }
+// Model 3: `sends` and `registers` entries carry `who` { brain, brain_name, machine } (COMMS_BRAIN, COMMS_BRAIN_NAME,
+// COMMS_MACHINE of the call); `send --to [<brain>[@<machine>]:]<project>/<topic>` is the target as the real client takes it.
 // Every call is appended to STUB_COMMS_LOG as one JSON line (argv).
 import fs from 'node:fs';
 
@@ -34,7 +38,17 @@ const print = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 const save = () => fs.writeFileSync(file, JSON.stringify(state));
 const refuse = (status, error, details = undefined) => { process.stderr.write(JSON.stringify({ error, code: 'REJECTED', status, ...(details ? { details } : {}) }) + '\n'); process.exit(1); };
 const messages = state.messages || [];
-const model = state.model === undefined ? 2 : state.model;
+const model = state.model === undefined ? 3 : state.model;
+const who = { brain: process.env.COMMS_BRAIN || null, brain_name: process.env.COMMS_BRAIN_NAME || null, machine: process.env.COMMS_MACHINE || null };
+/** Target of a send: `--to [<brain>[@<machine>]:]<project>/<topic>` (model 3) or --project/--topic; `key` is `<project>/<topic>`. */
+const target = () => {
+  const to = opt('to');
+  if (!to) return { project: opt('project'), topic: opt('topic'), key: `${opt('project')}/${opt('topic')}` };
+  const [head, pt] = to.includes(':') ? to.split(':') : [null, to];
+  const [project, topic] = pt.split('/');
+  const [brain, machine] = head ? head.split('@') : [null, null];
+  return { brain, machine: machine || null, project, topic, key: `${project}/${topic}` };
+};
 const stdin = () => (argv.includes('-') ? fs.readFileSync(0, 'utf8') : null);
 
 if (state.down) {
@@ -48,10 +62,12 @@ if (state.down) {
 }
 
 switch (cmd) {
-  case 'health': print({ ok: true, instance_id: 'stub', version: model === 2 ? '0.5.0' : '0.4.21', ...(model == null ? {} : { model }) }); break;
+  case 'health': print({ ok: true, instance_id: 'stub', version: model === 3 ? '0.6.0' : model === 2 ? '0.5.0' : '0.4.21', ...(model == null ? {} : { model }) }); break;
   case 'key': print({ sender: opt('sender'), key: state.key || 'k-stub' }); break;
   case 'register-topic':
+    if (state.registers) { state.registers.push({ argv, who }); save(); }
     if (state.register_fail) { process.stderr.write(JSON.stringify({ error: 'comms unavailable' }) + '\n'); process.exit(2); }
+    if (!who.brain && !argv.includes('--main')) refuse(400, 'registrácia témy vyžaduje brain (X-Comms-Brain)');
     print({ created: true });
     break;
   case 'obligations': {
@@ -64,7 +80,7 @@ switch (cmd) {
       owed: state.owed || [], awaiting: state.awaiting || [], recent,
       cursor: Math.max(since, ...recent.map((r) => r.seq), 0),
       topics: topics.map((t) => { const [p, id] = t.split('/'); const rec = (state.topics || {})[t]; return { project: p, topic: id, registered: !!rec, state: rec ? rec.state || 'open' : null }; }),
-      server: { version: '0.5.0', model: 2, instance_id: 'stub' },
+      server: { version: '0.6.0', model: 3, instance_id: 'stub' },
       ...(state.wake ? { wake: state.wake } : {}),
     });
     break;
@@ -94,7 +110,7 @@ switch (cmd) {
     break;
   }
   case 'send':
-    if (state.sends) { state.sends.push({ argv, text: stdin() }); save(); }
+    if (state.sends) { state.sends.push({ argv, text: stdin(), who }); save(); }
     if (state.send_queued) { print({ queued: true, outbox_file: 'stub-outbox/1.json', message: 'comms unavailable; queued in the outbox' }); break; }
     if (state.send_fail) refuse(500, 'stub send failed');
     // send --maintainer (operator 2026-11-16): the server names the maintainer's T3 thread, or refuses with 404.
@@ -102,10 +118,11 @@ switch (cmd) {
       if (state.no_maintainer) refuse(404, 'na tomto serveri nie je nastavené vlákno správcu (instance.json maintainer.thread)');
       print({ id: state.send_id || 'm-sent', status: 'pending', level: opt('level'), to_thread: state.maintainer_thread || 'thread-maint', expires_at: '2026-11-01T12:30:00.000Z', wait_due_at: '2026-11-01T11:00:00.000Z' }); break;
     }
-    if ((state.send_closed_topic || []).includes(`${opt('project')}/${opt('topic')}`)) refuse(410, `téma ${opt('project')}/${opt('topic')} je uzavretá`);
-    if ((state.send_held_to || []).includes(opt('persona') ? `@${opt('persona')}` : `${opt('project')}/${opt('topic')}`)) { print({ id: `m-held-${(state.sends || []).length}`, status: 'held', notice_id: 'n-held', expires_at: '2026-11-01T12:30:00.000Z', project_known: true }); break; }
+    if (state.send_ambiguous) refuse(409, `adresa ${target().key} je nejednoznačná`, { error: 'ambiguous', ambiguous: state.send_ambiguous, project: target().project, topic: target().topic });
+    if ((state.send_closed_topic || []).includes(target().key)) refuse(410, `téma ${target().key} je uzavretá`);
+    if ((state.send_held_to || []).includes(opt('persona') ? `@${opt('persona')}` : target().key)) { print({ id: `m-held-${(state.sends || []).length}`, status: 'held', notice_id: 'n-held', expires_at: '2026-11-01T12:30:00.000Z', project_known: true }); break; }
     if (state.send_held) { print({ id: 'm-held', status: 'held', notice_id: 'n-1', expires_at: '2026-11-01T12:30:00.000Z', ...(state.project_known ? { project_known: true } : {}) }); break; }
-    print({ id: state.send_id || 'm-sent', status: 'pending', level: opt('level'), expires_at: opt('ttl') ? '2026-11-01T12:30:00.000Z' : null, wait_due_at: opt('level') === 'steer' ? null : '2026-11-01T11:00:00.000Z' }); break;
+    print({ id: state.send_id || 'm-sent', status: 'pending', level: opt('level'), expires_at: opt('ttl') ? '2026-11-01T12:30:00.000Z' : null, wait_due_at: opt('level') === 'steer' ? null : '2026-11-01T11:00:00.000Z', ...(state.send_resolved ? { resolved: state.send_resolved } : {}) }); break;
   case 'turn':
     if (state.turn === 'unknown') { process.stderr.write('unknown command: turn\n'); process.exit(1); }
     {
@@ -129,7 +146,7 @@ switch (cmd) {
       const m = (state.message || {})[n.message_id];
       if (m && opt('decision') === 'deliver') m.status = 'pending';
       if (m && opt('decision') === 'discard') m.status = 'discarded';
-      if (m && opt('decision') === 'redirect') { const [p, t] = String(opt('target') || '').split('/'); Object.assign(m, { status: 'pending', project: p, topic: t }); }
+      if (m && opt('decision') === 'redirect') { const [p, t] = String(opt('target') || '').split(':').pop().split('/'); Object.assign(m, { status: 'pending', project: p, topic: t }); }
       save();
     }
     print({ notice_id: opt('notice'), decision: opt('decision') });

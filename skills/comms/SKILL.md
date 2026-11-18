@@ -1,14 +1,14 @@
 ---
 name: comms
 description: Použi, keď stavový riadok ohlási čakajúce správy („mail: n waiting“), keď ťah začal zvončekom („you have mail in topic“, „no reply“, „undelivered“, „recipient closed“, „continue from handover“, „up“), alebo keď treba poslať správu inej téme či agentovi (blocker, steer, assist) alebo odpovedať.
-argument-hint: "count | list | receive --id <id> | message --id <id> | send --level blocker|steer|assist --to [<project>/]<topic>|@<persona>/main --text \"...\" [--ttl 5m] | send --reply-to <id> --state hotovo|otázka|čakám ... | settle --id <id> | ack --id <id> | withdraw --id <id> | notices | status"
+argument-hint: "count | list | receive --id <id> | message --id <id> | send --level blocker|steer|assist --to [<brain>[@<machine>]:]<project>/<topic>|[<project>/]<topic>|@<persona>/main --text \"...\" [--ttl 5m] | send --reply-to <id> --state hotovo|otázka|čakám ... | settle --id <id> | ack --id <id> | withdraw --id <id> | notices | status"
 ---
 
 # comms – pošta medzi témami (P-041, P-042, P-044, P-047, P-072)
 
 Skript: `node ${CLAUDE_PLUGIN_ROOT}/bin/comms.mjs` (konfiguráciu pošty rieši skript; `status` ukáže, či je zapnutá). Bez pošty skript skončí „comms off“ a nič nečaká.
 
-Stav správy vedie iba pošta (model 2, P-072): skript nedrží zoznam prevzatých správ, čakanie na odpoveď ani budík viazaný na správu. Čo dlhuješ (prevzaté bez konečnej odpovede, `owed`) a na čo čakáš (odoslané bez konečnej odpovede, `awaiting`, s ďalšou kontrolou pošty), ukáže `status` jedným volaním `obligations`. Odpoveď a vybavenie bez odpovede sú jedna operácia pošty (`resolve`), nie odpoveď a potom ack. Pošta iného modelu: skript skončí „comms model <n> ≠ 2: update mail and workflow together“ a nič nezapíše (P-073); daj operátorovi úlohu aktualizovať poštu a workflow spolu.
+Stav správy vedie iba pošta (model 3, P-072): skript nedrží zoznam prevzatých správ, čakanie na odpoveď ani budík viazaný na správu. Čo dlhuješ (prevzaté bez konečnej odpovede, `owed`) a na čo čakáš (odoslané bez konečnej odpovede, `awaiting`, s ďalšou kontrolou pošty), ukáže `status` jedným volaním `obligations`. Odpoveď a vybavenie bez odpovede sú jedna operácia pošty (`resolve`), nie odpoveď a potom ack. Pošta iného modelu: skript skončí „comms model <n> ≠ 3: update mail and workflow together“ a nič nezapíše (P-073); daj operátorovi úlohu aktualizovať poštu a workflow spolu.
 
 ## Budíček operátora („up“, „?“, „check“)
 Budíček znamená, že vlákno nezobudil žiadny zvonček ani časovač. Hook dá riadok „operator nudge“ s príkazom `node ${CLAUDE_PLUGIN_ROOT}/bin/nudge-why.mjs --thread <id> --transcript <súbor>`.
@@ -29,7 +29,7 @@ Hook dá jeden riadok `mail: <n> waiting: <id> <kategória>, …`. Kategória je
 3. Správy spracuj po reťazi jedného odosielateľa (prečítaj, odpovedz alebo vybav), až potom ďalšieho. Správy rôznych odosielateľov nemiešaj v jednom kontexte.
 
 ## Posielanie
-`send --level <úroveň> --to [<project>/]<topic> --text "..."` (dlhší text: `--file <cesta>` alebo stdin). Hlavné vlákno persony: `--to @<persona>/main`. Odosielateľ je prvá držaná téma (odpoveď: téma, ktorej prišiel originál); pri viacerých témach `--from <téma>`. Opakovanú správu (cron, skript) pošli s `--key <kľúč>`: nová správa s rovnakým kľúčom nahradí tvoju ešte neprevzatú v tej istej téme a operátorský oznam blockera vznikne až po neprevzatí v lehote. Úroveň určuješ podľa toho, ako ťa blokuje odpoveď (P-042):
+`send --level <úroveň> --to [<project>/]<topic> --text "..."` (dlhší text: `--file <cesta>` alebo stdin). Hlavné vlákno persony: `--to @<persona>/main`. Téma je brain + stroj + projekt + téma (model 3): adresa bez brainu je téma vlastného brainu, inak jediná otvorená téma iného brainu (riadok `resolved: <brain>@<stroj>`); pri viacerých brainoch pošta nič nepošle a riadok vymenuje presné adresy `--to <brain>[@<stroj>]:<projekt>/<téma>`. Odosielateľ je prvá držaná téma (odpoveď: téma, ktorej prišiel originál); pri viacerých témach `--from <téma>`. Opakovanú správu (cron, skript) pošli s `--key <kľúč>`: nová správa s rovnakým kľúčom nahradí tvoju ešte neprevzatú v tej istej téme a operátorský oznam blockera vznikne až po neprevzatí v lehote. Úroveň určuješ podľa toho, ako ťa blokuje odpoveď (P-042):
 - `blocker` – odpoveď treba hneď. Pošli a pokračuj tým, čo odpoveď nepotrebuje, alebo odporúčaným predpokladom (povedz ho); čakanie vedie pošta (prvá kontrola o 15 min), odpoveď alebo jej kontrola „no reply <id>“ ťa zobudí. Koniec ťahu `**Stav:** čakám (na odpoveď <adresát>)` je s budíkom: čakanie pošty v `awaiting` ním je (P-061).
 - `steer` – držiteľ cieľovej témy má hneď upraviť prácu na nej (nie zastaviť); doručí sa aj počas jeho ťahu. Novú prácu pošli zvlášť ako `assist`.
 - `assist` – odpoveď treba, bez náhlenia; pokračuješ v inej práci; konečná odpoveď alebo kontrola pošty (60 min) ťa zobudí; priebežná odpoveď kontrolu prestaví (`otázka` 4 h, `čakám` 60 min, potom dvojnásobok). Po 4 kontrolách bez zmeny pošta čakanie ukončí riadkom „no answer after 4 checks <id>“: rozhodni (`withdraw --id <id>`, nová správa `blocker`, operátor).
