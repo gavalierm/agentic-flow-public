@@ -8,6 +8,7 @@ Popis skillu je trigger (najviac 300 znakov, P-022). Skilly projektu patria do b
 | `save` | P-013, P-007 |
 | `error` | P-003 |
 | `done` | P-005, P-006, P-011, P-020, P-036 |
+| `snapshot` | P-026, P-011, P-078 |
 | `consolidate` | P-010 |
 | `delegate` | P-027, P-028 |
 | `find` | P-031 |

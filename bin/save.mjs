@@ -63,7 +63,7 @@ import { workflowSkillNames, PROJECT_SKILLS_DIR, syncBrainSkills, deployedSkillN
 import { skillSources, PROJECT_KNOWLEDGE, domainRepos, knowledgeDirs, repoByName, sessionRepo, singleRepoOf, nextRepoDecisionId, repoWrite, formatRepoWrite, heldRepoTopic, repoPublic } from '../scripts/repo-knowledge.mjs';
 import { isInside, nowIso } from '../scripts/util.mjs';
 import { fieldsOp } from '../scripts/topic-files.mjs';
-import { resultsActive, tmpOwner, readBindings } from '../scripts/results.mjs';
+import { resultsActive, tmpOwner, readBindings, stalePages } from '../scripts/results.mjs';
 import { uncitedDecisions, uncitedLine, boundSkills, boundLine } from '../scripts/skill-decisions.mjs';
 import { checkSkill, meaningDiff, workLayout } from '../scripts/skill-check.mjs';
 import { personRedirect, requireOperatorRepo, readPeople, findPeople, newPerson, changePerson, shortIdProblem, proposedId } from '../scripts/people.mjs';
@@ -1134,8 +1134,13 @@ function saveHandover(ctx) {
   const holderError = ctx.presynced ? checkHolder(ctx.brainDir, handoverRel, ctx.thread) : syncAndCheckHolder(ctx.brainDir, handoverRel, ctx.thread);
   if (holderError) fail(holderError);
   const ops = [{ path: handoverRel, content }, setTopicState(ctx, topic, readTopic(ctx.brainDir, topic)?.state === 'paused' ? 'paused' : 'working')];
+  let lastHandover = 0;
+  try { lastHandover = fs.statSync(path.join(ctx.brainDir, handoverRel)).mtimeMs; } catch { /* first handover */ }
   const res = brainWrite(ctx, { ops, message: `handover ${topic}`, presynced: true });
   out(formatWriteResult(res, [handoverRel]));
+  // Skill proposal, Report výsledku: one work is one page; a state change goes into the published page, not only the handover.
+  const stale = stalePages(ctx.brainDir, topic, lastHandover);
+  if (stale.length) out(`published page${stale.length > 1 ? 's' : ''} ${stale.map((p) => `${p.name} (${p.url})`).join(', ')} not changed since the handover before this one: if the state it describes changed, update its work file and publish it again with its url (skill proposal, Report výsledku)`);
   if (merged?.kept.length) out(`kept from the current handover: ${merged.kept.join(', ')} (an option not given keeps its section; --<option> "" empties it)`);
   if (merged && merged.added !== null) out(`Hotové: ${merged.added} item(s) added after the current ones (--done adds; --done-replace rewrites Hotové; --done "" empties it)`);
 }

@@ -45,6 +45,18 @@ export function readBindings(brainDir, id) {
   return r && typeof r === 'object' && !Array.isArray(r) ? { ...r } : {};
 }
 
+/**
+ * A project 2026-11-18: a published result page (an Artifact) kept describing an old state; the thread wrote only the
+ * handover, turn after turn. The pages of topic `id` published as an Artifact whose source did not change since `sinceMs`
+ * (the time of the handover before this one): [{ name, url }].
+ */
+export function stalePages(brainDir, id, sinceMs) {
+  if (!sinceMs) return [];
+  return Object.entries(readBindings(brainDir, id))
+    .filter(([, b]) => b?.url && b.from && (statOf(path.join(brainDir, ...b.from.split('/')))?.mtimeMs ?? Infinity) < sinceMs)
+    .map(([name, b]) => ({ name, url: b.url }));
+}
+
 // Paths of the work files in a text: `tmp/<…>` (relative to the topic), `<…>/<topics>/<id>/tmp/<…>` (another topic,
 // brain-relative, domain-relative or absolute). The end of a sentence or a list is not part of the path.
 // Windows: `tmp\<…>` and `D:\Claude projekty\…\topics\<id>\tmp\<…>` (a space in the path cuts the token; its part from

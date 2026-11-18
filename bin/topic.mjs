@@ -20,6 +20,8 @@
 //                        in it save handover refuses --next; off on an order to work; only the holder; the class stays
 //           repos <id> <repo> [<repo> ...] [--main <repo>]   target repos of the topic (spec 4.5): outputs and sources go
 //                        to the main one (default the first); a topic with a code copy gets a worktree in each; only the holder
+//           snapshot [<id>]   after save.mjs handover in this turn: saves the bound and cited work files, the turn ends
+//                        without a continuation and the start after /clear loads the handover; the topic stays open
 //           list | status
 //           closed <id>   exit 0 once the topic is no longer open (a condition for timer.mjs --until)
 //           copy <id> [--operator-approved]   code copy (branch topic/<id>); a discussion topic gets one only after the
@@ -32,6 +34,7 @@ import path from 'node:path';
 import { createTopic, setTopicMode, setTopicRepos, CLASS_HELP, startThreadForTopic, claimTopic, claimMain, releaseTopic, handoffTopic, listTopics, heldTopics, ensureCodeCopy, copyTopic, readTopic, pauseTopic, resumeTopic, topicRel, topicMailProject, taskCopy, taskMerge, takeoverLines } from '../scripts/topic.mjs';
 import fs from 'node:fs';
 import { topicLine } from '../scripts/index.mjs';
+import { snapshotTopic } from '../scripts/snapshot.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const [cmd, id] = args._;
@@ -146,6 +149,8 @@ try {
     if (!id) fail('usage: topic.mjs resume <id>');
     const res = resumeTopic(ctx, id);
     out(res.already ? `topic ${id} is not paused` : `topic ${id} resumed`);
+  } else if (cmd === 'snapshot') {
+    for (const line of snapshotTopic(ctx, id || null).lines) out(line);
   } else if (cmd === 'mode') {
     const mode = args._[2];
     if (!id || !['discussion', 'off'].includes(mode)) fail('usage: topic.mjs mode <id> discussion|off');
@@ -177,7 +182,7 @@ try {
     if (copy.write?.unpushed) out(`unpushed: ${copy.write.unpushed}`);
     if (readTopic(ctx.brainDir, id)?.kind !== 'code') out(`next: delegate.mjs prepare --implement${readTopic(ctx.brainDir, id)?.class === 'ops' ? '' : ' web|code|ops'} --task-file <file> (the worker changes the copy; commit, merge and release stay in this thread, D-0020)`);
   } else {
-    fail('usage: topic.mjs create|claim|main|release|handoff|pause|resume|mode|repos|list|status|closed|copy|task-copy|task-merge|thread');
+    fail('usage: topic.mjs create|claim|main|release|handoff|snapshot|pause|resume|mode|repos|list|status|closed|copy|task-copy|task-merge|thread');
   }
 } catch (err) {
   fail(err.message);

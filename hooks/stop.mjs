@@ -28,6 +28,7 @@ import { fieldsOp } from '../scripts/topic-files.mjs';
 import { syncResults, savedLine } from '../scripts/results.mjs';
 import { parseReply, HANDOVER_LINE, HANDOVER_NONE_LINE, PROTOCOL_EXAMPLE, handoverMatches } from '../scripts/protocol.mjs';
 import { summaryState, WAITING, DONE } from '../scripts/topic-state.mjs';
+import { snapshotThisTurn } from '../scripts/snapshot.mjs';
 import { threadAlarms, topicFacts, turnUpdate, stuckNow, verifyLocks, LOCK_LOST_LINE, CONTINUE_RESUME_MS } from '../scripts/topic-turn.mjs';
 import { validWaker, awaitingWaker, clearTimer, threadTimers, timersPatch, sameTimer, finishedTasks, withoutFinished, resumeAtFor } from '../scripts/waker.mjs';
 import { transcriptTail } from '../scripts/bypass.mjs';
@@ -228,7 +229,8 @@ export function run(input) {
   if (validWaker(st)) return (close(), {});
   // P-026: the next step travels with the closed turn and wake rings "continue from handover"; resume_at makes it ring also
   // with the same step (plan O2), the cap of continue_max is counted at the wake; a stuck topic has no continuation.
-  const cont = running.find((t) => t.state !== 'paused' && t.next && !stuckNow(ctx, t, st));
+  // A snapshot in this turn (skill snapshot): the operator clears the context next; a continuation would go on in the old one.
+  const cont = snapshotThisTurn(st) ? null : running.find((t) => t.state !== 'paused' && t.next && !stuckNow(ctx, t, st));
   close(cont ? { next: cont.next, resumeAt: new Date(Date.now() + CONTINUE_RESUME_MS).toISOString() } : {});
   return {};
 }

@@ -215,6 +215,9 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
       status += `\nHandover (podklad zadania a stavu, P-026):\n${held[0].handover.trim().replace(/^## /gm, '### ')}${age ? `\n${age}` : ''}`;
     }
   }
+  // Skill snapshot (operator 2026-11-18): after /clear the context is empty; the handover of the held topic is its state.
+  const kept = info.held.find((t) => !isMainTopic(t));
+  if (source === 'clear' && kept?.handover) status += `\nPo /clear (P-026): kontext je prázdny, téma ${kept.id} ostáva tvoja a jej stav je tento handover (zadanie, Hotové, Ďalší krok); pokračuj z neho, nie z pamäte:\n${kept.handover.trim().replace(/^## /gm, '### ')}`;
   // Spec 3.9 and 10.5 (plan B6): the supervisor's session starts with the overview of the topics of this machine and its
   // open obligations of the mail (what it owes and awaits); the overview is the same as overview.mjs prints.
   if (isSupervisorSession(ctx)) {
