@@ -6,6 +6,7 @@ import { PLUGIN_ROOT, copyDir, readJson, writeJson, readText, writeText } from '
 import { dataPath, dataRel } from './layout.mjs';
 import { resolveBrain } from './config.mjs';
 import { PERSONA_REPO_RE, PERSONA_PREFIX } from './persona-name.mjs';
+import { forkOf, excludeLocal } from './fork.mjs';
 
 export const GENERATED_MARKER = '.workflow-generated.json';
 export const PROJECT_SKILLS_DIR = path.join('.claude', 'skills');
@@ -49,6 +50,8 @@ export function repoSkillDirs(sources = []) {
 }
 
 export function ensureGitignore(projectDir, entries) {
+  // A fork: .gitignore is the upstream's file, the lines go to info/exclude (scripts/fork.mjs).
+  if (forkOf(projectDir)) { excludeLocal(projectDir, entries); return false; }
   const file = path.join(projectDir, '.gitignore');
   const current = readText(file, '');
   const lines = current.split('\n');

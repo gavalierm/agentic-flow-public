@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { git, gitRemote, exists } from './util.mjs';
+import { forkOf } from './fork.mjs';
 
 export const EOL_RULE = '* text=auto eol=lf';
 export const EOL_COMMIT_MSG = 'Normalize line endings to LF (.gitattributes * text=auto eol=lf)';
@@ -30,7 +31,8 @@ export function hasEolRule(dir) {
  * Returns a status line, or null when there is nothing to do.
  */
 export function ensureLineEndings(dir, { label = path.basename(dir), push = true } = {}) {
-  if (!dir || !exists(path.join(dir, '.git')) || hasEolRule(dir)) return null;
+  // A fork keeps the upstream's bytes (its pull requests would carry the rewrite; scripts/fork.mjs).
+  if (!dir || !exists(path.join(dir, '.git')) || hasEolRule(dir) || forkOf(dir)) return null;
   const gitDir = git(['rev-parse', '--absolute-git-dir'], { cwd: dir }).stdout;
   const common = git(['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: dir }).stdout;
   if (!gitDir || path.resolve(gitDir) !== path.resolve(common)) return null;
@@ -38,7 +40,9 @@ export function ensureLineEndings(dir, { label = path.basename(dir), push = true
   if (git(['status', '--porcelain'], { cwd: dir }).stdout) return `${label}: no line-ending rule in .gitattributes; not normalized (uncommitted changes), runs again at the next session start`;
   const file = path.join(dir, '.gitattributes');
   const before = exists(file) ? fs.readFileSync(file, 'utf8') : '';
-  fs.writeFileSync(file, `${before}${before && !before.endsWith('\n') ? '\n' : ''}${EOL_RULE}\n`);
+  // First line: a later line of .gitattributes wins, so the repository's own rules (`*.csv -text` of a CRLF fixture
+  // its tests assert on, a fork of a shop app, 2026-11-19) must come after the rule for all files, not before it.
+  fs.writeFileSync(file, `${EOL_RULE}\n${before}`);
   const steps = [['add', '--renormalize', '.'], ['add', '--', '.gitattributes']];
   for (const args of steps) {
     const r = git(args, { cwd: dir });

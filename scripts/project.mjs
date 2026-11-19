@@ -16,6 +16,7 @@ export { ROOT_FILE, rootFile, machineRoot, setMachineRoot } from './config.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
 import { brainSync } from './brain.mjs';
 import { ensureLineEndings, EOL_RULE } from './eol.mjs';
+import { forkOf, setupFork } from './fork.mjs';
 import { redactUrl } from './secrets.mjs';
 import { servicesClient, machineMailFile } from './comms.mjs';
 import { gh, ghOwner, ghOwnedRepos, ghOwnerRepos, ghRootNames, grantAgentAccess, checkOwner, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_AGENT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
@@ -158,6 +159,7 @@ export function stampRepoLayout(projectDir, brainDir) {
   const rel = layoutFor(bv, ROLE_REPO).policy;
   fs.mkdirSync(path.dirname(path.join(projectDir, rel)), { recursive: true });
   fs.writeFileSync(path.join(projectDir, rel), `${JSON.stringify({ data_layout: dataName(bv) }, null, 2)}\n`);
+  if (forkOf(projectDir)) return `data: ${rel} with data ${dataName(bv)} of the brain, local (a fork commits no workflow file)`;
   const env = brainScriptEnv();
   const add = git(['add', '--', rel], { cwd: projectDir, env });
   const commit = add.ok ? git(['commit', '--quiet', '--no-verify', '-m', `${BRAIN_COMMIT_TAG} data ${dataName(bv)} of the domain's brain (project.mjs)`, '--', rel], { cwd: projectDir, env }) : add;
@@ -355,12 +357,7 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
   const projectDir = path.join(base, repoName);
   const brainDir = path.join(base, brainName);
   const lines = [...setAsideLines];
-  // Another owner's repository: the machine's SSH key (the agent account) needs access before the clone.
-  const access = foreign ? await grantAgentAccess(apiUrl, token, owner, repoName, agentTokenFile, { foreign: true }) : null;
-  if (access) lines.push(access);
-  try { lines.push(cloneInto(remoteFor(owner, repoName), projectDir, repoName)); } catch (err) { throw new Error(access && / NOT /.test(access) ? `${err.message}; ${access}` : err.message); }
-  const eol = ensureLineEndings(projectDir, { label: repoName });
-  if (eol) lines.push(eol);
+  lines.push(...(await cloneCodeRepo({ apiUrl, token, owner, repoName, agentTokenFile, foreign, remoteFor, projectDir })));
 
   if (brain && brain !== brainName) {
     if (!renameBrain) throw new Error(`brain repository ${brainOwner}/${brain} must be named ${brainName}; run again with --rename-brain (renames it on GitHub, the old name redirects)`);
@@ -430,17 +427,35 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
  * point at that brain (`../<brain>`), the brain itself is not touched. The setup being adopted (an older folder in the
  * projects root) is set aside as in connect; its own records are moved by the adoption topic (tidy), as in connect --adopt.
  */
+/**
+ * Clone a code repository of connect: the agent account gets push access first (also in the operator's own account: a
+ * fork made with the operator's token has no collaborator, the push said "Permission denied", a shop app
+ * 2026-11-19); a fork gets its upstream remote and keeps its files as they are (scripts/fork.mjs); others get the
+ * line-ending rule.
+ */
+async function cloneCodeRepo({ apiUrl, token, owner, repoName, agentTokenFile, foreign, remoteFor, projectDir }) {
+  const lines = [];
+  const access = await grantAgentAccess(apiUrl, token, owner, repoName, agentTokenFile, { foreign });
+  if (access) lines.push(access);
+  try { lines.push(cloneInto(remoteFor(owner, repoName), projectDir, repoName)); } catch (err) { throw new Error(access && / NOT /.test(access) ? `${err.message}; ${access}` : err.message); }
+  const info = await gh(apiUrl, token, 'GET', `/repos/${owner}/${repoName}`);
+  const parent = info.status === 200 && info.json?.fork ? info.json.parent?.full_name : null;
+  if (parent) {
+    const [pOwner, pRepo] = parent.split('/');
+    lines.push(setupFork(projectDir, { upstream: parent, url: remoteFor(pOwner, pRepo) }));
+  }
+  const eol = ensureLineEndings(projectDir, { label: repoName });
+  if (eol) lines.push(eol);
+  return lines;
+}
+
 async function joinDomain({ base, brainName, owner, me, repoName, foreign, setAside, root, apiUrl, token, agentTokenFile, remoteFor }) {
   const aside = setAsideNamed(root, setAside);
   const lines = [...(aside.lines || [])];
   lines.push(`domain ${path.basename(base)}: the repo joins its brain ${brainName} (${DOMAIN_MARKER}); no brain of its own`);
   const projectDir = path.join(base, repoName);
   const brainDir = path.join(base, brainName);
-  const access = foreign ? await grantAgentAccess(apiUrl, token, owner, repoName, agentTokenFile, { foreign: true }) : null;
-  if (access) lines.push(access);
-  try { lines.push(cloneInto(remoteFor(owner, repoName), projectDir, repoName)); } catch (err) { throw new Error(access && / NOT /.test(access) ? `${err.message}; ${access}` : err.message); }
-  const eol = ensureLineEndings(projectDir, { label: repoName });
-  if (eol) lines.push(eol);
+  lines.push(...(await cloneCodeRepo({ apiUrl, token, owner, repoName, agentTokenFile, foreign, remoteFor, projectDir })));
   adapter(projectDir, `../${brainName}`);
   lines.push('settings generated');
   const stamp = stampRepoLayout(projectDir, brainDir);

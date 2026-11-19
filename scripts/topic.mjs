@@ -19,6 +19,7 @@ import { topicOp, holderOp, fieldsOp, MODES, openTopicExists, closedTopicExists,
 import { registerTopic, mailCount, mailLines, isMainTopic, MAIN_TOPIC, runClient, commsConfigured, commsProjectName, supervisorOf } from './comms.mjs';
 import { checkOverlap, topicScopeText } from './overlap.mjs';
 import { freezeRefusal } from './freeze.mjs';
+import { forkOf, seedWorktree } from './fork.mjs';
 
 export function topicDir(brainDir, id) {
   return dataPath(brainDir, 'topics', id);
@@ -760,6 +761,11 @@ export function setTopicState(ctx, id, state) {
  * shared checkout lagged origin/dev, so a topic worktree began on an old dev (topic-project-move, D-0035). null = HEAD.
  */
 export function newBranchBase(repo) {
+  // A fork: a new topic branch starts at the upstream's main (its pull request goes there; scripts/fork.mjs).
+  if (forkOf(repo) && git(['fetch', '--quiet', 'upstream'], { cwd: repo }).ok) {
+    const head = git(['symbolic-ref', '--short', 'refs/remotes/upstream/HEAD'], { cwd: repo }).stdout || 'upstream/main';
+    if (git(['rev-parse', '--verify', '--quiet', head], { cwd: repo }).ok) return head;
+  }
   const b = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repo });
   const name = b.ok ? b.stdout.trim() : '';
   if (!name || name === 'HEAD') return null;
@@ -790,6 +796,7 @@ export function ensureCodeCopy(ctx, id, { repo: repoName = null } = {}) {
       : remote ? git(['worktree', 'add', '--quiet', '-b', branch, copy, `origin/${branch}`], { cwd: repo })
         : git(['worktree', 'add', '--quiet', ...newBranchArgs(branch, copy, newBranchBase(repo))], { cwd: repo });
     if (!add.ok) throw new Error(`git worktree add ${copy} (${branch}) failed: ${add.stderr.split('\n')[0]}`);
+    seedWorktree(repo, copy);
     return { path: copy, branch, created: true, worktree: true, hook: installPushHook(copy) };
   }
   const clone = git(['clone', '--quiet', ctx.projectDir, copy]);
@@ -855,6 +862,7 @@ export function taskCopy(ctx, task, { topic: asked = null } = {}) {
     : remote ? git(['worktree', 'add', '--quiet', '-b', branch, dir, `origin/${branch}`], { cwd })
       : git(['worktree', 'add', '--quiet', '--no-track', '-b', branch, dir, base.branch], { cwd });
   if (!add.ok) throw new Error(`git worktree add ${toPosix(dir)} (${branch}) failed: ${add.stderr.split('\n')[0]}`);
+  seedWorktree(cwd, dir);
   return { path: dir, branch, base: base.branch, created: true, hook: installPushHook(dir) };
 }
 
