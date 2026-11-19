@@ -18,7 +18,11 @@ import { fileURLToPath } from 'node:url';
 // 4 cores, load 8; one run of node --test already uses all cores). The run gets a lower CPU priority (AGENTIC_TEST_NICE=0
 // keeps the normal one), so the threads' live work stays responsive.
 export const DEFAULT_SLOTS = 1;
-/** Test files run at once inside one run: AGENTIC_TEST_CONCURRENCY, else half the cores (at least 1). */
+/**
+ * Test files run at once inside one run: AGENTIC_TEST_CONCURRENCY, else half the cores (at least 1). Not more, also on
+ * an idle machine (measured 2026-11-19, 4 cores, the release set of 243 tests): 3 files at once gave load 6.7, each test
+ * 25 % slower (the tests start processes of their own) and the run only 17 % shorter.
+ */
 export function testConcurrency(env = process.env, cores = (os.availableParallelism?.() || os.cpus().length)) {
   const n = Number(env.AGENTIC_TEST_CONCURRENCY);
   return Number.isInteger(n) && n > 0 ? n : Math.max(1, Math.floor(cores / 2));
@@ -136,6 +140,10 @@ async function main(argv) {
   // tests left mkdtemp dirs in /tmp, ~167 000 inodes in 4 days, /tmp tmpfs at 85 % of its inode limit). A run inside a
   // scoped run (WF_TEST_TMP_SCOPED) keeps the outer dir.
   const scoped = env.WF_TEST_TMP_SCOPED ? null : tmpScope(env);
+  // Node's compile cache for every process of the run (P-079): a suite starts the same hooks and scripts thousands of
+  // times, each compiling ~750 KB of source. It lives in the temp dir of the run and goes with it: tests run scripts from
+  // temp dirs of their own, a lasting cache would grow by those paths at every run.
+  if (scoped && !env.NODE_COMPILE_CACHE) env.NODE_COMPILE_CACHE = path.join(scoped, 'node-compile-cache');
   // At most half the cores for test files at once (operator 2026-11-17: a release took the whole CPU of 4 cores; node
   // --test runs cores-1 files, each starting more processes). AGENTIC_TEST_CONCURRENCY sets it; an explicit flag wins.
   if (bin === 'node' && rest.includes('--test') && !rest.some((a) => a.startsWith('--test-concurrency'))) {
