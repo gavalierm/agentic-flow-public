@@ -20,12 +20,12 @@
 // Picked mail without an answer (P-042, P-072) is one queued line, not a block.
 // The work files of the held topics are tidied (P-062, scripts/work-classes.mjs): helpers go, backups keep the first and last 3.
 import fs from 'node:fs';
-import { readHookInput, emit, isMain } from '../scripts/hooks-io.mjs';
+import { readHookInput, emitAndExit, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { logDecision } from '../scripts/denials.mjs';
 import { flushBuffer, proposalKey } from '../scripts/logs.mjs';
 import { unpushedCount, brainSync, oldestUnpushedAgeMs } from '../scripts/brain.mjs';
-import { recordTurn, isMainTopic, readObligations, ageText, OWED_PREFIX, OWED_LINE, unansweredOwed, categoryOf } from '../scripts/comms.mjs';
+import { recordTurn, isMainTopic, readObligationsAsync, ageText, OWED_PREFIX, OWED_LINE, unansweredOwed, categoryOf } from '../scripts/comms.mjs';
 import { heldTopics, isDiscussionMode } from '../scripts/topic.mjs';
 import { fieldsOp } from '../scripts/topic-files.mjs';
 import { syncResults, savedLine } from '../scripts/results.mjs';
@@ -107,7 +107,7 @@ export function violationOf({ msg, reply, facts, alarms, factsState, turnSource,
   return null;
 }
 
-export function run(input) {
+export async function run(input) {
   const ctx = loadContext({ requireBrain: false });
   const reply = parseReply(input.last_assistant_message);
   const msg = input.last_assistant_message;
@@ -119,13 +119,13 @@ export function run(input) {
   // The prompt hook ends a turn that is only protocol without a model call and closes it again with the step and time this
   // Stop sent last (`last_close`). `last_end_state`: comms send --reply-to --state hotovo refuses it in a turn the operator
   // did not start when the previous turn ended otázka (P-061).
-  const close = ({ next = null, resumeAt = null } = {}) => {
+  const close = async ({ next = null, resumeAt = null } = {}) => {
     if (!ctx.thread) return null;
     if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_close: { next, resume_at: resumeAt }, last_end_state: reply.state || null, last_end_at: new Date().toISOString() });
     // Spec 2.2 (plan B7): delivered mail wakes the thread in every state: the end of a turn closes the discussion.
     return recordTurn(ctx, 'closed', held, { openedAt, next, resumeAt, discussion: false });
   };
-  if (!ctx.brainDir) { close(); return {}; }
+  if (!ctx.brainDir) { await close(); return {}; }
   const signals = [];
   // One brain write per turn for the buffered logs (P-030); `ops` (the topic state) go into the same commit and are pushed.
   const flush = (ops = [], message = null, { retry = false } = {}) => {
@@ -167,7 +167,7 @@ export function run(input) {
   if (!ctx.thread) { flush(); return {}; }
 
   // One obligations call; an outage gives the client's backup (offline), another model nothing.
-  const res = readObligations(ctx, { held });
+  const res = await readObligationsAsync(ctx, { held });
   const mail = res.ok && !(res.data?.offline && !res.data?.cached) ? res.data : null;
   const picked = unansweredOwed(mail);
   const unreadReplies = (mail?.inbox?.ids || []).filter((it) => it && categoryOf(it) === 'reply').map((it) => it.id);
@@ -237,17 +237,17 @@ export function run(input) {
   // The earliest timer, also one already due: it came due while this turn ran, so the closed turn carries it and wake rings
   // it at once (pilot nudge-why 2026-11-14).
   const timer = threadTimers(st)[0] || null;
-  if (timer) return (close({ next: timer.then, resumeAt: resumeAtFor(timer) }), {});
+  if (timer) return (await close({ next: timer.then, resumeAt: resumeAtFor(timer) }), {});
   const running = work.filter((t) => !lost.has(t.id));
   const snooze = !running.some((t) => t.state !== 'paused' && t.next) && running.find((t) => t.state === 'paused' && t.paused_until && Date.parse(t.paused_until) > Date.now());
-  if (snooze) return (close({ next: `pause of topic ${snooze.id} ended: run topic.mjs resume ${snooze.id}, then continue from handover`, resumeAt: snooze.paused_until }), {});
+  if (snooze) return (await close({ next: `pause of topic ${snooze.id} ended: run topic.mjs resume ${snooze.id}, then continue from handover`, resumeAt: snooze.paused_until }), {});
   // A background task or a schedule rings the thread itself; the step runs after it (10.2 point 1).
-  if (validWaker(st)) return (close(), {});
+  if (validWaker(st)) return (await close(), {});
   // P-026: the next step travels with the closed turn and wake rings "continue from handover"; resume_at makes it ring also
   // with the same step (plan O2), the cap of continue_max is counted at the wake; a stuck topic has no continuation.
   // A snapshot in this turn (skill snapshot): the operator clears the context next; a continuation would go on in the old one.
   const cont = snapshotThisTurn(st) ? null : running.find((t) => t.state !== 'paused' && t.next && !stuckNow(ctx, t, st));
-  close(cont ? { next: cont.next, resumeAt: new Date(Date.now() + CONTINUE_RESUME_MS).toISOString() } : {});
+  await close(cont ? { next: cont.next, resumeAt: new Date(Date.now() + CONTINUE_RESUME_MS).toISOString() } : {});
   return {};
 }
 
@@ -279,7 +279,7 @@ if (isMain(import.meta.url)) {
   let out = {};
   try {
     const input = readHookInput();
-    out = run(input) || {};
+    out = (await run(input)) || {};
     if (out.decision === 'block') {
       try {
         const ctx = loadContext({ requireBrain: false });
@@ -289,5 +289,5 @@ if (isMain(import.meta.url)) {
   } catch (err) {
     process.stderr.write(`stop: ${err.message}\n`);
   }
-  emit(out);
+  emitAndExit(out);
 }

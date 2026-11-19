@@ -13,7 +13,8 @@ test('hooks.json handlers exist and export HOOK_META with class and limit', asyn
   for (const e of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop']) assert.ok(events.includes(e), e);
   for (const [event, groups] of Object.entries(hooks.hooks)) {
     for (const g of groups) for (const h of g.hooks) {
-      const rel = h.args[0].replace('${CLAUDE_PLUGIN_ROOT}/', '');
+      assert.equal(h.args[0], '${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs', `${event}: the entry that turns on the compile cache`);
+      const rel = `hooks/${h.args[1]}.mjs`;
       const file = path.join(PLUGIN_ROOT, rel);
       assert.ok(fs.existsSync(file), `${event}: ${rel} exists`);
       const mod = await import(pathToFileURL(file).href);

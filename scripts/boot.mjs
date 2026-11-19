@@ -28,12 +28,11 @@ export const BOOT_MARKERS = ['## Pravidlá', '## Stav vlákna', '## Index pamät
  * the mail's `obligations` (`mail.obligations`, one request). `discussion` (D-0015, D-0022): the thread discusses with the
  * operator, so waiting steer and assist are left out until it ends. `since`: the cursor of recent rows already shown.
  */
-export function statusInfo(ctx, { discussion = false, since = null } = {}) {
-  const held = ctx.brainDir ? heldTopics(ctx.brainDir, ctx.thread) : [];
+export function statusInfo(ctx, { discussion = false, since = null, held = ctx.brainDir ? heldTopics(ctx.brainDir, ctx.thread) : [], counted = null } = {}) {
   const topic = held.length ? `${held[0].id} (${held[0].state || 'working'}, mode ${held[0].holder?.mode || 'operator'})` : '- (none)';
-  // Mailboxes as in comms list/receive: held topics and free-point topics (P-044).
-  const mailTopics = ctx.brainDir ? mailboxTopics(ctx) : [];
-  const counted = mailCount(ctx, mailTopics, { since });
+  // Mailboxes as in comms list/receive: held topics and free-point topics (P-044). `counted`: the mail a hook already
+  // asked for (promptMail asks it together with the turn record); `held`: the topics it read for that.
+  counted ||= mailCount(ctx, ctx.brainDir ? mailboxTopics(ctx) : [], { since });
   const mail = discussion ? discussionMail(counted) : counted;
   // Open notices of the instance, in the persona main thread only (D-0011: 41 open, none decided, nobody saw them).
   const notices = held.some(isMainTopic) && mail.available ? noticesCount(ctx) : null;

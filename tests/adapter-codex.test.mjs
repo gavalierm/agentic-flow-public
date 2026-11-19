@@ -65,7 +65,7 @@ test('generated config.toml, hooks.json, AGENTS.md and .agents/skills match poli
     assert.match(hooks.hooks.PreToolUse[0].matcher, /apply_patch/);
     assert.match(hooks.hooks.PreToolUse[0].hooks[0].command, /hook\.mjs" pre-tool-use$/);
     assert.match(hooks.hooks.Stop[0].hooks[0].command, /hook\.mjs" stop$/);
-    assert.match(hooks.hooks.UserPromptSubmit[0].hooks[0].command, /hooks\/user-prompt-submit\.mjs"$/);
+    assert.match(hooks.hooks.UserPromptSubmit[0].hooks[0].command, /hooks\/run\.mjs" user-prompt-submit$/);
     assert.ok(hooks.hooks.Stop[0].hooks[0].command.includes(PLUGIN_ROOT), 'local file carries the plugin path');
 
     // AGENTS.md: existing content preserved, managed block equals the assembled rules

@@ -3,7 +3,7 @@
 // No workflow logic here; it calls the same hook scripts as Claude Code.
 //   hook.mjs session-start | pre-tool-use | stop   (JSON on stdin, JSON on stdout, exit 0)
 import path from 'node:path';
-import { readHookInput, emit, contextOutput, permissionOutput, isMain } from '../../scripts/hooks-io.mjs';
+import { readHookInput, emit, emitAndExit, contextOutput, permissionOutput, isMain } from '../../scripts/hooks-io.mjs';
 import { loadContext } from '../../scripts/config.mjs';
 import { buildBootContext } from '../../scripts/boot.mjs';
 import { readText } from '../../scripts/util.mjs';
@@ -69,8 +69,8 @@ export function preToolUseCodex(input) {
  * Stop: same turn record, logging and signal queue as Claude Code. A missing reply to `assist` is found by the message
  * TTL in the mail service (P-042, P-043), so Stop adds no continuation turn.
  */
-export function stopCodex(input) {
-  stop(input);
+export async function stopCodex(input) {
+  await stop(input);
   return {};
 }
 
@@ -80,10 +80,10 @@ if (isMain(import.meta.url)) {
   try {
     if (event === 'session-start') emit(sessionStart(input));
     else if (event === 'pre-tool-use') emit(preToolUseCodex(input));
-    else if (event === 'stop') emit(stopCodex(input));
+    else if (event === 'stop') emitAndExit(await stopCodex(input));
     else { process.stderr.write(`codex hook: unknown event "${event}"\n`); emit({}); }
   } catch (err) {
     process.stderr.write(`codex hook ${event}: ${err.message}\n`);
-    emit(event === 'session-start' ? contextOutput('SessionStart', `## Workflow\nworkflow: session-start failed (${err.message})`) : {});
+    emitAndExit(event === 'session-start' ? contextOutput('SessionStart', `## Workflow\nworkflow: session-start failed (${err.message})`) : {});
   }
 }

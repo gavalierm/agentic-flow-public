@@ -1,5 +1,6 @@
 // Interface to the mail service (P-041, P-042, P-044, P-047). The client is `bin/comms.mjs` of agentic-comms;
-// this module only resolves where it is, spawns it with the hook deadline and shapes its JSON output.
+// this module only resolves where it is, runs it with the hook deadline (a process per call, or inside the process of a
+// hook that can wait: clientInProcess, runClientsAsync) and shapes its JSON output.
 // Without a reachable client the workflow works unchanged: `mail: 0`, nothing waits.
 //
 // Configuration (`.workflow.json`, overridable per machine in `local/workflow.json`), field `comms`:
@@ -11,10 +12,12 @@
 //     config   client config file (key, instance_id, data_dir ...), default `<brain>/local/comms.json`
 //     project  project name used in mail addresses, default: project directory name
 // Environment: WORKFLOW_COMMS_CLIENT overrides the client path (tests, machine-specific installs).
+// WORKFLOW_COMMS_SPAWN=1 runs every client call as a process of its own (no call inside the hook process, see clientInProcess).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { readJson, PLUGIN_ROOT, toPosix } from './util.mjs';
 import { machineName, servicesDir, threadStateFile } from './config.mjs';
 import { knownBrains } from './update.mjs';
@@ -254,34 +257,148 @@ export function clientIdentity(ctx, args = []) {
   return { env };
 }
 
-function spawnClient(ctx, s, args, { timeoutMs, input, thread } = {}) {
+/** One client call: its argv after the script, its environment and its deadline; `{ error }` when the brain cannot be named. */
+function clientCall(ctx, s, args, { timeoutMs, thread, noStart = false } = {}) {
   const wait = timeoutMs ?? s.waitMs;
   const th = thread === undefined ? ctx.thread : thread;
   const who = clientIdentity(ctx, args);
-  if (who.error) return { ok: false, code: 1, data: null, error: who.error, unavailable: false };
+  if (who.error) return { error: { ok: false, code: 1, data: null, error: who.error, unavailable: false } };
   const common = ['--timeout', String(wait)];
   if (s.configFile) common.push('--config', s.configFile);
   if (s.instance) common.push('--instance', s.instance);
   if (s.outbox) common.push('--outbox', s.outbox, '--client-dir', s.clientDir);
   if (th) common.push('--thread', th);
-  const res = spawnSync(process.execPath, [s.client, ...args, ...common], {
-    cwd: ctx.projectDir,
-    encoding: 'utf8',
-    input,
-    timeout: wait + 1500,
-    // The mail service records the workflow version per persona and machine (`comms clients`).
-    env: { ...process.env, ...who.env, COMMS_THREAD_ID: th || '', COMMS_WORKFLOW_VERSION: workflowVersion() || '' },
-  });
+  if (noStart) common.push('--no-start');
+  // The mail service records the workflow version per persona and machine (`comms clients`).
+  return { argv: [...args, ...common], wait, env: { ...who.env, COMMS_THREAD_ID: th || '', COMMS_WORKFLOW_VERSION: workflowVersion() || '' } };
+}
+
+/** The result of one client run from its exit code and output; `status` null: it did not end within its deadline. */
+function clientResult(status, stdout, stderr) {
   const parse = (t) => { try { return JSON.parse(String(t || '').trim()); } catch { return null; } };
-  if (res.error || res.status === null) {
+  if (status === null) {
     return { ok: false, code: 2, data: null, error: 'comms unavailable (client timed out)', unavailable: true };
   }
-  if (res.status === 0) return { ok: true, code: 0, data: parse(res.stdout) ?? {}, error: null, unavailable: false };
-  const err = parse(res.stderr);
-  const message = err?.error || (res.stderr || res.stdout || '').trim().split('\n')[0] || `comms client exit ${res.status}`;
+  if (status === 0) return { ok: true, code: 0, data: parse(stdout) ?? {}, error: null, unavailable: false };
+  const err = parse(stderr);
+  const message = err?.error || (stderr || stdout || '').trim().split('\n')[0] || `comms client exit ${status}`;
   // The client refuses a service of another model itself (exit 3, MODEL_MISMATCH): reported as the model line.
-  if (res.status === 3 && err?.code === 'MODEL_MISMATCH') return { ok: false, code: 3, data: err, error: message, unavailable: false, model: true };
-  return { ok: false, code: res.status, data: err, error: res.status === 2 ? 'comms unavailable' : message, unavailable: res.status === 2 };
+  if (status === 3 && err?.code === 'MODEL_MISMATCH') return { ok: false, code: 3, data: err, error: message, unavailable: false, model: true };
+  return { ok: false, code: status, data: err, error: status === 2 ? 'comms unavailable' : message, unavailable: status === 2 };
+}
+
+function spawnClient(ctx, s, args, opts = {}) {
+  const call = clientCall(ctx, s, args, opts);
+  if (call.error) return call.error;
+  const res = spawnSync(process.execPath, [s.client, ...call.argv], {
+    cwd: ctx.projectDir,
+    encoding: 'utf8',
+    input: opts.input,
+    timeout: call.wait + 1500,
+    env: { ...process.env, ...call.env },
+  });
+  return clientResult(res.error ? null : res.status, res.stdout, res.stderr);
+}
+
+const clientMains = new Map();
+/**
+ * `main(argv, { stdout, stderr })` of the client's CLI module (`<client>/../src/client/cli.mjs`, the function its
+ * `bin/comms.mjs` runs) for a call inside this process, or null: the client has no such module (a stub, another layout),
+ * WORKFLOW_COMMS_SPAWN=1, or a path of the client is relative (the spawned client runs in the project and resolves it
+ * there; this process may run in any directory of the session).
+ */
+function clientMain(ctx, s) {
+  if (process.env.WORKFLOW_COMMS_SPAWN === '1') return Promise.resolve(null);
+  if (path.resolve(ctx.projectDir || '.') !== process.cwd()) {
+    const cfg = s.configFile ? readJson(s.configFile, {}) || {} : {};
+    const dirs = [
+      ...Object.entries({ ...cfg, ...(cfg.wake && typeof cfg.wake === 'object' ? cfg.wake : {}) }).filter(([k]) => /(_dir|^outbox)$/.test(k)),
+      ...Object.entries(process.env).filter(([k]) => /^(COMMS|WAKE)_\w*(DIR|OUTBOX)$/.test(k)),
+    ].map(([, v]) => v);
+    if (dirs.some((d) => typeof d === 'string' && d && !path.isAbsolute(d))) return Promise.resolve(null);
+  }
+  if (!clientMains.has(s.client)) {
+    const file = path.join(path.dirname(s.client), '..', 'src', 'client', 'cli.mjs');
+    clientMains.set(s.client, fs.existsSync(file) ? loadClientMain(file).catch(() => null) : Promise.resolve(null));
+  }
+  return clientMains.get(s.client);
+}
+
+async function loadClientMain(file) {
+  const main = (await import(pathToFileURL(file).href)).main;
+  if (typeof main !== 'function') return null;
+  // One connection per request: node's default agent keeps a connection alive, and the service closes an idle one after
+  // 5 s. A hook that works between two calls without a turn of the event loop (Stop: the brain write between
+  // `obligations` and `turn closed`) would send the second call into the closed connection (review 2026-11-19).
+  const [{ default: http }, { default: https }] = await Promise.all([import('node:http'), import('node:https')]);
+  http.globalAgent = new http.Agent({ keepAlive: false });
+  https.globalAgent = new https.Agent({ keepAlive: false });
+  return main;
+}
+
+const LATE = Symbol('late');
+/** `promise`, or LATE when it does not settle within `ms`. */
+function within(promise, ms) {
+  let timer;
+  return Promise.race([promise, new Promise((resolve) => { timer = setTimeout(() => resolve(LATE), ms); })]).finally(() => clearTimeout(timer));
+}
+
+/** Calls past their deadline that still run in this process (a spawned client was killed at its deadline; this one cannot be). */
+const overdue = new Set();
+/**
+ * No call past its deadline runs any more; they get `ms` to end. While one runs, no other call is made, here or as a
+ * process: it may be sending the outbox, or its request would arrive after the next one.
+ */
+async function overdueEnded(ms) {
+  return !overdue.size || (await within(Promise.all([...overdue]), ms)) !== LATE;
+}
+/** Deadline of the probe of the service (serviceUp): the answer of a running service takes a few ms. */
+const PROBE_MS = 500;
+/** Clients whose service did not answer the probe in this process: their calls are spawned, as before. */
+const servicesDown = new Set();
+
+/**
+ * One client call inside this process (operator 2026-11-19: asynchronous, no new `node` per call: a spawned client is
+ * ~90 ms, the first call here ~15 ms, the next ones ~2 ms). Arguments, environment, deadline and result as spawnClient.
+ * It never starts the service (`--no-start`): only a spawned client does, one at a time (two starts at once unlink each
+ * other's socket: the server probes, unlinks, listens); the callers come here only after the service answered (serviceUp)
+ * and no call past its deadline runs (overdueEnded).
+ */
+async function clientInProcess(main, ctx, s, args, opts = {}) {
+  const call = clientCall(ctx, s, args, { ...opts, noStart: true });
+  if (call.error) return call.error;
+  const sink = () => { let text = ''; return { write: (chunk) => { text += chunk; return true; }, text: () => text }; };
+  const out = sink();
+  const err = sink();
+  // The client reads the settings of a call from process.env before its first await (resolveConfig in main, agentic-comms
+  // src/client/cli.mjs): the variables of this call are set for that synchronous part only, so two calls at once never
+  // see each other's thread or brain.
+  const before = Object.fromEntries(Object.keys(call.env).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, call.env);
+  let run;
+  try {
+    run = main(call.argv, { stdout: out, stderr: err });
+  } finally {
+    for (const [k, v] of Object.entries(before)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+  const ended = Promise.resolve(run).then((code) => code, () => 1);
+  const status = await within(ended, call.wait + 1500);
+  if (status !== LATE) return clientResult(status, out.text(), err.text());
+  const still = ended.then(() => { overdue.delete(still); });
+  overdue.add(still);
+  return clientResult(null);
+}
+
+/**
+ * The service answers now, asked inside this process: `{ mismatch }` (modelMismatch, from the same answer), or null: no
+ * answer (kept for this process: the calls are spawned, the spawned client may start the service).
+ */
+async function serviceUp(main, ctx, s) {
+  if (servicesDown.has(s.client)) return null;
+  const probe = await clientInProcess(main, ctx, s, ['health'], { timeoutMs: PROBE_MS });
+  if (probe.unavailable) { servicesDown.add(s.client); return null; }
+  const k = modelKnown(s);
+  return { mismatch: k.known ? k.value : modelJudged(k, probe) };
 }
 
 /**
@@ -291,25 +408,38 @@ function spawnClient(ctx, s, args, { timeoutMs, input, thread } = {}) {
  */
 export function modelMismatch(ctx, s = commsSettings(ctx)) {
   if (!s.enabled) return null;
+  const k = modelKnown(s);
+  return k.known ? k.value : modelJudged(k, spawnClient(ctx, s, ['health']));
+}
+
+/** The check a process already made, or a match kept in the client dir: `{ key, file, known, value }`. */
+function modelKnown(s) {
   const key = `${s.client}|${s.configFile || ''}|${s.instance || ''}`;
-  if (modelChecks.has(key)) return modelChecks.get(key);
+  if (modelChecks.has(key)) return { key, known: true, value: modelChecks.get(key) };
   const file = s.clientDir ? path.join(s.clientDir, MODEL_CHECK_FILE) : null;
   const cached = file ? readJson(file, null) : null;
   if (cached?.key === key && cached.model === COMMS_MODEL && Date.now() - Date.parse(cached.at) < MODEL_CHECK_TTL_MS) {
     modelChecks.set(key, null);
-    return null;
+    return { key, file, known: true, value: null };
   }
-  const r = spawnClient(ctx, s, ['health']);
-  let out = null;
-  if (r.ok && r.data?.model !== COMMS_MODEL) out = { model: r.data?.model ?? null, error: modelMismatchText(r.data?.model) };
-  else if (r.model) out = { model: null, error: r.error };
-  if (r.unavailable) return null;
+  return { key, file, known: false };
+}
+
+/** modelMismatch from the answer `r` of `health`; only an answer of the service (a match or another model) is kept. */
+function modelJudged({ key, file }, r) {
+  // No answer about the model (outage, a refused call, another instance): cannot be told, asked again next time. A
+  // refused `health` was kept as a match for a minute before (review 2026-11-19).
+  if (!r.ok && !r.model) return null;
+  const out = r.ok && r.data?.model === COMMS_MODEL ? null : r.ok ? { model: r.data?.model ?? null, error: modelMismatchText(r.data?.model) } : { model: null, error: r.error };
   modelChecks.set(key, out);
   if (!out && file) {
     try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify({ key, model: COMMS_MODEL, version: r.data?.version ?? null, at: new Date().toISOString() }) + '\n'); } catch { /* checked again next time */ }
   }
   return out;
 }
+
+const CLIENT_OFF = (s) => ({ ok: false, code: null, data: null, error: s.reason, unavailable: false, disabled: true });
+const CLIENT_MODEL = (mismatch) => ({ ok: false, code: 3, data: null, error: mismatch.error, unavailable: false, model: true });
 
 /**
  * Run the comms client once. Returns { ok, code, data, error, unavailable, model }. A mail of another model (modelMismatch)
@@ -319,10 +449,55 @@ export function modelMismatch(ctx, s = commsSettings(ctx)) {
  */
 export function runClient(ctx, args, { timeoutMs, input, thread } = {}) {
   const s = commsSettings(ctx);
-  if (!s.enabled) return { ok: false, code: null, data: null, error: s.reason, unavailable: false, disabled: true };
+  if (!s.enabled) return CLIENT_OFF(s);
   const mismatch = modelMismatch(ctx, s);
-  if (mismatch) return { ok: false, code: 3, data: null, error: mismatch.error, unavailable: false, model: true };
+  if (mismatch) return CLIENT_MODEL(mismatch);
   return spawnClient(ctx, s, args, { timeoutMs, input, thread });
+}
+
+/**
+ * runClient for a caller that can wait (hooks): the call runs inside this process (clientInProcess) while the service
+ * answers; a call with stdin, a client that cannot run here (clientMain) and a service that does not answer go the way
+ * of runClient: a process of its own, which may start the service and is stopped at its deadline.
+ */
+export async function runClientAsync(ctx, args, { timeoutMs, input, thread } = {}) {
+  const s = commsSettings(ctx);
+  if (!s.enabled) return CLIENT_OFF(s);
+  if (!(await overdueEnded(timeoutMs ?? s.waitMs))) return clientResult(null);
+  const main = input === undefined ? await clientMain(ctx, s) : null;
+  const up = main ? await serviceUp(main, ctx, s) : null;
+  if (!up) return runClient(ctx, args, { timeoutMs, input, thread });
+  if (up.mismatch) return CLIENT_MODEL(up.mismatch);
+  return clientInProcess(main, ctx, s, args, { timeoutMs, thread });
+}
+
+/** The outbox holds a queued write, or cannot be told (the client's own default outbox). */
+function outboxWaits(s) {
+  if (!s.outbox) return true;
+  try { return fs.readdirSync(s.outbox).some((f) => f.endsWith('.json')); } catch { return false; }
+}
+
+/**
+ * The mail calls of one hook at once (operator 2026-11-19: parallel and asynchronous, without a race). `list`: items
+ * `{ args, timeoutMs, thread }`, or `{ result }` for a call that is not made; the results come in the same order.
+ * Only calls that may run twice and queue nothing during an outage belong here (obligations, turn open).
+ * They run at once only inside this process, after the service answered (serviceUp), so none of them starts it. They
+ * run one after another (runClientAsync), as before, when a race is possible or the fast way is closed:
+ * - the outbox holds a queued write: every call sends the outbox first, two of them at once would send an item twice
+ *   (a queued `closed` without opened_at after the new `open` closes the new turn);
+ * - the service does not answer, speaks another model, or the client cannot run in this process;
+ * - one of the calls made at once did not pass (the service went away): all are made again in order.
+ */
+export async function runClientsAsync(ctx, list) {
+  const inOrder = async () => { const out = []; for (const c of list) out.push(c.args ? await runClientAsync(ctx, c.args, { timeoutMs: c.timeoutMs, thread: c.thread }) : c.result); return out; };
+  const s = commsSettings(ctx);
+  if (!s.enabled || list.filter((c) => c.args).length < 2 || outboxWaits(s) || overdue.size) return inOrder();
+  const main = await clientMain(ctx, s);
+  const up = main ? await serviceUp(main, ctx, s) : null;
+  if (!up || up.mismatch) return inOrder();
+  const res = await Promise.all(list.map((c) => (c.args ? clientInProcess(main, ctx, s, c.args, { timeoutMs: c.timeoutMs, thread: c.thread }) : c.result)));
+  const passed = (r) => r.ok && !r.data?.unavailable && !r.data?.offline;
+  return res.every((r, i) => !list[i].args || passed(r)) ? res : inOrder();
 }
 
 /** Obligations query of held topics (section 2): work topics as `<project>/<topic>`, topic main as the persona mailbox. */
@@ -342,12 +517,24 @@ export function obligationsArgs(ctx, held = []) {
  * `topics` (`<project>/<topic>` list) replaces the held topics; `thread: null` asks without a thread (another topic's view).
  * Returns the runClient result; `none: true` when there is nothing to ask for.
  */
-export function readObligations(ctx, { held = [], topics = null, since = null, thread } = {}) {
+export function readObligations(ctx, query = {}) {
+  const c = obligationsCall(ctx, query);
+  return c.result || runClient(ctx, c.args, { thread: c.thread });
+}
+
+/** readObligations for a caller that can wait (hooks, runClientAsync). */
+export async function readObligationsAsync(ctx, query = {}) {
+  const c = obligationsCall(ctx, query);
+  return c.result || runClientAsync(ctx, c.args, { thread: c.thread });
+}
+
+/** The client call of readObligations: `{ args, thread }`, or `{ result }` when there is nothing to ask for. */
+export function obligationsCall(ctx, { held = [], topics = null, since = null, thread } = {}) {
   const th = thread === undefined ? ctx.thread : thread;
   const a = topics ? ['obligations', ...(topics.length ? ['--topics', topics.join(',')] : [])] : obligationsArgs(ctx, held);
-  if (!th && a.length === 1) return { ok: false, none: true, error: 'no thread or held topic: not checked' };
+  if (!th && a.length === 1) return { result: { ok: false, none: true, error: 'no thread or held topic: not checked' } };
   if (since != null && since !== '') a.push('--since', String(since));
-  return runClient(ctx, a, { thread: th });
+  return { args: a, thread: th };
 }
 
 /** Age of the backup for the status line: `45 s`, `12 min`, `3 h`. */
@@ -412,13 +599,22 @@ export function categoryLabel(item) {
  * Returns { count, blockers, steers, items, available, unknown, offline, note, configured, model, obligations }.
  */
 export function mailCount(ctx, held = [], { since = null } = {}) {
+  return mailCounted(ctx, commsSettings(ctx).enabled ? readObligations(ctx, { held, since }) : null);
+}
+
+/** mailCount for a caller that can wait (hooks, runClientAsync). */
+export async function mailCountAsync(ctx, held = [], { since = null } = {}) {
+  return mailCounted(ctx, commsSettings(ctx).enabled ? await readObligationsAsync(ctx, { held, since }) : null);
+}
+
+/** The result of mailCount from the answer `res` of its obligations call (not asked while the mail is off). */
+export function mailCounted(ctx, res) {
   const s = commsSettings(ctx);
   const out = { count: 0, blockers: 0, steers: 0, items: [], available: false, unknown: false, offline: false, note: null, configured: s.enabled, obligations: null };
   if (!s.enabled) {
     if (s.configured && s.clientRel) out.note = s.reason; // explicit client path that does not exist: configuration error
     return out;
   }
-  const res = readObligations(ctx, { held, since });
   // Nothing to ask for (no thread, no held topic): the mail is not checked, so it is unknown, never `0` as checked.
   if (res.none || !res.ok) { out.unknown = true; out.note = res.error; out.model = !!res.model; return out; }
   const d = res.data || {};
@@ -556,38 +752,62 @@ const TURN_OPTIONAL = ['--discussion', '--opened-at', '--resume-at'];
  * client without `--opened-at`, `--resume-at` or `--discussion` (usage error naming it) gets the call again without it.
  * Never throws.
  */
-export function recordTurn(ctx, state, held = [], { openedAt = null, next = null, resumeAt = null, discussion = null } = {}) {
+export async function recordTurn(ctx, state, held = [], opts = {}) {
   try {
-    const s = commsSettings(ctx);
-    if (!s.enabled || !ctx.thread) return { ok: false, skipped: true };
-    const h = held[0];
-    const args = ['turn', '--state', state, '--machine', String(h?.holder?.machine || machineName())];
-    if (h) {
-      if (!isMainTopic(h)) args.push('--project', topicProject(s, h), '--topic', h.id);
-      if (h.holder?.mode === 'operator' || h.holder?.mode === 'auto') args.push('--holder-mode', h.holder.mode);
-    }
-    const timeoutMs = Math.min(s.waitMs, 1000);
-    // P-026: the next step of the held work topic goes with `closed`; wake rings the thread to continue it.
-    if (state === 'closed' && next) args.push('--next', String(next).slice(0, 300));
-    // P-061: the thread timer; wake rings the thread at resume_at with the next step.
-    if (state === 'closed' && next && resumeAt) args.push('--resume-at', String(resumeAt));
-    if (state === 'closed' && openedAt) args.push('--opened-at', String(openedAt));
-    if (typeof discussion === 'boolean') args.push('--discussion', discussion ? 'open' : 'closed');
-    let call = args;
-    let res = runClient(ctx, call, { timeoutMs });
-    // An older mail client refuses a newer option (usage error naming it): the call goes again without it. Without
-    // --resume-at the step is rung after the usual delay; without --discussion the mail rings as before.
-    for (let tries = 0; !res.ok && res.code === 1 && tries < TURN_OPTIONAL.length; tries++) {
-      const flag = TURN_OPTIONAL.find((f) => call.includes(f) && String(res.error || '').includes(f.slice(2)));
-      if (!flag) break;
-      call = call.filter((a, i, all) => a !== flag && all[i - 1] !== flag);
-      res = runClient(ctx, call, { timeoutMs });
-    }
-    if (res.ok && res.data && res.data.ok === false) return { ok: false, ...res.data };
-    return res.ok ? { ok: true, ...(res.data || {}) } : { ok: false, unavailable: !!res.unavailable, error: res.error };
+    const call = turnCall(ctx, state, held, opts);
+    return call ? await turnRecorded(ctx, call, await runClientAsync(ctx, call.args, { timeoutMs: call.timeoutMs })) : { ok: false, skipped: true };
   } catch (err) {
     return { ok: false, error: err.message };
   }
+}
+
+/** The client call of recordTurn: `{ args, timeoutMs }`, or null (mail off, no thread: nothing is recorded). */
+function turnCall(ctx, state, held = [], { openedAt = null, next = null, resumeAt = null, discussion = null } = {}) {
+  const s = commsSettings(ctx);
+  if (!s.enabled || !ctx.thread) return null;
+  const h = held[0];
+  const args = ['turn', '--state', state, '--machine', String(h?.holder?.machine || machineName())];
+  if (h) {
+    if (!isMainTopic(h)) args.push('--project', topicProject(s, h), '--topic', h.id);
+    if (h.holder?.mode === 'operator' || h.holder?.mode === 'auto') args.push('--holder-mode', h.holder.mode);
+  }
+  // P-026: the next step of the held work topic goes with `closed`; wake rings the thread to continue it.
+  if (state === 'closed' && next) args.push('--next', String(next).slice(0, 300));
+  // P-061: the thread timer; wake rings the thread at resume_at with the next step.
+  if (state === 'closed' && next && resumeAt) args.push('--resume-at', String(resumeAt));
+  if (state === 'closed' && openedAt) args.push('--opened-at', String(openedAt));
+  if (typeof discussion === 'boolean') args.push('--discussion', discussion ? 'open' : 'closed');
+  return { args, timeoutMs: Math.min(s.waitMs, 1000) };
+}
+
+/** The result of recordTurn from the answer `res` of its call (a call made together with another one: runClientsAsync). */
+async function turnRecorded(ctx, call, res) {
+  // An older mail client refuses a newer option (usage error naming it): the call goes again without it. Without
+  // --resume-at the step is rung after the usual delay; without --discussion the mail rings as before.
+  let args = call.args;
+  for (let tries = 0; !res.ok && res.code === 1 && tries < TURN_OPTIONAL.length; tries++) {
+    const flag = TURN_OPTIONAL.find((f) => args.includes(f) && String(res.error || '').includes(f.slice(2)));
+    if (!flag) break;
+    args = args.filter((a, i, all) => a !== flag && all[i - 1] !== flag);
+    res = await runClientAsync(ctx, args, { timeoutMs: call.timeoutMs });
+  }
+  if (res.ok && res.data && res.data.ok === false) return { ok: false, ...res.data };
+  return res.ok ? { ok: true, ...(res.data || {}) } : { ok: false, unavailable: !!res.unavailable, error: res.error };
+}
+
+/**
+ * The mail of a prompt, asked together (runClientsAsync): what the thread owes and awaits in its mailboxes `mailTopics`
+ * (`counted`, as mailCount) and the open turn record of its held topics (`opened`, as recordTurn). Neither needs the
+ * other's answer and the service keeps them apart (messages, turn record).
+ */
+export async function promptMail(ctx, { mailTopics = [], held = [], since = null, discussion = null } = {}) {
+  const asked = commsSettings(ctx).enabled ? obligationsCall(ctx, { held: mailTopics, since }) : { result: null };
+  let turn = null;
+  try { turn = turnCall(ctx, 'open', held, { discussion }); } catch { /* the prompt goes on without the turn record */ }
+  const [obligations, first] = await runClientsAsync(ctx, [asked, turn || { result: null }]);
+  let opened = { ok: false, skipped: true };
+  if (turn) { try { opened = await turnRecorded(ctx, turn, first); } catch (err) { opened = { ok: false, error: err.message }; } }
+  return { counted: mailCounted(ctx, obligations), opened };
 }
 
 /**

@@ -3,14 +3,14 @@
 // a tool call the main thread learns once that a blocker or steer waits in its mailbox; checked at most every 15 s, silent
 // when the mail service is down (P-041). Subagents are not watched. Own edits (P-018): the content the thread left in
 // a file it changed from a clean state is recorded, so restoring it later does not ask the operator. Otherwise no output.
-import { readHookInput, emit, isMain, contextOutput } from '../scripts/hooks-io.mjs';
+import { readHookInput, emitAndExit, isMain, contextOutput } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState, SCRATCH_DIR } from '../scripts/config.mjs';
 import { isInside } from '../scripts/util.mjs';
 import { isSessionWorkPath } from '../scripts/layout.mjs';
 import { markProgress } from '../scripts/topic-turn.mjs';
 import { withLift } from '../scripts/bypass.mjs';
 import { bufferAppend, normalizeCommand } from '../scripts/logs.mjs';
-import { mailCount, recordWaitingOperator, categoryOf } from '../scripts/comms.mjs';
+import { mailCountAsync, recordWaitingOperator, categoryOf } from '../scripts/comms.mjs';
 import { mailboxTopics } from '../scripts/topic.mjs';
 import path from 'node:path';
 import { heldTopics, topicCopyPath, taskCopyPaths } from '../scripts/topic.mjs';
@@ -84,13 +84,15 @@ export function watchLine(items = [], seen = []) {
  * assist waits for the end of the discussion (D-0022, not watched anyway). The waiting mail is the inbox of the mail's
  * `obligations` (P-072).
  */
-export function watch(ctx, input, now = Date.now()) {
+export async function watch(ctx, input, now = Date.now()) {
   if (input.agent_id || input.agent_type || !ctx.brainDir || !ctx.thread) return null;
   const state = readThreadState(ctx.brainDir, ctx.thread);
   if (now - (state.watch_at || 0) < WATCH_INTERVAL_MS) return null;
   const upd = updateNotice(state);
-  const mail = mailCount(ctx, mailboxTopics(ctx));
+  // watch_at is written before the mail is asked: the question waits (await), and the state read above must not come back
+  // over what another hook of this thread wrote meanwhile.
   writeThreadState(ctx.brainDir, ctx.thread, { ...state, ...(upd?.patch || {}), watch_at: now });
+  const mail = await mailCountAsync(ctx, mailboxTopics(ctx));
   const lines = upd?.line ? [upd.line.replace('changed rules follow in full', 'changed rules come with the next prompt')] : [];
   const res = mail.available ? watchLine(mail.items || [], state.watch_seen || []) : null;
   if (res) {
@@ -178,7 +180,7 @@ export function progressCommand(command) {
   return !!save && save[1] !== 'handover';
 }
 
-export function run(input, now = Date.now()) {
+export async function run(input, now = Date.now()) {
   const ctx = loadContext({ requireBrain: false });
   if (!ctx.brainDir) return {};
   // P-061 (V1): the operator answered (or dismissed) the dialog: the open turn no longer waits for the operator.
@@ -214,7 +216,7 @@ export function run(input, now = Date.now()) {
   if (entry?.kind === 'cmd' && !input.agent_id && ctx.thread && progressCommand(input.tool_input?.command)) markProgress(ctx.brainDir, ctx.thread, now);
   // P-061: a waker armed by this call (background task or agent, scheduler, mail) lets the turn end waiting.
   if (!input.agent_id && ctx.thread) recordWaker(ctx.brainDir, ctx.thread, wakerFromTool(input, now));
-  const lines = [shown, readBudget(ctx, input), watch(ctx, input, now), compactLine(ctx, input)].filter(Boolean);
+  const lines = [shown, readBudget(ctx, input), await watch(ctx, input, now), compactLine(ctx, input)].filter(Boolean);
   return lines.length ? contextOutput('PostToolUse', lines.join('\n')) : {};
 }
 
@@ -256,11 +258,11 @@ if (isMain(import.meta.url)) {
   let out = {};
   try {
     const input = readHookInput();
-    out = run(input);
+    out = await run(input);
     const push = pushFailureLine(input);
     if (push) out = { ...out, ...contextOutput('PostToolUse', [out.hookSpecificOutput?.additionalContext, push].filter(Boolean).join('\n')) };
   } catch (err) {
     process.stderr.write(`post-tool-use: ${err.message}\n`);
   }
-  emit(out);
+  emitAndExit(out);
 }

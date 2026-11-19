@@ -67,11 +67,12 @@ export function codexHooks(pluginRoot = PLUGIN_ROOT) {
       // Codex reports file edits as tool `apply_patch` (matchers Edit|Write also match it); shell is `Bash`.
       if (g.matcher) group.matcher = event === 'PreToolUse' ? `${g.matcher}|apply_patch` : g.matcher;
       group.hooks = g.hooks.map((h) => {
-        const script = h.args[0].replace('${CLAUDE_PLUGIN_ROOT}/', '');
+        // args: the entry hooks/run.mjs and the hook name (hooks.json).
+        const [entry, name] = h.args;
         // hooks.json has no `args` field in Codex: one command string, run with the session cwd (docs).
         const command = TRANSLATED_EVENTS[event]
           ? `node "${root}/adapters/codex/hook.mjs" ${TRANSLATED_EVENTS[event]}`
-          : `node "${root}/${script}"`;
+          : `node "${root}/${entry.replace('${CLAUDE_PLUGIN_ROOT}/', '')}" ${name}`;
         const out = { type: 'command', command, timeout: h.timeout, statusMessage: `workflow ${event}` };
         // Boot context up to 15 000 chars must reach the model whole (P-021, P-022); default threshold is 2500 tokens.
         if (event === 'SessionStart') out.additionalContextLimit = 0;

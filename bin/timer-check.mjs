@@ -45,7 +45,7 @@ try {
     const st = readThreadState(entry.brain, thread);
     writeThreadState(entry.brain, thread, { ...st, last_close: { next: r.resume.next, resume_at: r.resume.at } });
     // The same close the Stop hook sent, with the new time: discussion as that turn ended (Stop: state otázka).
-    const res = recordTurn(ctx, 'closed', heldTopics(entry.brain, thread), { openedAt: st.turn_opened_at || null, next: r.resume.next, resumeAt: r.resume.at, discussion: st.last_end_state === 'otázka' });
+    const res = await recordTurn(ctx, 'closed', heldTopics(entry.brain, thread), { openedAt: st.turn_opened_at || null, next: r.resume.next, resumeAt: r.resume.at, discussion: st.last_end_state === 'otázka' });
     const mail = res.ok ? (res.stale ? 'turn record newer, left' : 'turn record moved') : `turn record not moved (${res.error || 'mail off'}): the prompt hook checks it`;
     for (const d of done.slice(0, -1)) process.stdout.write(`${thread}: condition does not hold (${d.timer.until}), timer moved to ${d.timer.at}\n`);
     process.stdout.write(`${thread}: condition does not hold (${r.timer.until}), timer moved to ${r.timer.at}; ${mail}\n`);

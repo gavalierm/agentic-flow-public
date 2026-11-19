@@ -1,6 +1,6 @@
 # hooks/
 
-Hooky pluginu pre Claude Code. `hooks.json` ich registruje v exec forme (`"command": "node"`, skript v `args` cez `${CLAUDE_PLUGIN_ROOT}`), skripty `*.mjs` prekladajú vstup/výstup Claude Code; logika je v `scripts/` (P-017, P-034). Každý skript exportuje `HOOK_META` (udalosť, trieda výstupu podľa P-023, limit); test `hooks-json.test.mjs` to kontroluje. Codex volá tie isté skripty z generovaného `<project>/.codex/hooks.json`; kde sa formát líši (SessionStart, PreToolUse, Stop), ide cez prekladač `adapters/codex/hook.mjs`.
+Hooky pluginu pre Claude Code. `hooks.json` ich registruje v exec forme (`"command": "node"`, v `args` vstupný skript `run.mjs` cez `${CLAUDE_PLUGIN_ROOT}` a meno hooku: `run.mjs` zapne kompilačnú cache node a spustí `<meno>.mjs`, P-079), skripty `*.mjs` prekladajú vstup/výstup Claude Code; logika je v `scripts/` (P-017, P-034). Každý skript exportuje `HOOK_META` (udalosť, trieda výstupu podľa P-023, limit); test `hooks-json.test.mjs` to kontroluje. Codex volá tie isté skripty z generovaného `<project>/.codex/hooks.json`; kde sa formát líši (SessionStart, PreToolUse, Stop), ide cez prekladač `adapters/codex/hook.mjs`.
 
 | Súbor | Udalosť | Princíp | Trieda výstupu (P-023) |
 |---|---|---|---|

@@ -6,12 +6,12 @@
 // Flow v2: the lock of each held topic is checked after the pull (spec 4.2.4); a continuation bell is counted in .tema.json
 // with the cap topics.continue_max and the stuck mark (spec 10.2, plan B4, scripts/topic-turn.mjs).
 import path from 'node:path';
-import { readHookInput, emit, contextOutput, isMain, enforceLines } from '../scripts/hooks-io.mjs';
+import { readHookInput, emitAndExit, contextOutput, isMain, enforceLines } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { deployedSkillName } from '../scripts/skills-sync.mjs';
 import { statusInfo, rulesHash, rulesSections, changedRules, BOOT_MARKERS } from '../scripts/boot.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
-import { recordTurn, runClient, mailNoticeLine, heldMailLine, isMainTopic, turnDiscussion, recentLine, OWED_PREFIX, OWED_LINE, unansweredOwed, ageText, supervisorOf, fromSupervisor, mailSenders } from '../scripts/comms.mjs';
+import { recordTurn, runClientAsync, promptMail, mailNoticeLine, heldMailLine, isMainTopic, turnDiscussion, recentLine, OWED_PREFIX, OWED_LINE, unansweredOwed, ageText, supervisorOf, fromSupervisor, mailSenders } from '../scripts/comms.mjs';
 import { migrateLocalMail } from '../scripts/comms-migrate.mjs';
 import { setTimer, untilMet, threadTimers, timersPatch, sameTimer, finishedTasks, withoutFinished, AUTO_TIMER_MS } from '../scripts/waker.mjs';
 import { readReports } from '../scripts/report.mjs';
@@ -19,7 +19,7 @@ import { PLUGIN_ROOT, toPosix, localTime } from '../scripts/util.mjs';
 import { threadTitleSignal } from '../scripts/thread-title.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 import { startDriftJudge, ownWords, driftJob, noTopicJob } from '../scripts/drift.mjs';
-import { listTopics, mailboxTopics, NEW_TOPIC_ASK } from '../scripts/topic.mjs';
+import { listTopics, heldTopics, mailboxTopics, NEW_TOPIC_ASK } from '../scripts/topic.mjs';
 import { brainWrite } from '../scripts/brain.mjs';
 import { verifyLocks, LOCK_LOST_LINE, countContinue, continueMax, STUCK_LINE } from '../scripts/topic-turn.mjs';
 import { staleSessionCatchUp } from '../scripts/t3-stale-session.mjs';
@@ -241,7 +241,7 @@ export function messageBellLine(kind, id, data) {
   return `${head}: undelivered${detail}${P047_ACTIONS}`;
 }
 
-export function run(input) {
+export async function run(input) {
   const ctx = loadContext({ requireBrain: false });
   const parsed = parsePrompt(input.prompt, ctx.policy);
   const kind = parsed.kind;
@@ -254,7 +254,13 @@ export function run(input) {
   // passes. The mail learns it with the turn record and holds back those rings.
   const discussion = prior ? turnDiscussion(turnSource, prior, kind) : turnSource === 'operator';
   // `since`: the cursor of the mail's recent rows shown at an earlier prompt (the mail drops those rows, section 2).
-  const info = statusInfo(ctx, { discussion, since: prior?.mail_cursor ?? null });
+  const since = prior?.mail_cursor ?? null;
+  // Turn record for keepalive (P-043); an outage never blocks the prompt. `opened_at` of the record goes back with `closed`
+  // at Stop so a late Stop cannot close a newer turn (older server: no opened_at, closed as before). It is asked together
+  // with the mail of the status line (promptMail: inside this process, at once, operator 2026-11-19).
+  const held = ctx.brainDir ? heldTopics(ctx.brainDir, ctx.thread) : [];
+  const mail = await promptMail(ctx, { mailTopics: ctx.brainDir ? mailboxTopics(ctx) : [], held, since, discussion });
+  const info = statusInfo(ctx, { discussion, since, held, counted: mail.counted });
   const lines = [];
   const extras = [];
   let state = null;
@@ -279,18 +285,16 @@ export function run(input) {
   const cursor = ob && !ob.offline && !quietBell && ob.cursor != null ? ob.cursor : prior?.mail_cursor ?? null;
   // P-023 e: the status line repeats only when it changed (topic, mode, mail) or a wake/keepalive turn starts.
   if (!state || info.line !== state.last_status || BELLS.includes(kind)) lines.push(info.line);
-  // Turn record for keepalive (P-043); an outage never blocks the prompt. `opened_at` of the record goes back with `closed`
-  // at Stop so a late Stop cannot close a newer turn (older server: no opened_at, closed as before).
-  const opened = recordTurn(ctx, 'open', info.held, { discussion });
+  const opened = mail.opened;
   const openedAt = opened?.ok ? opened.turn?.opened_at ?? null : null;
   // P-061 (audit 2026-11-11, M1): a turn that is only protocol ends here without a model call. The turn opened above (wake
   // rings an idle thread again only after a turn opened) is closed with the step and time the last Stop sent; without them
   // (a state from before) the turn runs, a close without its resume time would drop the thread timer.
   const lastClose = state?.last_close || (threadTimers(state)[0] ? { next: threadTimers(state)[0].then, resume_at: threadTimers(state)[0].at } : null);
-  const quietEnd = (reason, close) => {
+  const quietEnd = async (reason, close) => {
     // turn_opened_at: the wake job timer-check closes this record again with it (a stale one is refused by the mail).
     writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_close: { next: close.next ?? null, resume_at: close.resume_at ?? null }, ...(openedAt ? { turn_opened_at: openedAt } : {}) });
-    recordTurn(ctx, 'closed', info.held, { openedAt, next: close.next ?? null, resumeAt: close.resume_at ?? null, discussion });
+    await recordTurn(ctx, 'closed', info.held, { openedAt, next: close.next ?? null, resumeAt: close.resume_at ?? null, discussion });
     return { decision: 'block', reason };
   };
   // Spec 4.2.4: a turn of a thread that holds a topic checks its lock after the pull first. A bell of a thread that holds
@@ -327,7 +331,7 @@ export function run(input) {
         ? `wake: mail unavailable (${info.mail.model ? info.mail.note : 'comms unavailable'}): run comms receive when it is back, or end the turn with only your **Stav:** line (P-061)`
         : 'wake: no new mail; end the turn with only your **Stav:** line (P-061)');
   } else if (messageBell) {
-    const res = runClient(ctx, ['message', '--id', parsed.id]);
+    const res = await runClientAsync(ctx, ['message', '--id', parsed.id]);
     // An error report the maintainer thread did not pick up (gone or silent) goes to a public issue (spec 7.4), not
     // "send elsewhere" by guess.
     const errReport = (ctx.brainDir || ctx.projectDir) && readReports(ctx)[parsed.id];
@@ -480,8 +484,8 @@ export function run(input) {
 
 if (isMain(import.meta.url)) {
   try {
-    emit(run(readHookInput()));
+    emitAndExit(await run(readHookInput()));
   } catch (err) {
-    emit(contextOutput('UserPromptSubmit', `thread ${process.env.WORKFLOW_THREAD_ID || process.env.T3CODE_THREAD_ID || '-'} | topic - | mail: ? (${err.message})`));
+    emitAndExit(contextOutput('UserPromptSubmit', `thread ${process.env.WORKFLOW_THREAD_ID || process.env.T3CODE_THREAD_ID || '-'} | topic - | mail: ? (${err.message})`));
   }
 }

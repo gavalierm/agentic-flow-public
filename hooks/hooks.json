@@ -1,19 +1,19 @@
 {
-  "description": "Workflow hooks (P-021, P-023). Exec form: command node, script via ${CLAUDE_PLUGIN_ROOT} (works on Windows, P-034). Output class and limit are declared as HOOK_META in each script.",
+  "description": "Workflow hooks (P-021, P-023). Exec form: command node, the entry hooks/run.mjs via ${CLAUDE_PLUGIN_ROOT} (works on Windows, P-034) with the hook name: it turns on the compile cache of node and runs hooks/<name>.mjs (P-079). Output class and limit are declared as HOOK_META in each script.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs"], "timeout": 60 },
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start-rules.mjs", "1"], "timeout": 30 },
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start-rules.mjs", "2"], "timeout": 30 }
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs", "session-start"], "timeout": 60 },
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs", "session-start-rules", "1"], "timeout": 30 },
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs", "session-start-rules", "2"], "timeout": 30 }
         ]
       }
     ],
     "UserPromptSubmit": [
       {
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.mjs"], "timeout": 15 }
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs", "user-prompt-submit"], "timeout": 15 }
         ]
       }
     ],
@@ -21,42 +21,42 @@
       {
         "matcher": "Write|Edit|MultiEdit|NotebookEdit|Artifact|Bash|PowerShell|Monitor|WebFetch|WebSearch|Agent|Task|AskUserQuestion|mcp__.*__t3_thread_send|mcp__.*__html_preview|mcp__.*__(.*[_-])?(act|click|type|fill|form|submit|create|update|delete|remove|send|post|write|set|apply|upload|trash|edit|patch|insert|replace|move|press|select|drag|evaluate|javascript|reply|forward|label|mark|share|copy|rename|run|execute|batch|key|respond|merge|commit|push|deploy|publish|computer)([_-].*)?",
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/pre-tool-use.mjs"], "timeout": 15 }
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs", "pre-tool-use"], "timeout": 15 }
         ]
       }
     ],
     "PostToolUse": [
       {
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.mjs"], "timeout": 15 }
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs", "post-tool-use"], "timeout": 15 }
         ]
       }
     ],
     "PostToolUseFailure": [
       {
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.mjs"], "timeout": 15 }
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs", "post-tool-use"], "timeout": 15 }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/stop.mjs"], "timeout": 60 }
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs", "stop"], "timeout": 60 }
         ]
       }
     ],
     "SubagentStop": [
       {
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/subagent-stop.mjs"], "timeout": 15 }
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs", "subagent-stop"], "timeout": 15 }
         ]
       }
     ],
     "PreCompact": [
       {
         "hooks": [
-          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/pre-compact.mjs"], "timeout": 15 }
+          { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs", "pre-compact"], "timeout": 15 }
         ]
       }
     ]
