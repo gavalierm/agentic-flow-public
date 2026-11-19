@@ -158,6 +158,7 @@
       "bin/brain-init.mjs",
       "bin/project.mjs"
     ],
+    "subagent_deny_commands": [],
     "worker_full_test_commands": [
       "^(?:npm|pnpm|yarn)\\s+(?:run\\s+)?test(?:\\s|$)",
       "^node(?:\\s+--\\S+)*\\s+--test(?:\\s+--\\S+)*\\s*$",

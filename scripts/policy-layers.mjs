@@ -18,6 +18,7 @@ export const POLICY_KEY_CLASSES = {
   'harness.subagent_denied_scripts': 'union',
   'harness.ask_commands': 'union',
   'harness.deny_commands': 'union',
+  'harness.subagent_deny_commands': 'union',
   'harness.worker_full_test_commands': 'union',
   immutable_principles: 'union',
   'harness.ask_commands_except': 'intersect',
@@ -44,8 +45,8 @@ export function keyClass(key) {
 const hasClassBelow = (key) => Object.keys(POLICY_KEY_CLASSES).some((k) => k.startsWith(`${key}.`) && POLICY_KEY_CLASSES[k] !== 'ignore');
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-// Identity of a list entry: deny_commands entries by their `match`, other entries by value.
-const entryId = (key, e) => (key === 'harness.deny_commands' && isObj(e) ? `match:${e.match}` : JSON.stringify(e));
+// Identity of a list entry: deny_commands and subagent_deny_commands entries by their `match`, other entries by value.
+const entryId = (key, e) => (/^harness\.(?:subagent_)?deny_commands$/.test(key) && isObj(e) ? `match:${e.match}` : JSON.stringify(e));
 
 function tightenValue(key, cls, base, value) {
   if (cls === 'union' || cls === 'intersect') {

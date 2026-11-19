@@ -171,13 +171,19 @@ export function slotShellRewrite(command, patterns) {
 
 /** P-076: a rule of deny_commands without its own reason still names the way that passes (the agent tried other forms). */
 export const DENIED_COMMAND_WAY = 'command form forbidden by the project: change one file with Edit (after Read), write a new file with Write, read with Read or Grep';
-export function deniedCommand(command, rules, cwd = '') {
+/**
+ * The way of a command a subagent may not run (policy `harness.subagent_deny_commands`, the shape of deny_commands): the
+ * brain names the commands that stay with the thread, a live write among them. A limit in the words of a brief does not
+ * hold: a worker allowed a live write test on one test record ran the write with a plan of live records (2026-11-19).
+ */
+export const SUBAGENT_DENIED_WAY = 'a subagent does not run this command: return the exact command and what it has to prove in your result, the thread that started you runs it';
+export function deniedCommand(command, rules, cwd = '', { key = 'harness.deny_commands', way = DENIED_COMMAND_WAY } = {}) {
   const text = `${cwd ? `cd '${cwd}'\n` : ''}${dataQuotesMasked(String(command || ''))}`;
   for (const r of Array.isArray(rules) ? rules : []) {
     if (!r || typeof r.match !== 'string' || !r.match) continue;
     let re;
     try { re = new RegExp(r.match); } catch { continue; }
-    if (re.test(text)) return `${r.reason || DENIED_COMMAND_WAY} (policy harness.deny_commands of the brain)`;
+    if (re.test(text)) return `${r.reason || way} (policy ${key} of the brain)`;
   }
   return null;
 }
@@ -1768,6 +1774,8 @@ export function run(input) {
     if (hit) return permissionOutput('deny', `subagents do not write to brain or hold topics (${hit}); return the result to the main agent (P-025)`);
     const comms = commsSubagentCheck(cmd, input.agent_type);
     if (comms) return permissionOutput('deny', comms);
+    const kept = deniedCommand(cmd, policy.harness?.subagent_deny_commands, cwd, { key: 'harness.subagent_deny_commands', way: SUBAGENT_DENIED_WAY });
+    if (kept) return permissionOutput('deny', kept);
     // Spec 3.7: in a task worktree the worker commits (only commit); the rest stays with the topic thread.
     const inTask = gitWriteDirs(cmd, cwd, TASK_THREAD_GIT).find((d) => inTaskCopy(ctx, d));
     if (inTask) return permissionOutput('deny', `a worker commits in a task worktree (${toPosix(inTask)}) but does not push, merge, rebase, tag or reset there: the post-commit hook pushes each commit and the topic thread merges the task with topic.mjs task-merge after review (spec 3.7); commit your changes and return a summary of them and the tests run`);
@@ -1875,12 +1883,13 @@ export function run(input) {
   }
   // A refused forced add names its own way (git add without -f, a named file) on the same paths: it locks nothing.
   // So does a command form the brain forbids (deny_commands): it names the tool for the same file (Edit, multi-replace),
-  // and its lock denied that Edit as a bypass until the end of the turn (report-14a1f628, 2026-11-13).
+  // and its lock denied that Edit as a bypass until the end of the turn (report-14a1f628, 2026-11-13). The same holds for
+  // subagent_deny_commands: its way is the same command run by the thread, which a lock would refuse in that turn.
   // Nor does a step that needs the operator's consent (D-0042): it locked nothing while it was a window, the same check
   // guards every call.
   // Nor does the catalog reminder: the first listing of a source is refused once and the same command passes again (its
   // own words); its lock closed every path of the call, a memory record too, for the rest of the turn (doma-pc 2026-11-16).
-  if (decision === 'deny' && state && !/ adds ignored files too |\(policy harness\.deny_commands of the brain\)$|\(P-042, D-0042\)$|^katalóg: pre dáta v /.test(out.hookSpecificOutput.permissionDecisionReason || '')) {
+  if (decision === 'deny' && state && !/ adds ignored files too |\(policy harness\.(?:subagent_)?deny_commands of the brain\)$|\(P-042, D-0042\)$|^katalóg: pre dáta v /.test(out.hookSpecificOutput.permissionDecisionReason || '')) {
     const found = analyze(tool, toolInput, cwd, anchors);
     const write = found.write;
     // A P-052 refusal (write outside the project) is about the outside target only: the way it names, a work file in
