@@ -274,15 +274,21 @@ test('Stop 10.3 item 3: the dialog only in a turn the operator did not start, at
     const ask = 'Porovnanie hotové.\n\n**Otázky na operátora:**\n1. Variant A alebo B?\n\n**Handover:**\n1. alpha → žiadny\n\n**Stav:** otázka';
     fx.hook('user-prompt-submit.mjs', { prompt: 'porovnaj varianty' });
     assert.equal(stopRaw(fx, ask).decision, undefined, 'the operator reads the reply: no dialog');
+    // a project 2026-11-19: a bell turn does not ask again what the operator already saw (no context in the dialog).
     turnOf(fx, 'wake');
-    assert.match(stopRaw(fx, ask).reason, /ask the first item of \*\*Otázky na operátora:\*\* with AskUserQuestion now/);
+    assert.equal(stopRaw(fx, ask).decision, undefined, 'the question the operator saw in their turn: no dialog again');
+    // A new question in a bell turn is asked with a dialog.
+    assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--task', 'T', '--questions', 'Variant A alebo B?; Zverejniť?']).status, 0);
+    const ask2 = 'Porovnanie hotové.\n\n**Otázky na operátora:**\n1. Variant A alebo B?\n2. Zverejniť?\n\n**Handover:**\n1. alpha → žiadny\n\n**Stav:** otázka';
+    turnOf(fx, 'wake');
+    assert.match(stopRaw(fx, ask2).reason, /ask the first item of \*\*Otázky na operátora:\*\* with AskUserQuestion now/);
     const st = readState(fx.brain, 'a1');
     fs.writeFileSync(stateFile(fx.brain, 'a1'), JSON.stringify({ ...st, dialog_at: new Date(Date.now() + 1000).toISOString() }));
-    assert.equal(stopRaw(fx, ask).decision, undefined, 'a dialog asked in the turn: only that it was asked counts');
+    assert.equal(stopRaw(fx, ask2).decision, undefined, 'a dialog asked in the turn: only that it was asked counts');
     // A mail turn that goes on with a next step needs no dialog: it would hold the continuation (operator 2026-11-17).
     assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--next', 'zostaviť register']).status, 0);
     turnOf(fx, 'wake');
-    const goesOn = 'Pošta spracovaná.\n\n**Otázky na operátora:**\n1. Variant A alebo B?\n\n**Handover:**\n1. alpha → zostaviť register\n\n**Stav:** otázka';
+    const goesOn = 'Pošta spracovaná.\n\n**Otázky na operátora:**\n1. Variant A alebo B?\n2. Zverejniť?\n\n**Handover:**\n1. alpha → zostaviť register\n\n**Stav:** otázka';
     assert.equal(stopRaw(fx, goesOn).decision, undefined, 'otázka with a next step: no dialog');
   } finally { fx.cleanup(); }
 });

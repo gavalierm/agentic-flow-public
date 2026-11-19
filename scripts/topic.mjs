@@ -20,6 +20,7 @@ import { registerTopic, mailCount, mailLines, isMainTopic, MAIN_TOPIC, runClient
 import { checkOverlap, topicScopeText } from './overlap.mjs';
 import { freezeRefusal } from './freeze.mjs';
 import { forkOf, seedWorktree } from './fork.mjs';
+import { topicTitle } from './thread-title.mjs';
 
 export function topicDir(brainDir, id) {
   return dataPath(brainDir, 'topics', id);
@@ -217,7 +218,20 @@ export function resolveClass(ctx, cls, kind = null) {
   return c;
 }
 
-function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedKind = null, mode, claim = true, copy = true, forThread = null, newThread = false, task = null, explicitProject = false, origin = ctx, assignedBy = ASSIGNED_TECHNICAL, run = spawnSync, requestedBy = null }) {
+/**
+ * Operator 2026-11-19: "založ novú tému" means a new thread with that topic and the work discussed here handed to it, so
+ * a parallel subject does not fill the context of this thread (a thread claimed the new topic and worked on it in place).
+ */
+export const NEW_TOPIC_ASK = /(?<![\p{L}])(?:zalo[žz]|vytvor|otvor|sprav|za[čc]ni)\p{L}*\s+(?:(?:mi|si|aj|teda|pros[íi]m)\s+)?(?:nov[úu]|samostatn[úu]|osobitn[úu])\s+t[ée]mu|(?<![\p{L}])(?:create|open|start)\s+a\s+new\s+topic/iu;
+/** The operator's message of this turn asks for a new topic. */
+export function newTopicAsked(ctx) {
+  if (!ctx.brainDir || !ctx.thread) return false;
+  const st = readThreadState(ctx.brainDir, ctx.thread);
+  return st.turn_source === 'operator' && NEW_TOPIC_ASK.test(String((st.operator_prompts || [])[0] || ''));
+}
+export const NEW_TOPIC_THREAD = (id) => `topic ${id}: the operator asked for a new topic, and that means a new thread (operator 2026-11-19: the other topic fills the context of this thread): topic.mjs create ${id} --subject "..." --class ... --title "..." --task "<the work discussed here and what belongs to it: decisions, files, open points>" --new-thread --requested-by operator; then give the operator the link and do not work on the topic here; only when the operator said to work on it in this thread: --here`;
+
+function createTopicUnlocked(ctx, { id, subject, title = null, here = false, class: cls = null, kind: askedKind = null, mode, claim = true, copy = true, forThread = null, newThread = false, task = null, explicitProject = false, origin = ctx, assignedBy = ASSIGNED_TECHNICAL, run = spawnSync, requestedBy = null }) {
   if (!isValidId(id)) throw new Error(`topic id "${id}" must be lowercase letters, digits and hyphens (P-036)`);
   if (id === MAIN_TOPIC) throw new Error('topic id "main" is reserved for the persona main thread: use topic.mjs main (P-045)');
   if (!subject || !String(subject).trim()) throw new Error('topic needs --subject "<one sentence>" (P-045)');
@@ -229,6 +243,9 @@ function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedK
   // instead of the managed project (bob 2026-11-03, t3-workarounds-check in bob, not the managed project).
   if (kind === 'code' && !explicitProject && isPersonaProject(ctx)) throw new Error(`code topic ${id} would be created in persona project ${path.basename(ctx.projectDir)}: a persona has no project code (P-025). Pass --project <managed project dir> (or --project ${ctx.projectDir} if the persona repo itself is the code)`);
   guardThread(ctx, 'create', { allowWake: true, codeStart: newThread && !forThread });
+  const asked = newTopicAsked(ctx);
+  if (asked && !forNewThread && !here && heldTopics(ctx.brainDir, ctx.thread).length) throw new Error(NEW_TOPIC_THREAD(id));
+  if (asked && newThread && !forThread && !(task && String(task).trim())) throw new Error(`topic ${id}: the new thread gets the work discussed here: pass --task "<what was discussed and decided, the files, the open points>" (operator 2026-11-19)`);
   // P-074 (agent-alice/D-0092): during a freeze a code topic in a frozen repo (workflow, mail) runs only when the freeze
   // allows it (the work of the rebuild); the old version is not fixed, so the report or issue is rejected instead.
   if (kind === 'code') {
@@ -236,7 +253,7 @@ function createTopicUnlocked(ctx, { id, subject, class: cls = null, kind: askedK
     if (frozen) throw new Error(frozen);
   }
   if (topicExists(ctx.brainDir, id) || closedTopicExists(ctx.brainDir, id)) throw new Error(`topic ${id} already exists`);
-  const topic = { id, subject: String(subject).trim(), class: String(cls), kind, state: 'working', created: nowIso() };
+  const topic = { id, subject: String(subject).trim(), ...(title && String(title).trim() ? { title: String(title).trim() } : {}), class: String(cls), kind, state: 'working', created: nowIso() };
   // flow-public#87: the task is kept with the topic, so the drift judge compares new work with it, not only with the subject.
   if (task && String(task).trim()) topic.task = String(task).trim();
   if (forNewThread) topic.thread_requested_by = requestedBy;
@@ -441,14 +458,14 @@ export function startTopicThread(ctx, topic, run = spawnSync, { task = null, pla
     // No CLI on this machine (T3 Code without `t3` in PATH): the same thread through the T3 tool, then assigned here.
     let file = null;
     try { file = threadMessageFile(ctx, topic.id); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, input + '\n'); } catch { file = null; }
-    const fallback = `start it with the T3 tool t3_thread_launch (project ${ctx.projectDir}, title ${topic.id}, message${file ? ` = content of ${file}` : ': the topic subject and task'}), then: topic.mjs thread ${topic.id} --project ${ctx.projectDir} --for-thread <new thread id>`;
+    const fallback = `start it with the T3 tool t3_thread_launch (project ${ctx.projectDir}, title "${topicTitle(topic)}", message${file ? ` = content of ${file}` : ': the topic subject and task'}), then: topic.mjs thread ${topic.id} --project ${ctx.projectDir} --for-thread <new thread id>`;
     return { ok: false, reason, fallback };
   };
   if (!cmd.length) return failed('topics.thread_start_command not set');
   // `--provider` only with `--model` (t3 thread start --help: "Provider instance id. Pass with --model").
   const sel = classThread(ctx, topic);
   const modelArgs = sel?.model ? [...(sel.provider ? ['--provider', sel.provider] : []), '--model', sel.model] : [];
-  const t = spawnTarget(cmd[0], [...cmd.slice(1), '--title', topic.id, ...modelArgs, ctx.projectDir, '-'], { platform });
+  const t = spawnTarget(cmd[0], [...cmd.slice(1), '--title', topicTitle(topic), ...modelArgs, ctx.projectDir, '-'], { platform });
   const r = run(t.file, t.args, { encoding: 'utf8', input, timeout: 30000, shell: t.shell });
   if (r.error || r.status !== 0) return failed((r.error?.message || r.stderr || `exit ${r.status}`).trim().split('\n')[0]);
   let thread = null;

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// topic.mjs create <id> --subject "..." --class web|code|ops|discussion [--task "<task>"] [--no-claim] [--no-copy] [--here]
+// topic.mjs create <id> --subject "..." [--title "<2-5 words>"] --class web|code|ops|discussion [--task "<task>"] [--no-claim] [--no-copy] [--here]
 //                        [--new-thread | --for-thread <new thread id>] --requested-by operator|supervisor   a new thread only
 //                        on the explicit request of the operator or the supervisor, recorded in topic.json (spec 3.4)
 //                        open topics of the same repo or project whose scope overlaps are listed (overlap: lines), nothing refused
@@ -32,6 +32,7 @@ import { domainRepos } from '../scripts/repo-knowledge.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { createTopic, setTopicMode, setTopicRepos, CLASS_HELP, startThreadForTopic, claimTopic, claimMain, releaseTopic, handoffTopic, listTopics, heldTopics, ensureCodeCopy, copyTopic, readTopic, pauseTopic, resumeTopic, topicRel, topicMailProject, taskCopy, taskMerge, takeoverLines } from '../scripts/topic.mjs';
+import { topicTitle } from '../scripts/thread-title.mjs';
 import fs from 'node:fs';
 import { topicLine } from '../scripts/index.mjs';
 import { snapshotTopic } from '../scripts/snapshot.mjs';
@@ -69,9 +70,9 @@ try {
   const foreign = foreignProjectCwd(ctx, args.project);
   if (foreign) fail(foreign);
   if (cmd === 'create') {
-    if (!id) fail(`usage: topic.mjs create <id> --subject "..." --class web|code|ops|discussion [--task "..."] [--here | --new-thread --requested-by operator|supervisor]\n${CLASS_HELP}`);
+    if (!id) fail(`usage: topic.mjs create <id> --subject "..." [--title "<2-5 words, the thread title>"] --class web|code|ops|discussion [--task "..."] [--here | --new-thread --requested-by operator|supervisor]\n${CLASS_HELP}`);
     // The class decides the kind (D-0021): web and code get a code copy, ops and discussion do not.
-    const res = createTopic(ctx, { id, subject: args.subject, class: args.class, kind: typeof args.kind === 'string' ? args.kind : null, mode: args.mode, claim: !args['no-claim'], copy: !args['no-copy'], forThread: args['for-thread'] || null, task: args.task || null, explicitProject: !!args.project, requestedBy: str(args['requested-by']),
+    const res = createTopic(ctx, { id, subject: args.subject, title: typeof args.title === 'string' ? args.title : null, here: !!args.here, class: args.class, kind: typeof args.kind === 'string' ? args.kind : null, mode: args.mode, claim: !args['no-claim'], copy: !args['no-copy'], forThread: args['for-thread'] || null, task: args.task || null, explicitProject: !!args.project, requestedBy: str(args['requested-by']),
       // Layout 2 (D-0044): topic create from a thread is a topic the operator gave; from code without a thread it is technical.
       assignedBy: ctx.thread ? 'operator' : 'technical',
       origin: args.project ? originContext(ctx) : ctx,
@@ -80,7 +81,7 @@ try {
       newThread: !!args['new-thread'] && !args.here && !args['no-claim'] && !args['for-thread'] });
     for (const l of res.overlap || []) out(l);
     out(`topic ${id} created (class ${res.topic.class}, ${res.topic.kind})`);
-    if (res.thread) out(`thread ${res.thread} started with title ${id}; it holds the topic (this thread does not)`);
+    if (res.thread) out(`thread ${res.thread} started with title "${topicTitle(res.topic)}"; it holds the topic (this thread does not)`);
     if (res.effortNote) out(res.effortNote);
     if (res.claim) out(res.claim.ok ? `${res.claim.assigned ? `assigned to ${res.claim.holder.thread}` : `claimed by ${ctx.thread}`}${res.claim.pushed ? ', pushed' : ''}` : res.claim.reason);
     if (res.claim?.comms && !res.claim.comms.ok && !res.claim.comms.skipped) out(`comms: topic not registered (${res.claim.comms.reason})`);

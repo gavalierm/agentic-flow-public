@@ -9,6 +9,7 @@ import path from 'node:path';
 import { setup } from './helpers.mjs';
 import { readTopicRecord } from '../scripts/topic-files.mjs';
 import { topicThreadMessage } from '../scripts/topic.mjs';
+import { readThreadState, writeThreadState } from '../scripts/config.mjs';
 
 function threadStub(fx) {
   const input = path.join(fx.root, 'first-message.txt');
@@ -39,7 +40,7 @@ test('a thread holding a topic claims a new topic itself; --new-thread needs --r
     // the supervisor asked for it: recorded, the first message introduces the supervisor and carries its task
     r = fx.run('topic.mjs', ['create', 'third', '--subject', 'Third', '--class', 'discussion', '--new-thread', '--requested-by', 'supervisor', '--task', 'sprav tretiu vec'], env);
     assert.equal(r.status, 0, r.out);
-    assert.match(r.out, /thread t-new started with title third/);
+    assert.match(r.out, /thread t-new started with title "Third"/);
     assert.equal(readTopicRecord(fx.brain, 'third').thread_requested_by, 'supervisor');
     const first = fs.readFileSync(input, 'utf8');
     assert.match(first, /Vlákno založil supervisor \(alice, pošta @alice\/main\)/);
@@ -60,4 +61,26 @@ test('the first message of an operator thread names no supervisor', () => {
   const msg = topicThreadMessage({ id: 'x', kind: 'discussion', subject: 'S', thread_requested_by: 'operator' }, { task: 'do x', supervisor: { persona: 'alice', comms: '@alice/main' } });
   assert.match(msg, /Zadanie operátora:\ndo x/);
   assert.doesNotMatch(msg, /supervisor/);
+});
+
+// operator 2026-11-19: "založ novú tému" in a thread with a topic means a new thread with the discussed work; a thread
+// claimed the topic and worked on it in place, filling its context with a second subject.
+test('the operator asks for a new topic: claiming it here is refused, the new thread needs the discussed work', () => {
+  const fx = setup();
+  try {
+    const input = threadStub(fx);
+    const env = { env: { T3CODE_THREAD_ID: fx.thread } };
+    assert.equal(fx.run('topic.mjs', ['create', 'first', '--subject', 'First', '--class', 'discussion'], env).status, 0);
+    writeThreadState(fx.brain, fx.thread, { ...readThreadState(fx.brain, fx.thread), turn_source: 'operator', operator_prompts: ['Zaloz novu temu na upravu kategorie produktov'] });
+    let r = fx.run('topic.mjs', ['create', 'kat', '--subject', 'Kategórie', '--class', 'discussion'], env);
+    assert.equal(r.status, 1, r.out); assert.match(r.out, /means a new thread[\s\S]*--new-thread --requested-by operator/);
+    assert.equal(readTopicRecord(fx.brain, 'kat'), null);
+    r = fx.run('topic.mjs', ['create', 'kat', '--subject', 'Kategórie', '--class', 'discussion', '--new-thread', '--requested-by', 'operator'], env);
+    assert.equal(r.status, 1, r.out); assert.match(r.out, /--task/);
+    r = fx.run('topic.mjs', ['create', 'kat', '--subject', 'Kategórie', '--class', 'discussion', '--new-thread', '--requested-by', 'operator', '--task', 'skill kategórií: dohodnuté X'], env);
+    assert.equal(r.status, 0, r.out);
+    assert.match(fs.readFileSync(input, 'utf8'), /dohodnuté X/);
+    // the operator said to work on it here: --here passes
+    assert.equal(fx.run('topic.mjs', ['create', 'tu', '--subject', 'Tu', '--class', 'discussion', '--here'], env).status, 0);
+  } finally { fx.cleanup(); }
 });

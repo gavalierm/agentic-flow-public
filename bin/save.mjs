@@ -30,7 +30,10 @@
 //                        project repo; a folder in one commit with names by the rule of names (the mapping is printed)
 //   save.mjs source --record <file> --from <where> [--topic <id>] [--description "..."]   a file over the limit: its record
 //   save.mjs source --check [--repo <name>]   files in the sources over the limit (exit 1)
-//   save.mjs share <skill>[,<skill>] --to <brain dir>   a saved agentic skill into another brain: one checked commit, pushed
+//   save.mjs share <skill>[,<skill>] --to <brain dir> [--overwrite]   a saved agentic skill into another brain: one checked commit, pushed;
+//     refused while the other brain has its own commits on the skill since the last share (--overwrite after taking them over)
+//   save.mjs share <skill>[,<skill>] --to <brain dir> --retire --reason "..." [--overwrite]   removes the agentic skill in the
+//     other brain (superseded there) by the same checked commit, pushed; git keeps it in the history
 //   save.mjs result <file> [--topic <id>] [--as <name>] [--replace]   a result of the topic's work worth keeping, into
 //                        topics/<topic>/ of the brain (spec 5; the SubagentStop hook writes none, O13)
 import fs from 'node:fs';
@@ -38,7 +41,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { lfBytes } from '../scripts/eol.mjs';
 import { spawnSync } from 'node:child_process';
-import { parseArgs, fail, today, readText, listFiles, relPosix, git } from '../scripts/util.mjs';
+import { parseArgs, fail, today, readText, listFiles, relPosix, git, gitRemote } from '../scripts/util.mjs';
 import { loadContext, isWakeTurn, dialogAnsweredInTurn, machineName, foreignProjectCwd, resolveBrain, brainExists, projectPolicy, inSubagent, loadPolicy } from '../scripts/config.mjs';
 import { isMainTopic, commsProjectName } from '../scripts/comms.mjs';
 import { brainId } from '../scripts/brain-id.mjs';
@@ -1366,13 +1369,64 @@ function saveResult(ctx) {
  * --to <brain dir>. The files of each skill (as saved in this brain) replace the skill in the other brain in one commit made
  * by the brain script, checked by its pre-commit (P-040) and pushed; nothing else of the other brain changes.
  */
+/**
+ * a project 2026-11-19: a share overwrote three edits a thread of the other brain made to the skill after the last share.
+ * The commits of `to` on the skill since its last share of `name` (all of them when it was never shared): [{ h, a, s }].
+ */
+function foreignSkillCommits(to, destRel, name) {
+  // The upstream too: brainWrite pulls it before the copy, so a commit only there would be overwritten as well.
+  const up = git(['rev-parse', '--verify', '--quiet', '@{u}'], { cwd: to }).ok ? ['@{u}'] : [];
+  const log = git(['log', '--format=%h%x09%an%x09%s', 'HEAD', ...up, '--', destRel], { cwd: to }).stdout.trim();
+  if (!log) return [];
+  const rows = log.split('\n').map((l) => { const [h, a, ...s] = l.split('\t'); return { h, a, s: s.join('\t') }; });
+  const shared = (r) => { const m = r.s.match(/share skill (.+?) from /); return !!m && m[1].split(',').map((x) => x.trim()).includes(name); };
+  const last = rows.findIndex(shared);
+  return (last === -1 ? rows : rows.slice(0, last)).filter((r) => !shared(r));
+}
+
+const skillFiles = (d) => (fs.existsSync(d) ? fs.readdirSync(d, { recursive: true }).map(String).filter((f) => fs.statSync(path.join(d, f)).isFile() && !f.split(/[\\/]/).includes('__pycache__')).map(toPosixPath) : []);
+
+/** The other brain's own edits of the skills since the last share would be lost: refused until taken over (a project 2026-11-19). */
+function refuseForeignEdits(to, names) {
+  if (hasRemote(to)) gitRemote(['fetch', '--quiet', 'origin'], { cwd: to });
+  if (args.overwrite) return;
+  const found = names.flatMap((name) => foreignSkillCommits(to, dataRel(to, 'skills', AGENTIC_OWNER, name), name).map((r) => `${name}: ${r.h} ${r.a} "${r.s.slice(0, 80)}"`));
+  if (found.length) fail(`save.mjs share: ${toPosixPath(to)} has its own commits on the skill since the last share, the ${args.retire ? 'removal' : 'copy'} would ${args.retire ? 'drop' : 'overwrite'} them:\n  ${found.join('\n  ')}\ntake them over into this brain first (git -C ${toPosixPath(to)} show <commit>, then save.mjs skill here), then run the share again with --overwrite; nothing written`);
+}
+
+/**
+ * a project 2026-11-19: skills replaced in a peer's brain on this machine could not be retired from here (save.mjs skill
+ * --remove works only in this session's brain, share never removed a skill), so the agent asked the peer's agent by mail,
+ * which the operator refused: edits of another brain on this machine are made here. --retire removes the agentic skill in
+ * the other brain in one commit of its brain script, checked by its pre-commit and pushed; git keeps it in the history.
+ */
+function retireShared(ctx, names, to) {
+  const reason = String(args.reason || '').trim();
+  if (!reason) fail('save.mjs share --retire needs --reason "superseded by <skill> | operator <YYYY-MM-DD>: <their words>"');
+  const ops = [];
+  const dirs = [];
+  for (const name of names) {
+    const destRel = dataRel(to, 'skills', AGENTIC_OWNER, name);
+    if (!fs.existsSync(path.join(to, destRel, 'SKILL.md'))) fail(`save.mjs share --retire: no agentic skill ${name} in ${toPosixPath(to)} (skills/${AGENTIC_OWNER}/; a skill of the operator is not retired from here, P-032); nothing written`);
+    dirs.push(path.join(to, destRel));
+    for (const f of skillFiles(path.join(to, destRel))) ops.push({ path: `${destRel}/${f}`, remove: true });
+  }
+  refuseForeignEdits(to, names);
+  const res = brainWrite({ brainDir: to, thread: ctx.thread, policy: loadPolicy(to) }, { ops, message: `retire skill ${names.join(', ')} from ${path.basename(ctx.brainDir)}: ${reason.slice(0, 160)}` });
+  // git does not track directories: an emptied skill folder (only __pycache__ left) goes too, as with save.mjs skill --remove.
+  for (const d of dirs) if (fs.existsSync(d) && !skillFiles(d).length) fs.rmSync(d, { recursive: true, force: true });
+  out(res.committed ? formatWriteResult(res, [`${toPosixPath(to)}: skill ${names.join(', ')} removed`]) : `nothing to retire: skill ${names.join(', ')} in ${toPosixPath(to)}`);
+  if (res.committed) out('the other machine drops it after a pull and a new session (skills are deployed at session start)');
+}
+
 function saveShare(ctx) {
-  const names = String(rest[0] || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const names = String(typeof args.retire === 'string' ? args.retire : rest[0] || '').split(',').map((s) => s.trim()).filter(Boolean);
   const to = typeof args.to === 'string' ? path.resolve(args.to) : null;
-  if (!names.length || !to) fail('usage: save.mjs share <skill>[,<skill>] --to <brain dir>');
+  if (!names.length || !to) fail('usage: save.mjs share <skill>[,<skill>] --to <brain dir> [--overwrite] | --retire --reason "..."');
   if (!ctx.brainDir) fail('save.mjs share: this session has no brain to take the skill from');
   if (path.resolve(to) === path.resolve(ctx.brainDir)) fail('save.mjs share: --to is this brain; a skill of this brain is saved with save.mjs skill');
   if (!brainExists(to) || !fs.existsSync(path.join(to, '.githooks'))) fail(`save.mjs share: ${toPosixPath(to)} is no brain of the workflow (topics/, .git and .githooks/); nothing written`);
+  if (args.retire) return retireShared(ctx, names, to);
   const ops = [];
   // The copy names the topic that develops the skill, as a mail address (operator 2026-11-18: a thread of the other brain
   // reported a fault of the skill, did not know which thread develops it, and the report reached nobody).
@@ -1386,16 +1440,16 @@ function saveShare(ctx) {
     if (!fs.existsSync(path.join(src, 'SKILL.md'))) fail(`save.mjs share: no agentic skill ${name} in this brain (${toPosixPath(src)}); save it first (save.mjs skill)`);
     if (git(['status', '--porcelain', '--', rel], { cwd: ctx.brainDir }).stdout.trim()) fail(`save.mjs share: ${rel} has changes not saved in this brain; the saved state is shared (save.mjs skill first)`);
     const destRel = dataRel(to, 'skills', AGENTIC_OWNER, name);
-    const list = (d) => (fs.existsSync(d) ? fs.readdirSync(d, { recursive: true }).map(String).filter((f) => fs.statSync(path.join(d, f)).isFile() && !f.split(/[\\/]/).includes('__pycache__')).map(toPosixPath) : []);
-    const files = list(src);
+    const files = skillFiles(src);
     for (const f of files) {
       const buf = fs.readFileSync(path.join(src, f));
       let content = f.endsWith('.md') ? buf.toString('utf8') : buf;
       if (f === 'SKILL.md' && devAt) { const fm = parseFrontmatter(content); content = serializeFrontmatter({ ...fm.data, developed_in: devAt }, fm.body); }
       ops.push({ path: `${destRel}/${f}`, content });
     }
-    for (const f of list(path.join(to, destRel))) if (!files.includes(f)) ops.push({ path: `${destRel}/${f}`, remove: true });
+    for (const f of skillFiles(path.join(to, destRel))) if (!files.includes(f)) ops.push({ path: `${destRel}/${f}`, remove: true });
   }
+  refuseForeignEdits(to, names);
   const sha = git(['rev-parse', '--short', 'HEAD'], { cwd: ctx.brainDir }).stdout.trim();
   const res = brainWrite({ brainDir: to, thread: ctx.thread, policy: loadPolicy(to) }, { ops, message: `share skill ${names.join(', ')} from ${path.basename(ctx.brainDir)} (${sha})` });
   out(res.committed ? formatWriteResult(res, [`${toPosixPath(to)}: skill ${names.join(', ')}`]) : `nothing to share: skill ${names.join(', ')} in ${toPosixPath(to)} is the same as here`);

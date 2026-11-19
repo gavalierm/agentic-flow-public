@@ -72,15 +72,28 @@ function trackedUnder(dir, rel) {
   return r.ok ? new Set(r.stdout.split('\0').filter(Boolean)) : null;
 }
 
-/** Files and bytes under an absolute path, a nested repository and links counted as they are (not followed). */
-export function sizeOf(abs) {
+/**
+ * Bytes of a file on the disk once: the names of one hardlinked file count its size at the first name only (2026-11-19:
+ * 86 backups made hardlinks of identical ones; the overview still reported 8.9 GB of the 3.3 GB on the disk). `seen`: the
+ * inodes already counted in this walk.
+ */
+export function diskBytes(st, seen) {
+  if (st.nlink <= 1 || !seen) return st.size;
+  const key = `${st.dev}:${st.ino}`;
+  if (seen.has(key)) return 0;
+  seen.add(key);
+  return st.size;
+}
+
+/** Files and bytes under an absolute path, a nested repository and links counted as they are (not followed); a hardlinked file once. */
+export function sizeOf(abs, seen = new Set()) {
   let st;
   try { st = fs.lstatSync(abs); } catch { return { files: 0, bytes: 0 }; }
-  if (!st.isDirectory()) return { files: 1, bytes: st.size };
+  if (!st.isDirectory()) return { files: 1, bytes: diskBytes(st, seen) };
   const out = { files: 0, bytes: 0 };
   let entries = [];
   try { entries = fs.readdirSync(abs); } catch { return out; }
-  for (const e of entries) { const s = sizeOf(path.join(abs, e)); out.files += s.files; out.bytes += s.bytes; }
+  for (const e of entries) { const s = sizeOf(path.join(abs, e), seen); out.files += s.files; out.bytes += s.bytes; }
   return out;
 }
 
@@ -195,13 +208,14 @@ export function workFolders(dir, map) {
     const abs = path.join(root, id, map.topicTmp);
     if (!fs.existsSync(abs)) continue;
     const files = [];
+    const seen = new Set();
     const walk = (a) => {
       let entries = [];
       try { entries = fs.readdirSync(a, { withFileTypes: true }); } catch { return; }
       for (const e of entries) {
         const p = path.join(a, e.name);
         if (e.isDirectory() && !e.isSymbolicLink()) walk(p);
-        else { try { files.push({ path: posix(path.relative(dir, p)), bytes: fs.lstatSync(p).size }); } catch { /* gone */ } }
+        else { try { files.push({ path: posix(path.relative(dir, p)), bytes: diskBytes(fs.lstatSync(p), seen) }); } catch { /* gone */ } }
       }
     };
     walk(abs);

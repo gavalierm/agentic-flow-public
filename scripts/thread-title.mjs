@@ -59,8 +59,26 @@ export function t3ThreadState(policy, thread, opts = {}) {
 }
 
 /**
+ * Operator 2026-11-19: the thread title reads as a name, not a slug: the topic's `title` (2 to 5 words, set by
+ * topic create --title), else its subject up to a colon, a bracket or a dash, cut at a word boundary to 40 characters,
+ * else the topic id.
+ */
+export const TITLE_MAX = 40;
+export function topicTitle(topic) {
+  const own = String(topic?.title || '').trim();
+  if (own) return own.slice(0, 60);
+  let s = String(topic?.subject || '').split(/\s*[:(–—;]\s*|\s+-\s+/)[0].replace(/[.,\s]+$/, '').trim();
+  if (s.length > TITLE_MAX) s = s.slice(0, TITLE_MAX + 1).replace(/\s+\S*$/, '').replace(/[,\s]+$/, '');
+  return s || String(topic?.id || '');
+}
+
+/** The question the rename dialog asks: it names the old and the new title, so the operator knows what to look for. */
+export const renameQuestion = (current, target) => `Premenovať toto vlákno z „${current}“ na „${target}“? Téma vlákna sa zmenila, so starým názvom ho v zozname vlákien nenájdete.`;
+
+/**
  * Decide about the title for this turn. `state` is the thread state; returns { line, patch } (patch merged into the state)
- * or null when nothing is to be done.
+ * or null when nothing is to be done. Operator 2026-11-19: a rename is never silent: the operator confirms it in a
+ * dialog that names the old and the new title (renameGate refuses the rename without it).
  */
 export function threadTitleSignal(ctx, held, state, { read = readThreadTitle, env = process.env } = {}) {
   // Only inside T3 (it sets T3CODE_THREAD_ID); elsewhere there is no title to follow.
@@ -70,12 +88,35 @@ export function threadTitleSignal(ctx, held, state, { read = readThreadTitle, en
   if (state.title_topic === topic) return null;
   const current = read(ctx);
   if (current == null) return { line: null, patch: { title_topic: topic } };
-  const target = topic;
+  const target = topicTitle(held[0]);
   if (current === target) return { line: null, patch: { title_topic: topic, auto_title: target } };
   const known = [state.auto_title, state.title_prev].filter((t) => typeof t === 'string');
   if (known.length && !known.includes(current)) return { line: null, patch: { title_topic: topic, title_manual: current } };
   return {
-    line: `thread title: rename this thread to "${target}" (tool t3_thread_update, action rename), P-036`,
+    line: `thread title: this thread is titled "${current}", its topic "${target}"; a rename is never silent: ask in one AskUserQuestion "${renameQuestion(current, target)}" with the options "Premenovať na „${target}“" (recommended) and "Nechať „${current}“"; only after the yes rename it (tool t3_thread_update, action rename, title "${target}"), after the no keep the title (P-036)`,
     patch: { title_topic: topic, auto_title: target, title_prev: current },
   };
+}
+
+// A refusal is not kept as a lift (bypass.mjs REFUSING_ANSWER); these are the "keep the title" answers on top of it.
+const RENAME_NO = /^\s*(?:nie|ne|no|nechaj|nechať|ponechaj|ponechať|zachovaj|keep|cancel|zru[sš]|stop)(?![\p{L}])/iu;
+
+/**
+ * Operator 2026-11-19 (P-036): a thread rename (t3_thread_update rename or regenerate_title, own thread or another) passes
+ * only after the operator's yes in a dialog of this turn; a rename to a title the dialog names that title. `lifts` are the
+ * answered dialogs of the turn ({ text: question + "\n" + answer }). Returns the reason of the refusal, or null.
+ */
+export function renameGate(toolName, toolInput, lifts = []) {
+  if (!/(?:^|__)t3_thread_update$/.test(String(toolName || ''))) return null;
+  const action = String(toolInput?.action || '');
+  if (action !== 'rename' && action !== 'regenerate_title') return null;
+  const title = String(toolInput?.title || '').trim();
+  const ok = lifts.some((l) => {
+    const text = String(l?.text || '');
+    const answer = text.slice(text.lastIndexOf('\n') + 1);
+    if (RENAME_NO.test(answer)) return false;
+    return action === 'rename' ? !!title && text.includes(title) : /premenova|názov vlákna|rename|title/i.test(text);
+  });
+  if (ok) return null;
+  return `a thread rename is never silent (operator 2026-11-19, P-036): the operator looks for the thread by its title. Ask first in one AskUserQuestion that names the old and the new title, e.g. "${renameQuestion('<current title>', title || '<new title>')}", options "Premenovať na „${title || '<new title>'}“" (recommended) and "Nechať „<current title>“"; after the yes the same call passes, after the no keep the title`;
 }

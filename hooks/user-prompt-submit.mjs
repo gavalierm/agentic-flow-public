@@ -19,7 +19,7 @@ import { PLUGIN_ROOT, toPosix, localTime } from '../scripts/util.mjs';
 import { threadTitleSignal } from '../scripts/thread-title.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
 import { startDriftJudge, ownWords, driftJob, noTopicJob } from '../scripts/drift.mjs';
-import { listTopics, mailboxTopics } from '../scripts/topic.mjs';
+import { listTopics, mailboxTopics, NEW_TOPIC_ASK } from '../scripts/topic.mjs';
 import { brainWrite } from '../scripts/brain.mjs';
 import { verifyLocks, LOCK_LOST_LINE, countContinue, continueMax, STUCK_LINE } from '../scripts/topic-turn.mjs';
 import { staleSessionCatchUp } from '../scripts/t3-stale-session.mjs';
@@ -418,6 +418,8 @@ export function run(input) {
   // P-036: thread title follows the topic (not in bell turns, they handle one thing).
   const title = !BELLS.includes(kind) ? threadTitleSignal(ctx, info.held, state) : null;
   if (title?.line) extras.push(title.line);
+  // Operator 2026-11-19: "založ novú tému" is a new thread that gets the work discussed here (topic.mjs refuses it in place).
+  if (turnSource === 'operator' && typeof input.prompt === 'string' && NEW_TOPIC_ASK.test(input.prompt)) extras.push('topic: the operator asks for a new topic: that is a new thread with the work discussed here handed over (topic.mjs create <id> ... --task "<what was discussed and decided, files, open points>" --new-thread --requested-by operator), not a topic claimed by this thread; give the link, do not work on it here');
   // Timer spent when it fired; an operator prompt keeps it until Stop, which spends it when that turn ends without "čakám"
   // (12 of 59 timers were dropped by an operator prompt, audit 2026-11-11). No timer is bound to a message (P-072): the
   // mail's wait rings a message bell and moves to its next check itself (1e).

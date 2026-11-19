@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import { missingTaskPaths } from '../scripts/waker.mjs';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
 import { dialogAnsweredInTurn, loadContext, loadPolicy, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, brainWritable, personaWritableDirs, brainEntries, SCRATCH_DIR, resolveBrain, threadStateFile } from '../scripts/config.mjs';
 import { git, isInside, toPosix, PLUGIN_ROOT } from '../scripts/util.mjs';
@@ -40,6 +41,7 @@ import { heldTopics, listTopics, topicCopyPath,expectedImplementation, implement
 import { logDecision } from '../scripts/denials.mjs';
 import { taskCopyPaths } from '../scripts/topic.mjs';
 import { republishDeny, newArtifactDeny } from '../scripts/artifacts.mjs';
+import { renameGate } from '../scripts/thread-title.mjs';
 import { analyze, bypassOf, bypassReason, callKey, closedTargets, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, namesPath, openByAnswers, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, transcriptTurnText, turnLifts, awaitTranscriptToolUse, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-036', 'P-052', 'P-053', 'P-041', 'P-054'] };
@@ -1631,6 +1633,11 @@ export function run(input) {
   const policy = ctx.policy;
   const resolve = (p) => path.resolve(cwd, gitBashPath(p));
 
+  // P-036 (operator 2026-11-19): a thread rename is never silent; it passes after the operator's yes in a dialog of this turn.
+  if (ctx.brainDir && ctx.thread && String(tool || '').endsWith('t3_thread_update')) {
+    const why = renameGate(tool, toolInput, turnLifts(readThreadState(ctx.brainDir, ctx.thread)));
+    if (why) return permissionOutput('deny', why);
+  }
   // report-80357d47: a recorded artifact path published without url would get a new address (scripts/artifacts.mjs).
   const republish = tool === 'Artifact' ? republishDeny(ctx, input) : null;
   if (republish) return permissionOutput('deny', republish);
@@ -1799,7 +1806,11 @@ export function run(input) {
   // the agent fetch and diff sources itself on every run is not repeatable (alice 2026-11-03: daily news report).
   const recurring = /(^|__)schedule_task$/.test(tool) ? typeof toolInput.prompt === 'string' : tool === 'CronCreate' && toolInput.recurring !== false;
   if (recurring && !/[\w./~-]+\.(mjs|cjs|js|sh|py)\b/.test(String(toolInput.prompt || ''))) {
-    return permissionOutput('deny', `a recurring task runs a script, not a prompt that does the work by hand: write the deterministic part (fetch, diff against saved state, write the result) as a script, keep it in a skill (save.mjs skill <name> --script <file>, P-030) and let the prompt run it by absolute path and evaluate its output; lasting results of a persona go to docs/ (save.mjs docs, P-024), state to local/`);
+    return permissionOutput('deny', `a recurring task runs a script, not a prompt that does the work by hand: write the deterministic part (fetch, diff against saved state, write the result) as a script, keep it in a skill (save.mjs skill <name> --script <file>, P-030) and let the prompt run it by absolute path and evaluate its output; lasting results go to the topic (save.mjs result <file> --topic <id>), state to local/`);
+  }
+  if (recurring) {
+    const missing = missingTaskPaths(toolInput.prompt);
+    if (missing.length) return permissionOutput('deny', `the prompt of the recurring task names paths whose folder does not exist (${missing.slice(0, 5).join(', ')}): every run would guess them; name the skill that holds the procedure and the script by its absolute path (P-030), results with save.mjs result --topic <id>`);
   }
 
   // P-054: a step refused in this turn (workflow hook, harness permission, operator) is not reached another way.

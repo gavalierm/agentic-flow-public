@@ -11,6 +11,23 @@ import { spawnSync } from 'node:child_process';
 import { readThreadState, writeThreadState } from './config.mjs';
 import { PLUGIN_ROOT } from './util.mjs';
 
+/**
+ * Absolute paths in the prompt of a recurring task whose folder does not exist (alice 2026-11-19: the daily report sent
+ * the agent to docs/ai-news/ of an older brain layout, so it guessed the paths at every run). A file to be written may be
+ * missing, its folder not; a placeholder (<x>, YYYY) is skipped. Returns the paths, [] when all fit.
+ */
+export function missingTaskPaths(prompt, { home = os.homedir(), exists = fs.existsSync } = {}) {
+  const out = [];
+  for (const m of String(prompt || '').matchAll(/(?<![\w.:/~-])(~\/|\/)[\w.@%+-]+(?:\/[\w.@%+-]+)+\/?/g)) {
+    const raw = m[0];
+    if (/YYYY|\bMM\b|\bDD\b/.test(raw) || /[<>]/.test(raw)) continue;
+    const abs = raw.startsWith('~/') ? path.join(home, raw.slice(2)) : raw;
+    const dir = raw.endsWith('/') ? abs : path.dirname(abs);
+    if (!exists(dir)) out.push(raw);
+  }
+  return [...new Set(out)];
+}
+
 export const TIMER_CMD = `node ${path.join(PLUGIN_ROOT, 'bin', 'timer.mjs')}`;
 
 export const TIMER_MIN_MS = 60_000;

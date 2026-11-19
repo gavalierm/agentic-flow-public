@@ -4,10 +4,10 @@
 // supervisor's review:
 //   1. stuck steps (10.2: the continuation reached its cap; the question already waits for the operator);
 //   2. idle locks (4.2.2: inactivity from the last push of the topic state, not counted while the state is otázka, hotovo
-//      or čakám before its alarm, after a missed alarm from the alarm's time; over topics.stale_machine_hours): propose a
-//      takeover to the operator;
+//      or čakám before its alarm, after a missed alarm from the alarm's time; over overview.idle_days, default 30:
+//      operator 2026-11-19, a lock idle for hours is no finding): propose a takeover to the operator;
 //   3. topics hotovo without work outside mode discussion (10.6 item 4) and without a question the supervisor owes an answer
-//      to: propose closing to the operator.
+//      to, for overview.idle_days since the last push of the state: propose closing to the operator.
 // The overlap of topics (3.9.4) stays the supervisor's judgement: no code here. Read only; nothing here writes a brain.
 // The wake job `overview` (bin/overview.mjs wake) mails the supervisor only when a finding is new.
 import fs from 'node:fs';
@@ -27,6 +27,17 @@ export const OVERVIEW_INTERVAL_MIN = 30;
 export const STALE_HOURS = 12;
 export const overviewIntervalMs = (policy) => (Number(policy?.overview?.interval_min) > 0 ? Number(policy.overview.interval_min) : OVERVIEW_INTERVAL_MIN) * 60_000;
 export const staleHours = (policy) => (Number(policy?.topics?.stale_machine_hours) > 0 ? Number(policy.topics.stale_machine_hours) : STALE_HOURS);
+/**
+ * Operator 2026-11-19: the overview reports a topic idle for 30 days (policy overview.idle_days), not for hours: an idle
+ * lock, and a topic hotovo without work counted from the last push of its state, so work on it starts the count again
+ * (a topic hotovo, worked on, hotovo again was mailed as a new finding each time).
+ */
+export const IDLE_DAYS = 30;
+export const idleHours = (policy, env = process.env) => {
+  if (Number(env.WORKFLOW_OVERVIEW_IDLE_HOURS) > 0) return Number(env.WORKFLOW_OVERVIEW_IDLE_HOURS);
+  const days = Number(policy?.overview?.idle_days);
+  return (days > 0 ? days : IDLE_DAYS) * 24;
+};
 
 const ms = (v) => {
   const t = typeof v === 'number' ? v : Date.parse(v || '');
@@ -87,7 +98,8 @@ export function topicFindings(rec, { now = Date.now(), hours = STALE_HOURS, last
     if (idle) out.push({ kind: 'lock', holder: holder.thread, machine: holder.machine || null, since: idle.since, hours: idle.hours, state: turn.state || null });
   }
   const owes = owed.some((w) => w && w.from_topic === rec.id);
-  if (turn.state === DONE && topic.mode !== 'discussion' && !owes) out.push({ kind: 'done', since: lastPush });
+  const doneFor = ms(lastPush) === null ? Infinity : (ms(now) - ms(lastPush)) / 3600_000;
+  if (turn.state === DONE && topic.mode !== 'discussion' && !owes && doneFor >= hours) out.push({ kind: 'done', since: lastPush });
   return out;
 }
 
@@ -106,7 +118,7 @@ export function overviewRoot({ root = null, ctx = null, env = process.env } = {}
 export function overview({ root = null, ctx = null, brains = null, now = Date.now(), policy = null, owed = [], env = process.env } = {}) {
   const base = brains ? null : overviewRoot({ root, ctx, env });
   const list = brains || (base ? domainBrains(base) : []);
-  const hours = staleHours(policy || ctx?.policy);
+  const hours = idleHours(policy || ctx?.policy, env);
   const findings = [];
   let topics = 0;
   for (const b of list) {
@@ -136,7 +148,7 @@ const subject = (f) => (f.subject ? ` (${String(f.subject).replace(/\s+/g, ' ').
 /** One line of a finding. */
 export function findingLine(f) {
   if (f.kind === 'stuck') return `stuck: ${where(f)}${subject(f)}: ${f.items.join('; ')}; the question waits for the operator, instruct the manager only within your jurisdiction (spec 3.9.1)`;
-  if (f.kind === 'lock') return `idle lock: ${where(f)}${subject(f)} held by ${f.holder}${f.machine ? ` on ${f.machine}` : ''}, inactive ${f.hours} h since ${localTime(f.since)} (state ${f.state || '-'}): propose a takeover to the operator (spec 4.2.2)`;
+  if (f.kind === 'lock') return `idle lock: ${where(f)}${subject(f)} held by ${f.holder}${f.machine ? ` on ${f.machine}` : ''}, inactive ${f.hours >= 48 ? `${Math.floor(f.hours / 24)} d` : `${f.hours} h`} since ${localTime(f.since)} (state ${f.state || '-'}): propose a takeover to the operator (spec 4.2.2)`;
   if (f.kind === 'work-files') return `work files: ${f.domain ? `${f.domain}/` : ''}${f.text}`;
   return `done without work: ${where(f)}${subject(f)} is hotovo${f.since ? ` since ${localTime(f.since)}` : ''}: propose closing to the operator (spec 3.9.3)`;
 }

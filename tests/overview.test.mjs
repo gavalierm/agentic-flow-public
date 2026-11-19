@@ -1,4 +1,5 @@
 // ttl: 2026-12-15
+// operator 2026-11-19: an idle lock and a topic hotovo are reported after 30 days (here 12 h through WORKFLOW_OVERVIEW_IDLE_HOURS).
 // Flow v2 spec 3.9, 4.2.2, 10.5, 10.6 item 4 (plan B6, O6, O23): the supervisor's overview without an agent reads the topic
 // record and handover of every open topic of every domain of the machine (a brain in layout 2 and one in layout 3) and
 // lists stuck steps, idle locks (inactivity from the last push of the topic state, not while otázka, hotovo or čakám before
@@ -76,6 +77,9 @@ test('inactivity of a lock (4.2.2): not while otázka, hotovo or čakám before 
   // A topic the supervisor owes an answer to is not proposed for closing; mode discussion never is.
   const rec = (id, topicFields) => ({ id, topic: { subject: id, turn: { state: 'hotovo' }, mode: 'off', ...topicFields }, holder: {} });
   assert.deepEqual(topicFindings(rec('x'), { now }).map((f) => f.kind), ['done']);
+  // operator 2026-11-19: hotovo counts from the last push of the state; work on the topic starts the count again.
+  assert.deepEqual(topicFindings(rec('x'), { now, hours: 30 * 24, lastPush: iso(now - 2 * H) }), [], 'hotovo for 2 h');
+  assert.deepEqual(topicFindings(rec('x'), { now, hours: 30 * 24, lastPush: iso(now - 31 * 24 * H) }).map((f) => f.kind), ['done']);
   assert.deepEqual(topicFindings(rec('x'), { now, owed: [{ id: 'm1', from_topic: 'x' }] }), []);
   assert.deepEqual(topicFindings(rec('x', { mode: 'discussion' }), { now }), []);
   // turn.stuck is the list of step items (10.2, the wake writes it): an empty list or another shape is no stuck finding.
@@ -88,7 +92,8 @@ test('two domains in layout 2 and 3: each kind of finding, the discussion topic 
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-ov-'));
   try {
     const m = machine(base);
-    const res = overview({ root: m.root, now: m.now + 14 * H });
+    const res = overview({ root: m.root, now: m.now + 14 * H, env: { WORKFLOW_OVERVIEW_IDLE_HOURS: '12' } });
+    assert.ok(!overview({ root: m.root, now: m.now + 14 * H, env: {} }).findings.some((f) => f.kind === 'lock'), 'default: 30 days');
     assert.equal(res.brains, 2);
     assert.equal(res.topics, 8);
     const got = res.findings.map((f) => `${f.kind} ${f.domain}/${f.id}`).sort();
@@ -96,7 +101,7 @@ test('two domains in layout 2 and 3: each kind of finding, the discussion topic 
     assert.deepEqual(res.findings.find((f) => f.kind === 'stuck').items, ['spusti migráciu']);
     assert.equal(res.findings.find((f) => f.id === 'a-idle').hours, 13);
     // The same over the command, before the threshold only the stuck step and the done topic.
-    const env = cleanEnv();
+    const env = { ...cleanEnv(), WORKFLOW_OVERVIEW_IDLE_HOURS: '12' };
     let r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'overview.mjs'), '--root', m.root, '--now', iso(m.now + 14 * H)], { env, encoding: 'utf8', cwd: base });
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /^overview: 4 finding\(s\) in 8 open topic\(s\) of 2 brain\(s\)$/m);
@@ -106,8 +111,8 @@ test('two domains in layout 2 and 3: each kind of finding, the discussion topic 
     assert.match(r.stdout, /^done without work: Beta\/brain\/b-done .*propose closing/m);
     assert.doesNotMatch(r.stdout, /b-disc|b-question|a-wait|a-free/);
     r = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'overview.mjs'), '--root', m.root, '--now', iso(m.now + H)], { env, encoding: 'utf8', cwd: base });
-    assert.match(r.stdout, /^overview: 2 finding\(s\)/m);
-    assert.doesNotMatch(r.stdout, /idle lock/);
+    assert.match(r.stdout, /^overview: 1 finding\(s\)/m);
+    assert.doesNotMatch(r.stdout, /idle lock|done without work/, 'hotovo for 1 h is no finding yet');
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
@@ -117,12 +122,12 @@ test('the wake job mails the maintainer once per new finding (no supervisor by d
     const m = machine(fx.root);
     const stateFile = path.join(fx.root, 'stub-state.json');
     fs.writeFileSync(stateFile, JSON.stringify({ sends: [], send_id: 'm-ov' }));
-    const env = { WORKFLOW_COMMS_CLIENT: STUB, STUB_COMMS_STATE: stateFile, WORKFLOW_OVERVIEW_STATE: path.join(fx.root, 'overview-state.json') };
+    const env = { WORKFLOW_COMMS_CLIENT: STUB, STUB_COMMS_STATE: stateFile, WORKFLOW_OVERVIEW_STATE: path.join(fx.root, 'overview-state.json'), WORKFLOW_OVERVIEW_IDLE_HOURS: '12' };
     const sends = () => JSON.parse(fs.readFileSync(stateFile, 'utf8')).sends;
     const wake = (now) => fx.run('overview.mjs', ['wake', '--project', fx.project, '--root', m.root, '--now', iso(now)], { env });
     let r = wake(m.now + H);
     assert.equal(r.status, 0, r.out);
-    assert.match(r.stdout, /overview: 2 new finding\(s\) mailed to the maintainer/);
+    assert.match(r.stdout, /overview: 1 new finding\(s\) mailed to the maintainer/);
     assert.equal(sends().length, 1);
     const argv = sends()[0].argv || sends()[0];
     assert.ok(JSON.stringify(argv).includes('"--maintainer"') && JSON.stringify(argv).includes('"--supersede-key","overview"') && JSON.stringify(argv).includes('"assist"'), JSON.stringify(sends()[0]));
@@ -130,17 +135,17 @@ test('the wake job mails the maintainer once per new finding (no supervisor by d
     // the same findings: no mail
     r = wake(m.now + 2 * H);
     assert.equal(r.status, 0, r.out);
-    assert.match(r.stdout, /2 finding\(s\), none new; the supervisor is not woken/);
+    assert.match(r.stdout, /1 finding\(s\), none new; the supervisor is not woken/);
     assert.equal(sends().length, 1);
     // a new finding (the locks went idle), the mail fails: exit 1, tried again at the next run
     fs.writeFileSync(stateFile, JSON.stringify({ sends: sends(), send_fail: true }));
     r = wake(m.now + 14 * H);
     assert.equal(r.status, 1, r.out);
-    assert.match(r.stderr, /2 new finding\(s\), mail to the maintainer failed/);
+    assert.match(r.stderr, /3 new finding\(s\), mail to the maintainer failed/);
     fs.writeFileSync(stateFile, JSON.stringify({ sends: sends() }));
     r = wake(m.now + 14 * H);
     assert.equal(r.status, 0, r.out);
-    assert.match(r.stdout, /2 new finding\(s\) mailed/);
+    assert.match(r.stdout, /3 new finding\(s\) mailed/);
     assert.match(JSON.stringify(sends().at(-1)), /idle lock: Alfa\/brain\/a-idle/);
     r = wake(m.now + 15 * H);
     assert.match(r.stdout, /none new/, 'mailed once');

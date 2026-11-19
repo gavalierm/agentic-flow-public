@@ -18,6 +18,8 @@
 // turn + CONTINUE_RESUME_MS, plan O2), not while a timer or background task runs and not for a stuck topic (B4); the mail's
 // wait for an answer does not hold the continuation back (3.3.3). An interrupted turn has no Stop and writes nothing (10.5).
 // Picked mail without an answer (P-042, P-072) is one queued line, not a block.
+// The work files of the held topics are tidied (P-062, scripts/work-classes.mjs): helpers go, backups keep the first and last 3.
+import fs from 'node:fs';
 import { readHookInput, emit, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
 import { logDecision } from '../scripts/denials.mjs';
@@ -30,11 +32,14 @@ import { syncResults, savedLine } from '../scripts/results.mjs';
 import { parseReply, PROTOCOL_EXAMPLE } from '../scripts/protocol.mjs';
 import { summaryState, WAITING, DONE } from '../scripts/topic-state.mjs';
 import { snapshotThisTurn } from '../scripts/snapshot.mjs';
-import { threadAlarms, topicFacts, turnUpdate, stuckNow, verifyLocks, LOCK_LOST_LINE, CONTINUE_RESUME_MS } from '../scripts/topic-turn.mjs';
+import { threadAlarms, topicFacts, questionsKey, turnUpdate, stuckNow, verifyLocks, LOCK_LOST_LINE, CONTINUE_RESUME_MS } from '../scripts/topic-turn.mjs';
 import { validWaker, awaitingWaker, clearTimer, threadTimers, timersPatch, sameTimer, finishedTasks, withoutFinished, resumeAtFor } from '../scripts/waker.mjs';
 import { transcriptTail } from '../scripts/bypass.mjs';
+import { topicHome, topicWorkDir, hasScratch } from '../scripts/layout.mjs';
+import { clearHelpers, backupFolders, pruneBackups, sizeLine, SIZE_CHECK_MS } from '../scripts/work-classes.mjs';
+import { TMP_WARN_BYTES } from '../scripts/leftovers.mjs';
 
-export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to next prompt); 1 block reason', principles: ['P-026', 'P-030', 'P-037', 'P-040', 'P-042', 'P-043', 'P-061', 'P-078'] };
+export const HOOK_META = { event: 'Stop', class: 'c', limit: '2 lines (queued to next prompt); 1 block reason', principles: ['P-026', 'P-030', 'P-037', 'P-040', 'P-042', 'P-043', 'P-061', 'P-062', 'P-078'] };
 
 // T3 shows the operator only the last message of a turn and folds the earlier ones under "Worked for …": a note written
 // after a block hid the answer (operator 2026-11-03: "the payload I want is hidden, I get the operational message").
@@ -77,7 +82,7 @@ export { OWED_PREFIX, OWED_LINE, unansweredOwed };
 const count = (items) => (Array.isArray(items) ? items.length : 0);
 
 /** The first skeleton or fact violation of the reply (spec 10.3 points 1 to 4), or null. */
-export function violationOf({ msg, reply, facts, alarms, factsState, turnSource, dialog, unreadReplies = [], protocolOnly = false }) {
+export function violationOf({ msg, reply, facts, alarms, factsState, turnSource, dialog, seen = false, unreadReplies = [], protocolOnly = false }) {
   if (fakeNotification(msg)) return FAKE_NOTIFICATION_REASON;
   if (unreadReplies.length) return UNREAD_REPLY_REASON(unreadReplies);
   if (!reply.state) return NO_STATE_REASON;
@@ -96,7 +101,9 @@ export function violationOf({ msg, reply, facts, alarms, factsState, turnSource,
   const asks = facts.some((f) => f.facts.questions > 0 && !isDiscussionMode(f.topic));
   // A turn that goes on with a next step needs no dialog: it would hold the continuation (the question stays in the reply).
   const goesOn = facts.some((f) => (f.facts.next || []).length > 0);
-  if (turnSource !== 'operator' && factsState === 'otázka' && asks && !dialog && !goesOn) return DIALOG_REASON;
+  // Questions the operator already saw (their turn showed them, or a dialog asked them) are not asked again in a turn of a
+  // bell: the dialog came without context and the operator took it for a new task from mail (a project 2026-11-19).
+  if (turnSource !== 'operator' && factsState === 'otázka' && asks && !dialog && !goesOn && !seen) return DIALOG_REASON;
   return null;
 }
 
@@ -183,13 +190,16 @@ export function run(input) {
   // Only whether a dialog was asked in this turn (PreToolUse keeps its time), not its content (10.3 item 3).
   const dialog = !!before.dialog_at && (!before.turn_started_at || before.dialog_at >= before.turn_started_at);
   // A harness that sends no reply text (field missing) cannot be checked; the second attempt of a turn passes (10.3).
-  const violation = typeof msg === 'string' && !input.stop_hook_active ? violationOf({ msg, reply, facts, alarms, factsState, turnSource, dialog, unreadReplies, protocolOnly: before.turn_protocol_only === true }) : null;
+  const qKey = questionsKey(facts);
+  const seen = !!qKey && before.questions_seen === qKey;
+  const violation = typeof msg === 'string' && !input.stop_hook_active ? violationOf({ msg, reply, facts, alarms, factsState, turnSource, dialog, seen, unreadReplies, protocolOnly: before.turn_protocol_only === true }) : null;
   if (violation) {
     // A blocked stop keeps the agent working: the turn record stays open and nothing of the state is written.
     flush();
     queue();
     return { decision: 'block', reason: `${violation}\n${FINAL_REPLY}` };
   }
+  if (qKey && !seen && (turnSource === 'operator' || dialog)) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), questions_seen: qKey });
   if (spent) clearTimer(ctx.brainDir, ctx.thread, (t) => sameTimer(t, before.timer));
   // Spec 10.2: the state and the alarm time of each held topic, from the facts (not from the state line), only when they
   // changed; after the pull the lock decides (4.2.4): a topic this thread lost is not written and gets no continuation.
@@ -221,6 +231,7 @@ export function run(input) {
       flush(stateOps, stateOps.length ? stateMessage : null);
     } else for (const x of results) { const line = savedLine(x.id, x.res); if (line) signals.push(line); }
   } else flush();
+  tidyWork(ctx, work, { waiting: reply.state === WAITING, now, signals });
   queue();
   const st = readThreadState(ctx.brainDir, ctx.thread);
   // The earliest timer, also one already due: it came due while this turn ran, so the closed turn carries it and wake rings
@@ -238,6 +249,30 @@ export function run(input) {
   const cont = snapshotThisTurn(st) ? null : running.find((t) => t.state !== 'paused' && t.next && !stuckNow(ctx, t, st));
   close(cont ? { next: cont.next, resumeAt: new Date(Date.now() + CONTINUE_RESUME_MS).toISOString() } : {});
   return {};
+}
+
+/**
+ * Work files of the held topics (operator 2026-11-19, 13 GB in one domain): tmp/_pomocne/ is emptied unless the turn waits
+ * for a job, backup folders keep the first and the last three backups, a work folder over the limit gives a line at most
+ * once an hour. Layout 1 (scratch/) and topic main (shared by threads) are left alone.
+ */
+export function tidyWork(ctx, work, { waiting = false, now = Date.now(), signals = [] } = {}) {
+  if (!work.length || !ctx.projectDir) return;
+  const home = topicHome(ctx.brainDir, ctx.projectDir);
+  if (!home || hasScratch(home)) return;
+  const st = readThreadState(ctx.brainDir, ctx.thread);
+  const check = !(st.tmp_checked_at && now - Date.parse(st.tmp_checked_at) < SIZE_CHECK_MS);
+  for (const t of work) {
+    const tmp = topicWorkDir(ctx.brainDir, ctx.projectDir, t.id);
+    if (!tmp || !fs.existsSync(tmp)) continue;
+    try {
+      if (!waiting) clearHelpers(tmp);
+      for (const dir of backupFolders(tmp)) pruneBackups(dir);
+      const line = check ? sizeLine(t.id, tmp, TMP_WARN_BYTES) : null;
+      if (line) signals.push(line);
+    } catch (err) { signals.push(`work files of ${t.id} not tidied: ${err.message.split('\n')[0]}`); }
+  }
+  if (check) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), tmp_checked_at: new Date(now).toISOString() });
 }
 
 if (isMain(import.meta.url)) {

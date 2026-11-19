@@ -56,8 +56,11 @@ export function topicFacts(topic, alarmsIn = {}, { turnEnd = Date.now(), now = D
   const timers = [...(alarmsIn.timers || [])];
   if (paused && time(topic.paused_until) > now) timers.push({ at: topic.paused_until });
   const alarms = turnAlarms({ next, timers, background: alarmsIn.background || [], awaiting: alarmsIn.awaiting || [], turnEnd: new Date(turnEnd).toISOString() });
-  return { next, questions: questions === null ? null : questions.length, tasks: tasks === null ? null : tasks.length, alarms };
+  return { next, questions: questions === null ? null : questions.length, questionItems: questions || [], tasks: tasks === null ? null : tasks.length, alarms };
 }
+
+/** The open questions of the held topics as one key: the operator saw them (their turn or a dialog) when it is unchanged. */
+export const questionsKey = (facts) => facts.flatMap((f) => (f.facts.questionItems || []).map((q) => `${f.topic.id}\u0000${String(q).trim()}`)).sort().join('\u0001');
 
 /** The `turn` fields of the facts (state and alarm time): turnFields with a missing section counted as none. */
 export const factsFields = (facts) => turnFields({ next: facts.next, questions: facts.questions || 0, tasks: facts.tasks || 0, alarms: facts.alarms });
