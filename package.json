@@ -1,6 +1,6 @@
 {
   "name": "agentic-flow",
-  "version": "2.0.55",
+  "version": "2.0.56",
   "private": true,
   "commsModel": 3,
   "type": "module",

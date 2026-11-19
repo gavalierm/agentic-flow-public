@@ -1,6 +1,6 @@
 # skills/
 
-Základné skilly workflow (P-029), formát `SKILL.md` podľa štandardu Agent Skills. Každý má skript v Node (P-034); výnimkou sú znalostné skilly bez skriptu (`shell`, `verify`, `secrets`, `proposal`), poučenia z chýb spoločné pre všetkých agentov (P-003).
+Základné skilly workflow (P-029), formát `SKILL.md` podľa štandardu Agent Skills. Každý má skript v Node (P-034); výnimkou sú znalostné skilly bez skriptu (`shell`, `verify`, `secrets`), poučenia z chýb spoločné pre všetkých agentov (P-003).
 Popis skillu je trigger (najviac 300 znakov, P-022). Skilly projektu patria do brain (P-024, P-032), nie sem.
 
 | Skill | Princíp |

@@ -1,0 +1,182 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>__TITLE__</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700&family=Nunito:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Status map (skill proposal, P-077). Layout: a tree. The root node on top, a trunk down the middle and a branch with an
+   arrow to every area left and right; in an area the done items are small chips and the open ones are larger notes, so
+   the eye goes to what is not done. On a phone the trunk runs on the left. The page is built by bin/status-map.mjs from
+   a JSON file: change the data, never this file per page. No doctype-level <html>/<body> tags: the file works standalone
+   and inside the Artifact skeleton. Fonts fall back to the system ones without a network. */
+:root {
+  --bg: #eef5ea; --panel: #ffffff; --fg: #1b2a1c; --muted: #5a6b58; --line: #cfdcc8; --root: #2f6b3d; --root-fg: #f4fbef; --branch: #86a86b;
+  --done: #23774a; --done-bg: #dff3e4; --work: #96650a; --work-bg: #fdf0c8; --wait: #2459a6; --wait-bg: #dfeafb;
+  --miss: #a8402f; --miss-bg: #fbe6e1; --off: #6c726a; --off-bg: #e6e9e3;
+  --display: "Baloo 2", "Trebuchet MS", system-ui, sans-serif; --body: "Nunito", "Segoe UI", system-ui, sans-serif; --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121a13; --panel: #1b261c; --fg: #e5efe0; --muted: #9db097; --line: #314232; --root: #8fd08a; --root-fg: #10210f; --branch: #5f8650;
+  --done: #86d9a6; --done-bg: #1c3a29; --work: #efc86d; --work-bg: #3e3312; --wait: #93bbf5; --wait-bg: #1b2f4c;
+  --miss: #f3a092; --miss-bg: #48211c; --off: #a6ada3; --off-bg: #293028; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #121a13; --panel: #1b261c; --fg: #e5efe0; --muted: #9db097; --line: #314232; --root: #8fd08a; --root-fg: #10210f; --branch: #5f8650;
+  --done: #86d9a6; --done-bg: #1c3a29; --work: #efc86d; --work-bg: #3e3312; --wait: #93bbf5; --wait-bg: #1b2f4c;
+  --miss: #f3a092; --miss-bg: #48211c; --off: #a6ada3; --off-bg: #293028; color-scheme: dark }
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15px; line-height: 1.45; }
+.wrap { max-width: 1160px; margin: 0 auto; padding-block: 26px 48px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: flex; flex-direction: column; gap: 20px; }
+h1 { font-family: var(--display); font-size: 34px; font-weight: 700; line-height: 1.1; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--display); font-size: 21px; font-weight: 700; line-height: 1.15; margin: 0; }
+.sub { color: var(--muted); margin: 6px 0 0; max-width: 62ch; }
+.bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.badge { display: inline-flex; align-items: center; gap: 8px; border: 2px solid transparent; border-radius: 999px; padding: 5px 14px 5px 6px; font: inherit; font-weight: 700; cursor: pointer; }
+.badge b { display: inline-grid; place-items: center; min-width: 30px; height: 30px; padding: 0 6px; border-radius: 999px; background: var(--panel); font-family: var(--display); font-size: 17px; font-variant-numeric: tabular-nums; }
+.badge[aria-pressed="true"] { border-color: currentColor; }
+.plain { border: 2px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 999px; padding: 8px 16px; font: inherit; font-weight: 700; cursor: pointer; }
+.badge:focus-visible, .plain:focus-visible, .log summary:focus-visible { outline: 3px solid var(--root); outline-offset: 2px; }
+.s-done { color: var(--done); background: var(--done-bg); } .s-work { color: var(--work); background: var(--work-bg); }
+.s-wait { color: var(--wait); background: var(--wait-bg); } .s-miss { color: var(--miss); background: var(--miss-bg); } .s-off { color: var(--off); background: var(--off-bg); }
+
+.map { position: relative; display: flex; flex-direction: column; gap: 26px; }
+#wires { position: absolute; inset: 0; pointer-events: none; color: var(--branch); overflow: visible; }
+.trunk { fill: none; stroke: currentColor; stroke-width: 6; stroke-linecap: round; }
+.branch { fill: none; stroke: currentColor; stroke-width: 3.5; stroke-linecap: round; stroke-dasharray: 1 9; animation: flow 1.4s linear infinite; }
+@keyframes flow { to { stroke-dashoffset: -20; } }
+@media (prefers-reduced-motion: reduce) { .branch { animation: none; } }
+.router { position: relative; z-index: 1; align-self: center; text-align: center; background: var(--root); color: var(--root-fg); border-radius: 26px 26px 34px 34px; padding: 14px 30px 16px; max-width: 100%; box-shadow: 0 6px 0 var(--branch); }
+.router b { font-family: var(--display); font-size: 26px; line-height: 1; display: block; }
+.router small { display: block; font-size: 13px; font-weight: 600; }
+.cols { display: flex; flex-direction: column; gap: 22px; padding-left: 40px; }
+.col { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+.mid { display: none; }
+@media (min-width: 900px) {
+  .cols { flex-direction: row; padding-left: 0; gap: 0; align-items: flex-start; }
+  .col { flex: 1 1 0; } .mid { display: block; flex: 0 0 120px; }
+  .col.right { padding-top: 46px; }
+}
+.area { position: relative; z-index: 1; background: var(--panel); border: 2px solid var(--line); border-radius: 22px; padding: 16px 16px 18px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.head { display: flex; align-items: center; gap: 12px; }
+.ring { flex: 0 0 auto; }
+.ring circle { fill: none; stroke-width: 6; }
+.ring .track { stroke: var(--line); } .ring .fill { stroke: var(--done); stroke-linecap: round; }
+.ring text { font-family: var(--display); font-size: 12px; font-weight: 700; fill: var(--fg); }
+.head p { margin: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
+.notes, .chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; }
+.note { flex: 1 1 210px; min-width: 0; border-radius: 4px 16px 16px 16px; padding: 10px 12px 11px; display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
+.note:nth-child(odd) { transform: rotate(-.6deg); } .note:nth-child(even) { transform: rotate(.5deg); }
+.note.s-miss { background: transparent; border: 2px dashed var(--miss); }
+.note.s-off .what { text-decoration: line-through; }
+.tag { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.what { font-weight: 700; color: var(--fg); }
+.why { font-size: 13px; color: var(--fg); opacity: .85; }
+.chip { display: inline-flex; flex-direction: column; max-width: 100%; border-radius: 16px; padding: 5px 12px 5px 10px; font-weight: 600; overflow-wrap: anywhere; }
+.chip .what { color: inherit; font-weight: 600; }
+/* The tick is drawn, not a glyph: a font without the character would show an empty box. */
+.chip .what::before { content: ""; display: inline-block; width: .3em; height: .6em; margin: 0 .5em .06em .15em; border: solid currentColor; border-width: 0 .16em .16em 0; transform: rotate(45deg); }
+.more { display: none; font-size: 12.5px; font-weight: 400; color: var(--fg); }
+.more code, .why code { font-family: var(--mono); font-size: 11.5px; }
+.map.details .more { display: block; }
+.log { background: var(--panel); border: 2px solid var(--line); border-radius: 22px; padding: 14px 18px; }
+.log summary { cursor: pointer; font-family: var(--display); font-weight: 700; font-size: 19px; }
+.log ol { margin: 10px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.log time { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-right: 8px; white-space: nowrap; }
+.empty { color: var(--muted); font-weight: 600; }
+</style>
+<div class="wrap">
+  <header>
+    <h1 id="title"></h1>
+    <p class="sub"><span id="sub"></span> Stav k <span id="stamp"></span>.</p>
+  </header>
+  <div class="bar" id="bar" role="group" aria-label="Filter podľa stavu"></div>
+  <div class="map" id="map">
+    <svg id="wires" aria-hidden="true"></svg>
+    <div class="router" id="router"><b id="root-name"></b><small id="root-note"></small></div>
+    <div class="cols"><div class="col left" id="left"></div><div class="mid"></div><div class="col right" id="right"></div></div>
+  </div>
+  <details class="log" id="log-box" open>
+    <summary>Posledné zmeny</summary>
+    <ol id="log"></ol>
+  </details>
+</div>
+<script>
+// The data of the page, written by bin/status-map.mjs (already checked there): title, sub, stamp, root {name, note},
+// states {key: label}, areas [{name, side, items [[state, what, ref, note]]}], log [[when, text]], key (storage prefix).
+const DATA = __DATA__;
+const STATES = DATA.states, AREAS = DATA.areas, LOG = DATA.log;
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+const NS = 'http://www.w3.org/2000/svg';
+const svgEl = (tag, attrs) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; };
+// The filter and the details switch are a convenience of one viewer: they stay in the browser, the page works without them.
+let filter = null, details = false;
+try { const f = localStorage.getItem(DATA.key + '-filter'); if (f && STATES[f]) filter = f; details = localStorage.getItem(DATA.key + '-details') === '1'; } catch (e) {}
+const keep = (k, v) => { try { v ? localStorage.setItem(DATA.key + k, v) : localStorage.removeItem(DATA.key + k); } catch (e) {} };
+
+function ring(done, total) {
+  const C = 2 * Math.PI * 15, s = svgEl('svg', { class: 'ring', width: 44, height: 44, viewBox: '0 0 44 44', role: 'img', 'aria-label': `hotových ${done} z ${total}` });
+  s.append(svgEl('circle', { class: 'track', cx: 22, cy: 22, r: 15 }), svgEl('circle', { class: 'fill', cx: 22, cy: 22, r: 15, transform: 'rotate(-90 22 22)', 'stroke-dasharray': `${total ? C * done / total : 0} ${C}` }));
+  const t = svgEl('text', { x: 22, y: 26, 'text-anchor': 'middle' }); t.textContent = `${done}/${total}`; s.append(t); return s;
+}
+function more(ref, note) { const m = el('span', 'more'); if (ref) m.append(el('code', '', ref)); if (ref && note) m.append(' · '); if (note) m.append(note); return m; }
+
+function render() {
+  $('title').textContent = DATA.title; $('sub').textContent = DATA.sub; $('stamp').textContent = DATA.stamp;
+  $('root-name').textContent = DATA.root.name; $('root-note').textContent = DATA.root.note; $('root-note').hidden = !DATA.root.note;
+  const all = AREAS.flatMap(a => a.items), bar = $('bar'); bar.replaceChildren();
+  for (const [key, label] of Object.entries(STATES)) {
+    const count = all.filter(i => i[0] === key).length; if (!count) continue;
+    const b = el('button', 'badge s-' + key); b.type = 'button'; b.id = 'filter-' + key; b.setAttribute('aria-pressed', String(filter === key));
+    b.append(el('b', '', String(count)), label);
+    b.addEventListener('click', () => { filter = filter === key ? null : key; keep('-filter', filter); render(); });
+    bar.append(b);
+  }
+  const d = el('button', 'plain', details ? 'Skryť podrobnosti hotových' : 'Ukázať podrobnosti hotových'); d.type = 'button'; d.id = 'toggle-details';
+  d.addEventListener('click', () => { details = !details; keep('-details', details ? '1' : ''); render(); }); bar.append(d);
+  $('map').classList.toggle('details', details);
+  const cols = { left: $('left'), right: $('right') }; cols.left.replaceChildren(); cols.right.replaceChildren();
+  for (const a of AREAS) {
+    const items = a.items.filter(i => !filter || i[0] === filter); if (filter && !items.length) continue;
+    const done = a.items.filter(i => i[0] === 'done').length, open = a.items.filter(i => i[0] !== 'done' && i[0] !== 'off').length;
+    const sec = el('section', 'area'), head = el('div', 'head'), txt = el('div');
+    txt.append(el('h2', '', a.name), el('p', '', open ? `ešte ${open} ${open === 1 ? 'vec otvorená' : open < 5 ? 'veci otvorené' : 'vecí otvorených'}` : 'všetko hotové'));
+    head.append(ring(done, a.items.length), txt); sec.append(head);
+    const notes = el('ul', 'notes'), chips = el('ul', 'chips');
+    for (const [state, name, ref, note] of items) {
+      if (state === 'done') { const li = el('li', 'chip s-done'); li.append(el('span', 'what', name)); if (ref || note) li.append(more(ref, note)); chips.append(li); continue; }
+      const li = el('li', 'note s-' + state); li.append(el('span', 'tag', STATES[state]), el('span', 'what', name));
+      if (ref || note) { const w = el('span', 'why'); if (note) w.append(note); if (ref && note) w.append(' · '); if (ref) w.append(el('code', '', ref)); li.append(w); }
+      notes.append(li);
+    }
+    if (notes.children.length) sec.append(notes); if (chips.children.length) sec.append(chips);
+    cols[a.side].append(sec);
+  }
+  if (!cols.left.children.length && !cols.right.children.length) cols.left.append(el('p', 'empty', 'V tomto stave nič nie je.'));
+  const log = $('log'); log.replaceChildren(); $('log-box').hidden = !LOG.length;
+  for (const [when, text] of LOG) { const li = el('li'); li.append(el('time', '', when), text); log.append(li); }
+  draw();
+}
+// Trunk and branches: the trunk runs from the root down (in the middle on a wide screen, on the left on a narrow one),
+// a branch with an arrow leads to every area.
+function draw() {
+  const map = $('map'), svg = $('wires'), box = map.getBoundingClientRect(), W = map.clientWidth, H = map.scrollHeight;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.setAttribute('width', W); svg.setAttribute('height', H); svg.replaceChildren();
+  const defs = svgEl('defs', {}), tip = svgEl('marker', { id: 'tip', viewBox: '0 0 10 10', refX: 7, refY: 5, markerWidth: 5.5, markerHeight: 5.5, orient: 'auto-start-reverse' });
+  tip.append(svgEl('path', { d: 'M0 0 L10 5 L0 10 z', fill: 'currentColor' })); defs.append(tip); svg.append(defs);
+  const r = $('router').getBoundingClientRect(), wide = window.matchMedia('(min-width: 900px)').matches;
+  const tx = wide ? r.left + r.width / 2 - box.left : 14, ty = r.bottom - box.top;
+  let end = ty; const branches = [];
+  for (const card of map.querySelectorAll('.area')) {
+    const c = card.getBoundingClientRect(), y = c.top - box.top + 38, toRight = c.left - box.left > tx;
+    const ex = toRight ? c.left - box.left - 9 : c.right - box.left + 9, dir = toRight ? 1 : -1, bend = Math.max(6, Math.min(30, Math.abs(ex - tx) - 4));
+    branches.push(svgEl('path', { class: 'branch', d: `M ${tx} ${y - bend} Q ${tx} ${y} ${tx + dir * bend} ${y} L ${ex} ${y}`, 'marker-end': 'url(#tip)' }));
+    end = Math.max(end, y - bend);
+  }
+  if (branches.length) svg.append(svgEl('path', { class: 'trunk', d: `M ${tx} ${ty} L ${tx} ${end}` }), ...branches);
+}
+render();
+window.addEventListener('resize', draw);
+if (window.ResizeObserver) new ResizeObserver(draw).observe($('map'));
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(draw);
+</script>

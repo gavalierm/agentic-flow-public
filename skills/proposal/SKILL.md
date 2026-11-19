@@ -1,6 +1,6 @@
 ---
 name: proposal
-description: Použi, keď operátorovi predkladáš návrh (riešenie, plán, porovnanie možností, špecifikáciu, rešerš so záverom) alebo report výsledku práce, aj keď operátor povie „report“. Forma: ASCII diagram, HTML stránka alebo Artifact podľa obsahu; nie súbor .md ani dlhý text (P-077).
+description: Použi, keď operátorovi predkladáš návrh (riešenie, plán, porovnanie, špecifikáciu, rešerš so záverom), report výsledku (aj na slovo „report“) alebo prehľad stavu, čo je hotové a čo nie. Forma: ASCII diagram, HTML stránka či Artifact podľa obsahu; nie súbor .md ani dlhý text (P-077).
 ---
 
 # proposal – návrh ako HTML stránka (P-077)
@@ -39,5 +39,20 @@ Report výsledku práce (porovnanie, migrácia, kontrola dát) je stránka podľ
 
 nie ukážka 24 správnych riadkov z 11 664 ani samostatná stránka namiesto doplnenia, lebo operátor stránku prerábal 4× v jednej session („chcem len zoznam toho, čo treba skontrolovať alebo vyžaduje pozornosť“, 2026-11-17).
 nie nový artefakt bez pohľadu na stránky témy, lebo vznikli 2 takmer rovnaké reporty a zbytočný sa z vlákna nedal zmazať (operátor 2026-11-18).
+
+## Mapa stavu
+
+Prehľad, čo je hotové a čo nie (stav skillu, migrácie, plánu, práce po častiach; „ukáž stav“, „čo je hotové“, „kde sme“), je strom zo šablóny. Stránku nepíšeš, píšeš iba údaje:
+
+1. Údaje: `<pracovné súbory>/stav-<názov>.json`:
+   `{"title": "…", "root": {"name": "…", "note": "…"}, "areas": [{"name": "…", "items": [["done", "čo", "kde", "poznámka"]]}], "log": [["20. 11. 00:12", "čo sa zmenilo"]]}`
+   - `root` je to, čoho stav ukazuješ (skill, projekt, migrácia); `areas` sú jeho schopnosti alebo časti práce (do ~8); `log` sú posledné zmeny, najnovšia prvá.
+   - Položka je jedna vec, ktorú operátor pozná menom, nie súbor ani commit. `kde` (skill, skript, súbor) a `poznámka` sú nepovinné.
+   - Stav položky: `done` hotové, `work` robí sa, `wait` čaká na operátora (poznámka = čo má urobiť), `miss` chýba, `off` zrušené (poznámka = prečo).
+   - `done` iba po vlastnom overení (P-019); čo si neoveril naživo, napíš do poznámky položky.
+2. Stránka: `node ${CLAUDE_PLUGIN_ROOT}/bin/status-map.mjs <údaje.json>` zapíše `stav-<názov>.html` vedľa údajov. Neznámy stav či prázdnu položku odmietne s miestom chyby.
+3. Zobrazenie a uchovanie podľa krokov 4–6. Je to jeden dokument práce („Report výsledku“ bod 4): pri zmene uprav údaje, spusti skript znova a publikuj s tým istým `url`; ulož údaje aj stránku.
+
+Hotové sú malé štítky a nehotové veľké lístky, preto oko ide na to, čo ostáva. Nie vlastná stránka stavu ani tabuľka so stĺpcom „stav“, lebo strom zo šablóny operátor číta na jeden pohľad („extrémne prehľadný o tom, čo je spravené a čo nie“, 2026-11-20).
 
 Nie je to návrh: dokument, ktorý má byť v repe ako Markdown (README, dokumentácia kódu), a správa inému agentovi (pošta je text, P-041).
