@@ -4,7 +4,7 @@
 // characters; four finished agents kept their wakers for 2 h and the turn closed "čakám" with no continuation).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { finishedTasks, withoutFinished } from '../scripts/waker.mjs';
+import { finishedTasks, withoutFinished, wakerFromTool } from '../scripts/waker.mjs';
 
 const note = (id, status, result) => `<task-notification>\n<task-id>${id}</task-id>\n<tool-use-id>toolu_x</tool-use-id>\n<output-file>/tmp/x/${id}.output</output-file>\n<status>${status}</status>\n<summary>Agent "x" finished</summary>\n<note>A task-notification fires each time this agent stops.</note>\n<result>${result}</result>\n</task-notification>`;
 
@@ -29,4 +29,15 @@ test('finishedTasks: "completed" of an agent waiting on its own background work 
 test('withoutFinished: a waker whose tasks all ended goes, one with a running task stays', () => {
   const wakers = [{ kind: 'agent', tasks: ['a1'] }, { kind: 'agent', tasks: ['a1', 'a2'] }, { kind: 'scheduler', recurring: true }];
   assert.deepEqual(withoutFinished(wakers, new Set(['a1'])), wakers.slice(1));
+});
+
+test('an agent resumed by a message has a waker again and its earlier end does not count (2026-11-20: three wakes in a minute, topic marked stuck)', () => {
+  const resumed = [{ type: 'text', text: JSON.stringify({ success: true, message: 'Resuming agent c1', resumedAgentId: 'c1' }) }];
+  const w = wakerFromTool({ tool_name: 'SendMessage', tool_input: { to: 'c1', message: 'x' }, tool_response: resumed });
+  assert.equal(w.kind, 'agent');
+  assert.deepEqual(w.tasks, ['c1']);
+  assert.equal(wakerFromTool({ tool_name: 'SendMessage', tool_input: { to: 'peer', message: 'x' }, tool_response: { success: true } }), null);
+  const tail = [note('c1', 'completed', 'x'), JSON.stringify({ content: resumed })].join('\n');
+  assert.deepEqual([...finishedTasks(tail)], []);
+  assert.deepEqual([...finishedTasks([tail, note('c1', 'completed', 'y')].join('\n'))], ['c1']);
 });

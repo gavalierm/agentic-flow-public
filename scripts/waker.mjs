@@ -48,10 +48,13 @@ export function parseDelay(s) {
 
 /** Ids of the harness tasks a tool call started or waits on (background command, async agent, Monitor, t3_background_wait):
  * the end notification of the task spends its waker (withoutFinished). */
+/** The answer of SendMessage that resumed a finished agent (also JSON-escaped, as in the session transcript). */
+const RESUMED = /resumedAgentId[\\":\s]+([\w-]+)/;
+
 function taskIds(ti, resp, respText) {
   const ids = Array.isArray(ti.taskIds) ? ti.taskIds.filter((x) => typeof x === 'string') : [];
   if (resp && typeof resp === 'object') for (const k of ['backgroundTaskId', 'agentId', 'taskId', 'task_id']) if (typeof resp[k] === 'string' && resp[k]) ids.push(resp[k]);
-  const named = /running in background with ID: ([\w-]+)/.exec(respText) || /(?:^|\n)agentId: ([\w-]+)/.exec(respText);
+  const named = /running in background with ID: ([\w-]+)/.exec(respText) || /(?:^|\n)agentId: ([\w-]+)/.exec(respText) || RESUMED.exec(respText);
   if (named) ids.push(named[1]);
   return [...new Set(ids)];
 }
@@ -67,7 +70,9 @@ export function finishedTasks(text) {
   // The status is in the head of the notification, before the agent's <result>: the closing tag may come thousands of
   // characters later (2026-11-16: 3 354 characters, over the former limit of 3 000, so four finished agents
   // kept their wakers for 2 h and the turn closed with no continuation). The head ends at the result, the end or the next id.
-  for (const m of s.matchAll(/<task-id>([^<\s]+)<\/task-id>/g)) {
+  for (const m of s.matchAll(new RegExp(`<task-id>([^<\\s]+)</task-id>|${RESUMED.source}`, 'g'))) {
+    // A message resumed the agent after its end: it runs again and notifies again, so its earlier end does not count.
+    if (m[2]) { out.delete(m[2]); continue; }
     const from = m.index + m[0].length;
     const head = s.slice(from, from + 4000).split(/<result>|<\/task-notification>|<task-id>/)[0];
     const status = /<status>([\w-]+)<\/status>/.exec(head)?.[1];
@@ -104,6 +109,9 @@ export function wakerFromTool(input, now = Date.now()) {
   const bg = (kind) => ({ kind, at, until: new Date(now + BACKGROUND_WAKER_MS).toISOString(), ...(tasks.length ? { tasks } : {}) });
   if ((tool === 'Bash' || tool === 'PowerShell') && ti.run_in_background === true) return bg('background');
   if ((tool === 'Agent' || tool === 'Task') && (ti.run_in_background === true || /async_launched|running in the background|run_in_background/i.test(respText))) return bg('agent');
+  // A message that resumes a finished agent starts it again in the background and the harness notifies its end (a project
+  // 2026-11-20: no waker, so "continue from handover" rang three times in a minute and marked the waiting topic stuck).
+  if (tool === 'SendMessage' && RESUMED.test(respText)) return bg('agent');
   // A harness schedule rings this thread on every run, also turns later: it stays a waker until removed, not 2 h
   // (2026-11-03: a daily 06:00 report task did not count in the evening, so auto timers woke the thread for nothing).
   if (/(^|__)schedule_task$/.test(tool)) {
