@@ -283,7 +283,7 @@ export function layoutRefusal(brainDir, repoDir) {
 /** Relative path (posix) of a logical name, layout 1 (kept for the tests and messages of layout 1; code reads layoutOf(root)). */
 export const LAYOUT = LAYOUT_1;
 
-const MAIN = 'main';
+export const MAIN = 'main';
 const inside = (parent, child) => {
   const rel = path.relative(path.resolve(parent), path.resolve(child));
   return rel === '' || (!!rel && !rel.startsWith('..') && !path.isAbsolute(rel));

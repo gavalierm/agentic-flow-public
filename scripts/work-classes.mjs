@@ -8,7 +8,8 @@
 // Names linked to one file (a hardlink) are one backup. The size of a held work folder is checked at most once an hour.
 import fs from 'node:fs';
 import path from 'node:path';
-import { sizeOf, human } from './leftovers.mjs';
+import { sizeOf, human, tmpFiles, workFinding } from './leftovers.mjs';
+import { MAIN } from './layout.mjs';
 
 export const HELPER_DIR = '_pomocne';
 export const BACKUP_DIR = '_zalohy';
@@ -76,9 +77,19 @@ export function pruneBackups(dir, keep = BACKUP_KEEP) {
   return removed;
 }
 
-/** The line for a work folder over the limit, else null. */
+/**
+ * Backup folders of a topic's tmp/ whose files the end of a turn rotates (tidyWork of Stop): a size limit does not count
+ * them, the flow bounds them by itself (operator 2026-11-20: 936 MB of rotated backups of 4 topics were alone over the
+ * limit of the brain, so the finding could never go away by a triage). Topic main is never tidied: it counts in full.
+ */
+export const rotatedDirs = (id, tmp) => (id === MAIN ? [] : backupFolders(tmp));
+
+/** The work files finding of a repository (leftovers.mjs workFinding) without the backups the flow rotates. */
+export const repoWorkFinding = (dir, map, opts = {}) => workFinding(dir, map, { ...opts, keptDirs: rotatedDirs });
+
+/** The line for a work folder over the limit (the rotated backups not counted), else null. */
 export function sizeLine(id, tmp, limit) {
-  const w = sizeOf(tmp);
+  const w = { bytes: tmpFiles(tmp, { keep: rotatedDirs(id, tmp) }).files.reduce((n, f) => n + f.bytes, 0) };
   if (w.bytes <= limit) return null;
   return `work files of topic ${id}: ${human(w.bytes)} in tmp/ (limit ${human(limit)}). Put a helper file (an export to read, a download, a log, a one-run script) in tmp/${HELPER_DIR}/ (work-dir.mjs --helper; the end of the turn removes it) and a backup before a write in tmp/${BACKUP_DIR}/ (work-dir.mjs --backup; the first and the last ${BACKUP_KEEP} stay); remove what the topic does not need (P-062)`;
 }

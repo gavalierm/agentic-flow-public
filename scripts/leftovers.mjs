@@ -195,35 +195,55 @@ export function junkText(junk) {
 }
 
 /**
- * Work folders of a repository (topics/<id>/tmp/ of its layout): [{ path, files, bytes, largest: [{ path, bytes }] }],
- * the largest first; and the sum. The pre-release check reports a repository over TMP_WARN_BYTES.
+ * The files of one work folder: { files: [{ path, bytes }] (path relative to `base`), kept } . The files directly in a
+ * folder of `keep` (absolute paths) are not listed, their bytes are `kept`: the caller names there what the flow bounds
+ * by itself (the rotated backups, scripts/work-classes.mjs), so a limit counts only what somebody has to triage.
  */
-export function workFolders(dir, map) {
-  if (!map?.topics || !map?.topicTmp) return { list: [], files: 0, bytes: 0 };
+export function tmpFiles(abs, { keep = [], base = abs } = {}) {
+  const files = [];
+  const seen = new Set();
+  const keptSeen = new Set();
+  const skip = new Set(keep);
+  let kept = 0;
+  const walk = (a) => {
+    let entries = [];
+    try { entries = fs.readdirSync(a, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = path.join(a, e.name);
+      if (e.isDirectory() && !e.isSymbolicLink()) { walk(p); continue; }
+      try {
+        const st = fs.lstatSync(p);
+        if (skip.has(a)) kept += diskBytes(st, keptSeen);
+        else files.push({ path: posix(path.relative(base, p)), bytes: diskBytes(st, seen) });
+      } catch { /* gone */ }
+    }
+  };
+  walk(abs);
+  return { files, kept };
+}
+
+/**
+ * Work folders of a repository (topics/<id>/tmp/ of its layout): [{ path, files, bytes, largest: [{ path, bytes }] }],
+ * the largest first; the sum; and `kept`, the bytes `keptDirs(id, tmp)` took out of the count (tmpFiles). The pre-release
+ * check and the overview report a repository over TMP_WARN_BYTES.
+ */
+export function workFolders(dir, map, { keptDirs = () => [] } = {}) {
+  if (!map?.topics || !map?.topicTmp) return { list: [], files: 0, bytes: 0, kept: 0 };
   const root = path.join(dir, ...map.topics.split('/'));
   const list = [];
   let ids = [];
-  try { ids = fs.readdirSync(root); } catch { return { list, files: 0, bytes: 0 }; }
+  let kept = 0;
+  try { ids = fs.readdirSync(root); } catch { return { list, files: 0, bytes: 0, kept }; }
   for (const id of ids) {
     const abs = path.join(root, id, map.topicTmp);
     if (!fs.existsSync(abs)) continue;
-    const files = [];
-    const seen = new Set();
-    const walk = (a) => {
-      let entries = [];
-      try { entries = fs.readdirSync(a, { withFileTypes: true }); } catch { return; }
-      for (const e of entries) {
-        const p = path.join(a, e.name);
-        if (e.isDirectory() && !e.isSymbolicLink()) walk(p);
-        else { try { files.push({ path: posix(path.relative(dir, p)), bytes: diskBytes(fs.lstatSync(p), seen) }); } catch { /* gone */ } }
-      }
-    };
-    walk(abs);
-    files.sort((a, b) => b.bytes - a.bytes);
-    list.push({ path: `${map.topics}/${id}/${map.topicTmp}/`, files: files.length, bytes: files.reduce((n, f) => n + f.bytes, 0), largest: files.slice(0, 5) });
+    const w = tmpFiles(abs, { keep: keptDirs(id, abs), base: dir });
+    kept += w.kept;
+    w.files.sort((a, b) => b.bytes - a.bytes);
+    list.push({ path: `${map.topics}/${id}/${map.topicTmp}/`, files: w.files.length, bytes: w.files.reduce((n, f) => n + f.bytes, 0), largest: w.files.slice(0, 5) });
   }
   list.sort((a, b) => b.bytes - a.bytes);
-  return { list, files: list.reduce((n, w) => n + w.files, 0), bytes: list.reduce((n, w) => n + w.bytes, 0) };
+  return { list, files: list.reduce((n, w) => n + w.files, 0), bytes: list.reduce((n, w) => n + w.bytes, 0), kept };
 }
 
 /** Map of a repository for its work folders (data 2.0 has one map, data 2.1 one per role). */
@@ -233,11 +253,11 @@ export const workMap = (version, role) => layoutFor(version, ROLE(role));
  * The finding of a repository whose work folders outside git exceed TMP_WARN_BYTES (doma-pc 2026-11-16: 3 GB of exports
  * piled up unseen): { dir, files, bytes, text } or null. The text names the largest work folders and files.
  */
-export function workFinding(dir, map, { limit = TMP_WARN_BYTES } = {}) {
-  const w = workFolders(dir, map);
+export function workFinding(dir, map, { limit = TMP_WARN_BYTES, keptDirs } = {}) {
+  const w = workFolders(dir, map, { keptDirs });
   if (w.bytes <= limit) return null;
   const name = path.basename(dir);
   const folders = w.list.slice(0, 3).map((f) => `${f.path} ${human(f.bytes)}`).join(', ');
   const files = w.list.flatMap((f) => f.largest).sort((a, b) => b.bytes - a.bytes).slice(0, 5).map((f) => `${f.path} ${human(f.bytes)}`).join(', ');
-  return { dir, files: w.files, bytes: w.bytes, text: `${name}: ${sizeText(w)} of work files outside git (limit ${human(limit)}): ${folders}; largest: ${files}. Triage them with the operator: remove exports, backups and copies not needed; a finished work belongs to vystupy/ or zdroje/` };
+  return { dir, files: w.files, bytes: w.bytes, text: `${name}: ${sizeText(w)} of work files outside git (limit ${human(limit)}): ${folders}; largest: ${files}${w.kept ? `; not counted: ${human(w.kept)} of backups the flow rotates` : ''}. Triage them with the operator: remove exports, backups and copies not needed; a finished work belongs to vystupy/ or zdroje/` };
 }

@@ -17,7 +17,7 @@ import { git, localTime, readJson, relPosix } from './util.mjs';
 import { machineRoot } from './config.mjs';
 import { domainBrains } from './stores.mjs';
 import { layoutOf, dataPath } from './layout.mjs';
-import { workFinding } from './leftovers.mjs';
+import { repoWorkFinding } from './work-classes.mjs';
 import { listTopicRecords } from './topic-files.mjs';
 import { isMainTopic, commsProjectName, supervisorOf } from './comms.mjs';
 import { DONE, QUESTION, WAITING } from './topic-state.mjs';
@@ -135,7 +135,7 @@ export function overview({ root = null, ctx = null, brains = null, now = Date.no
     // Work folders of the brain outside git over the limit (data 2.1 keeps every topic's tmp/ in the brain): data does
     // not pile up unseen (doma-pc 2026-11-16: 3 GB of exports in a never closed work folder).
     try {
-      const work = workFinding(b.dir, layoutOf(b.dir));
+      const work = repoWorkFinding(b.dir, layoutOf(b.dir));
       if (work) findings.push({ kind: 'work-files', domain: b.domainRoot ? path.basename(b.domainRoot) : null, brain: b.name, brainDir: b.dir, id: 'tmp', subject: '', text: work.text });
     } catch { /* an unknown layout: other checks name it */ }
   }

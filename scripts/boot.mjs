@@ -19,6 +19,7 @@ import { sessionKnowledgeSources, skillSources, knowledgeKinds } from './repo-kn
 import { dataPath, dataRel, dataLayoutVersion, layoutOf, topicHome, topicWorkLabel, hasData, hasScratch, layoutRefusal, dataName } from './layout.mjs';
 import { workDir, workTopic } from './topic-files.mjs';
 import { overview, overviewLines, obligationLines, isSupervisorSession } from './overview.mjs';
+import { repoWorkFinding } from './work-classes.mjs';
 import { migrateLocalMail } from './comms-migrate.mjs';
 import { operatorProfile } from './people.mjs';
 export const BOOT_MARKERS = ['## Pravidlá', '## Stav vlákna', '## Index pamäte', '## Index rozhodnutí', '## Otvorené témy', '## Workflow'];
@@ -222,6 +223,11 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   if (isSupervisorSession(ctx)) {
     try { for (const line of overviewLines(overview({ ctx, owed: info.mail.obligations?.owed || [] }))) status += `\n${line}`; } catch (err) { status += `\noverview: not read (${err.message})`; }
     for (const line of obligationLines(info.mail.available ? info.mail.obligations : null)) status += `\n${line}`;
+  } else if (ctx.brainDir) {
+    // The work files of this brain over the limit, shown on the machine that holds them (operator 2026-11-20: the finding
+    // went only to the supervisor, who does not see that disk; topic main and three topics under the topic limit were
+    // over the limit of the brain and no thread of the machine saw a line). One walk of tmp/ per session start.
+    try { const work = repoWorkFinding(ctx.brainDir, layoutOf(ctx.brainDir)); if (work) status += `\nwork files over the limit: ${work.text}`; } catch { /* an unknown layout: the start names it elsewhere */ }
   }
   // repo knowledge of the session repo and held code topics (D-0002): one line each, the HANDOVER of a topic's repo in full.
   for (const line of repoKnowledgeLines(ctx)) status += `\n${line}`;
