@@ -48,6 +48,7 @@ Zápis do brain ide výlučne cez `node ${CLAUDE_PLUGIN_ROOT}/bin/save.mjs`. Wri
 - Žiadne pevné ID modelu ani verzie: skill povie, ako ich zistiť za behu (politika, `orchestrator_capabilities`), a ak ich nemá, nahlási blocker, nenahrádza ich iným.
 - Dôvod patrí k pokynu: „nie X, lebo Y (dátum)“. Skript iba tam, kde je krok deterministický (čakanie, commit, vydanie); ostatné ostáva textom.
 - Pred novým skillom hľadaj existujúci (`error.mjs` / `find`): refaktoruj ho, nezakladaj druhý. Refaktor: celé telo ako jeden postup (kroky v poradí práce, každý pokyn raz, žiadne dva pokyny proti sebe, dôvody „nie X, lebo Y“ zachované); staré sekcie „## Doplnenie“ pri tom zlúč do tela.
+- Uloženie, ktoré prepisuje celý súbor skillu (`--replace`, `--script` existujúceho skriptu), skript odmietne, keď skill medzitým zmenil commit, ktorý tvoje vlákno neuložilo. Vypíše tie commity: porovnaj ich so svojím obsahom, zlúč, čo tvojmu chýba, a ulož znova s `--base <commit z hlášky>`. Nie `--base` bez porovnania, lebo druhé uloženie o 18 minút neskôr zmazalo zmeny iného vlákna (hlásenie 2026-11-20). `--sed` mení aktuálne telo, základ nepotrebuje.
 
 Skript po zápise commitne so značkou, pushne, vygeneruje indexy a hlási `unpushed: N` alebo prekročený limit (vtedy `workflow:consolidate` po dokončení práce).
 

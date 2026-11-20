@@ -13,7 +13,7 @@
 //   save.mjs rule <name> [--repo [<repo>]] --content "..." (--enforced-by <file>[:<symbol>][,...] | --unenforced "<why code cannot check it>") [--title "..."] | --remove --reason "..."
 //   save.mjs exception P-XXX --wording "..." --reason "..." [--layer project|harness|machine|local] [--title "..."]
 //   save.mjs exception P-XXX --remove --reason "..." [--layer project|harness|machine|local]   removes its section (one commit; an empty file goes)
-//   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--remove-script <file>[,<file>]] [--replace | --sed 's/<pattern>/<replacement>/[gim]' ...] (existing skill: --script or --description alone keeps the body; an edit needs --origin error|routine|operator, operator with --reason "operator <date>: ...") [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
+//   save.mjs skill <name> --description "..." --content "..." --origin error|routine [--aliases a,b] [--script <file>[,<file>]] [--remove-script <file>[,<file>]] [--replace [--base <commit>] | --sed 's/<pattern>/<replacement>/[gim]' ...] (existing skill: --script or --description alone keeps the body; an edit needs --origin error|routine|operator, operator with --reason "operator <date>: ...") [--from-procedure <name>] [--from-sequence <seq>] | --remove --reason "..."
 //   save.mjs handover <topic> (--task ".." --done "a; b" --next "a; b" --files "a; b" --questions "a; b" --tasks "a; b" [--done-replace "a; b"] | --file <path>)
 //                        six sections (P-011); --next (a step in Ďalší krok) is refused in a topic in mode discussion (spec 10.6)
 //   save.mjs docs [--message "..."]   persona only: commits the files written directly into docs/ (P-024)
@@ -71,6 +71,7 @@ import { fieldsOp } from '../scripts/topic-files.mjs';
 import { resultsActive, tmpOwner, readBindings, stalePages } from '../scripts/results.mjs';
 import { uncitedDecisions, uncitedLine, boundSkills, boundLine } from '../scripts/skill-decisions.mjs';
 import { checkSkill, meaningDiff, workLayout } from '../scripts/skill-check.mjs';
+import { unseenSkillCommits, recordSkillSave, UNSEEN_REASON } from '../scripts/skill-base.mjs';
 import { personRedirect, requireOperatorRepo, readPeople, findPeople, newPerson, changePerson, shortIdProblem, proposedId } from '../scripts/people.mjs';
 import { machineStores, machineRecords, targetStore, sameStore, checkDecisionRefs, decisionRefs, rewriteDecisionRefs, subjectMatch, saveHint, displayPath, refFiles, isTombstone, SUBJECT_TYPES, ID_LINE, lc } from '../scripts/stores.mjs';
 
@@ -826,9 +827,20 @@ function saveSkill(ctx) {
   const ops = [];
   let rel;
   let basis = null;
+  // A save that replaces a whole file (the body, an existing script) needs the commits of the skill the thread knows.
+  let whole = true;
   if (hit) {
     basis = editBasis(hit.skillName);
     rel = hit.path;
+    const dir = path.posix.dirname(toPosixPath(rel));
+    whole = Boolean(args.replace) || asList(args.script).some((x) => fs.existsSync(path.join(ctx.brainDir, dir, path.basename(String(x)))));
+    if (whole && ctx.thread) {
+      const since = heldTopics(ctx.brainDir, ctx.thread).map((t) => t.holder?.since).filter(Boolean).sort()[0] || null;
+      const base = typeof args.base === 'string' && args.base.trim() ? args.base.trim() : null;
+      let unseen = [];
+      try { unseen = unseenSkillCommits(ctx.brainDir, ctx.thread, hit.skillName, dir, { base, since }); } catch (err) { fail(err.message); }
+      if (unseen.length) fail(UNSEEN_REASON(hit.skillName, dir, ctx.brainDir, unseen, base));
+    }
     const parsed = parseFrontmatter(readText(path.join(ctx.brainDir, rel), ''));
     const data = { ...parsed.data, aliases: [...new Set([...asList(parsed.data.aliases), ...asList(args.aliases)])], updated: today() };
     if (args.description) data.description = args.description;
@@ -892,6 +904,7 @@ function saveSkill(ctx) {
   if (args['from-sequence']) ops.push(removeNames(ctx.brainDir, 'sequences.log', asList(args['from-sequence'])));
   const res = brainWrite(ctx, { ops, message: `save skill ${name} (${hit ? `${sed !== null ? 'edit' : 'refactor'}, ${basis}` : origin})` });
   finish(ctx, res, [rel, ...scripts]);
+  if (res.committed) recordSkillSave(ctx.brainDir, ctx.thread, hit ? hit.skillName : name, path.posix.dirname(toPosixPath(rel)), { whole });
   const notDeployed = deploySkills(ctx);
   out(hit ? `${sed !== null ? 'edited' : 'refactored'} existing skill ${hit.skillName}` : `new skill ${name} (origin: ${origin})`);
   if (removeList.length) out(`removed from skill ${name}: ${removeList.join(', ')} (brain and deployed copy; save.mjs share removes them in the other brain too)`);

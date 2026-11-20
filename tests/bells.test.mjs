@@ -44,6 +44,9 @@ test('classifyPrompt: only the exact whole prompt is a bell; a quoted template i
   // from, then to (operator 2026-11-17; comms v2.0.20): a bell; anything more or less is an operator prompt
   for (const t of ['you have mail from shop-api/schema in topic shop-web/faq', 'you have mail from agent-bob in topic thread/b2', 'You have mail from @alpha/main in topic p/t']) assert.equal(classifyPrompt(t, policy), 'wake', t);
   for (const t of ['you have mail from in topic p/t', 'you have mail from x y in topic p/t', 'you have mail from x in topic', 'did you have mail from x in topic p/t']) assert.equal(classifyPrompt(t, policy), null, t);
+  // the link to the sender's thread under the bell (operator 2026-11-20; comms v2.0.31): a bell; a body after it is an operator prompt
+  for (const l of ['\n[shop-api/schema](t3-thread://v1/8c0e55d2-0b7a-4d1f-9a53-2f1c7e6b9a10)', ' [thread/mcp:launch:f0a5](t3-thread://v1/mcp:launch:f0a5)']) assert.equal(classifyPrompt(`you have mail from shop-api/schema in topic shop-web/faq${l}`, policy), 'wake', l);
+  for (const l of ['\n[x](t3-thread://v1/a1)\nread it', '\n[x](https://example.com/a1)', '\n[x y](t3-thread://v1/a1)']) assert.equal(classifyPrompt(`you have mail from x in topic p/t${l}`, policy), null, l);
   assert.deepEqual(parsePrompt('no reply m-123', policy), { kind: 'no-reply', id: 'm-123' });
   assert.deepEqual(parsePrompt('undelivered m-9', policy), { kind: 'undelivered', id: 'm-9' });
   assert.equal(classifyPrompt('there was no reply m-123 yesterday', policy), null);

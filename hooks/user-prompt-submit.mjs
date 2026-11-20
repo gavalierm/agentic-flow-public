@@ -55,11 +55,15 @@ const TOPIC = '@?[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.:-]*)?';
 // and the plain `<wake_template> <to>` stay bells. Never the body (P-047).
 const LABEL = '@?[A-Za-z0-9][A-Za-z0-9_.:@-]*(?:/[A-Za-z0-9][A-Za-z0-9_.:@-]*)?';
 const FROM = `(?:\\s+from\\s+${LABEL})?`;
+// Link to the sender's thread after a from-first wake (operator 2026-11-20, agentic-comms v2.0.31), on a line of its own
+// (Windows: after a space): `[<from>](t3-thread://v1/<thread>)`; the operator opens the sender's thread from the bell.
+// A fixed form, never the body (P-047).
+const LINK = `(?:\\s+\\[${LABEL}\\]\\(t3-thread://v1/[A-Za-z0-9][A-Za-z0-9_.:-]*\\))?`;
 /** The from-first bell of a template ending in ` in topic`: `^<head> from <from> in topic <to>$`, else null. */
 const words = (s) => escapeRe(s).replace(/ /g, '\\s+');
 const fromFirst = (tpl) => {
   const m = /^(.*\S)\s+(in\s+topic)$/i.exec(String(tpl || '').trim());
-  return m ? new RegExp(`^${words(m[1])}\\s+from\\s+${LABEL}\\s+${words(m[2])}\\s+${TOPIC}$`, 'i') : null;
+  return m ? new RegExp(`^${words(m[1])}\\s+from\\s+${LABEL}\\s+${words(m[2])}\\s+${TOPIC}${LINK}$`, 'i') : null;
 };
 
 /** Topic id from a name: lower case, no diacritics, words joined by `-` (at most 60 characters). */
