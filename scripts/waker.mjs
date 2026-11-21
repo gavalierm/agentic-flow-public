@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { readThreadState, writeThreadState } from './config.mjs';
-import { PLUGIN_ROOT } from './util.mjs';
+import { PLUGIN_ROOT, writeJson } from './util.mjs';
 
 /**
  * Absolute paths in the prompt of a recurring task whose folder does not exist (alice 2026-11-19: the daily report sent
@@ -298,11 +298,7 @@ export function readTimerIndex(env = process.env) {
   } catch { return { threads: {} }; }
 }
 export function writeTimerIndex(idx, env = process.env) {
-  const file = timerIndexFile(env);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(idx, null, 2)}\n`);
-  fs.renameSync(tmp, file);
+  writeJson(timerIndexFile(env), idx);
 }
 /** Register the thread of `ctx` (brain, project dir: the check's cwd and the mail settings of its turn). Never throws. */
 export function registerTimerThread(ctx, env = process.env) {

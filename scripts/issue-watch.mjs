@@ -10,7 +10,7 @@ import { runClient, commsProjectName, isMainTopic, formatAddress } from './comms
 import { brainId } from './brain-id.mjs';
 import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh, readToken } from './github.mjs';
 import { heldTopics } from './topic.mjs';
-import { readJson, nowIso, toPosix } from './util.mjs';
+import { readJson, writeJson, nowIso, toPosix } from './util.mjs';
 import { LAYOUT, dataPath } from './layout.mjs';
 
 export const ISSUES_FILE = 'reported-issues.json';
@@ -28,18 +28,12 @@ export function readIssues(base) {
   const all = base ? readJson(issuesFile(base), {}) : {};
   return all && typeof all === 'object' && !Array.isArray(all) ? all : {};
 }
-function writeAtomic(file, data) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`);
-  fs.renameSync(tmp, file);
-}
 /** Merge `patch` into record `key` (read again first: the check and the reporter's commands may write one after the other). */
 export function updateIssue(base, key, patch) {
   const all = readIssues(base);
   if (patch === null) delete all[key];
   else all[key] = { ...(all[key] || {}), ...patch };
-  writeAtomic(issuesFile(base), all);
+  writeJson(issuesFile(base), all);
   return all[key] || null;
 }
 
@@ -56,7 +50,7 @@ function addToIndex(ctx, env) {
   const idx = readIndex(env);
   if (idx.brains[base]?.project === ctx.projectDir) return;
   idx.brains[base] = { project: ctx.projectDir, since: idx.brains[base]?.since || nowIso() };
-  try { writeAtomic(indexFile(env), idx); } catch { /* the record stays; the check does not see it until the next report */ }
+  try { writeJson(indexFile(env), idx); } catch { /* the record stays; the check does not see it until the next report */ }
 }
 
 export function issueKey(slug, number) {
@@ -347,7 +341,7 @@ export async function watchIssues({ env = process.env, force = false, now = Date
       if (r.limitedUntil) { limitedUntil = r.limitedUntil; break; }
     }
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    writeAtomic(stateFile, { ...state, last_run_at: new Date(now).toISOString(), retry_after: limitedUntil });
+    writeJson(stateFile, { ...state, last_run_at: new Date(now).toISOString(), retry_after: limitedUntil });
     lines.push(`issue-watch: ${bases.length} brain(s), ${rang} ring(s)${undelivered.length ? `, ${undelivered.length} without mail address` : ''}${limitedUntil ? `, rate limit until ${limitedUntil}` : ''}`);
     return { lines, rang, undelivered };
   });

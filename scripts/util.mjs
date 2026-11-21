@@ -18,9 +18,30 @@ export function readJson(file, fallback = undefined) {
   }
 }
 
+/**
+ * Atomic: the JSON goes to a temporary file and a rename puts it in place, so a reader never meets a truncated file.
+ * The hooks of one thread run at the same time (parallel tool calls; every call of a Code Mode script): a hook that read
+ * the thread state while another one wrote it got `{}` from readJson and wrote that back, which reset the whole state
+ * (own_edits, refusals, wakers; reproduced 2026-11-21). The new file keeps the permission bits of the one it replaces.
+ * Two writers that read the same state still lose one update: that needs a lock around read and write, not this.
+ */
 export function writeJson(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+  const text = JSON.stringify(data, null, 2) + '\n';
+  let old = null;
+  try { old = fs.lstatSync(file); } catch { /* a new file */ }
+  // A link stays a link: the write goes through it to its target, a rename would put a file in its place.
+  if (old?.isSymbolicLink()) return fs.writeFileSync(file, text);
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, text);
+    if (old) fs.chmodSync(tmp, old.mode & 0o777);
+    fs.renameSync(tmp, file);
+  } catch {
+    // The system refused the rename (Windows: the target is open elsewhere): the direct write, as before.
+    fs.rmSync(tmp, { force: true });
+    fs.writeFileSync(file, text);
+  }
 }
 
 export function readText(file, fallback = null) {
