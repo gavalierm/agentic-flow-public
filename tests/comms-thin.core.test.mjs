@@ -117,7 +117,7 @@ test('Stop reminds from the mail\'s owed; the prompt shows it as the mail has it
     fx.hook('user-prompt-submit.mjs', { prompt: 'pracuj' });
     fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Hotové.\n\nStav: hotovo' });
     const queued = (readState(fx.brain).pending_signals || []).join(' ');
-    assert.match(queued, /picked mail unanswered: m-p1 assist; answer each with comms send --reply-to <id>/);
+    assert.match(queued, /picked mail unanswered: m-p1 assist; end each: it asks for an answer or a result: comms send --reply-to <id>/);
     assert.doesNotMatch(queued, /m-w1/, 'an interim answer is not reminded');
     // another thread answered it meanwhile: the prompt shows the mail's owed, not the queued copy
     fx.stub.set({ owed: [], awaiting: [] });

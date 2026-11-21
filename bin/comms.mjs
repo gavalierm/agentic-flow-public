@@ -405,8 +405,8 @@ function cmdSend(ctx) {
   const finalLevel = data.level || level;
   // P-061, 1e: the wait for the answer is the mail's (wait_due_at): it rings this thread at its check, also when the message
   // stays picked without an answer; no timer of this thread is bound to the message (P-072).
-  const check = data.wait_due_at && !data.warning ? `; without an answer the mail rings you at ${localTime(data.wait_due_at)}` : '';
-  if (finalLevel === 'assist' && data.id && !data.queued) out(`assist sent: continue other work; the reply wakes you${check} (P-042)`);
+  const check = data.wait_due_at && !data.warning ? `; without ${finalLevel === 'assist' ? 'a pickup' : 'an answer'} the mail rings you at ${localTime(data.wait_due_at)}` : '';
+  if (finalLevel === 'assist' && data.id && !data.queued) out(`assist sent: continue other work; the final reply wakes you${check} (P-042)`);
   if (finalLevel === 'blocker') out(`blocker sent: continue with work that does not need the answer (or your recommended assumption, say it); the reply wakes you${check}; a message never stops the work (P-061)`);
 }
 

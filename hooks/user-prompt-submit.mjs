@@ -212,20 +212,23 @@ export function messageBellLine(kind, id, data) {
   const d = data && typeof data === 'object' ? data : {};
   const head = d.level && d.to ? `message ${id} (${d.level} → ${d.to})` : `message ${id}`;
   const later = d.wait_due_at ? `; the mail checks again ${localTime(d.wait_due_at)}` : '';
+  // The last check of the mail (no later one): the sender decides; before it the line names no step, and the mail does
+  // not ring (mail v2.0.34: one ring at the end of the wait; operator 2026-11-21: a ring is for a turn that has a step).
+  const hold = (text) => (d.wait_due_at ? `${text}${later} (P-061)` : `this was the last check of the mail: withdraw it (comms withdraw --id ${id}), ask again with a blocker, or ask the operator; no takeover or sensitive steps (P-047)`);
   if (kind === 'recipient-closed') {
     // I9: the recipient closed its topic after it picked the message; the message stays owed there, no answer will come.
     return `${head}: the recipient closed its topic after picking it up (${d.status || 'picked'}${d.answer_state ? `, answer ${d.answer_state}` : ''}): no answer will come from there; withdraw it (comms withdraw --id ${id}), send it elsewhere or ask the operator (P-047)`;
   }
   if (kind === 'no-reply' && d.code_answer === 'busy') {
     // P-061 (V1): the mail answered busy: an open running turn of the recipient holds the message back.
-    return `${head}: not picked, busy (answer set by the mail, not by the recipient): the recipient thread is working, the message is delivered after its turn; send nothing again and do not raise the level${later} (P-061)`;
+    return `${head}: not picked, busy (answer set by the mail, not by the recipient): the recipient thread is working, the message is delivered after its turn; ${hold('send nothing again and do not raise the level')}`;
   }
   if (kind === 'no-reply' && d.code_answer === 'otázka') {
-    return `${head}: not picked, otázka (answer set by the mail, not by the recipient): the recipient thread waits for its operator (an open question, or its last turn ended Stav: otázka); do not resend, promote or ask your operator the same${later} (P-061)`;
+    return `${head}: not picked, otázka (answer set by the mail, not by the recipient): the recipient thread waits for its operator (an open question, or its last turn ended Stav: otázka); ${hold('do not resend, promote or ask your operator the same')}`;
   }
   if (kind === 'no-reply' && d.status === 'waiting') {
     // The recipient's interim answer (otázka, čakám) is unchanged at this check of the mail (1e): only its state is checked.
-    return `${head}: interim answer ${d.answer_state || '?'} since ${localTime(d.answer_at)}, unchanged at this check: the recipient ${d.answer_state === 'otázka' ? 'waits for its operator' : 'waits for an event'}; do not resend or escalate${later} (P-061)`;
+    return `${head}: interim answer ${d.answer_state || '?'} since ${localTime(d.answer_at)}, unchanged at this check: the recipient ${d.answer_state === 'otázka' ? 'waits for its operator' : 'waits for an event'}; ${hold('do not resend or escalate')}`;
   }
   if (kind === 'no-reply' && d.status === 'picked') {
     return `${head}: picked ${localTime(d.picked_at)}, no answer yet${d.wait_n ? ` (check ${d.wait_n + 1})` : ''}${P047_ACTIONS}`;

@@ -121,7 +121,9 @@ test('message bells of mail model 2: recipient closed, code answer busy / otázk
   assert.match(messageBellLine('recipient-closed', 'm5', { ...base, status: 'picked' }), /^message m5 \(assist → project\/beta\): the recipient closed its topic after picking it up \(picked\): no answer will come from there; withdraw it \(comms withdraw --id m5\)/);
   assert.match(messageBellLine('no-reply', 'm6', { ...base, status: 'pending', code_answer: 'busy' }), /not picked, busy \(answer set by the mail, not by the recipient\)/);
   assert.match(messageBellLine('no-reply', 'm7', { ...base, status: 'pending', code_answer: 'otázka' }), /not picked, otázka \(answer set by the mail, not by the recipient\): the recipient thread waits for its operator/);
-  assert.match(messageBellLine('no-reply', 'm8', { ...base, status: 'waiting', answer_state: 'čakám', answer_at: '2026-11-01T10:00:00.000Z' }), /interim answer čakám since .*: the recipient waits for an event; do not resend or escalate/);
+  // The last check of the mail (no later one) gives the sender a step; a check with a later one says to do nothing.
+  assert.match(messageBellLine('no-reply', 'm8', { ...base, status: 'waiting', answer_state: 'čakám', answer_at: '2026-11-01T10:00:00.000Z' }), /interim answer čakám since .*: the recipient waits for an event; this was the last check of the mail: withdraw it \(comms withdraw --id m8\), ask again with a blocker, or ask the operator/);
+  assert.match(messageBellLine('no-reply', 'm8', { ...base, status: 'waiting', answer_state: 'čakám', answer_at: '2026-11-01T10:00:00.000Z', wait_due_at: '2026-11-02T10:00:00.000Z' }), /waits for an event; do not resend or escalate; the mail checks again /);
   assert.match(messageBellLine('no-reply', 'm9', { ...base, status: 'picked', picked_at: '2026-11-01T10:00:00.000Z', wait_n: 1 }), new RegExp(`picked .*, no answer yet \\(check 2\\)${ACTIONS.replace(/[()]/g, '\\$&')}$`));
   assert.match(messageBellLine('no-reply', 'm10', { ...base, status: 'held' }), /no reply, held: no thread receives project\/beta/);
   // No version branch: a field of model 1 (answer_origin code) is no code answer.

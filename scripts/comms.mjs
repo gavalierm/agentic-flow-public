@@ -545,7 +545,7 @@ export function ageText(s) {
 
 /** Prefix of the queued line about owed mail (Stop); the prompt hook replaces a queued one with the mail's live `owed`. */
 export const OWED_PREFIX = 'picked mail unanswered';
-export const OWED_LINE = (list, offline = null) => `${OWED_PREFIX}${offline ? ` (offline, ${offline})` : ''}: ${list.map((w) => `${w.id} ${w.level}`).join(', ')}; answer each with comms send --reply-to <id> --state hotovo|otázka|čakám; answered another way (one reply for several, a new message): comms settle --id <id>; no answer needed: comms ack --id <id> (P-042)`;
+export const OWED_LINE = (list, offline = null) => `${OWED_PREFIX}${offline ? ` (offline, ${offline})` : ''}: ${list.map((w) => `${w.id} ${w.level}`).join(', ')}; end each: it asks for an answer or a result: comms send --reply-to <id> --state hotovo|otázka|čakám; it asks for none and is done: comms ack --id <id>; answered another way (one reply for several, a new message): comms settle --id <id> (P-042)`;
 /** Owed mail the stop reminds of: picked without an answer (an interim answer is not reminded), from the mail (P-072). */
 export const unansweredOwed = (obligations) => (obligations?.owed || []).filter((w) => w.status === 'picked');
 
