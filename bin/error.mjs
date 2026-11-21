@@ -25,8 +25,9 @@ import { isMainTopic } from '../scripts/comms.mjs';
 import { report, scrub } from '../scripts/report.mjs';
 import { confirmIssue, reopenIssue, watchIssues, undeliveredIssues, undeliveredFor, updateIssue, baseOf } from '../scripts/issue-watch.mjs';
 
-// P-003 step 5: every error goes to the workflow maintainer, or the lesson stays in one brain.
-const REPORT_LINE = 'then report the error to the workflow maintainer: error.mjs report --title "<short>" --text "chyba: ...; príčina: ...; uložené: ..."; only its line "reported: ..." means reported (P-003)';
+// P-003 step 5 (operator 2026-11-21): only an error of the workflow or the mail goes to the maintainer, so the workflow
+// gets fixed; an error of a domain's own work, tool or skill is the scope of that skill, its lesson stays in the brain.
+const REPORT_LINE = 'an error of the workflow or the mail (script, hook, workflow skill): then report it to the workflow maintainer: error.mjs report --title "<short>" --text "chyba: ...; príčina: ...; uložené: ..."; only its line "reported: ..." means reported. An error of your own work, tool or domain skill: do not report it, the lesson stays in this brain (P-003)';
 
 const args = parseArgs(process.argv.slice(2));
 const [cmd, arg] = args._;
