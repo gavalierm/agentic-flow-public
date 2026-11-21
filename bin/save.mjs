@@ -3,7 +3,8 @@
 // The agent classifies; this script only writes in a fixed format, deduplicates via find, commits via brain.mjs, regenerates indexes.
 //   save.mjs memory <type> <name> --content "..." [--origin operator|derived|observed] [--aliases a,b] [--relates-to x,y] [--unrelate x,y] [--sources f1,f2] [--summary "..."] [--new]
 //   save.mjs memory <type> <name> (--relates-to x,y | --unrelate x,y)   existing record: changes only its links, the body stays
-//   save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y [--origin operator|agent] [--sources f1,f2] [--supersedes D-0001]
+//   save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y [--origin operator|agent] [--sources f1,f2] [--supersedes D-0001[,D-0002]]
+//   save.mjs decision --supersede D-0001[,D-0002] --by D-0003 [--repo [<repo>]]   (an older decision the saved D-0003 replaces)
 //   sources (D-0036) of memory (derived: required, observed: optional, operator: none) and of a decision: a file tracked
 //   in git, D-NNNN, P-NNN or a URL; a new source in scratch/, local/, outside git or missing is refused (scripts/links.mjs)
 //   save.mjs decision --relink D-XXXX [--repo [<repo>]] (--relates-to x,y | --unrelate x,y)   changes only the links of a decision
@@ -71,6 +72,7 @@ import { fieldsOp } from '../scripts/topic-files.mjs';
 import { NOTE_STATES, newNote, readNotes, similarNotes, appendedNote, statedNote } from '../scripts/notes.mjs';
 import { resultsActive, tmpOwner, readBindings, stalePages } from '../scripts/results.mjs';
 import { uncitedDecisions, uncitedLine, boundSkills, boundLine } from '../scripts/skill-decisions.mjs';
+import { decisionCheckLine, validDecision } from '../scripts/decision-overlap.mjs';
 import { checkSkill, meaningDiff, workLayout } from '../scripts/skill-check.mjs';
 import { unseenSkillCommits, recordSkillSave, UNSEEN_REASON } from '../scripts/skill-base.mjs';
 import { personRedirect, requireOperatorRepo, readPeople, findPeople, newPerson, changePerson, shortIdProblem, proposedId } from '../scripts/people.mjs';
@@ -407,13 +409,8 @@ function relinkDecision(ctx) {
   if (!/^([a-z0-9-]+\/)?D-\d{4}$/i.test(id) || (args['relates-to'] === undefined && args.unrelate === undefined)) fail('usage: save.mjs decision --relink D-XXXX [--repo [<repo>]] (--relates-to x,y | --unrelate x,y)');
   const repo = repoTarget(ctx);
   const target = targetStore(ctx, repo);
-  const key = (repo ? id.replace(new RegExp(`^${repo}/`), '') : id).toUpperCase();
-  let hit;
-  if (repo) {
-    const held = heldRepoTopic(ctx, repo)?.topic || null;
-    hit = find(ctx.brainDir, key, ctx.domain).find((m) => m.kind === 'decision' && m.repo === repo && (!m.topic || m.topic === held));
-  } else hit = readDecisions(ctx.brainDir).find((d) => (d.id || d.key) === key);
-  if (!hit) fail(`decision ${id} not found${repo ? ` in repo ${repo}` : ''}`);
+  const key = decisionKey(repo, id);
+  const hit = decisionHit(ctx, repo, id);
   const parsed = parseFrontmatter(readText(path.resolve(ctx.brainDir, hit.path), ''));
   const linked = asList(parsed.data.relates_to);
   const unrelate = asList(args.unrelate);
@@ -433,9 +430,71 @@ function relinkDecision(ctx) {
   out(`decision ${repo ? `${repo}/` : ''}${key} relates_to: ${relates.join(', ')}`);
 }
 
+/** ID of a decision inside its store: `<repo>/D-0001` and `d-0001` are D-0001. */
+const decisionKey = (repo, id) => (repo ? String(id).replace(new RegExp(`^${repo}/`), '') : String(id)).toUpperCase();
+
+/** The saved decision `id` of the store a save writes into (the brain, or with `repo` that repo); fails when it has none. */
+function decisionHit(ctx, repo, id) {
+  const key = decisionKey(repo, id);
+  let hit;
+  if (repo) {
+    const held = heldRepoTopic(ctx, repo)?.topic || null;
+    hit = find(ctx.brainDir, key, ctx.domain).find((m) => m.kind === 'decision' && m.repo === repo && (!m.topic || m.topic === held));
+  } else hit = readDecisions(ctx.brainDir).find((d) => (d.id || d.key) === key);
+  return hit || fail(`decision ${id} not found${repo ? ` in repo ${repo}` : ''}`);
+}
+
+/**
+ * A decision (its file as parsed) may be replaced by a decision of `origin`: fails when it is replaced already, or when a
+ * decision of the agent would replace a decision of the operator (operator 2026-11-21: only the operator changes what he
+ * decided). Called before a lock is taken (process.exit skips its release). Returns the parsed file.
+ */
+function replaceable(parsed, oldId, origin) {
+  if (!validDecision(parsed.data)) fail(`decision ${oldId} is already ${parsed.data.status}; nothing written`);
+  if (parsed.data.origin === 'operator' && origin === 'agent') fail(`decision ${oldId} is a decision of the operator: a decision of the agent (origin agent) does not replace it. The operator decided the new one: save it with --origin operator. He did not: ask him (P-059); nothing written`);
+  return parsed;
+}
+/** Text of a decision (its file as parsed) marked replaced by `id`. */
+const supersededText = (parsed, id) => serializeFrontmatter({ ...parsed.data, status: `superseded-by ${id}`, updated: today() }, parsed.body);
+
+/**
+ * An older decision the saved one replaces, marked after the save (save decision names the candidates only when it has
+ * written the new one): save.mjs decision --supersede D-0001[,D-0002] --by D-0003 [--repo [<repo>]].
+ */
+function supersedeDecision(ctx) {
+  const repo = repoTarget(ctx);
+  const ids = [...new Set(asList(args.supersede === true ? rest[0] : args.supersede).map((v) => decisionKey(repo, v)))];
+  const by = typeof args.by === 'string' ? decisionKey(repo, args.by) : '';
+  if (!ids.length || !ids.every((v) => /^D-\d{4}$/.test(v)) || !/^D-\d{4}$/.test(by) || ids.includes(by)) fail('usage: save.mjs decision --supersede D-XXXX[,D-YYYY] --by D-ZZZZ [--repo [<repo>]]');
+  const rel = (hit) => (repo ? knowledgeRel(ctx, hit.path) : hit.path);
+  const parse = (hit) => parseFrontmatter(readText(path.resolve(ctx.brainDir, hit.path), ''));
+  const next = decisionHit(ctx, repo, by);
+  const nextParsed = parse(next);
+  if (!validDecision(nextParsed.data)) fail(`decision ${by} is ${nextParsed.data.status}: a replaced decision replaces nothing; nothing written`);
+  const ops = ids.map((id) => { const hit = decisionHit(ctx, repo, id); return { path: rel(hit), content: supersededText(replaceable(parse(hit), id, nextParsed.data.origin), by) }; });
+  const all = [...new Set([...asList(nextParsed.data.supersedes), ...ids])];
+  ops.push({ path: rel(next), content: serializeFrontmatter({ ...nextParsed.data, supersedes: all.length === 1 ? all[0] : all, updated: today() }, nextParsed.body) });
+  const message = `supersede decision ${ids.join(', ')} by ${by}`;
+  if (repo) out(formatRepoWrite(repoWrite(ctx, repo, { ops, message })));
+  else finish(ctx, brainWrite(ctx, { ops, message }), ops.map((o) => o.path));
+  out(`decision ${ids.join(', ')}: superseded by ${by}`);
+}
+
+/** The valid decisions of the store the new one contradicts or repeats (scripts/decision-overlap.mjs); never fails the save. */
+function overlapHint(ctx, repo, id, skip = []) {
+  try {
+    const store = repo ? targetStore(ctx, repo) : null;
+    const decisions = repo ? machineRecords(ctx).filter((r) => r.kind === 'decision' && sameStore(r.storeOf, store)) : readDecisions(ctx.brainDir);
+    const text = [rest.join(' '), args.what, args.alternatives, args.reason].filter((v) => typeof v === 'string').join(' ');
+    const line = decisionCheckLine(ctx, decisions.filter((d) => !skip.includes(d.id)), { id, text }, { flags: repo ? ` --repo ${repo}` : '' });
+    if (line) out(line);
+  } catch { /* a hint never fails the save */ }
+}
+
 function saveDecision(ctx) {
   if (args.remove) return removeDecision(ctx);
   if (args.relink !== undefined) return relinkDecision(ctx);
+  if (args.supersede !== undefined) return supersedeDecision(ctx);
   const title = rest.join(' ');
   if (!title) fail('usage: save.mjs decision "<title>" --what "..." --alternatives "..." --reason "..." --relates-to x,y');
   const relates = asList(args['relates-to']);
@@ -455,7 +514,9 @@ function saveDecision(ctx) {
   const meta = { origin, sources: sources.length ? sources : undefined };
   if (repo) return saveRepoDecision(ctx, repo, title, relates, meta);
   brainGuard(ctx, '', relates);
-  if (args.supersedes && !readDecisions(ctx.brainDir).some((d) => (d.id || d.key) === args.supersedes)) fail(`decision ${args.supersedes} not found`);
+  const supers = [...new Set(asList(args.supersedes).map((v) => decisionKey(null, v)))];
+  const parsedOld = (hit) => parseFrontmatter(readText(path.join(ctx.brainDir, hit.path), ''));
+  for (const s of supers) replaceable(parsedOld(decisionHit(ctx, null, s)), s, origin);
   const slug = normalizeKey(title).slice(0, 40);
   // The ID is assigned under the brain lock after a sync: two threads saving at once both got D-0033 when the ID was taken
   // before the lock (report-392ea415, 2026-11-13).
@@ -465,14 +526,11 @@ function saveDecision(ctx) {
     id = nextDecisionId(ctx.brainDir);
     rel = dataRel(ctx.brainDir, 'decisions', `${id.toLowerCase()}-${slug}.md`);
     const ops = [];
-    const old = args.supersedes ? readDecisions(ctx.brainDir).find((d) => (d.id || d.key) === args.supersedes) : null;
-    if (old) {
-      const parsed = parseFrontmatter(readText(path.join(ctx.brainDir, old.path), ''));
-      ops.push({ path: old.path, content: serializeFrontmatter({ ...parsed.data, status: `superseded-by ${id}`, updated: today() }, parsed.body) });
-    }
+    // Read again after the sync; checked above, before the lock (no fail() here: process.exit skips the release of the lock).
+    for (const old of readDecisions(ctx.brainDir).filter((d) => supers.includes(d.id || d.key))) ops.push({ path: old.path, content: supersededText(parsedOld(old), id) });
     // The topic this thread works on (frontmatter `topic`): the decision names the topic it was made in.
     const topic = heldTopics(ctx.brainDir, ctx.thread).find((t) => t.kind !== 'main')?.id;
-    const data = { key: id, id, title, status: 'valid', ...meta, relates_to: relates, aliases: asList(args.aliases), supersedes: args.supersedes || undefined, ...(topic ? { topic } : {}), created: today() };
+    const data = { key: id, id, title, status: 'valid', ...meta, relates_to: relates, aliases: asList(args.aliases), supersedes: supers.length > 1 ? supers : supers[0], ...(topic ? { topic } : {}), created: today() };
     const body = `**Rozhodnuté:** ${args.what}\n\n**Zamietnuté alternatívy:** ${args.alternatives || '-'}\n\n**Dôvod:** ${args.reason}\n`;
     ops.push({ path: rel, content: serializeFrontmatter(data, body) });
     return brainWrite(ctx, { ops, message: `save decision ${id} ${slug}` });
@@ -481,6 +539,7 @@ function saveDecision(ctx) {
   out(`decision ${id}: reference it in the commit message of the change it drives (P-008)`);
   // Report 2026-11-17: a decision of one topic set the output of a skill another topic edited, and never reached it.
   try { const line = boundLine(id, boundSkills(ctx.brainDir, { id, title, body: `${args.what} ${args.reason || ''}` })); if (line) out(line); } catch { /* a hint never fails the save */ }
+  overlapHint(ctx, null, id, supers);
 }
 
 // The ID is assigned under the repo lock (repoWrite takes it again, re-entrant): two threads saving into one repo at once,
@@ -494,6 +553,7 @@ function saveRepoDecision(ctx, repo, title, relates, meta) {
     old = find(ctx.brainDir, String(args.supersedes).replace(new RegExp(`^${repo}/`), ''), ctx.domain)
       .find((m) => m.kind === 'decision' && m.repo === repo && (!m.topic || m.topic === held));
     if (!old) fail(`decision ${args.supersedes} not found in repo ${repo}`);
+    replaceable(parseFrontmatter(readText(path.resolve(ctx.brainDir, old.path), '')), decisionKey(repo, args.supersedes), meta.origin);
   }
   withBrainLock(repoByName(ctx.domain, repo, ctx.brainDir).dir, () => saveRepoDecisionLocked(ctx, repo, title, relates, old, meta));
 }
@@ -504,14 +564,14 @@ function saveRepoDecisionLocked(ctx, repo, title, relates, old, meta) {
   const rel = dataRel(recordRoot(ctx, repo), 'decisions', `${id.toLowerCase()}-${slug}.md`);
   const ops = [];
   if (old) {
-    const parsed = parseFrontmatter(readText(path.resolve(ctx.brainDir, old.path), ''));
-    ops.push({ path: knowledgeRel(ctx, old.path), content: serializeFrontmatter({ ...parsed.data, status: `superseded-by ${id}`, updated: today() }, parsed.body) });
+    ops.push({ path: knowledgeRel(ctx, old.path), content: supersededText(parseFrontmatter(readText(path.resolve(ctx.brainDir, old.path), '')), id) });
   }
   const data = { key: id, id, title, status: 'valid', ...meta, relates_to: relates, aliases: asList(args.aliases), supersedes: args.supersedes ? String(args.supersedes).replace(new RegExp(`^${repo}/`), '') : undefined, created: today() };
   const body = `**Rozhodnuté:** ${args.what}\n\n**Zamietnuté alternatívy:** ${args.alternatives || '-'}\n\n**Dôvod:** ${args.reason}\n`;
   ops.push({ path: rel, content: serializeFrontmatter(data, body) });
   out(formatRepoWrite(repoWrite(ctx, repo, { ops, message: `save decision ${id} ${slug}` })));
   out(`decision ${repo}/${id}: reference it as ${repo}/${id} in the commit message of the change it drives (P-008)`);
+  overlapHint(ctx, repo, id, old ? [decisionKey(repo, args.supersedes)] : []);
 }
 
 const PRECEDENCE_RE = /prednos[tť]|\boverrid|takes? precedence/i;
