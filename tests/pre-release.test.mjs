@@ -127,7 +127,7 @@ test('pre-release: a domain folder without .agentic-domain whose repo names a br
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
-test('pre-release and overview: leftovers of an older layout and work files over the limit are findings (doma-pc 2026-11-16)', () => {
+test('pre-release: leftovers of an older layout and work files over the limit are findings (doma-pc 2026-11-16); the overview of the supervisor does not name work files', () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wf-pre-'));
   try {
     const root = path.join(base, 'machine');
@@ -147,6 +147,8 @@ test('pre-release and overview: leftovers of an older layout and work files over
     assert.match(r.stdout, /^- \S*brain: outside git in folders of an older data layout, left by a move of the data: scratch\/export\.csv \(1 file\(s\), 2 B\)/m);
     assert.match(r.stdout, /^- brain: 1 file\(s\), 600 MB of work files outside git \(limit 500 MB\): topics\/main\/tmp\/ 600 MB; largest: topics\/main\/tmp\/export-full\.csv 600 MB\. Triage them with the operator/m);
     const o = spawnSync(process.execPath, [path.join(PLUGIN_ROOT, 'bin', 'overview.mjs'), '--root', root], { env: cleanEnv({}), encoding: 'utf8', cwd: base });
-    assert.match(o.stdout, /work files: Gamma\/brain: 1 file\(s\), 600 MB of work files outside git/, o.stdout + o.stderr);
+    // operator 2026-11-21: tidying the work files is the duty of the threads of the brain (the start of their session names
+    // them); the supervisor gets no finding, so no mail and no report.
+    assert.doesNotMatch(o.stdout, /work files/, o.stdout + o.stderr);
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });

@@ -17,7 +17,6 @@ import { git, localTime, readJson, relPosix } from './util.mjs';
 import { machineRoot } from './config.mjs';
 import { domainBrains } from './stores.mjs';
 import { layoutOf, dataPath } from './layout.mjs';
-import { repoWorkFinding } from './work-classes.mjs';
 import { listTopicRecords } from './topic-files.mjs';
 import { isMainTopic, commsProjectName, supervisorOf } from './comms.mjs';
 import { DONE, QUESTION, WAITING } from './topic-state.mjs';
@@ -132,12 +131,9 @@ export function overview({ root = null, ctx = null, brains = null, now = Date.no
         findings.push({ ...f, domain: b.domainRoot ? path.basename(b.domainRoot) : null, brain: b.name, brainDir: b.dir, id: rec.id, subject: rec.topic?.subject || '' });
       }
     }
-    // Work folders of the brain outside git over the limit (data 2.1 keeps every topic's tmp/ in the brain): data does
-    // not pile up unseen (doma-pc 2026-11-16: 3 GB of exports in a never closed work folder).
-    try {
-      const work = repoWorkFinding(b.dir, layoutOf(b.dir));
-      if (work) findings.push({ kind: 'work-files', domain: b.domainRoot ? path.basename(b.domainRoot) : null, brain: b.name, brainDir: b.dir, id: 'tmp', subject: '', text: work.text });
-    } catch { /* an unknown layout: other checks name it */ }
+    // The work files of a brain over the limit are no finding of the overview (operator 2026-11-21: tidying them is the
+    // duty of the threads of that brain on the machine that holds them; a finding mailed to the supervisor, who does not
+    // see that disk, only made mail, reports and waits). The start of a session of that brain names them (scripts/boot.mjs).
   }
   return { root: base, brains: list.length, topics, findings };
 }
@@ -149,7 +145,6 @@ const subject = (f) => (f.subject ? ` (${String(f.subject).replace(/\s+/g, ' ').
 export function findingLine(f) {
   if (f.kind === 'stuck') return `stuck: ${where(f)}${subject(f)}: ${f.items.join('; ')}; the question waits for the operator, instruct the manager only within your jurisdiction (spec 3.9.1)`;
   if (f.kind === 'lock') return `idle lock: ${where(f)}${subject(f)} held by ${f.holder}${f.machine ? ` on ${f.machine}` : ''}, inactive ${f.hours >= 48 ? `${Math.floor(f.hours / 24)} d` : `${f.hours} h`} since ${localTime(f.since)} (state ${f.state || '-'}): propose a takeover to the operator (spec 4.2.2)`;
-  if (f.kind === 'work-files') return `work files: ${f.domain ? `${f.domain}/` : ''}${f.text}`;
   return `done without work: ${where(f)}${subject(f)} is hotovo${f.since ? ` since ${localTime(f.since)}` : ''}: propose closing to the operator (spec 3.9.3)`;
 }
 
