@@ -7,6 +7,7 @@ Dáta workflow pre jednu doménu (P-024), dáta 2.1 (`"data_layout": "2.1"` v `p
 - `decisions/`: voľby (jedna vec = jeden súbor s frontmatter `key`, P-031).
 - `rules/`, `skills/operator/`, `skills/agentic/`: poučenia domény (skilly agenta s `origin: error | routine`, P-032).
 - `exceptions/`: výnimky z princípov po vrstvách (P-035). `logs/`: surové pozorovania (P-030).
+- `notes/<kanál>/`: zápisky (1 súbor = 1 zápisok, `save.mjs note`): odložené pripomienky, ktoré čakajú na spracovanie na pokyn operátora. Štart session ich nečíta.
 - `policy.json`: doplnky politiky domény (P-017), verzia tvaru dát a predvolené repo projektu domény (`default_repo`).
 - `INDEX.md`: riadok na každý súbor v `topics/` a `decisions/`; generuje ho workflow pri každom zápise, ručne sa needituje.
 - `local/` (necommitované): indexy, `threads/`, `log-buffer/`, `outbox/`, `tajomstva/` (heslá a tokeny ako `<služba>.env`, P-018).

@@ -51,6 +51,8 @@ const LAYOUT_1 = Object.freeze({
   index: null,
   // Outputs sorted by type, vystupy/<typ>/<vec> (spec 4): a project repo of layout 3 only.
   outputs: null,
+  // Notes of a channel, notes/<channel>/<note>.md (scripts/notes.mjs): the brain of layout 3 only.
+  notes: null,
 });
 
 
@@ -88,12 +90,13 @@ const LAYOUT_2 = Object.freeze({
   repoHandover: '.brain/HANDOVER.md',
   index: 'INDEX.md',
   outputs: null,
+  notes: null,
 });
 
 /**
  * Layout 3, the brain (flow v2, spec 4; plan O11): records in the root as in layout 1 (memory/, decisions/, rules/,
  * skills/, exceptions/, logs/, policy.json), topics in topics/<topic>/ with one .tema.json, handover.md, the results of
- * the work and tmp/ (outside git). No outputs and no sources (they go to the target repo of the topic, spec 4.5), no
+ * the work and tmp/ (outside git). Notes of a channel in notes/<channel>/ (scripts/notes.mjs). No outputs and no sources (they go to the target repo of the topic, spec 4.5), no
  * archive of topics (a closed topic ends, spec 5) and no scratch folder.
  */
 const LAYOUT_3 = Object.freeze({
@@ -122,6 +125,7 @@ const LAYOUT_3 = Object.freeze({
   repoHandover: 'HANDOVER.md',
   index: 'INDEX.md',
   outputs: null,
+  notes: 'notes',
 });
 
 /**

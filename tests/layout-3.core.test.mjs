@@ -32,7 +32,7 @@ test('the map of layout 3: brain records in the root, no outputs; the project re
   assert.equal(splitRoles(3), true);
   assert.equal(splitRoles(2), false);
   assert.deepEqual(Object.keys(B).sort(), Object.keys(layoutFor(1)).sort());
-  assert.deepEqual(brainEntriesFor(3).slice(0, 7), ['memory/**', 'decisions/**', 'rules/**', 'skills/**', 'exceptions/**', 'logs/**', 'policy.json']);
+  assert.deepEqual(brainEntriesFor(3).slice(0, 8), ['memory/**', 'decisions/**', 'rules/**', 'skills/**', 'exceptions/**', 'logs/**', 'notes/**', 'policy.json']);
   assert.ok(brainEntriesFor(3).includes('topics/*/.tema.json') && brainEntriesFor(3).includes('topics/*/handover.md'));
 });
 

@@ -68,6 +68,7 @@ import { workflowSkillNames, PROJECT_SKILLS_DIR, syncBrainSkills, deployedSkillN
 import { skillSources, PROJECT_KNOWLEDGE, domainRepos, knowledgeDirs, repoByName, sessionRepo, singleRepoOf, nextRepoDecisionId, repoWrite, formatRepoWrite, heldRepoTopic, repoPublic } from '../scripts/repo-knowledge.mjs';
 import { isInside, nowIso } from '../scripts/util.mjs';
 import { fieldsOp } from '../scripts/topic-files.mjs';
+import { NOTE_STATES, newNote, readNotes, similarNotes, appendedNote, statedNote } from '../scripts/notes.mjs';
 import { resultsActive, tmpOwner, readBindings, stalePages } from '../scripts/results.mjs';
 import { uncitedDecisions, uncitedLine, boundSkills, boundLine } from '../scripts/skill-decisions.mjs';
 import { checkSkill, meaningDiff, workLayout } from '../scripts/skill-check.mjs';
@@ -1376,6 +1377,55 @@ function saveResult(ctx) {
   if (owner) out(`bound to ${owner.from}: its changes are saved at the end of each turn (P-078)`);
 }
 
+const NOTE_USAGE = 'usage: save.mjs note <channel> --title "..." (--content "..." | --file <path>) [--new] | note <channel> <id> (--content "..." | --file <path>) | note <channel> <id>[,<id>] --state processed|rejected|open --reason "..." | note <channel> --list [--all]';
+
+/**
+ * A note of a channel (scripts/notes.mjs; operator 2026-11-21: a remark to a skill is not worked into it at once, it waits
+ * for the processing the operator orders). Any thread adds, with no topic held; the file is new per note, so no thread
+ * overwrites another. A similar open note refuses the add (one remark, one note): add to it (`note <channel> <id>`) or
+ * pass --new. The state changes only in a turn of the operator (a mail body never orders the processing, P-047).
+ */
+function saveNote(ctx) {
+  const [channel, idArg, ...more] = rest;
+  if (!channel || !isValidId(channel) || more.length) fail(NOTE_USAGE);
+  if (!ctx.brainDir || !hasData(ctx.brainDir, 'notes')) fail('save.mjs note: this brain has no notes (they need data 2.1); nothing written');
+  const line = (n) => `${n.id} | ${n.state} | ${String(n.created || '').slice(0, 10)} | ${n.title} | ${n.rel}`;
+  const pick = (id) => readNotes(ctx.brainDir, channel).find((n) => n.id === id) || fail(`save.mjs note: no note ${id} in channel ${channel} (save.mjs note ${channel} --list --all); nothing written`);
+  if (args.list) {
+    // The thread that processes the channel reads the notes of every machine: pull first.
+    if (hasRemote(ctx.brainDir)) brainSync(ctx.brainDir);
+    const all = readNotes(ctx.brainDir, channel);
+    const shown = args.all ? all : all.filter((n) => n.state === 'open');
+    return out(shown.length ? shown.map(line).join('\n') : `no ${args.all ? '' : 'open '}notes in channel ${channel}`);
+  }
+  if (args.state !== undefined) {
+    const state = String(args.state);
+    const reason = String(args.reason || '').trim();
+    if (!idArg || !NOTE_STATES.includes(state)) fail(NOTE_USAGE);
+    if (state !== 'open' && !reason) fail('save.mjs note --state needs --reason "<what was done with the note>"');
+    if (isWakeTurn(ctx.brainDir, ctx.thread)) fail('save.mjs note --state refused: this turn was started by a message, not by the operator; the state of a note changes only in a turn of the operator (P-047)');
+    if (hasRemote(ctx.brainDir)) brainSync(ctx.brainDir);
+    const ops = idArg.split(',').map((id) => pick(id.trim())).filter((n) => n.state !== state).map((n) => ({ path: n.rel, content: statedNote(n, state, reason) }));
+    if (!ops.length) return out(`unchanged: ${idArg} (already ${state})`);
+    return out(formatWriteResult(brainWrite(ctx, { ops, message: `save note ${channel} ${state}: ${idArg}` }), ops.map((o) => o.path)));
+  }
+  const text = args.file ? fs.readFileSync(String(args.file), 'utf8') : typeof args.content === 'string' ? args.content : '';
+  if (!text.trim()) fail(NOTE_USAGE);
+  if (idArg) {
+    const note = pick(idArg);
+    if (note.state !== 'open') fail(`save.mjs note: ${idArg} is ${note.state}; add a new note (a closed one is not changed); nothing written`);
+    return out(formatWriteResult(brainWrite(ctx, { ops: [{ path: note.rel, content: appendedNote(note, text) }], message: `save note ${channel} ${idArg} (added)` }), [note.rel]));
+  }
+  const title = typeof args.title === 'string' ? args.title.trim() : '';
+  if (!normalizeKey(title)) fail(NOTE_USAGE);
+  const similar = args.new ? [] : similarNotes(readNotes(ctx.brainDir, channel), title);
+  if (similar.length) fail(`similar open note in channel ${channel}:\n  ${similar.map(line).join('\n  ')}\nthe same remark: add to it (save.mjs note ${channel} <id> --content "..."); another remark: pass --new; nothing written`);
+  const held = heldTopics(ctx.brainDir, ctx.thread).filter((t) => t.kind !== 'main');
+  const note = newNote(ctx.brainDir, channel, { title, body: text, topic: held.length === 1 ? held[0].id : null });
+  if (fs.existsSync(path.join(ctx.brainDir, note.rel))) fail(`save.mjs note: ${note.rel} exists (the same title in the same second); nothing written, run it again`);
+  out(formatWriteResult(brainWrite(ctx, { ops: [{ path: note.rel, content: note.content }], message: `save note ${channel} ${note.id}` }), [note.rel]));
+}
+
 /**
  * A saved agentic skill into another brain (a project, 2026-11-18: a skill went to a peer's brain by `git commit
  * --no-verify`, so every transfer asked the operator for a dialog against a standing order): save.mjs share <skill>[,<skill>]
@@ -1475,8 +1525,8 @@ try {
   if (foreign) fail(foreign);
   // Spec 11.10, plan O18: the guard of the session start, again before a write (a session started before the migration).
   if (ctx.brainDir && ctx.projectDir) { const refusal = layoutRefusal(ctx.brainDir, ctx.projectDir); if (refusal) fail(`save.mjs refused, nothing written: ${refusal}`); }
-  const handlers = { memory: saveMemory, decision: saveDecision, rule: saveRule, exception: saveException, skill: saveSkill, handover: saveHandover, docs: saveDocs, move: saveMove, person: savePerson, source: saveSource, result: saveResult, share: saveShare };
-  if (!handlers[category]) fail('usage: save.mjs memory|decision|rule|exception|skill|handover|docs|move|person|source|result|share ...');
+  const handlers = { memory: saveMemory, decision: saveDecision, rule: saveRule, exception: saveException, skill: saveSkill, handover: saveHandover, docs: saveDocs, move: saveMove, person: savePerson, source: saveSource, result: saveResult, share: saveShare, note: saveNote };
+  if (!handlers[category]) fail('usage: save.mjs memory|decision|rule|exception|skill|handover|docs|move|person|source|result|share|note ...');
   if (args.repo !== undefined && !['memory', 'decision', 'rule', 'skill', 'handover', 'move', 'source'].includes(category)) fail(`--repo: ${category} lives in brain only (memory, decision, rule, skill, handover, move and source take --repo)`);
   // Spec 4.2.4 (plan B5): a thread that holds a topic pulls and verifies its locks before any write; a lost one stops the
   // save with nothing written, whatever it writes (not only the files of the topic).

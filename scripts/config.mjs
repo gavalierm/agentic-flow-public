@@ -36,7 +36,7 @@ const REPO_FILES = ['.githooks/**', '.gitattributes', '.gitignore', '.workflow.j
 export function brainEntriesFor(version = 1) {
   const L = layoutFor(version);
   if (L.scratch !== null) return [...['memory', 'decisions', 'rules', 'skills', 'topics', 'exceptions', 'logs'].map((n) => `${L[n]}/**`), L.policy, ...REPO_FILES];
-  const data = L.policy.includes('/') ? [`${L.policy.split('/')[0]}/**`, `${L.decisions}/**`] : [...['memory', 'decisions', 'rules', 'skills', 'exceptions', 'logs'].map((n) => `${L[n]}/**`), L.policy];
+  const data = L.policy.includes('/') ? [`${L.policy.split('/')[0]}/**`, `${L.decisions}/**`] : [...['memory', 'decisions', 'rules', 'skills', 'exceptions', 'logs', 'notes'].map((n) => `${L[n]}/**`), L.policy];
   return [...data, `${L.topics}/*/${L.topicFile}`, `${L.topics}/*/${L.handover}`, ...REPO_FILES];
 }
 /** Template entries of the brain at root, by its layout. */
