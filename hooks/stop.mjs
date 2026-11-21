@@ -33,7 +33,7 @@ import { parseReply, PROTOCOL_EXAMPLE } from '../scripts/protocol.mjs';
 import { summaryState, WAITING, DONE } from '../scripts/topic-state.mjs';
 import { snapshotThisTurn } from '../scripts/snapshot.mjs';
 import { threadAlarms, topicFacts, questionsKey, turnUpdate, stuckNow, verifyLocks, LOCK_LOST_LINE, CONTINUE_RESUME_MS } from '../scripts/topic-turn.mjs';
-import { validWaker, awaitingWaker, clearTimer, threadTimers, timersPatch, sameTimer, finishedTasks, withoutFinished, resumeAtFor } from '../scripts/waker.mjs';
+import { validWaker, clearTimer, threadTimers, timersPatch, sameTimer, finishedTasks, withoutFinished, resumeAtFor } from '../scripts/waker.mjs';
 import { transcriptTail } from '../scripts/bypass.mjs';
 import { topicHome, topicWorkDir, hasScratch } from '../scripts/layout.mjs';
 import { clearHelpers, backupFolders, pruneBackups, sizeLine, SIZE_CHECK_MS } from '../scripts/work-classes.mjs';
@@ -47,7 +47,7 @@ export const FINAL_REPLY = 'The operator sees only your last message of this tur
 // flow-public#37: after a block the reply was only its state line and the result stayed in an earlier, folded message.
 export const STATE_ONLY_REASON = 'the last message of this turn is only its skeleton (the state line): the answer stays in an earlier message the operator does not see; write the complete answer above the skeleton in this last message (spec 10.3 item 1, P-061, flow-public#37)';
 
-const STATES_HELP = 'The state comes from the facts, not from the text (spec 10.2): otázka = an item in the handover sections Otvorené otázky or Úlohy pre operátora (the blocks **Otázky na operátora:** and **Úlohy pre operátora:** are their content), also when a next step goes on (the continuation runs anyway); čakám = no such item, and a held topic\'s handover has a next step ("**Stav:** čakám (na pokračovanie)") or an alarm armed by code runs (timer.mjs, a background task, mail you sent that waits for an answer); hotovo = none of that. A step is only the handover\'s Ďalší krok (save.mjs handover --next), a step that waits for the operator\'s answer is a question';
+const STATES_HELP = 'The state comes from the facts, not from the text (spec 10.2): otázka = an item in the handover sections Otvorené otázky or Úlohy pre operátora (the blocks **Otázky na operátora:** and **Úlohy pre operátora:** are their content), also when a next step goes on (the continuation runs anyway); čakám = no such item, and a held topic\'s handover has a next step ("**Stav:** čakám (na pokračovanie)") or an alarm armed by code runs (timer.mjs, a background task, a blocker you sent that waits for its answer; an assist or a steer you sent is no alarm: you have no step until its result, and the reply rings you); hotovo = none of that. A step is only the handover\'s Ďalší krok (save.mjs handover --next), a step that waits for the operator\'s answer is a question';
 export const NO_STATE_REASON = `the final reply has no state line: end it with exactly one line "**Stav:** hotovo", "**Stav:** otázka" or "**Stav:** čakám (na <what>)" (P-061), e.g. ${PROTOCOL_EXAMPLE}. ${STATES_HELP}`;
 // D-0040 (operator 2026-11-13): items are numbered, the state line is bold.
 const OLD_FORM_PARTS = {
@@ -185,7 +185,7 @@ export async function run(input) {
   const now = Date.now();
   const alarms = threadAlarms(alarmState, mail, now);
   const facts = work.map((topic) => ({ topic, facts: topicFacts(topic, alarms, { turnEnd: now, now }) }));
-  const factsState = facts.length ? summaryState(facts.map((f) => f.facts)) : (alarms.timers.length || alarms.background.length || awaitingWaker(mail) ? WAITING : DONE);
+  const factsState = facts.length ? summaryState(facts.map((f) => f.facts)) : (alarms.timers.length || alarms.background.length || alarms.awaiting.length ? WAITING : DONE);
   const turnSource = before.turn_source || 'operator';
   // Only whether a dialog was asked in this turn (PreToolUse keeps its time), not its content (10.3 item 3).
   const dialog = !!before.dialog_at && (!before.turn_started_at || before.dialog_at >= before.turn_started_at);

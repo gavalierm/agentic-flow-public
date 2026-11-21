@@ -226,6 +226,10 @@ export function messageBellLine(kind, id, data) {
   if (kind === 'no-reply' && d.code_answer === 'otázka') {
     return `${head}: not picked, otázka (answer set by the mail, not by the recipient): the recipient thread waits for its operator (an open question, or its last turn ended Stav: otázka); ${hold('do not resend, promote or ask your operator the same')}`;
   }
+  if (kind === 'no-reply' && d.status === 'done') {
+    // Mail from v2.0.36: a blocker its recipient ended without a reply (ack, settle) rings its blocked sender once.
+    return `${head}: ended by the recipient without a reply (${d.resolution || 'done'}): no answer comes by this message; go on without it, or ask again with a new blocker that names what you need back (P-047)`;
+  }
   if (kind === 'no-reply' && d.status === 'waiting') {
     // The recipient's interim answer (otázka, čakám) is unchanged at this check of the mail (1e): only its state is checked.
     return `${head}: interim answer ${d.answer_state || '?'} since ${localTime(d.answer_at)}, unchanged at this check: the recipient ${d.answer_state === 'otázka' ? 'waits for its operator' : 'waits for an event'}; ${hold('do not resend or escalate')}`;

@@ -10,7 +10,7 @@ import { handoverNextStep, handoverQuestions, handoverTasks } from './brain-chec
 import { turnAlarms, turnFields } from './topic-state.mjs';
 import { fieldsOp, holderFileRel } from './topic-files.mjs';
 import { syncAndCheckHolder, checkHolder } from './brain.mjs';
-import { threadTimers, TIMER_MAX_MS } from './waker.mjs';
+import { threadTimers, awaitedAnswers, TIMER_MAX_MS } from './waker.mjs';
 
 /**
  * Plan O2: the continuation goes to the mail with resume_at (end of the turn + this), so the mail rings it also with the same
@@ -30,7 +30,7 @@ const time = (v) => { const t = Date.parse(v || ''); return Number.isFinite(t) ?
 /**
  * The alarms of the thread (spec 13 budík) as inputs of turnAlarms: its timers (each its time), its background tasks and
  * schedules (a waker armed by a tool: its limit `until`, a recurring schedule without one TIMER_MAX_MS from now), the mail's
- * waits for answers (`obligations.awaiting` with `wait_due_at`). Wakers already spent (their task ended) are left out by the caller.
+ * waits for the answers to its blockers (awaitedAnswers). Wakers already spent (their task ended) are left out by the caller.
  */
 export function threadAlarms(state, mail, now = Date.now()) {
   const timers = threadTimers(state).map((t) => ({ at: t.at }));
@@ -38,7 +38,7 @@ export function threadAlarms(state, mail, now = Date.now()) {
   const background = (state?.wakers || [])
     .filter((w) => w.recurring || (w.until && time(w.until) > now) || (time(w.at) || 0) >= started)
     .map((w) => ({ at: w.until || new Date(now + TIMER_MAX_MS).toISOString() }));
-  const awaiting = (mail?.awaiting || []).filter((a) => a?.wait_due_at).map((a) => ({ id: a.id, wait_due_at: a.wait_due_at }));
+  const awaiting = awaitedAnswers(mail).map((a) => ({ id: a.id, wait_due_at: a.wait_due_at }));
   return { timers, background, awaiting };
 }
 

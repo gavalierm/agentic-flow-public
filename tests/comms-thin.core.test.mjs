@@ -123,8 +123,14 @@ test('Stop reminds from the mail\'s owed; the prompt shows it as the mail has it
     fx.stub.set({ owed: [], awaiting: [] });
     const r = fx.hook('user-prompt-submit.mjs', { prompt: 'ďalej' });
     assert.doesNotMatch(r.context, /picked mail unanswered/);
-    // the mail waits for an answer to mail this thread sent: "čakám" needs no timer of the thread (1e)
-    fx.stub.set({ awaiting: [{ id: 'm-a1', to: 'project-b/beta', level: 'assist', status: 'pending', wait_due_at: new Date(Date.now() + 3600_000).toISOString(), wait_n: 0 }] });
+    // an assist this thread sent is no alarm: its sender has no step until the result, and an ack of the recipient rings
+    // nobody, so "čakám" on it was a turn waiting without a waker (error report 2026-11-21)
+    fx.stub.set({ awaiting: [{ id: 'm-a0', to: 'project-b/beta', level: 'assist', status: 'pending', wait_due_at: new Date(Date.now() + 3600_000).toISOString(), wait_n: 0 }] });
+    fx.hook('user-prompt-submit.mjs', { prompt: 'pošli prácu' });
+    const assist = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Poslal som prácu.\n\nStav: čakám (na prevzatie pošty)' });
+    assert.equal(assist.json.decision, 'block', JSON.stringify(assist.json));
+    // the mail waits for the answer to a blocker this thread sent: "čakám" needs no timer of the thread (1e)
+    fx.stub.set({ awaiting: [{ id: 'm-a1', to: 'project-b/beta', level: 'blocker', status: 'pending', wait_due_at: new Date(Date.now() + 3600_000).toISOString(), wait_n: 0 }] });
     fx.hook('user-prompt-submit.mjs', { prompt: 'pošli otázku' });
     const wait = fx.hook('stop.mjs', { stop_hook_active: false, last_assistant_message: 'Poslal som otázku.\n\nStav: čakám (na odpoveď z beta)' });
     assert.equal(wait.json.decision, undefined, JSON.stringify(wait.json));

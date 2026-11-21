@@ -2,7 +2,8 @@
 // otázky and Úlohy pre operátora, and the wakers (alarms) that run. Pure functions without I/O: the Stop hook computes the
 // state at the end of a turn and writes it with the alarm time into `.tema.json` (`turn`, topic-files.mjs fieldsOp);
 // the supervisor's overview and the lock read it from there. The state line of the reply is checked against the same facts.
-// The mail's state of a message never enters (spec kap. 9): of the mail only `obligations.awaiting` with `wait_due_at`.
+// The mail's state of a message never enters (spec kap. 9): of the mail only the awaited answers to the thread's
+// blockers (`obligations.awaiting` with `wait_due_at`, waker.mjs awaitedAnswers).
 
 export const DONE = 'hotovo';
 export const QUESTION = 'otázka';
@@ -45,8 +46,8 @@ export function summaryState(topics = []) {
 
 /**
  * The running alarms of a topic with their times (spec 13): a timer its time (`timers[].at`), a background task its
- * limit (`background[].at`), a wait for an answer by mail the next check of the server (`awaiting[].wait_due_at`; an
- * entry without it does not wait), the continuation (a next step in the handover) the end of the turn (`turnEnd`) when
+ * limit (`background[].at`), a wait for the answer to a blocker the next check of the server (`awaiting[].wait_due_at`; an
+ * entry without it does not wait; the caller passes only blockers, waker.mjs awaitedAnswers), the continuation (a next step in the handover) the end of the turn (`turnEnd`) when
  * no timer and no background task runs: then that alarm wakes the thread and the step runs after it (10.2 point 1).
  * Mail does not hold the continuation back (3.3.3). Only the obligations of the topic's own messages belong here.
  */

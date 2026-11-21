@@ -164,11 +164,20 @@ export function validWaker(state, now = Date.now()) {
 }
 
 /**
- * The mail rings this thread for an answer it waits for (1e): a message it sent without a final answer whose wait is set
- * (`obligations.awaiting[].wait_due_at`; a due one rings at the next cycle of the wake module). Null without one.
+ * The sent messages that make this thread wait (state `čakám`): a blocker without a final answer whose wait is set
+ * (`obligations.awaiting[].wait_due_at`). Its sender is blocked, and the answer or the mail's check rings it (1e).
+ * An assist and a steer are not among them: their sender does other work and has no step until the result, and the
+ * recipient ends a message that asks for no answer with `ack`, or reads a steer, which rings nobody. A turn that ended
+ * `čakám (na prevzatie pošty)` after such an assist had no waker once it was acked (error report 2026-11-21).
+ * One place for the Stop hook, the facts of a topic (threadAlarms) and nudge-why.
  */
+export function awaitedAnswers(obligations) {
+  return (obligations?.awaiting || []).filter((a) => a?.wait_due_at && a.level === 'blocker');
+}
+
+/** The mail rings this thread for the answer to its blocker (awaitedAnswers; a due wait rings at the next cycle of the wake module). Null without one. */
 export function awaitingWaker(obligations) {
-  const a = (obligations?.awaiting || []).filter((x) => x.wait_due_at).sort((x, y) => Date.parse(x.wait_due_at) - Date.parse(y.wait_due_at))[0];
+  const a = awaitedAnswers(obligations).sort((x, y) => Date.parse(x.wait_due_at) - Date.parse(y.wait_due_at))[0];
   return a ? { kind: 'mail', id: a.id, at: a.wait_due_at } : null;
 }
 
