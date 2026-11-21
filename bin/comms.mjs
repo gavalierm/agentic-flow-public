@@ -402,6 +402,11 @@ function cmdSend(ctx) {
   // The server takes the message but nobody can pick it up now (persona without a main thread): say so at sending, not
   // 30 min later from the no-reply bell (5 of 5 such messages expired unread, audit M5 2026-11-11).
   if (data.warning) out(`warning: ${data.warning}; nobody picks it up now: send it where someone works, or tell the operator`);
+  // The recipient sits in a dialog with its operator: only the operator ends that wait, and only this thread can tell
+  // him now (operator 2026-11-21: a turn ended "čakám na odpoveď vlákna", the recipient had waited 50 min for the
+  // operator's answer, and the operator took it for gone). The link has the form of the bell's (wake threadLink).
+  const dialog = data.recipient_dialog;
+  if (dialog) out(`recipient waits for its operator: its thread has an open question to the operator${dialog.since ? ` since ${localTime(dialog.since)}` : ''} and takes this mail only after the answer; say so to the operator in your reply${/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(String(dialog.thread)) ? `, with the link [${destination}](t3-thread://v1/${dialog.thread})` : ` (thread ${dialog.thread})`}; do not wait for this mail with your work (P-061)`);
   const finalLevel = data.level || level;
   // P-061, 1e: the wait for the answer is the mail's (wait_due_at): it rings this thread at its check, also when the message
   // stays picked without an answer; no timer of this thread is bound to the message (P-072).
