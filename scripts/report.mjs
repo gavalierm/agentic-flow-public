@@ -11,7 +11,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh } from './github.mjs';
 import { recordIssue } from './issue-watch.mjs';
-import { commsSettings, runClient, parseAddress, formatAddress, addressArgs, ambiguousLine, markMaintainerMail, MAIL_FIX } from './comms.mjs';
+import { commsSettings, runClient, mailClientHas, MAIL_ONCE_VERSION, parseAddress, formatAddress, addressArgs, ambiguousLine, markMaintainerMail, MAIL_FIX } from './comms.mjs';
 import { PLUGIN_ROOT, toPosix, writeJson } from './util.mjs';
 import { withLock } from './lock.mjs';
 import { channelOf } from './config.mjs';
@@ -165,11 +165,16 @@ export function reportTopic(title, ctx = {}, env = process.env, ver = version())
  * accepted pending (not queued in the outbox). `key` supersedes an unpicked copy of the same report. A server that names
  * no maintainer thread (404) or does not know the address (an older server, 400) is no delivery: the caller files an issue.
  */
+// A report that does not reach the mail now goes another way (to the maintainer, an issue). Queued in the outbox, it
+// arrived a second time at the next flush (audit 2026-11-22): the send is not queued (--no-queue, mail 2.0.37; an older
+// client queues as before and the caller reads `queued`).
+const notQueued = (ctx) => (mailClientHas(ctx, MAIL_ONCE_VERSION) ? ['--no-queue'] : []);
+
 export function mailReport(ctx, text, { key = null } = {}) {
   const s = commsSettings(ctx);
   if (!s.enabled) return { ok: false, why: `mail not configured (${s.reason || 'off'})` };
-  const res = runClient(ctx, ['send', '--maintainer', '--text', '-', '--level', 'assist', ...(key ? ['--supersede-key', key] : [])], { input: text });
-  if (!res.ok) return { ok: false, why: `no maintainer thread on this mail server (${res.error || 'failed'})` };
+  const res = runClient(ctx, ['send', '--maintainer', '--text', '-', '--level', 'assist', ...(key ? ['--supersede-key', key] : []), ...notQueued(ctx)], { input: text });
+  if (!res.ok) return { ok: false, why: res.unavailable ? 'mail unavailable (not queued)' : `no maintainer thread on this mail server (${res.error || 'failed'})` };
   const d = res.data || {};
   // A brain without its mail key queues everything (agentic-flow-public#62: a domain brain attached without project.mjs mail).
   if (d.queued) return { ok: false, why: `mail unavailable (queued in the outbox)${s.configFile ? '' : `; this brain has no mail key (<brain>/${LAYOUT.local}/comms.json): project.mjs mail <project dir>`}`, queued: d.id || null };
@@ -219,7 +224,7 @@ export function mailTopicReport(ctx, text, to) {
   if (!addr || addr.persona) return { ok: false, why: `bad topic address ${to} (use [<brain>[@<machine>]:]<project>/<topic> or [<project>/]<topic>)` };
   // Mail model 3: a brain-qualified address (developed_in of a shared skill) goes as the client's --to; a bare one is
   // resolved by the mail (own brain first, else the one brain that has the topic open).
-  const res = runClient(ctx, ['send', '--text', '-', '--level', 'assist', ...addressArgs(addr)], { input: text });
+  const res = runClient(ctx, ['send', '--text', '-', '--level', 'assist', ...addressArgs(addr), ...notQueued(ctx)], { input: text });
   if (!res.ok) return { ok: false, why: ambiguousLine(res) || `mail to ${to} ${res.error || 'failed'}` };
   const d = res.data || {};
   if (d.queued) return { ok: false, why: `mail to ${to} unavailable (queued in the outbox)`, queued: d.id || null };

@@ -30,6 +30,9 @@ export function testConcurrency(env = process.env, cores = (os.availableParallel
 const HEARTBEAT_MS = 5000;
 const STALE_MS = 60000;
 const LOCK_STALE_MS = 10000;
+// A run whose wrapper is gone holds its slot at most this long after the last refresh: a pid of the run that the system
+// gave to another process must not hold the slot for good.
+const ORPHAN_MAX_MS = 30 * 60000;
 
 /** A temp dir for one test run: TMPDIR, TMP and TEMP of `env` point into it (os.tmpdir() of the run and its children). */
 export function tmpScope(env, base = os.tmpdir()) {
@@ -52,14 +55,19 @@ function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
 }
 
-/** The record of a slot file, or null when the slot is free or its run is gone (dead pid, no refresh). */
+/**
+ * The record of a slot file, or null when the slot is free or its run is gone (dead pid, no refresh).
+ * A wrapper that was killed (SIGKILL: no handler, no release) leaves its run alive, and the run still loads the machine:
+ * the slot stays held while the process of the run (`run_pid`) lives, at most ORPHAN_MAX_MS. Freed with the wrapper, it
+ * let a second full run start beside the first (audit 2026-11-22).
+ */
 function holderOf(file, now = Date.now()) {
   let rec;
   let mtime;
   try { rec = JSON.parse(fs.readFileSync(file, 'utf8')); mtime = fs.statSync(file).mtimeMs; } catch { return null; }
-  if (now - mtime > STALE_MS) return null;
-  if (rec?.host === os.hostname() && !alive(rec.pid)) return null;
-  return rec;
+  const age = now - mtime;
+  if (rec?.host === os.hostname() && !alive(rec.pid)) return alive(rec.run_pid) && age <= ORPHAN_MAX_MS ? rec : null;
+  return age > STALE_MS ? null : rec;
 }
 
 /** Short lock of the slot dir (mkdir is atomic): only its holder takes or clears a slot. */
@@ -150,6 +158,16 @@ async function main(argv) {
     rest.splice(rest.indexOf('--test') + 1, 0, `--test-concurrency=${testConcurrency(env)}`);
   }
   const child = spawn(bin === 'node' ? process.execPath : bin, rest, { stdio: 'inherit', env, shell: process.platform === 'win32' && bin !== 'node' });
+  // The slot record names the process of the run (see holderOf): one small write per full run, by the holder only.
+  // Written beside the file and renamed over it: a rewrite in place is empty for a moment, and a waiting run that
+  // read it then would take the slot as free.
+  if (slot && child.pid) {
+    try {
+      const tmp = `${slot}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, `${JSON.stringify({ ...JSON.parse(fs.readFileSync(slot, 'utf8')), run_pid: child.pid })}\n`);
+      fs.renameSync(tmp, slot);
+    } catch { /* slot lost or unreadable: as without run_pid */ }
+  }
   // Below normal priority for the run and what it starts (inherited on Linux and macOS; Windows: the run's own process).
   if (env.AGENTIC_TEST_NICE !== '0' && child.pid) { try { os.setPriority(child.pid, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch { /* not allowed: normal priority */ } }
   const forward = (sig) => { try { child.kill(sig); } catch { /* gone */ } };

@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, fail, readStdin, localTime, toPosix } from '../scripts/util.mjs';
 import { loadContext, inSubagent, readThreadState, patchThreadState, dialogAnsweredInTurn } from '../scripts/config.mjs';
-import { commsSettings, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, formatAddress, addressArgs, resolvedNote, ambiguousLine, topicProject, isMainTopic, categoryLabel, LEVELS, dropNoticesCache, readObligations, ageText, supervisorOf, fromSupervisor, threadMailBrain, machineMailFile } from '../scripts/comms.mjs';
+import { commsSettings, runClient, onceArgs, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, formatAddress, addressArgs, resolvedNote, ambiguousLine, topicProject, isMainTopic, categoryLabel, LEVELS, dropNoticesCache, readObligations, ageText, supervisorOf, fromSupervisor, threadMailBrain, machineMailFile } from '../scripts/comms.mjs';
 import { readTopic, mailboxTopics, heldTopics, heldBy, topicMailProject } from '../scripts/topic.mjs';
 import { brainId, brainName } from '../scripts/brain-id.mjs';
 import { readHolder, isHolderOf } from '../scripts/brain.mjs';
@@ -404,7 +404,7 @@ function cmdSend(ctx) {
   if (key) clientArgs.push('--supersede-key', key);
   const from = fromTopic(ctx);
   if (from) clientArgs.push('--from-project', topicProject(s, readTopic(ctx.brainDir, from)), '--from-topic', from);
-  const sent = runClient(ctx, clientArgs, { input: String(text) });
+  const sent = runClient(ctx, [...clientArgs, ...onceArgs(ctx, [...clientArgs, text])], { input: String(text) });
   // 409 ambiguous (model 3): the topic is open in several brains; nothing was written, the line names each exact address.
   if (!sent.ok && sent.data?.status === 409) { const line = ambiguousLine(sent); if (line) fail(line); }
   const data = must(sent);
@@ -415,7 +415,8 @@ function cmdSend(ctx) {
     out(`comms unavailable: message queued in <brain>/local/outbox and sent with the next successful call (${destination})`);
   } else {
     const sentLevel = data.level || level;
-    out(`sent ${data.id} (${sentLevel}) -> ${destination}${resolvedNote(data)}${fromNote(ctx, from)}${data.status === 'held' ? `; topic not registered: held, operator notice ${data.notice_id} (new topic? / redirect, P-045)` : ''}`);
+    // replayed: the same send was made in this turn already (onceArgs); the mail answers with the first message.
+    out(`${data.replayed ? 'already sent (the same send was made in this turn, nothing is sent a second time): ' : 'sent '}${data.id} (${sentLevel}) -> ${destination}${resolvedNote(data)}${fromNote(ctx, from)}${data.status === 'held' ? `; topic not registered: held, operator notice ${data.notice_id} (new topic? / redirect, P-045)` : ''}`);
   }
   // The server takes the message but nobody can pick it up now (persona without a main thread): say so at sending, not
   // 30 min later from the no-reply bell (5 of 5 such messages expired unread, audit M5 2026-11-11).
@@ -450,7 +451,7 @@ function sendReply(ctx, { replyTo, replyState, waitFor, cancels, text }) {
   const a = ['resolve', '--id', replyTo, '--state', replyState, '--text', '-', ...replyBox(ctx, replyTo).args];
   if (waitFor) a.push('--wait-for', waitFor);
   if (cancels) a.push('--cancels', cancels);
-  const res = runClient(ctx, a, { input: text });
+  const res = runClient(ctx, [...a, ...onceArgs(ctx, [...a, text])], { input: text });
   if (!res.ok && res.data?.status === 409) {
     const st = res.data.details || {};
     // An interim answer follows the pickup (1b: picked/waiting → waiting); a final one may come before it.

@@ -16,6 +16,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { readJson, writeJson, PLUGIN_ROOT, toPosix } from './util.mjs';
@@ -274,10 +275,45 @@ function clientCall(ctx, s, args, { timeoutMs, thread, noStart = false } = {}) {
   return { argv: [...args, ...common], wait, env: { ...who.env, COMMS_THREAD_ID: th || '', COMMS_WORKFLOW_VERSION: workflowVersion() || '' } };
 }
 
+/**
+ * The mail client of this machine is at least `version` (its package.json). The client is updated apart from the
+ * workflow, and an older one refuses an option it does not know (usage error): the caller leaves the option out.
+ */
+const clientVersions = new Map();
+export function mailClientHas(ctx, version) {
+  const s = commsSettings(ctx);
+  if (!s.enabled || !s.client) return false;
+  if (!clientVersions.has(s.client)) clientVersions.set(s.client, readJson(path.join(path.dirname(s.client), '..', 'package.json'), null)?.version || null);
+  const part = (v) => String(v || '').split('.').map((n) => Number.parseInt(n, 10) || 0);
+  const have = part(clientVersions.get(s.client)); const need = part(version);
+  for (let i = 0; i < 3; i++) if ((have[i] || 0) !== (need[i] || 0)) return (have[i] || 0) > (need[i] || 0);
+  return !!clientVersions.get(s.client);
+}
+/** The mail version whose client has `send --no-queue` and `--op-id` (send, resolve). */
+export const MAIL_ONCE_VERSION = '2.0.37';
+
+/**
+ * `--op-id` of one write of this thread: the same write repeated in the same turn has the same id, and the mail answers
+ * the repeat with the first result. The workflow stops a client at its time limit and cannot see whether the write
+ * arrived; the command run again sent a second message (audit 2026-11-22). `parts`: what makes the write (address,
+ * level, text). Empty for an older client.
+ */
+export function onceArgs(ctx, parts) {
+  if (!mailClientHas(ctx, MAIL_ONCE_VERSION)) return [];
+  let turn = '';
+  try { turn = ctx.brainDir && ctx.thread ? readJson(threadStateFile(ctx.brainDir, ctx.thread), {})?.turn_started_at || '' : ''; } catch { /* no state: the hour below */ }
+  const seed = [ctx.thread || '', turn || new Date().toISOString().slice(0, 13), ...parts.map(String)].join('\u0000');
+  return ['--op-id', `flow-${crypto.createHash('sha256').update(seed).digest('hex').slice(0, 32)}`];
+}
+
 /** The result of one client run from its exit code and output; `status` null: it did not end within its deadline. */
 function clientResult(status, stdout, stderr) {
   const parse = (t) => { try { return JSON.parse(String(t || '').trim()); } catch { return null; } };
   if (status === null) {
+    // A client that printed its whole answer and did not end in time did its work: the answer counts. Thrown away, a
+    // pickup it confirmed was lost with the bodies, and a send was repeated (audit 2026-11-22).
+    const late = parse(stdout);
+    if (late && typeof late === 'object') return { ok: true, code: 0, data: late, error: null, unavailable: false, late: true };
     return { ok: false, code: 2, data: null, error: 'comms unavailable (client timed out)', unavailable: true };
   }
   if (status === 0) return { ok: true, code: 0, data: parse(stdout) ?? {}, error: null, unavailable: false };
