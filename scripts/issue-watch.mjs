@@ -10,7 +10,7 @@ import { runClient, commsProjectName, isMainTopic, formatAddress } from './comms
 import { brainId } from './brain-id.mjs';
 import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh, readToken } from './github.mjs';
 import { heldTopics } from './topic.mjs';
-import { readJson, writeJson, nowIso, toPosix } from './util.mjs';
+import { readJson, writeJson, nowIso, toPosix, machineConfigDir } from './util.mjs';
 import { LAYOUT, dataPath } from './layout.mjs';
 import { tryLock as tryLockDir } from './lock.mjs';
 
@@ -40,7 +40,7 @@ export function updateIssue(base, key, patch) {
 
 /** Brains of this machine with records: one wake job checks them all (one wake per mail instance, several projects). */
 export function indexFile(env = process.env) {
-  return env.WORKFLOW_ISSUE_WATCH_INDEX || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'issue-watch-index.json');
+  return env.WORKFLOW_ISSUE_WATCH_INDEX || path.join(machineConfigDir(env), 'issue-watch-index.json');
 }
 export function readIndex(env = process.env) {
   const d = readJson(indexFile(env), null);

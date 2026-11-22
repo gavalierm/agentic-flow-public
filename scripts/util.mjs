@@ -1,10 +1,13 @@
 // Shared helpers: filesystem, JSON, git process execution. No harness dependency (P-017, P-034).
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/** Folder of the machine files of the workflow (projects root, pins, mail of the machine, timer and watch indexes). */
+export const machineConfigDir = (env = process.env) => path.join(env.HOME || os.homedir(), '.config', 'agentic-flow');
 
 // A closed pipe (e.g. `| head`) must not crash a script.
 process.stdout.on('error', (err) => { if (err.code === 'EPIPE') process.exit(0); });

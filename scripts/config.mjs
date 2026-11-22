@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { PLUGIN_ROOT, readJson, writeJson, gitToplevel, git, isInside, realPathLoose, toPosix } from './util.mjs';
+import { PLUGIN_ROOT, readJson, writeJson, gitToplevel, git, isInside, realPathLoose, toPosix, machineConfigDir } from './util.mjs';
 import { tightenPolicy } from './policy-layers.mjs';
 import { withLock, LockBusy } from './lock.mjs';
 import { LAYOUT, dataPath, dataRel, dataLayoutVersion, layoutFor, isWorkPath, topicWorkLabel, hasData, hasScratch } from './layout.mjs';
@@ -56,7 +56,7 @@ export const scratchDir = (root, topic = null, brainDir = null) => topicWorkLabe
 // another folder, the persona was created in ~/agentic and its move was refused by P-052; the choice was stored nowhere).
 // One line in ~/.config/agentic-flow/projects-root, written by `project.mjs root <dir>` or by the first explicit --root.
 export const ROOT_FILE = 'projects-root';
-export const rootFile = (env = process.env) => env.WORKFLOW_ROOT_FILE || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', ROOT_FILE);
+export const rootFile = (env = process.env) => env.WORKFLOW_ROOT_FILE || path.join(machineConfigDir(env), ROOT_FILE);
 
 /** The projects root saved for this machine, or null. */
 export function machineRoot(env = process.env) {
@@ -291,12 +291,12 @@ export function brainExists(brainDir) {
 
 /** Policy of one brain: the plugin policy with `<brain>/policy.json` merged over it (brain-level commands, the domain brain). */
 export function loadPolicy(brainDir) {
+  return policyOver(brainDir ? readJson(dataPath(brainDir, 'policy'), {}) : null);
+}
+/** The plugin policy with the content of a brain policy file merged over it (also a content not on disk: the rights check of the brain writer). */
+export function policyOver(extra) {
   const base = readJson(path.join(PLUGIN_ROOT, 'policy', 'policy.json'));
-  if (brainDir) {
-    const extra = readJson(dataPath(brainDir, 'policy'), {});
-    return deepMerge(base, extra);
-  }
-  return base;
+  return extra ? deepMerge(base, extra) : base;
 }
 
 const samePath = (a, b) => !!a && !!b && realPathLoose(a) === realPathLoose(b);
@@ -374,7 +374,7 @@ export function inHarness(env = process.env) {
  */
 export function machineName(env = process.env) {
   if (env.WORKFLOW_MACHINE_ID) return safeMachine(env.WORKFLOW_MACHINE_ID);
-  const file = env.WORKFLOW_MACHINE_FILE || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'machine-id');
+  const file = env.WORKFLOW_MACHINE_FILE || path.join(machineConfigDir(env), 'machine-id');
   try {
     const id = fs.readFileSync(file, 'utf8').trim();
     if (id) return safeMachine(id);
@@ -561,18 +561,24 @@ export function resolveDomain(projectDir, home = os.homedir(), { field = true } 
   return up;
 }
 
-function domainAbove(projectDir, home) {
-  for (let p = path.resolve(projectDir); ; p = path.dirname(p)) {
+/** Root, marker file and brain of the nearest domain above a folder, or null (no policy is read). */
+export function markerAbove(dir) {
+  for (let p = path.resolve(dir); ; p = path.dirname(p)) {
     const file = path.join(p, DOMAIN_MARKER);
     if (fs.existsSync(file)) {
       const cfg = readJson(file, {}) || {};
-      const brain = typeof cfg.brain === 'string' && !path.isAbsolute(cfg.brain) ? path.resolve(p, cfg.brain) : null;
-      const policy = brain ? readJson(dataPath(brain, 'policy'), {}) || {} : {};
-      const allow = allowOutside(policy, home);
-      return { root: p, marker: file, brain, allowOutside: allow.paths, sudo: allow.sudo };
+      return { root: p, marker: file, brain: typeof cfg.brain === 'string' && !path.isAbsolute(cfg.brain) ? path.resolve(p, cfg.brain) : null };
     }
     if (p === path.dirname(p)) return null;
   }
+}
+
+function domainAbove(projectDir, home) {
+  const found = markerAbove(projectDir);
+  if (!found) return null;
+  const policy = found.brain ? readJson(dataPath(found.brain, 'policy'), {}) || {} : {};
+  const allow = allowOutside(policy, home);
+  return { ...found, allowOutside: allow.paths, sudo: allow.sudo };
 }
 
 /** Full context for scripts: project, brain, policy, thread. */

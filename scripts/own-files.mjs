@@ -148,7 +148,9 @@ export function inPlaceEdits(words) {
   for (let i = 1; i < words.length; i++) {
     const w = words[i];
     if (w === '-e' || w === '-f' || w === '--expression' || w === '--file') { hasScript = true; i++; continue; }
-    if (w.startsWith('-')) continue;
+    // The empty word is the backup suffix of BSD sed (`sed -i "" -e … file`, macOS), not a file: read as a file it was
+    // the session folder, and an edit of ~/.zshrc from a brain was refused as a shell write into the brain (carol 2026-11-22).
+    if (!w || /^(''|"")$/.test(w) || w.startsWith('-')) continue;
     positional.push(w);
   }
   return hasScript ? positional : positional.slice(1);

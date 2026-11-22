@@ -121,3 +121,52 @@ export function policyIgnoredLine(ignored) {
   if (!ignored?.length) return null;
   return `policy: project layer ignored (only tightening): ${ignored.map((i) => `${i.key} (${i.why}${i.source ? `, ${i.source}` : ''})`).join(', ')}`;
 }
+
+/**
+ * Policy sections that set what an agent may do: the write boundary and its exceptions, the deny, ask and tool lists of
+ * the harness, the principles no exception overrides, the limits of a destructive change and the release whose hooks
+ * enforce all of it. An agent changes none of them by its own decision, in either direction (operator 2026-11-22: an
+ * agent with the home folder in domain.allow_outside could rewrite its own policy, and one removed the entry itself and
+ * cut its own access). The brain writer asks for the operator's yes (rightsRefusal); the project layer is not concerned,
+ * it only tightens (POLICY_KEY_CLASSES).
+ */
+export const RIGHTS_SECTIONS = Object.freeze(['domain', 'harness', 'immutable_principles', 'destructive', 'workflow_version']);
+
+const shown = (e) => (typeof e === 'string' ? e : JSON.stringify(e));
+
+/** Changed keys of the rights sections between two policies: [{ key, added, removed }] (entries of lists, else the two values). */
+export function rightsChanges(before, after) {
+  const out = [];
+  const walk = (a, b, key) => {
+    if (same(a, b)) return;
+    if (isObj(a) || isObj(b)) {
+      if ((a === undefined || isObj(a)) && (b === undefined || isObj(b))) {
+        for (const k of new Set([...Object.keys(a || {}), ...Object.keys(b || {})])) walk(a?.[k], b?.[k], `${key}.${k}`);
+        return;
+      }
+    }
+    const list = (v) => (Array.isArray(v) ? v : v === undefined ? [] : [v]);
+    const ids = (v) => new Set(list(v).map((e) => JSON.stringify(e)));
+    const [had, has] = [ids(a), ids(b)];
+    out.push({ key, added: list(b).filter((e) => !had.has(JSON.stringify(e))).map(shown), removed: list(a).filter((e) => !has.has(JSON.stringify(e))).map(shown) });
+  };
+  for (const k of RIGHTS_SECTIONS) walk(isObj(before) ? before[k] : undefined, isObj(after) ? after[k] : undefined, k);
+  return out;
+}
+
+/** One line of the changes, the text the dialog shows the operator. */
+export function rightsChangeText(changes) {
+  return changes.map((c) => `${c.key}${c.added.length ? ` pridať ${c.added.map((e) => `„${e}“`).join(', ')}` : ''}${c.removed.length ? ` odobrať ${c.removed.map((e) => `„${e}“`).join(', ')}` : ''}`).join('; ');
+}
+
+/**
+ * A change of the agent's rights passes only after the operator's yes in a dialog of this turn that names every changed
+ * key and every entry it adds or removes (`lifts`: the answered dialogs, bypass.mjs turnLifts; a refusing answer is never
+ * kept there). Returns the refusal, or null. The operator's own way is the same command in a terminal (the brain writer).
+ */
+export function rightsRefusal(changes, lifts = []) {
+  if (!changes.length) return null;
+  const named = (text, c) => text.includes(c.key) && [...c.added, ...c.removed].every((e) => text.includes(e));
+  if (lifts.some((l) => changes.every((c) => named(String(l?.text || ''), c)))) return null;
+  return `policy ${changes.map((c) => c.key).join(', ')} sets what the agent may do: an agent does not change its own rights, in either direction (P-052, operator 2026-11-22). Nothing written. Only the operator decides: ask in one AskUserQuestion that names each key and each entry, e.g. "Zmeniť práva agenta v policy: ${rightsChangeText(changes)}?", options "Zmeniť" and "Nie, nemeniť", and run the step again in the same turn after a yes; without the operator in this turn (a turn started by a message) give it as an item under **Úlohy pre operátora:**. The operator's own way is the same command in a terminal`;
+}

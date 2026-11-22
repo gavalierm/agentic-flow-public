@@ -6,8 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { missingTaskPaths } from '../scripts/waker.mjs';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
-import { dialogAnsweredInTurn, loadContext, loadPolicy, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, updateThreadState, patchThreadState, personaWritable, brainWritable, personaWritableDirs, brainEntries, SCRATCH_DIR, resolveBrain, threadStateFile } from '../scripts/config.mjs';
-import { git, isInside, toPosix, PLUGIN_ROOT } from '../scripts/util.mjs';
+import { dialogAnsweredInTurn, loadContext, loadPolicy, allowOutside, machineRoot, mainCheckout, markerAbove, DOMAIN_MARKER, WORKTREES_DIR, servicesDir, readThreadState, updateThreadState, patchThreadState, personaWritable, brainWritable, personaWritableDirs, brainEntries, SCRATCH_DIR, resolveBrain, threadStateFile } from '../scripts/config.mjs';
+import { git, isInside, toPosix, PLUGIN_ROOT, machineConfigDir } from '../scripts/util.mjs';
 import { readDrift } from '../scripts/drift.mjs';
 import { parse, programIndex } from '../scripts/shell-parse.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
@@ -42,6 +42,7 @@ import { logDecision } from '../scripts/denials.mjs';
 import { taskCopyPaths } from '../scripts/topic.mjs';
 import { republishDeny, newArtifactDeny } from '../scripts/artifacts.mjs';
 import { renameGate } from '../scripts/thread-title.mjs';
+import { knownBrains } from '../scripts/update.mjs';
 import { analyze, bypassOf, bypassReason, callKey, closedTargets, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, namesPath, openByAnswers, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, transcriptTurnText, turnLifts, awaitTranscriptToolUse, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-036', 'P-052', 'P-053', 'P-041', 'P-054'] };
@@ -757,13 +758,37 @@ function boundaryActive(ctx) {
 function harnessPathWrite(ctx, targets) {
   const roots = (ctx.policy?.harness?.deny_paths || []).filter((p) => p.startsWith('~/'))
     .map((p) => path.join(os.homedir(), ...p.slice(2).split('/').filter((s) => s && !s.includes('*'))));
+  const rights = rightsPathWrite(ctx, targets);
+  if (rights) return rights;
   const hit = targets.find((t) => roots.some((r) => isInside(r, t)));
   return hit ? `${toPosix(hit)} is a global path of the harness (${roots.map(toPosix).join(', ')}): the agent never writes there; put the file in the work files (${workDirText(ctx)}/) and give the change of the harness setting to the operator as an item under **Úlohy pre operátora:** (P-014)` : null;
+}
+/**
+ * Paths outside the session's own domain that set what an agent may do: the machine files of the workflow (projects
+ * root, pins, mail of the machine), the marker of a domain, the brain of another domain and every brain this machine
+ * knows. domain.allow_outside never opens them (operator 2026-11-22: with the home folder allowed, an agent could change
+ * the policy of every brain of the machine). Checked only for a target outside the domain: a write inside costs nothing.
+ * The session's own brain has its own rules (P-013); its own marker is domainMarkerWrite.
+ */
+function rightsPathWrite(ctx, targets) {
+  const own = ctx.domain?.root || ctx.projectDir;
+  const out = targets.filter((t) => !(own && isInside(own, t)) && !(ctx.brainDir && isInside(ctx.brainDir, t)));
+  if (!out.length) return null;
+  const config = machineConfigDir();
+  let brains = null;
+  for (const t of out) {
+    let what = isInside(config, t) ? 'holds the machine files of the workflow' : null;
+    if (!what && path.basename(t) === DOMAIN_MARKER) what = 'defines the boundary of a domain';
+    if (!what) { const d = markerAbove(path.dirname(t)); if (d?.brain && isInside(d.brain, t)) what = `is in the brain of the domain ${toPosix(d.root)}`; }
+    if (!what) { brains ??= knownBrains(); const b = brains.find((x) => isInside(x, t)); if (b) what = `is in the brain ${toPosix(b)}`; }
+    if (what) return `${toPosix(t)} ${what}: it sets what an agent may do, so no agent writes there and domain.allow_outside does not open it (P-052, operator 2026-11-22); give the change to the operator as an item under **Úlohy pre operátora:** and go on with the task`;
+  }
+  return null;
 }
 function outsideReason(ctx, abs) {
   const scratch = workDirText(ctx);
   const where = ctx.domain ? `outside the domain ${toPosix(ctx.domain.root)}` : 'outside the project';
-  const extra = ctx.domain ? '; a lasting exception is only the domain brain policy domain.allow_outside, changed on the operator\'s instruction' : '';
+  const extra = ctx.domain ? '; a lasting exception is only the domain brain policy domain.allow_outside, changed only after the operator\'s yes in a dialog (the brain writer refuses a change of the agent\'s rights without it)' : '';
   return `${toPosix(abs)} is ${where}${isTempPath(abs) ? ' (system temp dir)' : ''}; the agent writes only inside it: work files and tool output go to ${scratch}/ (gitignored, no confirmation, P-052)${extra}${otherProjectHint(abs)}${rootHint(ctx, abs)}`;
 }
 /**

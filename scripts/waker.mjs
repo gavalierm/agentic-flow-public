@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { readThreadState, updateThreadState } from './config.mjs';
-import { PLUGIN_ROOT, writeJson } from './util.mjs';
+import { PLUGIN_ROOT, writeJson, machineConfigDir } from './util.mjs';
 import { withLock } from './lock.mjs';
 
 /**
@@ -303,7 +303,7 @@ export function preRing(brainDir, thread, { now = Date.now(), cwd = process.cwd(
 
 /** Threads of this machine with a timer under a condition (timer.mjs --until): the wake job checks them all. */
 export function timerIndexFile(env = process.env) {
-  return env.WORKFLOW_TIMER_INDEX || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'timer-index.json');
+  return env.WORKFLOW_TIMER_INDEX || path.join(machineConfigDir(env), 'timer-index.json');
 }
 export function readTimerIndex(env = process.env) {
   try {

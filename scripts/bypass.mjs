@@ -191,6 +191,13 @@ function broad(p, anchors) {
   try { return fs.statSync(p).isDirectory() && fs.existsSync(path.join(p, '.git')); } catch { return false; }
 }
 
+/**
+ * A word that begins with "/" is a path only when its first part exists under the root. The script of sed, awk or grep
+ * ("/^# Added$/d") was read as a path, and the lock named it as a target that no answer of the operator could open
+ * (carol 2026-11-22). Not on Windows: a POSIX path of its shells ("/c/Users") is no path for node there.
+ */
+const rooted = (e) => process.platform === 'win32' || !e.startsWith('/') || fs.existsSync(`/${e.split('/')[1]}`);
+
 /** Paths a call reaches and whether it may change them. A shell command counts as read-only only when every program in it is a known reader. */
 export function analyze(tool, toolInput = {}, cwd = process.cwd(), anchors = []) {
   const raw = [];
@@ -232,7 +239,7 @@ export function analyze(tool, toolInput = {}, cwd = process.cwd(), anchors = [])
         const val = tok.includes('=') && tok.startsWith('-') ? tok.slice(tok.indexOf('=') + 1) : tok;
         if (!val || val.startsWith('-') || /^[a-z][a-z0-9+.-]*:\/\//i.test(val)) continue;
         const e = expand(val);
-        if (path.isAbsolute(e) || /^[A-Za-z]:[\\/]/.test(e)) raw.push([e, dir]);
+        if (path.isAbsolute(e) || /^[A-Za-z]:[\\/]/.test(e)) { if (rooted(e)) raw.push([e, dir]); }
         else if (/[\\/.]/.test(e) || fs.existsSync(path.resolve(dir, e))) {
           if (fs.existsSync(path.resolve(dir, e))) raw.push([e, dir]);
         }
@@ -388,10 +395,27 @@ export function withLift(state, question, answer, at = new Date().toISOString())
   return { ...state, dialog_lifts: [...turnLifts(state), { at, text: `${question}\n${a}` }].slice(-10) };
 }
 
-/** Whether the text names the path: absolute, relative to cwd or by its file name, as a whole word. */
+/**
+ * Whether the text names the path: absolute, relative to cwd or by its file name, as a whole word; or by a path word of
+ * the text that is the path, a folder above it, or its start before a `*` (`~/.zshrc`, `~/.gemini*`, a path with
+ * spaces in quotes or backticks). The operator allowed targets written with ~ and * in the dialog and the lock stayed
+ * (carol 2026-11-22). The home folder, the session folder and what lies above them name no target.
+ */
 export function namesPath(text, p, cwd) {
   const names = [toPosix(p), toPosix(path.relative(cwd, p)), path.basename(p)].filter((n) => n && n.length >= 3 && n !== '..');
-  return names.some((n) => new RegExp('(^|[^\\w.-])' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\w-])').test(toPosix(text)));
+  const t = toPosix(text);
+  if (names.some((n) => new RegExp('(^|[^\\w.-])' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^\\w-])').test(t))) return true;
+  const target = toPosix(p);
+  const wide = [os.homedir(), cwd].map((d) => toPosix(path.resolve(d)));
+  const quoted = [...t.matchAll(/`([^`\n]+)`|"([^"\n]+)"|'([^'\n]+)'/g)].map((m) => m[1] || m[2] || m[3]);
+  const words = [...quoted, ...(t.match(/(?:~|\.{1,2})?\/[^\s"'`,;()<>]+/g) || [])].filter((w) => /^(~|\.{1,2})?\//.test(w));
+  for (const word of words) {
+    const star = word.indexOf('*');
+    const head = toPosix(path.resolve(cwd, expand((star >= 0 ? word.slice(0, star) : word).replace(/[.,:;!?]+$/, ''))));
+    if (head === '/' || wide.some((w) => w === head || isInside(head, w))) continue;
+    if (star >= 0 ? target.startsWith(head) : target === head || isInside(head, target)) return true;
+  }
+  return false;
 }
 
 /**

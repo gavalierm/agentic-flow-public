@@ -16,7 +16,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, readStdin, fail } from '../scripts/util.mjs';
-import { loadContext, loadPolicy, foreignProjectCwd, isWakeTurn } from '../scripts/config.mjs';
+import { loadContext, loadPolicy, foreignProjectCwd, isWakeTurn, readThreadState } from '../scripts/config.mjs';
+import { turnLifts } from '../scripts/bypass.mjs';
 import { maintainerOf, repoSlug } from '../scripts/report.mjs';
 import { supervisorOf, parseAddress } from '../scripts/comms.mjs';
 import { pinValue, knownBrains } from '../scripts/update.mjs';
@@ -78,7 +79,9 @@ try {
       try { if (fs.existsSync(file)) policy = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; }
       catch (err) { failed++; process.stdout.write(`${brainDir}: ${rel} is not valid JSON (${err.message}); fix it first\n`); continue; }
       try {
-        const res = brainWrite({ brainDir, thread: ctx.thread, policy: loadPolicy(brainDir) }, {
+        // The operator's yes was given in this session: its dialogs go with the write into every brain (rights gate of the writer).
+        const lifts = ctx.thread && ctx.brainDir ? turnLifts(readThreadState(ctx.brainDir, ctx.thread)) : [];
+        const res = brainWrite({ brainDir, thread: ctx.thread, policy: loadPolicy(brainDir), lifts }, {
           ops: [{ path: rel, content: `${JSON.stringify({ ...policy, workflow_version: want }, null, 2)}\n` }],
           message: `pin workflow ${want}`,
         });

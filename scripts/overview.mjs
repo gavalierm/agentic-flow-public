@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { git, localTime, readJson, relPosix } from './util.mjs';
+import { git, localTime, readJson, relPosix, machineConfigDir } from './util.mjs';
 import { machineRoot } from './config.mjs';
 import { domainBrains } from './stores.mjs';
 import { layoutOf, dataPath } from './layout.mjs';
@@ -177,7 +177,7 @@ export function isSupervisorSession(ctx) {
 
 /** The state of the wake job (the keys of the findings last mailed): ~/.config/agentic-flow/overview-state.json. */
 export function overviewStateFile(env = process.env) {
-  return env.WORKFLOW_OVERVIEW_STATE || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'overview-state.json');
+  return env.WORKFLOW_OVERVIEW_STATE || path.join(machineConfigDir(env), 'overview-state.json');
 }
 export function readOverviewState(env = process.env) {
   const d = readJson(overviewStateFile(env), null);

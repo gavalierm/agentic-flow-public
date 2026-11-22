@@ -19,7 +19,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { readJson, writeJson, PLUGIN_ROOT, toPosix } from './util.mjs';
+import { readJson, writeJson, PLUGIN_ROOT, toPosix, machineConfigDir } from './util.mjs';
 import { withLock } from './lock.mjs';
 import { machineName, servicesDir, threadStateFile } from './config.mjs';
 import { knownBrains } from './update.mjs';
@@ -114,10 +114,10 @@ export function mailBrain(ctx, opts) {
  * another server (a tunnel) is set up once, not per brain (operator 2026-11-18: install and migration left brains
  * without mail, flow-public#103). `project.mjs mail-machine` writes it.
  */
-export const machineMailFile = (env = process.env) => env.WORKFLOW_MACHINE_COMMS || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'comms.json');
+export const machineMailFile = (env = process.env) => env.WORKFLOW_MACHINE_COMMS || path.join(machineConfigDir(env), 'comms.json');
 
 /** The machine's mark that mail to the maintainer failed and a report went to an issue (operator 2026-11-18). */
-export const maintainerMailFile = (env = process.env) => env.WORKFLOW_MAINTAINER_MAIL || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'maintainer-mail.json');
+export const maintainerMailFile = (env = process.env) => env.WORKFLOW_MAINTAINER_MAIL || path.join(machineConfigDir(env), 'maintainer-mail.json');
 
 export const MAIL_FIX = () => `the mail of this machine must reach the maintainer's mail server: node ${toPosix(path.join(PLUGIN_ROOT, 'bin', 'project.mjs'))} mail-machine --url <server url> --instance-id <id> --key-file <file with the key the maintainer issued>, then error.mjs report again`;
 

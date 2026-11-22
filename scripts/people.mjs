@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { git, readJson, toPosix, today } from './util.mjs';
+import { git, readJson, toPosix, today, machineConfigDir } from './util.mjs';
 import { cloneWrite } from './own-clone.mjs';
 import { parseFrontmatter, serializeFrontmatter, asList } from './frontmatter.mjs';
 import { normalizeKey, isValidId } from './keys.mjs';
@@ -22,7 +22,7 @@ const home = (env) => env.HOME || os.homedir();
 const expand = (p, env) => String(p).replace(/^~(?=$|[\\/])/, home(env));
 
 /** The configuration file of the installation; WORKFLOW_INSTALL_CONFIG replaces it (tests never read the real one). */
-export const installConfigFile = (env = process.env) => env.WORKFLOW_INSTALL_CONFIG || path.join(home(env), '.config', 'agentic-flow', 'config.json');
+export const installConfigFile = (env = process.env) => env.WORKFLOW_INSTALL_CONFIG || path.join(machineConfigDir(env), 'config.json');
 
 /**
  * The operator repo of this installation: { dir, profile, configFile } or { error, configFile }; null when not configured.

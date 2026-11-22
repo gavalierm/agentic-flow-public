@@ -2,7 +2,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { git, gitRetry, gitRemote, remoteDiagnosis, readJson, toPosix, removeTree, dropStaleGitLocks, gitLockHint, cutShort, PLUGIN_ROOT } from './util.mjs';
-import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv, inSubagent, machineName, sameMachine } from './config.mjs';
+import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv, inSubagent, machineName, sameMachine, policyOver, readThreadState } from './config.mjs';
+import { rightsChanges, rightsRefusal } from './policy-layers.mjs';
+import { turnLifts } from './bypass.mjs';
 import { checkBrainFile } from './brain-checks.mjs';
 import { withLock as dirLock, stamp, live } from './lock.mjs';
 import { dataRel, dataLayoutVersion, layoutFor } from './layout.mjs';
@@ -644,6 +646,31 @@ function snapshot(brainDir, ops) {
   };
 }
 
+/**
+ * The policy file sets the agent's rights: every write of it goes through here (the generic write, pin and the other
+ * setters of brain.mjs), so this is the one gate. The change is measured against HEAD, not against the file on disk: a
+ * file edited by hand first would hide it. `ctx.lifts`: the dialogs of the session when the write goes into another
+ * brain (pin --all), whose thread state does not hold them. Returns the refusal or null. The operator's own way is the
+ * same command in a terminal.
+ */
+function policyRightsRefusal({ brainDir, thread, lifts }, ops) {
+  // A person at a terminal is the operator: a tool call of an agent has no terminal on its input and output.
+  if (process.stdin.isTTY && process.stdout.isTTY) return null;
+  const rel = dataRel(brainDir, 'policy');
+  const is = (p) => !!p && toPosix(p).replace(/^\.\//, '') === rel;
+  const op = ops.find((o) => is(o.path) || is(o.from) || is(o.to));
+  if (!op) return null;
+  const parse = (text) => { const v = JSON.parse(text); if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('not an object'); return v; };
+  let before = null;
+  let after = null;
+  try { const head = git(['show', `HEAD:${rel}`], { cwd: brainDir }); before = head.ok ? parse(head.stdout) : null; } catch { before = null; }
+  try {
+    if (is(op.to)) after = parse(fs.readFileSync(path.join(brainDir, op.from), 'utf8'));
+    else if (!op.remove && !op.from) after = parse(String(op.content ?? ''));
+  } catch (err) { return `${rel}: the policy is written whole, as one valid JSON object (${err.message}); nothing written`; }
+  return rightsRefusal(rightsChanges(policyOver(before), policyOver(after)), lifts ?? (thread ? turnLifts(readThreadState(brainDir, thread)) : []));
+}
+
 export function brainWrite(ctx, opts) {
   return withBrainLock(ctx.brainDir, () => brainWriteUnlocked(ctx, opts));
 }
@@ -677,6 +704,8 @@ function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, 
       errors.push(...checkBrainFile(rel, leaving ? null : op.content ?? op.append ?? null, { policy, version: dataLayoutVersion(brainDir) }).filter((e) => !leaving || !e.includes('(P-049)')));
     }
   }
+  const rights = policyRightsRefusal(ctx, ops);
+  if (rights) errors.push(rights);
   if (errors.length) throw new Error(errors.join('\n'));
   const access = gitAccessProblem(brainDir) || leftRebase(brainDir);
   if (access) throw new Error(access);

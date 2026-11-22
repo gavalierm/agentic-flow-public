@@ -8,7 +8,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { setup } from './helpers.mjs';
 import { accountEmailCall, bashTargets, executedText, forcedAddIgnored, foregroundWait, gitBashPath, gitWriteDirs, historyOperation, maskShell, recursiveModeChange, stripHeredocs, shellWriteTargets } from '../hooks/pre-tool-use.mjs';
-import { runsText, withoutDataHeredocs } from '../scripts/bypass.mjs';
+import { analyze, namesPath, runsText, withoutDataHeredocs } from '../scripts/bypass.mjs';
 import { inPlaceEdits } from '../scripts/own-files.mjs';
 
 const MAIL = 'owner@example.test';
@@ -144,3 +144,18 @@ test('real writes stay targets', () => {
 // Audit 2026-11-12 (other part): skarper 2026-11-10, `rm docs/firma/x.md && rmdir docs/firma docs` asked because rmdir counted as a removal of content.
 // Audit 2026-11-12 (other part): `export TMPDIR=scratch/tmp; mkdir -p $TMPDIR` asked as a write into the system /tmp, because
 // expandTemp replaced $TMPDIR before the assignment in the same command was applied.
+
+test('BSD sed -i "" is judged by its file, a sed script is no path, an answer names targets written with ~ and *', () => {
+  // carol 2026-11-22 (macOS): the empty suffix word was read as the session folder (a "shell write into brain"), the
+  // script as a path, and the lock stayed after the operator allowed the targets in a dialog.
+  const home = os.homedir();
+  const cwd = os.tmpdir();
+  assert.deepEqual(inPlaceEdits(['sed', '-i', '""', '-e', '/^#x$/d', '~/.zshrc']), ['~/.zshrc']);
+  assert.deepEqual(analyze('Bash', { command: 'sed -i "" -e "/^# Added by X$/d" ~/.zshrc' }, cwd).paths, [path.join(home, '.zshrc')]);
+  const q = 'Povoliť ciele ~/.zshrc, ~/.gemini* a "~/Library/App Support/X"?\nÁno, povoľ';
+  assert.ok(namesPath(q, path.join(home, '.zshrc'), cwd));
+  assert.ok(namesPath(q, path.join(home, '.gemini-cli', 'x.json'), cwd), 'the start before * names what begins with it');
+  assert.ok(namesPath(q, path.join(home, 'Library', 'App Support', 'X', 'a.txt'), cwd), 'a quoted folder names what is in it');
+  assert.ok(!namesPath(q, path.join(home, '.ssh', 'id'), cwd), 'another path stays closed');
+  assert.ok(!namesPath('Povoliť všetko v ~/ a v / ?\nÁno', path.join(home, '.ssh', 'id'), cwd), 'the home folder and the root name no target');
+});

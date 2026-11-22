@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { git, readJson, dropStaleGitLocks, gitLockHint, toPosix } from './util.mjs';
+import { git, readJson, dropStaleGitLocks, gitLockHint, toPosix, machineConfigDir } from './util.mjs';
 import { stamp, live } from './lock.mjs';
 
 const semver = (t) => (/^v(\d+)\.(\d+)\.(\d+)$/.exec(t) || []).slice(1).map(Number);
@@ -89,7 +89,7 @@ export function pinValue(version, { min = PIN_MIN } = {}) {
  * time (null: no pin); `brain.mjs pin --all` uses the same list.
  */
 export function pinFile(env = process.env) {
-  return env.WORKFLOW_PIN_FILE || path.join(env.HOME || os.homedir(), '.config', 'agentic-flow', 'pin.json');
+  return env.WORKFLOW_PIN_FILE || path.join(machineConfigDir(env), 'pin.json');
 }
 
 export function readPins(env = process.env) {
