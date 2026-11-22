@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Test headers and their TTL (D-0061, D-0062). Every test file names in its first lines what it is:
+// Test headers and their TTL (D-0061, D-0062; parser in scripts/test-header.mjs). Every test file names in its first lines what it is:
 //   // keep: core          a core test: it guards against irreversible damage or data loss, or checks a base flow
 //   // keep: guarded       a lasting test run only when the code it guards changes (operator 2026-11-17, P-079: a costly
 //                          test of a rarely changed part, e.g. a migration, ran at every release); never expires
@@ -16,10 +16,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const DEFAULT_TTL_DAYS = 30;
-const HEAD_LINES = 5;
-const KEEP = /^\/\/ keep: (core|guarded)$/;
-const TTL = /^\/\/ ttl: (\d{4}-\d{2}-\d{2})$/;
+export { DEFAULT_TTL_DAYS, header, today } from '../scripts/test-header.mjs';
+import { header, today } from '../scripts/test-header.mjs';
 
 /** Test files npm test runs (tests/**\/*.test.mjs), repo-relative, sorted. */
 export function testFiles(root = ROOT) {
@@ -34,24 +32,6 @@ export function testFiles(root = ROOT) {
   walk('tests');
   return out.sort();
 }
-
-const validDate = (s) => { const d = new Date(`${s}T00:00:00Z`); return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s; };
-
-/** Header of a test file: { keep } or { ttl } or { error } (the text says what to add). */
-export function header(text) {
-  const lines = text.split('\n').slice(0, HEAD_LINES).map((l) => l.trimEnd());
-  const kinds = lines.map((l) => KEEP.exec(l)).filter(Boolean).map((m) => m[1]);
-  const keep = kinds.length > 0;
-  const ttls = lines.map((l) => TTL.exec(l)).filter(Boolean).map((m) => m[1]);
-  if (keep && ttls.length) return { error: `has both "// keep: ${kinds[0]}" and "// ttl:"; keep one` };
-  if (kinds.length > 1) return { error: 'has more than one "// keep:" line' };
-  if (keep) return kinds[0] === 'core' ? { keep: true } : { guarded: true };
-  if (ttls.length > 1) return { error: 'has more than one "// ttl:" line' };
-  if (ttls.length) return validDate(ttls[0]) ? { ttl: ttls[0] } : { error: `ttl ${ttls[0]} is not a valid date` };
-  return { error: `no header: add "// keep: core" (core test), "// keep: guarded" (lasting, run when its code changes) or "// ttl: YYYY-MM-DD" (test of a fix, ${DEFAULT_TTL_DAYS} days from today) in the first ${HEAD_LINES} lines` };
-}
-
-export const today = () => new Date().toISOString().slice(0, 10);
 
 /** Every test file with its header; expired = ttl before `day`. */
 export function survey(root = ROOT, day = today()) {

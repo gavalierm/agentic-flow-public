@@ -54,6 +54,8 @@ export function compactInstructions({ held = [], brainDir = null, now = Date.now
 /**
  * Tokens of the main conversation now: input, cache read, cache creation and output of the last assistant response in
  * the transcript tail (as Claude Code counts `context_tokens`). Null when unknown.
+ * A response with a server tool call (the advisor) holds several requests of the main model and its usage is their sum
+ * (measured 2026-11-22: 77.9k for a context of 39k): the last request of the main model (`usage.iterations`) is the context.
  */
 export function contextTokens(transcriptPath) {
   if (!transcriptPath) return null;
@@ -73,8 +75,9 @@ export function contextTokens(transcriptPath) {
     let d;
     try { d = JSON.parse(l); } catch { continue; }
     if (d.type !== 'assistant' || d.isSidechain) continue;
-    const u = d.message?.usage;
-    if (!u) continue;
+    const whole = d.message?.usage;
+    if (!whole) continue;
+    const u = (Array.isArray(whole.iterations) ? whole.iterations : []).findLast((it) => it?.type === 'message') || whole;
     return (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.output_tokens || 0);
   }
   return null;
