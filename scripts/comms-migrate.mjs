@@ -12,7 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { readJson } from './util.mjs';
 import { dataPath } from './layout.mjs';
-import { writeThreadState } from './config.mjs';
+import { updateThreadState } from './config.mjs';
 import { commsSettings, modelMismatch, clientIdentity } from './comms.mjs';
 
 export const MODEL2_MARKER = 'model-2.json';
@@ -126,7 +126,7 @@ export function migrateLocalMail(ctx, now = Date.now()) {
     }
     if (adopted.length + dropped.length < waits.length) return { done: false, reason: `mail: ${res.find((r) => !r.ok && !refused(r))?.error || 'waits not handed over'}`, adopted, dropped };
   }
-  for (const t of threads) writeThreadState(ctx.brainDir, t.id, withoutMailState(t.state));
+  for (const t of threads) updateThreadState(ctx.brainDir, t.id, withoutMailState);
   fs.rmSync(dataPath(ctx.brainDir, 'local', 'comms-closed.json'), { force: true });
   try {
     fs.mkdirSync(markerDir, { recursive: true });

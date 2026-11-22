@@ -6,7 +6,7 @@
 // handover (boot.mjs). The topic stays held and open; nothing is merged or closed.
 import fs from 'node:fs';
 import path from 'node:path';
-import { readThreadState, writeThreadState } from './config.mjs';
+import { readThreadState, patchThreadState } from './config.mjs';
 import { brainWrite, readHolder, isHolderOf } from './brain.mjs';
 import { heldTopics, readTopic, topicRel } from './topic.mjs';
 import { isMainTopic } from './comms.mjs';
@@ -53,7 +53,7 @@ export function snapshotTopic(ctx, id = null, now = Date.now()) {
   if (scratch) lines.push(scratch);
   const handover = fs.readFileSync(file, 'utf8');
   if (!(handoverNextStep(handover) || []).length) lines.push(`the handover of ${id} has no Ďalší krok: a fresh session will not know what to do next; add it (save.mjs handover ${id} --next "..."), unless the topic waits on the operator`);
-  writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), snapshot_at: new Date(now).toISOString() });
+  patchThreadState(ctx.brainDir, ctx.thread, { snapshot_at: new Date(now).toISOString() });
   lines.push(`snapshot of ${id}: handover saved ${localTime(savedAt)}; the topic stays open and held by this thread; this turn ends without a continuation. After /clear the start of the new session loads this handover and goes on from Ďalší krok. End the turn: **Stav:** čakám (na /clear operátora)`);
   return { id, lines };
 }

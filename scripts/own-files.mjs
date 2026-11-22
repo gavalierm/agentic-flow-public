@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { lfBytes } from './eol.mjs';
-import { readThreadState, writeThreadState, SCRATCH_DIR } from './config.mjs';
+import { readThreadState, updateThreadState, SCRATCH_DIR } from './config.mjs';
 import { git } from './util.mjs';
 import { dataPath, layoutOf, layoutFor, layoutVersions, hasScratch, ROLE_BRAIN, ROLE_REPO } from './layout.mjs';
 
@@ -53,11 +53,22 @@ function ownEdits(ctx) {
   return readThreadState(ctx.brainDir, ctx.thread).own_edits || {};
 }
 
-function saveOwnEdits(ctx, edits) {
+/**
+ * `state` with `changes` in its own edits (path → hash; null: the file leaves the list). A hook computes the changes
+ * before the lock and applies them to the current list inside updateThreadState, so the hooks of parallel tool calls
+ * keep each other's files.
+ */
+function withOwnEdits(state, changes) {
+  const edits = { ...(state.own_edits || {}) };
+  for (const [abs, h] of Object.entries(changes)) {
+    if (h) edits[abs] = h;
+    else delete edits[abs];
+  }
   const keys = Object.keys(edits);
-  const kept = keys.length > OWN_LIMIT ? Object.fromEntries(keys.slice(-OWN_LIMIT).map((k) => [k, edits[k]])) : edits;
-  writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), own_edits: kept });
+  return { ...state, own_edits: keys.length > OWN_LIMIT ? Object.fromEntries(keys.slice(-OWN_LIMIT).map((k) => [k, edits[k]])) : edits };
 }
+
+const saveOwnEdits = (ctx, changes) => updateThreadState(ctx.brainDir, ctx.thread, (state) => withOwnEdits(state, changes));
 
 /** The current content of abs is exactly what this thread left: its uncommitted changes are the thread's own. */
 export function ownedEdit(ctx, abs) {
@@ -69,28 +80,21 @@ export function ownedEdit(ctx, abs) {
 export function claimOwn(ctx, files) {
   const edits = ownEdits(ctx);
   if (!edits || !files.length) return;
-  let changed = false;
+  const changes = {};
   for (const abs of files) {
     if (edits[abs] && (edits[abs] === PENDING || edits[abs] === fileHash(abs))) continue;
-    edits[abs] = PENDING;
-    changed = true;
+    changes[abs] = PENDING;
   }
-  if (changed) saveOwnEdits(ctx, edits);
+  if (Object.keys(changes).length) saveOwnEdits(ctx, changes);
 }
 
 /** PostToolUse: record what the thread left in each own file; a deleted file leaves the list. */
 export function settleOwn(ctx, files) {
   const edits = ownEdits(ctx);
   if (!edits) return;
-  let changed = false;
-  for (const abs of files) {
-    if (!(abs in edits)) continue;
-    const h = fileHash(abs);
-    if (h) edits[abs] = h;
-    else delete edits[abs];
-    changed = true;
-  }
-  if (changed) saveOwnEdits(ctx, edits);
+  const changes = {};
+  for (const abs of files) if (abs in edits) changes[abs] = fileHash(abs) || null;
+  if (Object.keys(changes).length) saveOwnEdits(ctx, changes);
 }
 
 /** Files a shell command edits in place (`sed -i`, `perl -i`): not deleted, but changed like an Edit. */
@@ -143,35 +147,42 @@ export function snapshotShell(ctx, id, dirs, births = []) {
   const dirty = {};
   const strays = [];
   for (const top of tops) {
-    for (const abs of dirtyTracked(top) || []) dirty[abs] = { h: fileHash(abs), own: ownedEdit(ctx, abs) };
+    for (const abs of dirtyTracked(top) || []) {
+      // One hash and the list read above: ownedEdit read the thread state again for every dirty file.
+      const h = fileHash(abs);
+      dirty[abs] = { h, own: Boolean(h && edits[abs] === h) };
+    }
     strays.push(...(strayEntries(top) || []));
   }
-  const state = readThreadState(ctx.brainDir, ctx.thread);
-  const before = Object.entries(state.shell_before || {}).slice(-(SHELL_LIMIT - 1));
-  writeThreadState(ctx.brainDir, ctx.thread, { ...state, shell_before: { ...Object.fromEntries(before), [id]: { tops, dirty, strays, births } } });
+  updateThreadState(ctx.brainDir, ctx.thread, (state) => {
+    const before = Object.entries(state.shell_before || {}).slice(-(SHELL_LIMIT - 1));
+    return { ...state, shell_before: { ...Object.fromEntries(before), [id]: { tops, dirty, strays, births } } };
+  });
 }
 
 /** PostToolUse (shell): files the command changed from clean, or changed further while own, become own edits. */
 export function settleShell(ctx, id) {
   const edits = ownEdits(ctx);
   if (!edits || !id) return;
-  const state = readThreadState(ctx.brainDir, ctx.thread);
-  const snap = state.shell_before?.[id];
+  const snap = readThreadState(ctx.brainDir, ctx.thread).shell_before?.[id];
   if (!snap) return;
+  const changes = {};
   for (const top of snap.tops) {
     for (const abs of dirtyTracked(top) || []) {
       const was = snap.dirty[abs];
       const h = fileHash(abs);
-      if (h && (!was || (was.own && was.h !== h))) edits[abs] = h;
+      if (h && (!was || (was.own && was.h !== h))) changes[abs] = h;
     }
   }
   const had = new Set(snap.strays || []);
   const born = [...(snap.strays ? snap.tops.flatMap((top) => strayEntries(top) || []).filter((abs) => !had.has(abs) && !inWorkScratch(abs)) : []),
     ...(snap.births || []).filter((abs) => fs.existsSync(abs))];
-  const created = [...(state.created_files || []).filter((f) => !born.includes(f)), ...born].slice(-CREATED_LIMIT);
-  const { [id]: _, ...rest } = state.shell_before;
-  writeThreadState(ctx.brainDir, ctx.thread, { ...state, shell_before: rest, created_files: created });
-  saveOwnEdits(ctx, edits);
+  // One change of the current state: the snapshot of this call leaves, its new files and own edits join the lists.
+  updateThreadState(ctx.brainDir, ctx.thread, (state) => {
+    const { [id]: _, ...rest } = state.shell_before || {};
+    const created = [...(state.created_files || []).filter((f) => !born.includes(f)), ...born].slice(-CREATED_LIMIT);
+    return withOwnEdits({ ...state, shell_before: rest, created_files: created }, changes);
+  });
 }
 
 // report-143e7cdb (2026-11-13): `rm -rf scratch/<dir>` of one topic removed drafts another topic had put into the same
@@ -184,9 +195,7 @@ export function recordScratch(ctx, files, inScratch = inWorkScratch) {
   if (!ctx.brainDir || !ctx.thread) return;
   const mine = files.map((f) => path.resolve(f)).filter((abs) => inScratch(abs) && fileHash(abs));
   if (!mine.length) return;
-  const state = readThreadState(ctx.brainDir, ctx.thread);
-  const kept = (state.scratch_files || []).filter((f) => !mine.includes(f));
-  writeThreadState(ctx.brainDir, ctx.thread, { ...state, scratch_files: [...kept, ...mine].slice(-SCRATCH_LIMIT) });
+  updateThreadState(ctx.brainDir, ctx.thread, (state) => ({ ...state, scratch_files: [...(state.scratch_files || []).filter((f) => !mine.includes(f)), ...mine].slice(-SCRATCH_LIMIT) }));
 }
 
 /** Files at or under target that another thread of this brain recorded as its scratch files and that still exist. */

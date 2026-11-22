@@ -2,7 +2,7 @@
 // image (header), PDF (pdfinfo when present). A profile is computed outside the lock and merged into the index
 // under the lock, only into a row that still has the same hash (the file may have changed meanwhile).
 import path from 'node:path';
-import { LockBusy, withLock } from './lock.mjs';
+import { LockBusy, withLock } from '../lock.mjs';
 import { paths, readIndex, readManifest, writeIndex, writeManifest } from './index.mjs';
 import { profileCsv, describeCsv } from './profile-csv.mjs';
 import { profileZip } from './profile-zip.mjs';

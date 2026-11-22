@@ -21,7 +21,7 @@
 // The work files of the held topics are tidied (P-062, scripts/work-classes.mjs): helpers go, backups keep the first and last 3.
 import fs from 'node:fs';
 import { readHookInput, emitAndExit, isMain } from '../scripts/hooks-io.mjs';
-import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
+import { loadContext, readThreadState, updateThreadState, patchThreadState } from '../scripts/config.mjs';
 import { logDecision } from '../scripts/denials.mjs';
 import { flushBuffer, proposalKey } from '../scripts/logs.mjs';
 import { unpushedCount, brainSync, oldestUnpushedAgeMs } from '../scripts/brain.mjs';
@@ -121,7 +121,7 @@ export async function run(input) {
   // did not start when the previous turn ended otázka (P-061).
   const close = async ({ next = null, resumeAt = null } = {}) => {
     if (!ctx.thread) return null;
-    if (ctx.brainDir) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_close: { next, resume_at: resumeAt }, last_end_state: reply.state || null, last_end_at: new Date().toISOString() });
+    if (ctx.brainDir) patchThreadState(ctx.brainDir, ctx.thread, { last_close: { next, resume_at: resumeAt }, last_end_state: reply.state || null, last_end_at: new Date().toISOString() });
     // Spec 2.2 (plan B7): delivered mail wakes the thread in every state: the end of a turn closes the discussion.
     return recordTurn(ctx, 'closed', held, { openedAt, next, resumeAt, discussion: false });
   };
@@ -152,17 +152,18 @@ export async function run(input) {
   // Signals are queued for the next prompt (P-023 c); each skill proposal once per thread (P-030).
   const queue = () => {
     if (!ctx.thread || !signals.length) return;
-    const state = readThreadState(ctx.brainDir, ctx.thread);
-    const proposed = Array.isArray(state.proposed) ? state.proposed : [];
-    const added = [];
-    const fresh = signals.filter((sig) => {
-      const key = proposalKey(sig);
-      if (!key) return true;
-      if (proposed.includes(key) || added.includes(key)) return false;
-      added.push(key);
-      return true;
+    updateThreadState(ctx.brainDir, ctx.thread, (state) => {
+      const proposed = Array.isArray(state.proposed) ? state.proposed : [];
+      const added = [];
+      const fresh = signals.filter((sig) => {
+        const key = proposalKey(sig);
+        if (!key) return true;
+        if (proposed.includes(key) || added.includes(key)) return false;
+        added.push(key);
+        return true;
+      });
+      return fresh.length ? { ...state, pending_signals: [...(state.pending_signals || []), ...fresh].slice(-(ctx.policy.limits?.hook_signal_lines ?? 2)), proposed: [...proposed, ...added].slice(-200) } : null;
     });
-    if (fresh.length) writeThreadState(ctx.brainDir, ctx.thread, { ...state, pending_signals: [...(state.pending_signals || []), ...fresh].slice(-(ctx.policy.limits?.hook_signal_lines ?? 2)), proposed: [...proposed, ...added].slice(-200) });
   };
   if (!ctx.thread) { flush(); return {}; }
 
@@ -174,10 +175,14 @@ export async function run(input) {
   // Once per queued line: a stop that finds the same reminder still waiting does not queue it again.
   if (picked.length && !(readThreadState(ctx.brainDir, ctx.thread).pending_signals || []).some((sig) => sig.startsWith(OWED_PREFIX))) signals.push(OWED_LINE(picked, mail.offline ? ageText(mail.age_s) : null));
   // A task whose end the harness already notified rings nobody: its waker is spent (operator 2026-11-13).
-  const recorded = readThreadState(ctx.brainDir, ctx.thread);
-  const live = (recorded.wakers || []).some((w) => w.tasks?.length) ? withoutFinished(recorded.wakers, finishedTasks(transcriptTail(input.transcript_path))) : recorded.wakers;
-  if (live !== recorded.wakers && live.length !== recorded.wakers.length) writeThreadState(ctx.brainDir, ctx.thread, { ...recorded, wakers: live });
-  const before = readThreadState(ctx.brainDir, ctx.thread);
+  let before = readThreadState(ctx.brainDir, ctx.thread);
+  if ((before.wakers || []).some((w) => w.tasks?.length)) {
+    const finished = finishedTasks(transcriptTail(input.transcript_path));
+    before = updateThreadState(ctx.brainDir, ctx.thread, (st) => {
+      const live = withoutFinished(st.wakers || [], finished);
+      return live.length !== (st.wakers || []).length ? { ...st, wakers: live } : null;
+    });
+  }
   // A timer outlives an operator prompt (audit 2026-11-11) and is spent when that turn ends without "čakám"; only that timer
   // (the earliest), later ones of the thread stay.
   const spent = !!before.timer && before.turn_source === 'operator' && !(before.turn_started_at && before.timer.set_at >= before.turn_started_at) && reply.state !== WAITING;
@@ -199,7 +204,7 @@ export async function run(input) {
     queue();
     return { decision: 'block', reason: `${violation}\n${FINAL_REPLY}` };
   }
-  if (qKey && !seen && (turnSource === 'operator' || dialog)) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), questions_seen: qKey });
+  if (qKey && !seen && (turnSource === 'operator' || dialog)) patchThreadState(ctx.brainDir, ctx.thread, { questions_seen: qKey });
   if (spent) clearTimer(ctx.brainDir, ctx.thread, (t) => sameTimer(t, before.timer));
   // Spec 10.2: the state and the alarm time of each held topic, from the facts (not from the state line), only when they
   // changed; after the pull the lock decides (4.2.4): a topic this thread lost is not written and gets no continuation.
@@ -272,7 +277,7 @@ export function tidyWork(ctx, work, { waiting = false, now = Date.now(), signals
       if (line) signals.push(line);
     } catch (err) { signals.push(`work files of ${t.id} not tidied: ${err.message.split('\n')[0]}`); }
   }
-  if (check) writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), tmp_checked_at: new Date(now).toISOString() });
+  if (check) patchThreadState(ctx.brainDir, ctx.thread, { tmp_checked_at: new Date(now).toISOString() });
 }
 
 if (isMain(import.meta.url)) {

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PLUGIN_ROOT, readJson, writeJson, gitToplevel, git, isInside, realPathLoose, toPosix } from './util.mjs';
 import { tightenPolicy } from './policy-layers.mjs';
+import { withLock, LockBusy } from './lock.mjs';
 import { LAYOUT, dataPath, dataRel, dataLayoutVersion, layoutFor, isWorkPath, topicWorkLabel, hasData, hasScratch } from './layout.mjs';
 
 export const WORKFLOW_CONFIG = '.workflow.json';
@@ -411,9 +412,45 @@ export function readThreadState(brainDir, id) {
   return { thread: id, turn_source: 'operator', pending_signals: [], ...state };
 }
 
+/** Replaces the whole state. Only for a seed and inside updateThreadState: a change of the state goes through updateThreadState. */
 export function writeThreadState(brainDir, id, state) {
   if (!brainDir || !id) return;
   writeJson(threadStateFile(brainDir, id), { ...state, thread: id, updated: new Date().toISOString() });
+}
+
+// The lock is held for one read and one write (under a millisecond), so the pause between attempts is short and a lock
+// older than 10 s belongs to a killed process. No owner file: one write less at every change (P-079).
+const THREAD_LOCK = { waitMs: 2000, staleMs: 10_000, sleepMs: 2, owner: false };
+
+/**
+ * Change the thread state: `fn(state)` gets the current state under the lock of the thread and returns the new one
+ * (nothing: no write). The hooks of parallel tool calls, a background agent and the wake job change the same file at the
+ * same time; without the lock the later writer put back what it read before the earlier write, and that change was lost
+ * (2026-11-22). Keep `fn` short and without I/O: the other writers of the thread wait for it, so compute before the call
+ * and read inside it only what must be current (a list you add to, a counter). A lock that cannot be taken within 2 s
+ * does not stop a hook: the change runs without it, as before the lock. Returns the state after the change.
+ */
+export function updateThreadState(brainDir, id, fn) {
+  const step = () => {
+    const cur = readThreadState(brainDir, id);
+    const next = fn(cur);
+    if (!next) return cur;
+    writeThreadState(brainDir, id, next);
+    return next;
+  };
+  if (!brainDir || !id) return step();
+  const lock = `${threadStateFile(brainDir, id)}.lock`;
+  try {
+    return withLock(lock, THREAD_LOCK, step);
+  } catch (err) {
+    if (!(err instanceof LockBusy) || err.dir !== lock) throw err;
+    return step();
+  }
+}
+
+/** Set the keys of `patch` in the thread state; the other keys keep their current value (updateThreadState). */
+export function patchThreadState(brainDir, id, patch) {
+  return updateThreadState(brainDir, id, (state) => ({ ...state, ...patch }));
 }
 
 export function isWakeTurn(brainDir, id) {

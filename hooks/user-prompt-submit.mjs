@@ -7,7 +7,7 @@
 // with the cap topics.continue_max and the stuck mark (spec 10.2, plan B4, scripts/topic-turn.mjs).
 import path from 'node:path';
 import { readHookInput, emitAndExit, contextOutput, isMain, enforceLines } from '../scripts/hooks-io.mjs';
-import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
+import { loadContext, readThreadState, updateThreadState, patchThreadState } from '../scripts/config.mjs';
 import { deployedSkillName } from '../scripts/skills-sync.mjs';
 import { statusInfo, rulesHash, rulesSections, changedRules, BOOT_MARKERS } from '../scripts/boot.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
@@ -304,7 +304,7 @@ export async function run(input) {
   const lastClose = state?.last_close || (threadTimers(state)[0] ? { next: threadTimers(state)[0].then, resume_at: threadTimers(state)[0].at } : null);
   const quietEnd = async (reason, close) => {
     // turn_opened_at: the wake job timer-check closes this record again with it (a stale one is refused by the mail).
-    writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), last_close: { next: close.next ?? null, resume_at: close.resume_at ?? null }, ...(openedAt ? { turn_opened_at: openedAt } : {}) });
+    patchThreadState(ctx.brainDir, ctx.thread, { last_close: { next: close.next ?? null, resume_at: close.resume_at ?? null }, ...(openedAt ? { turn_opened_at: openedAt } : {}) });
     await recordTurn(ctx, 'closed', info.held, { openedAt, next: close.next ?? null, resumeAt: close.resume_at ?? null, discussion });
     return { decision: 'block', reason };
   };
@@ -441,10 +441,10 @@ export async function run(input) {
   // A task notification (the harness rings an idle thread when a background task or agent ends) spends the waker of that
   // task: it rings nobody any more (operator 2026-11-13: it let "hotovo" pass with a next step for 2 h).
   const ended = finishedTasks(input.prompt);
-  const taskSpent = ended.size && state ? { wakers: withoutFinished(state.wakers, ended) } : {};
+  const taskSpent = (cur) => (ended.size ? { wakers: withoutFinished(cur.wakers, ended) } : {});
   // Only the timers that rang are spent; every other timer of the thread stays.
   const rang = kind === 'continue' && timer && !rearmed ? [timer, ...alsoDue] : alsoDue;
-  const keepTimer = timersPatch(threadTimers(rearmed ? readThreadState(ctx.brainDir, ctx.thread) : state).filter((t) => !rang.some((r) => sameTimer(r, t))));
+  const keepTimer = (cur) => timersPatch(threadTimers(cur).filter((t) => !rang.some((r) => sameTimer(r, t))));
   // P-021: the installed workflow changed during the session: one line; the rules come above only when their text changed
   // (rules hash), not at every update (tokens, operator 2026-11-03).
   const upd = state ? updateNotice(state) : null;
@@ -483,10 +483,14 @@ export async function run(input) {
   // notice alone (a task end) is none.
   const progress = turnSource === 'operator' && ownPlain(input.prompt) ? { progress_at: startedAt } : {};
   // D-0039: the operator's own words (this prompt and the one before) let a dialog use the marks the operator used.
-  const operatorPrompts = state && turnSource === 'operator' && typeof input.prompt === 'string' ? { operator_prompts: [input.prompt.slice(0, 20000), ...(state.operator_prompts || []).slice(0, 1)] } : {};
+  const operatorPrompts = (cur) => (turnSource === 'operator' && typeof input.prompt === 'string' ? { operator_prompts: [input.prompt.slice(0, 20000), ...(cur.operator_prompts || []).slice(0, 1)] } : {});
   // T3-WORKAROUND(t3-stale-session) t3code#38764: turns another Claude session of this T3 thread wrote since this session's last prompt.
   const split = state && process.env.T3CODE_THREAD_ID ? staleSessionCatchUp(input, state) : { patch: {}, block: '' };
-  if (state) writeThreadState(ctx.brainDir, ctx.thread, { ...state, ...split.patch, ...keepTimer, ...progress, ...taskSpent, ...(upd?.patch || {}), ...operatorPrompts, turn_started_at: startedAt, topic_gate: gate ? startedAt : null, ...(title?.patch || {}), turn_source: turnSource, turn_supervisor: supervisorMail, discussion, turn_intent: turnIntent, turn_protocol_only: protocolOnly, pending_signals: quietBell ? pending : [], mail_signaled: messageBell ? signaled : info.mail.count, mail_held_signaled: heldKey, mail_cursor: cursor, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections });
+  // The state was read before the mail was asked: the write sets this turn's keys in the current state (updateThreadState),
+  // so what a background agent's hook or the wake job wrote meanwhile stays. The lists (timers, wakers, queued signals,
+  // the operator's prompts) are changed from their current value: a signal queued after the read stays for the next prompt.
+  const shown = Array.isArray(state?.pending_signals) ? state.pending_signals : [];
+  if (state) updateThreadState(ctx.brainDir, ctx.thread, (cur) => ({ ...cur, ...split.patch, ...keepTimer(cur), ...progress, ...taskSpent(cur), ...(upd?.patch || {}), ...operatorPrompts(cur), turn_started_at: startedAt, topic_gate: gate ? startedAt : null, ...(title?.patch || {}), turn_source: turnSource, turn_supervisor: supervisorMail, discussion, turn_intent: turnIntent, turn_protocol_only: protocolOnly, pending_signals: [...(quietBell ? pending : []), ...(cur.pending_signals || []).filter((l) => !shown.includes(l))], mail_signaled: messageBell ? signaled : info.mail.count, mail_held_signaled: heldKey, mail_cursor: cursor, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections }));
   if (extras.length) lines.push(extras.join('; '));
   const limited = enforceLines(lines.join('\n'), ctx.policy?.limits?.hook_signal_lines ?? 2);
   // Nothing new: empty context (contextOutput leaves additionalContext out).

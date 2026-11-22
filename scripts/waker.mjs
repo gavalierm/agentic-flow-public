@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { readThreadState, writeThreadState } from './config.mjs';
+import { readThreadState, updateThreadState } from './config.mjs';
 import { PLUGIN_ROOT, writeJson } from './util.mjs';
 
 /**
@@ -183,13 +183,14 @@ export function awaitingWaker(obligations) {
 
 export function recordWaker(brainDir, thread, waker) {
   if (!brainDir || !thread || !waker) return;
-  const state = readThreadState(brainDir, thread);
   const now = Date.now();
   // A removed schedule drops its waker (by id; without an id every recurring one, the safe side).
   const removed = (w) => waker.remove && w.recurring && (!waker.id || !w.id || w.id === waker.id);
-  const keep = (state.wakers || []).filter((w) => !removed(w) && (w.recurring || (w.until && Date.parse(w.until) > now))).slice(-20);
-  if (waker.ended) return writeThreadState(brainDir, thread, { ...state, wakers: withoutFinished(keep, new Set(waker.ended)) });
-  writeThreadState(brainDir, thread, { ...state, wakers: waker.remove ? keep : [...keep.filter((w) => !(waker.id && w.id === waker.id)), waker] });
+  updateThreadState(brainDir, thread, (state) => {
+    const keep = (state.wakers || []).filter((w) => !removed(w) && (w.recurring || (w.until && Date.parse(w.until) > now))).slice(-20);
+    if (waker.ended) return { ...state, wakers: withoutFinished(keep, new Set(waker.ended)) };
+    return { ...state, wakers: waker.remove ? keep : [...keep.filter((w) => !(waker.id && w.id === waker.id)), waker] };
+  });
 }
 
 /** Add a thread timer: the wake module rings the thread at `at` with the step `then` (via the closed turn, P-061). Other
@@ -197,12 +198,11 @@ export function recordWaker(brainDir, thread, waker) {
  * message: the mail rings for an answer (1e, P-072). */
 export function setTimer(brainDir, thread, { delayMs, then, reason = null, until = null, deadline = null, everyMs = null, minMs = TIMER_MIN_MS }, now = Date.now()) {
   const ms = Math.min(Math.max(delayMs, minMs), TIMER_MAX_MS);
-  const state = readThreadState(brainDir, thread);
   // A condition (--until): the prompt hook runs it at `at` and rings the model only when it holds or `deadline` passed.
   const cond = until ? { until: String(until).slice(0, 300), deadline, every_ms: everyMs || ms } : {};
   const setAt = new Date(now).toISOString();
   const timer = { at: new Date(now + ms).toISOString(), then: String(then || '').slice(0, 300), set_at: setAt, ...(reason ? { reason } : {}), ...cond };
-  writeThreadState(brainDir, thread, { ...state, ...timersPatch([...threadTimers(state).filter((t) => t.then !== timer.then), timer]) });
+  updateThreadState(brainDir, thread, (state) => ({ ...state, ...timersPatch([...threadTimers(state).filter((t) => t.then !== timer.then), timer]) }));
   return timer;
 }
 
@@ -241,12 +241,14 @@ export function untilMet(cmd, cwd) {
 
 /** Remove the timers `which` selects (all without it); the removed entries, [] when none matched. */
 export function clearTimer(brainDir, thread, which = () => true) {
-  const state = readThreadState(brainDir, thread);
-  const all = threadTimers(state);
-  const gone = all.filter(which);
-  if (!gone.length) return [];
-  const { timer, timers, ...rest } = state;
-  writeThreadState(brainDir, thread, { ...rest, ...timersPatch(all.filter((t) => !gone.includes(t))) });
+  let gone = [];
+  updateThreadState(brainDir, thread, (state) => {
+    const all = threadTimers(state);
+    gone = all.filter(which);
+    if (!gone.length) return null;
+    const { timer, timers, ...rest } = state;
+    return { ...rest, ...timersPatch(all.filter((t) => !gone.includes(t))) };
+  });
   return gone;
 }
 

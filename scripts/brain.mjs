@@ -4,6 +4,7 @@ import path from 'node:path';
 import { git, gitRetry, gitRemote, remoteDiagnosis, readJson, toPosix, PLUGIN_ROOT } from './util.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv, inSubagent, machineName, sameMachine } from './config.mjs';
 import { checkBrainFile } from './brain-checks.mjs';
+import { withLock as dirLock } from './lock.mjs';
 import { dataRel, dataLayoutVersion, layoutFor } from './layout.mjs';
 import { readHolderRecord, mergeTopicOps, splitTema, listTopicRecords } from './topic-files.mjs';
 import { INDEX_FILE, hasDataIndex, refreshIndex, commitIndexAfterMerge, indexWriteError, refreshDeployIgnores, formatDeployIgnores } from './data-index.mjs';
@@ -15,8 +16,6 @@ import { INDEX_FILE, hasDataIndex, refreshIndex, commitIndexAfterMerge, indexWri
  */
 const LOCK_WAIT_MS = 60000;
 const LOCK_STALE_MS = 120000;
-const lockDepth = new Map();
-const sleeper = new Int32Array(new SharedArrayBuffer(4));
 
 export function brainLockPath(brainDir) {
   return path.join(brainDir, '.git', 'workflow-write.lock');
@@ -28,37 +27,11 @@ export function withBrainLock(brainDir, fn) {
 }
 
 /**
- * The same lock on any path (a directory created atomically): the own clone of a repo (spec 4.1, scripts/own-clone.mjs)
- * serializes the writes of the threads of this machine with it. `busy` starts the error after LOCK_WAIT_MS.
+ * The same lock on any path (scripts/lock.mjs): the own clone of a repo (spec 4.1, scripts/own-clone.mjs) serializes the
+ * writes of the threads of this machine with it. `busy` starts the error after LOCK_WAIT_MS.
  */
 export function withLock(lock, fn, busy = 'busy') {
-  const depth = lockDepth.get(lock) || 0;
-  if (depth > 0) {
-    lockDepth.set(lock, depth + 1);
-    try { return fn(); } finally { lockDepth.set(lock, lockDepth.get(lock) - 1); }
-  }
-  const started = Date.now();
-  for (;;) {
-    try {
-      fs.mkdirSync(lock);
-      fs.writeFileSync(path.join(lock, 'owner'), `${process.pid} ${new Date().toISOString()}\n`);
-      break;
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-      let age = 0;
-      try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch { continue; }
-      if (age > LOCK_STALE_MS) { fs.rmSync(lock, { recursive: true, force: true }); continue; }
-      if (Date.now() - started > LOCK_WAIT_MS) throw new Error(`${busy} (another workflow script holds ${lock} for ${Math.round(age / 1000)} s); retry`);
-      Atomics.wait(sleeper, 0, 0, 50 + Math.floor(Math.random() * 100));
-    }
-  }
-  lockDepth.set(lock, 1);
-  try {
-    return fn();
-  } finally {
-    lockDepth.set(lock, 0);
-    fs.rmSync(lock, { recursive: true, force: true });
-  }
+  return dirLock(lock, { waitMs: LOCK_WAIT_MS, staleMs: LOCK_STALE_MS, sleepMs: 50, busy: (dir, age) => `${busy} (another workflow script holds ${dir} for ${Math.round(age / 1000)} s); retry` }, fn);
 }
 
 /** Regex source of a literal path part (the map in layout.mjs), for the brain path patterns below. */

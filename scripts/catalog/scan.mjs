@@ -6,7 +6,7 @@ import path from 'node:path';
 import { extOf, kindOf } from './kinds.mjs';
 import { matcher } from './glob.mjs';
 import { hashFile } from './hash.mjs';
-import { withLock, LockBusy } from './lock.mjs';
+import { withLock, LockBusy } from '../lock.mjs';
 import { paths, readIndex, writeIndex, readJsonSafe, writeAtomic, writeManifest, recordError, clearError } from './index.mjs';
 import { SCHEMA_VERSION } from './schema.mjs';
 import { detectTools } from './tools.mjs';

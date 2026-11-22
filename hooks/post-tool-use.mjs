@@ -4,7 +4,7 @@
 // when the mail service is down (P-041). Subagents are not watched. Own edits (P-018): the content the thread left in
 // a file it changed from a clean state is recorded, so restoring it later does not ask the operator. Otherwise no output.
 import { readHookInput, emitAndExit, isMain, contextOutput } from '../scripts/hooks-io.mjs';
-import { loadContext, readThreadState, writeThreadState, SCRATCH_DIR } from '../scripts/config.mjs';
+import { loadContext, readThreadState, updateThreadState, patchThreadState, SCRATCH_DIR } from '../scripts/config.mjs';
 import { isInside } from '../scripts/util.mjs';
 import { isSessionWorkPath } from '../scripts/layout.mjs';
 import { markProgress } from '../scripts/topic-turn.mjs';
@@ -89,14 +89,14 @@ export async function watch(ctx, input, now = Date.now()) {
   const state = readThreadState(ctx.brainDir, ctx.thread);
   if (now - (state.watch_at || 0) < WATCH_INTERVAL_MS) return null;
   const upd = updateNotice(state);
-  // watch_at is written before the mail is asked: the question waits (await), and the state read above must not come back
-  // over what another hook of this thread wrote meanwhile.
-  writeThreadState(ctx.brainDir, ctx.thread, { ...state, ...(upd?.patch || {}), watch_at: now });
+  // watch_at is written before the mail is asked: the parallel hooks of this thread that come during the question (await)
+  // find it and do not ask the mail again.
+  patchThreadState(ctx.brainDir, ctx.thread, { ...(upd?.patch || {}), watch_at: now });
   const mail = await mailCountAsync(ctx, mailboxTopics(ctx));
   const lines = upd?.line ? [upd.line.replace('changed rules follow in full', 'changed rules come with the next prompt')] : [];
   const res = mail.available ? watchLine(mail.items || [], state.watch_seen || []) : null;
   if (res) {
-    writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), watch_seen: res.seen });
+    patchThreadState(ctx.brainDir, ctx.thread, { watch_seen: res.seen });
     lines.push(res.line);
   }
   return lines.length ? lines.join('\n') : null;
@@ -119,9 +119,9 @@ export function outputChars(response) {
  * Read budget of the main thread (P-001): tool output since the session start or the last compaction (session-start
  * clears it). Returns { line, budget }: a line at each READ_STEP_CHARS step and once at the WEB_NUDGE_CALLS-th web call.
  */
-export function readNudge(budget, input) {
+export function readNudge(budget, input, chars = outputChars(input.tool_response)) {
   const b = { chars: 0, web: 0, step: 0, web_said: false, ...(budget || {}) };
-  b.chars += outputChars(input.tool_response);
+  b.chars += chars;
   if (WEB_TOOLS.includes(input.tool_name)) b.web += 1;
   const lines = [];
   const step = Math.floor(b.chars / READ_STEP_CHARS);
@@ -139,10 +139,16 @@ export function readNudge(budget, input) {
 /** Read budget line for the main thread; subagents read on their own context and are not counted. */
 export function readBudget(ctx, input) {
   if (input.agent_id || input.agent_type || !ctx.brainDir || !ctx.thread) return null;
-  const state = readThreadState(ctx.brainDir, ctx.thread);
-  const r = readNudge(state.read_budget, input);
-  writeThreadState(ctx.brainDir, ctx.thread, { ...state, read_budget: r.budget });
-  return r.line;
+  // The size of the output is counted before the lock (a large result); the sum is added to the current budget inside
+  // it, so the results of parallel reads all count.
+  const chars = outputChars(input.tool_response);
+  let line = null;
+  updateThreadState(ctx.brainDir, ctx.thread, (state) => {
+    const r = readNudge(state.read_budget, input, chars);
+    line = r.line;
+    return { ...state, read_budget: r.budget };
+  });
+  return line;
 }
 
 /**
@@ -156,7 +162,7 @@ export function compactLine(ctx, input) {
   const window = ctx.policy?.compaction?.auto_compact_window_tokens ?? 200000;
   const r = compactNudge({ tokens: contextTokens(input.transcript_path), window, state, held: heldTopics(ctx.brainDir, ctx.thread) });
   if (!r) return null;
-  writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), ...r.patch });
+  patchThreadState(ctx.brainDir, ctx.thread, r.patch);
   return r.line;
 }
 
@@ -187,19 +193,20 @@ export async function run(input, now = Date.now()) {
   if ((input.tool_name === 'AskUserQuestion') && !input.agent_id && ctx.thread) recordWaitingOperator(ctx, false, readThreadState(ctx.brainDir, ctx.thread).turn_opened_at ?? null);
   // The answered dialog: its questions and answers (flow-public#46 lifts, D-0011 done --topic, P-063 turn intent).
   if (input.tool_name === 'AskUserQuestion' && !input.agent_id && ctx.thread) {
-    const st = readThreadState(ctx.brainDir, ctx.thread);
     const given = (Array.isArray(input.tool_input?.questions) ? input.tool_input.questions : []).map((x) => (typeof x === 'string' ? x : x?.question)).filter(Boolean);
     const answers = input.tool_response && typeof input.tool_response === 'object' ? input.tool_response.answers : null;
-    // A dialog closed without an answer answers nothing; a harness that reports no answers counts every question.
-    const asked = given.length ? given : st.dialog_questions || [];
-    const items = answers && typeof answers === 'object' ? asked.filter((q) => String(answers[q] ?? '').trim()) : asked;
-    // D-0011: an answer in this turn lets done --topic close the topic also in a turn started by a message.
-    // P-063: the operator's answer in the dialog decides the next step, so the turn is no longer only his question.
-    const answeredNow = items.length ? { dialog_answered_at: new Date(now).toISOString(), turn_intent: null } : {};
-    // flow-public#46: an answer that allows a target the question names opens it for the rest of the turn (P-054).
     const answerOf = (q) => (answers && typeof answers === 'object' ? String(answers[q] ?? '') : '');
-    const lifted = items.reduce((s, q) => withLift(s, q, answerOf(q), new Date(now).toISOString()), st);
-    writeThreadState(ctx.brainDir, ctx.thread, { ...lifted, dialog_questions: [], ...answeredNow });
+    updateThreadState(ctx.brainDir, ctx.thread, (st) => {
+      // A dialog closed without an answer answers nothing; a harness that reports no answers counts every question.
+      const asked = given.length ? given : st.dialog_questions || [];
+      const items = answers && typeof answers === 'object' ? asked.filter((q) => String(answers[q] ?? '').trim()) : asked;
+      // D-0011: an answer in this turn lets done --topic close the topic also in a turn started by a message.
+      // P-063: the operator's answer in the dialog decides the next step, so the turn is no longer only his question.
+      const answeredNow = items.length ? { dialog_answered_at: new Date(now).toISOString(), turn_intent: null } : {};
+      // flow-public#46: an answer that allows a target the question names opens it for the rest of the turn (P-054).
+      const lifted = items.reduce((s, q) => withLift(s, q, answerOf(q), new Date(now).toISOString()), st);
+      return { ...lifted, dialog_questions: [], ...answeredNow };
+    });
   }
   // report-80357d47: the address of a published artifact outlives the context (scripts/artifacts.mjs).
   let published = null;

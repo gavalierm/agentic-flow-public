@@ -22,7 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, fail, readStdin, localTime, toPosix } from '../scripts/util.mjs';
-import { loadContext, inSubagent, readThreadState, writeThreadState } from '../scripts/config.mjs';
+import { loadContext, inSubagent, readThreadState, patchThreadState } from '../scripts/config.mjs';
 import { commsSettings, runClient, mailQueries, queryArgs, mailCount, formatMail, registerTopic, parseAddress, formatAddress, addressArgs, resolvedNote, ambiguousLine, topicProject, isMainTopic, categoryLabel, LEVELS, dropNoticesCache, readObligations, ageText, supervisorOf, fromSupervisor, threadMailBrain, machineMailFile } from '../scripts/comms.mjs';
 import { readTopic, mailboxTopics, heldTopics, heldBy, topicMailProject } from '../scripts/topic.mjs';
 import { brainId, brainName } from '../scripts/brain-id.mjs';
@@ -392,7 +392,7 @@ function cmdSend(ctx) {
   const data = must(sent);
   // The reply to this message rings this thread; its session project may have no brain (another cwd next time): the
   // thread's state in this brain makes it the thread's mail home (threadMailBrain), also for the bell hook.
-  if (ctx.brainDir && ctx.thread && !inSubagent()) { try { const st = readThreadState(ctx.brainDir, ctx.thread); writeThreadState(ctx.brainDir, ctx.thread, { ...st, mail_sent_at: new Date().toISOString() }); } catch { /* only a hint */ } }
+  if (ctx.brainDir && ctx.thread && !inSubagent()) { try { patchThreadState(ctx.brainDir, ctx.thread, { mail_sent_at: new Date().toISOString() }); } catch { /* only a hint */ } }
   if (data.queued) {
     out(`comms unavailable: message queued in <brain>/local/outbox and sent with the next successful call (${destination})`);
   } else {

@@ -6,7 +6,7 @@
 // thread (a prompt the hook blocks is an error in T3 and starts a fresh session). The prompt hook keeps its check as a backup.
 //   timer-check.mjs [--now <iso>]
 import { parseArgs, fail } from '../scripts/util.mjs';
-import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
+import { loadContext, readThreadState, patchThreadState } from '../scripts/config.mjs';
 import { recordTurn } from '../scripts/comms.mjs';
 import { heldTopics } from '../scripts/topic.mjs';
 import { preRing, readTimerIndex, writeTimerIndex, threadTimers, resumeAtFor, sameTimer } from '../scripts/waker.mjs';
@@ -42,8 +42,7 @@ try {
     if (!done.length) continue;
     const left = threadTimers(readThreadState(entry.brain, thread));
     r = { ...done[done.length - 1], resume: { next: left.length ? readThreadState(entry.brain, thread).last_close?.next || left[0].then : null, at: left.length ? resumeAtFor(left[0], now) : null } };
-    const st = readThreadState(entry.brain, thread);
-    writeThreadState(entry.brain, thread, { ...st, last_close: { next: r.resume.next, resume_at: r.resume.at } });
+    const st = patchThreadState(entry.brain, thread, { last_close: { next: r.resume.next, resume_at: r.resume.at } });
     // The same close the Stop hook sent, with the new time: discussion as that turn ended (Stop: state otázka).
     const res = await recordTurn(ctx, 'closed', heldTopics(entry.brain, thread), { openedAt: st.turn_opened_at || null, next: r.resume.next, resumeAt: r.resume.at, discussion: st.last_end_state === 'otázka' });
     const mail = res.ok ? (res.stale ? 'turn record newer, left' : 'turn record moved') : `turn record not moved (${res.error || 'mail off'}): the prompt hook checks it`;

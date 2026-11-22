@@ -6,7 +6,7 @@
 // no base. The thread state keeps `skill_base[<name>]`: { seen: the commit the thread knows everything up to, own: its
 // commits after it }.
 import { git } from './util.mjs';
-import { readThreadState, writeThreadState } from './config.mjs';
+import { readThreadState, updateThreadState } from './config.mjs';
 
 const OWN_MAX = 50;
 const head = (brainDir, dir) => git(['log', '-1', '--format=%H', '--', dir], { cwd: brainDir, env: {} }).stdout || null;
@@ -36,8 +36,9 @@ export function recordSkillSave(brainDir, thread, name, dir, { whole }) {
   if (!brainDir || !thread) return;
   const now = head(brainDir, dir);
   if (!now) return;
-  const state = readThreadState(brainDir, thread);
-  const rec = state.skill_base?.[name] || null;
-  const next = whole ? { seen: now, own: [] } : { ...(rec?.seen ? { seen: rec.seen } : {}), own: [...(rec?.own || []), now].slice(-OWN_MAX) };
-  writeThreadState(brainDir, thread, { ...state, skill_base: { ...(state.skill_base || {}), [name]: next } });
+  updateThreadState(brainDir, thread, (state) => {
+    const rec = state.skill_base?.[name] || null;
+    const next = whole ? { seen: now, own: [] } : { ...(rec?.seen ? { seen: rec.seen } : {}), own: [...(rec?.own || []), now].slice(-OWN_MAX) };
+    return { ...state, skill_base: { ...(state.skill_base || {}), [name]: next } };
+  });
 }

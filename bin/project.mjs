@@ -33,7 +33,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs, fail, toPosix, readJson, PLUGIN_ROOT } from '../scripts/util.mjs';
-import { loadContext, loadPolicy, inSubagent, isWakeTurn, readThreadState, writeThreadState, WORKFLOW_CONFIG } from '../scripts/config.mjs';
+import { loadContext, loadPolicy, inSubagent, isWakeTurn, readThreadState, updateThreadState, WORKFLOW_CONFIG } from '../scripts/config.mjs';
 import { setupT3, startWelcome, pendingT3Line } from '../scripts/t3-setup.mjs';
 import { brainWrite, formatWriteResult } from '../scripts/brain.mjs';
 import { commsSettings, servicesClient } from '../scripts/comms.mjs';
@@ -80,11 +80,11 @@ function formatProbe(p) {
 function recordPending(update) {
   const ctx = loadContext({ requireBrain: false });
   if (!ctx.brainDir || !ctx.thread) return;
-  const state = readThreadState(ctx.brainDir, ctx.thread);
-  const next = { ...(state.t3_pending || {}) };
-  for (const [dir, steps] of Object.entries(update)) { if (steps?.length) next[dir] = steps; else delete next[dir]; }
-  if (Object.keys(next).length) state.t3_pending = next; else delete state.t3_pending;
-  writeThreadState(ctx.brainDir, ctx.thread, state);
+  updateThreadState(ctx.brainDir, ctx.thread, ({ t3_pending, ...state }) => {
+    const next = { ...(t3_pending || {}) };
+    for (const [dir, steps] of Object.entries(update)) { if (steps?.length) next[dir] = steps; else delete next[dir]; }
+    return Object.keys(next).length ? { ...state, t3_pending: next } : state;
+  });
 }
 
 /** Composed policy of a project (D-0025: domain brain, then its project layer), else the policy of its brain. */
@@ -116,9 +116,7 @@ function t3Step(dirs, name, previous = {}) {
   if (Object.keys(deferred).length) {
     const ctx = loadContext({ requireBrain: false });
     if (ctx.brainDir && ctx.thread) {
-      const state = readThreadState(ctx.brainDir, ctx.thread);
-      state.welcome_deferred = { ...(state.welcome_deferred || {}), ...deferred };
-      writeThreadState(ctx.brainDir, ctx.thread, state);
+      updateThreadState(ctx.brainDir, ctx.thread, (state) => ({ ...state, welcome_deferred: { ...(state.welcome_deferred || {}), ...deferred } }));
     } else {
       // Outside a workflow thread (doma-pc 2026-11-16) there is no thread state for `wizard end`: the command is named.
       for (const dir of Object.keys(deferred)) lines.push(`${path.basename(dir)}: t3: welcome thread not recorded for wizard end (no workflow thread here): after the adoption start it with project.mjs t3 ${toPosix(dir)} --welcome`);
@@ -129,11 +127,9 @@ function t3Step(dirs, name, previous = {}) {
 
 /** Welcome threads of adopted projects, started at `wizard end`; one that cannot start is left for the T3 tools. */
 function startDeferredWelcome(ctx) {
-  const state = readThreadState(ctx.brainDir, ctx.thread);
-  const deferred = state.welcome_deferred || {};
+  const deferred = readThreadState(ctx.brainDir, ctx.thread).welcome_deferred || {};
   if (!Object.keys(deferred).length) return [];
-  delete state.welcome_deferred;
-  writeThreadState(ctx.brainDir, ctx.thread, state);
+  updateThreadState(ctx.brainDir, ctx.thread, ({ welcome_deferred, ...state }) => state);
   const lines = []; const update = {};
   for (const [dir, name] of Object.entries(deferred)) {
     const r = startWelcome(dir, { name, policy: policyOf(dir), adopted: true }); // wizard end needs the T3 project set up

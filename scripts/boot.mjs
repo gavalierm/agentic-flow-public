@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PLUGIN_ROOT, shortSha, git, toPosix } from './util.mjs';
-import { WORKFLOW_CONFIG, SCRATCH_DIR, readThreadState, writeThreadState } from './config.mjs';
+import { WORKFLOW_CONFIG, SCRATCH_DIR, readThreadState, updateThreadState } from './config.mjs';
 import { assembleRules } from './rules.mjs';
 import { buildIndexes, shownIndexes, topicLine } from './index.mjs';
 import { recordAuthors, foreignAuthor } from './authors.mjs';
@@ -200,8 +200,8 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   // The topic comes from the operator's first message (operator 2026-11-17: a first message "Téma: Xy" got "bez témy").
   else if (ctx.thread && ctx.brainDir) status += `\nyour first reply in this session starts with the line "${ctx.projectName} / <topic>": the topic comes from the operator's first message (the one it names, "Téma: X", or the open topic it continues, else a new one); claim or create it before the reply; "${ctx.projectName} / bez témy" only for a reply without any work (spec 10.7, P-012; never a skill or thread name in place of the topic)`;
   if (ctx.brainDir && ctx.thread) {
-    const state = readThreadState(ctx.brainDir, ctx.thread);
-    writeThreadState(ctx.brainDir, ctx.thread, { ...state, turn_source: 'operator', session_source: source, mail_signaled: info.mail.count, last_status: info.line, rules_hash: recordRules ? rulesHash(rules.text) : state.rules_hash ?? null, rules_sections: recordRules ? rulesSections(rules.text) : state.rules_sections ?? null, rules_hook: rulesHook });
+    const recorded = recordRules ? { rules_hash: rulesHash(rules.text), rules_sections: rulesSections(rules.text) } : null;
+    updateThreadState(ctx.brainDir, ctx.thread, (state) => ({ ...state, turn_source: 'operator', session_source: source, mail_signaled: info.mail.count, last_status: info.line, rules_hash: recorded ? recorded.rules_hash : state.rules_hash ?? null, rules_sections: recorded ? recorded.rules_sections : state.rules_sections ?? null, rules_hook: rulesHook }));
     registerHeldTopics(ctx, info);
   }
   if (source === 'compact' && ctx.brainDir) {

@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { git, gitRemote, readText, nowIso, relPosix, toPosix, realPathLoose } from './util.mjs';
 import { installPushHook, pushBranch } from './push-hook.mjs';
-import { isWakeTurn, machineName, sameMachine, inSubagent, inHarness, readThreadState, writeThreadState, mainCheckout, WORKTREES_DIR, loadContext, readWorkflowConfig, PERSONA_BRAIN } from './config.mjs';
+import { isWakeTurn, machineName, sameMachine, inSubagent, inHarness, readThreadState, updateThreadState, mainCheckout, WORKTREES_DIR, loadContext, readWorkflowConfig, PERSONA_BRAIN } from './config.mjs';
 import { domainRepos } from './repo-knowledge.mjs';
 import { bellContinuation } from './waker.mjs';
 import { brainWrite, brainSync, readHolder, currentBranch, withBrainLock, isHolderOf } from './brain.mjs';
@@ -702,9 +702,10 @@ export function freePointMail(ctx, id, { record = true } = {}) {
   // The thread no longer holds the topic, yet handles its free-point mail: remember it so comms list/receive still
   // read that mailbox (pilot 2026-11-01: after release `receive --id` found nothing).
   if (record && ctx.brainDir && ctx.thread) {
-    const state = readThreadState(ctx.brainDir, ctx.thread);
-    const fp = Array.isArray(state.free_point) ? state.free_point : [];
-    if (!fp.includes(id)) writeThreadState(ctx.brainDir, ctx.thread, { ...state, free_point: [...fp, id] });
+    updateThreadState(ctx.brainDir, ctx.thread, (state) => {
+      const fp = Array.isArray(state.free_point) ? state.free_point : [];
+      return fp.includes(id) ? null : { ...state, free_point: [...fp, id] };
+    });
   }
   if (mail.count) {
     const ids = mailLines(mail.items);

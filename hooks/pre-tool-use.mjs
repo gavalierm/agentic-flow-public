@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { missingTaskPaths } from '../scripts/waker.mjs';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
-import { dialogAnsweredInTurn, loadContext, loadPolicy, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, writeThreadState, personaWritable, brainWritable, personaWritableDirs, brainEntries, SCRATCH_DIR, resolveBrain, threadStateFile } from '../scripts/config.mjs';
+import { dialogAnsweredInTurn, loadContext, loadPolicy, allowOutside, machineRoot, mainCheckout, WORKTREES_DIR, servicesDir, readThreadState, updateThreadState, patchThreadState, personaWritable, brainWritable, personaWritableDirs, brainEntries, SCRATCH_DIR, resolveBrain, threadStateFile } from '../scripts/config.mjs';
 import { git, isInside, toPosix, PLUGIN_ROOT } from '../scripts/util.mjs';
 import { readDrift } from '../scripts/drift.mjs';
 import { parse, programIndex } from '../scripts/shell-parse.mjs';
@@ -89,10 +89,7 @@ function createdByThread(ctx) {
 }
 function rememberCreated(ctx, abs) {
   if (!ctx.brainDir || !ctx.thread) return;
-  const state = readThreadState(ctx.brainDir, ctx.thread);
-  const list = (state.created_files || []).filter((f) => f !== abs);
-  list.push(abs);
-  writeThreadState(ctx.brainDir, ctx.thread, { ...state, created_files: list.slice(-CREATED_LIMIT) });
+  updateThreadState(ctx.brainDir, ctx.thread, (state) => ({ ...state, created_files: [...(state.created_files || []).filter((f) => f !== abs), abs].slice(-CREATED_LIMIT) }));
 }
 
 /** Data heredocs (scripts/bypass.mjs): bodies stored or read, not executed. */
@@ -1625,7 +1622,7 @@ function topicChoice(ctx, input, tool, toolInput, cwd) {
   }
   const verdict = !answered ? readDrift(ctx.brainDir, ctx.thread, turnKey) : null;
   if (verdict && verdict.fits === false && !verdict.no_topic && !DRIFT_REMEDY.test(driftRemedyText(tool, toolInput)) && driftWrite(tool, toolInput, cwd, ctx, input.session_id)) {
-    writeThreadState(ctx.brainDir, ctx.thread, { ...st, drift_denied_at: turnKey });
+    patchThreadState(ctx.brainDir, ctx.thread, { drift_denied_at: turnKey });
     return DRIFT_REASON(verdict);
   }
   return null;
@@ -1653,7 +1650,7 @@ export function run(input) {
     const asked = Array.isArray(st.new_artifact_asked) ? st.new_artifact_asked : [];
     const fresh = newArtifactDeny(ctx, input, asked);
     if (fresh) {
-      writeThreadState(ctx.brainDir, ctx.thread, { ...st, new_artifact_asked: [...asked, fresh.file].slice(-20) });
+      updateThreadState(ctx.brainDir, ctx.thread, (cur) => ({ ...cur, new_artifact_asked: [...(Array.isArray(cur.new_artifact_asked) ? cur.new_artifact_asked : []), fresh.file].slice(-20) }));
       return permissionOutput('deny', fresh.reason);
     }
   }
@@ -1672,7 +1669,7 @@ export function run(input) {
       awaitTranscriptToolUse(input.transcript_path, input.tool_use_id);
       const written = transcriptTurnText(input.transcript_path, before.turn_started_at || '').trim().length;
       if (written >= LONG_TURN_TEXT) {
-        writeThreadState(ctx.brainDir, ctx.thread, { ...before, thin_dialog_denied_at: turnKey });
+        patchThreadState(ctx.brainDir, ctx.thread, { thin_dialog_denied_at: turnKey });
         return permissionOutput('deny', THIN_DIALOG_REASON(written, shown));
       }
     }
@@ -1682,7 +1679,7 @@ export function run(input) {
       awaitTranscriptToolUse(input.transcript_path, input.tool_use_id);
       const hidden = hiddenLinks(transcriptTurnText(input.transcript_path, before.turn_started_at || ''), dialogText(toolInput));
       if (hidden.length) {
-        writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), hidden_links_denied_at: turnKey });
+        patchThreadState(ctx.brainDir, ctx.thread, { hidden_links_denied_at: turnKey });
         return permissionOutput('deny', HIDDEN_LINKS_REASON(hidden));
       }
     }
@@ -1693,7 +1690,7 @@ export function run(input) {
       awaitTranscriptToolUse(input.transcript_path, input.tool_use_id);
       const written = transcriptTurnText(input.transcript_path, before.turn_started_at || '').trim().length;
       if (written < MIN_ANSWER_TEXT) {
-        writeThreadState(ctx.brainDir, ctx.thread, { ...before, unanswered_dialog_denied_at: turnKey });
+        patchThreadState(ctx.brainDir, ctx.thread, { unanswered_dialog_denied_at: turnKey });
         return permissionOutput('deny', UNANSWERED_DIALOG_REASON(written));
       }
     }
@@ -1705,7 +1702,7 @@ export function run(input) {
       awaitTranscriptToolUse(input.transcript_path, input.tool_use_id);
       const written = transcriptTurnText(input.transcript_path, answeredAt).trim().length;
       if (written < MIN_ANSWER_TEXT) {
-        writeThreadState(ctx.brainDir, ctx.thread, { ...before, chained_dialog_denied_at: answeredAt });
+        patchThreadState(ctx.brainDir, ctx.thread, { chained_dialog_denied_at: answeredAt });
         return permissionOutput('deny', CHAINED_DIALOG_REASON(written));
       }
     }
@@ -1720,12 +1717,11 @@ export function run(input) {
         .filter((m) => !consent.some((t) => namesTarget(m.mark, t, cwd) || namesTarget(t, m.mark, cwd)));
       const gaps = dialogGaps(toolInput);
       if (marks.length || gaps.length) {
-        writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), question_marks_denied_at: turnKey });
+        patchThreadState(ctx.brainDir, ctx.thread, { question_marks_denied_at: turnKey });
         return permissionOutput('deny', UNCLEAR_DIALOG_REASON(marks, gaps));
       }
     }
-    const st ={ ...readThreadState(ctx.brainDir, ctx.thread), dialog_at: new Date().toISOString(), dialog_questions: dialogQuestions(toolInput) };
-    writeThreadState(ctx.brainDir, ctx.thread, st);
+    const st = patchThreadState(ctx.brainDir, ctx.thread, { dialog_at: new Date().toISOString(), dialog_questions: dialogQuestions(toolInput) });
     // P-061 (V1): the dialog holds the turn, so the thread cannot pick up mail: the open turn record in the mail says it waits for
     // the operator (PostToolUse clears it); mail then answers a sender `otázka` instead of "no reply".
     recordWaitingOperator(ctx, true, st.turn_opened_at ?? null);
@@ -1745,7 +1741,7 @@ export function run(input) {
     const st = readThreadState(ctx.brainDir, ctx.thread);
     const turnKey = st.turn_started_at || 'turn';
     if (st.turn_intent === 'misread' && st.misread_denied_at !== turnKey && misreadWorkStart(tool, toolInput)) {
-      writeThreadState(ctx.brainDir, ctx.thread, { ...st, misread_denied_at: turnKey });
+      patchThreadState(ctx.brainDir, ctx.thread, { misread_denied_at: turnKey });
       return permissionOutput('deny', MISREAD_TURN_REASON);
     }
   }
@@ -1755,7 +1751,7 @@ export function run(input) {
     const state = readThreadState(ctx.brainDir, ctx.thread);
     const seen = Array.isArray(state.email_calls) ? state.email_calls : [];
     if (!seen.includes(key)) {
-      writeThreadState(ctx.brainDir, ctx.thread, { ...state, email_calls: [...seen, key].slice(-50) });
+      updateThreadState(ctx.brainDir, ctx.thread, (cur) => ({ ...cur, email_calls: [...(Array.isArray(cur.email_calls) ? cur.email_calls : []).filter((k) => k !== key), key].slice(-50) }));
       return permissionOutput('deny', `this call holds the operator's account email next to a network word (ssh, http, curl...), so Claude Code's built-in privacy check would ask the operator to approve it; keep the address out of shell and web calls: write file content with Write/Edit, or let the script read the address from a config file or an environment variable. If the operator asked to send it, run the same call again unchanged: the operator then approves it`);
     }
   }
@@ -1854,13 +1850,13 @@ export function run(input) {
       const targets = consentTargets(tool, toolInput, cwd, anchors, policy);
       const lift = targets.length ? turnLifts(st).find((l) => !granted.some((g) => g.key === key && g.lift === l.at) && targets.every((t) => namesTarget(l.text, t, cwd))) : null;
       if (lift) {
-        writeThreadState(ctx.brainDir, ctx.thread, { ...st, consents_granted: [...granted, { key, lift: lift.at, at: new Date().toISOString() }].slice(-20) });
+        // The list of this turn (`granted`, filtered above) plus what a parallel call recorded meanwhile.
+        updateThreadState(ctx.brainDir, ctx.thread, (cur) => ({ ...cur, consents_granted: [...(Array.isArray(cur.consents_granted) ? cur.consents_granted : []).filter((g) => g && (!since || g.at >= since)), { key, lift: lift.at, at: new Date().toISOString() }].slice(-20) }));
         return permissionOutput('allow', 'granted by the operator\'s answer in the dialog of this turn (D-0042)');
       }
       // The targets the dialog must name stay allowed in it for the rest of the turn (D-0039 vs P-018, report-dd7a8da4).
       if (targets.length) {
-        const kept = turnConsentTargets(st).filter((t) => !targets.includes(t));
-        writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), consent_targets: { turn: since, targets: [...kept, ...targets].slice(-50) } });
+        updateThreadState(ctx.brainDir, ctx.thread, (cur) => ({ ...cur, consent_targets: { turn: since, targets: [...turnConsentTargets(cur).filter((t) => !targets.includes(t)), ...targets].slice(-50) } }));
       }
     }
     let named = [];
@@ -1910,7 +1906,7 @@ export function run(input) {
       const locals = secretDirs(ctx);
       paths = paths.filter((p) => !locals.some((l) => isInside(l, path.resolve(cwd, p))));
     }
-    if (paths.length) writeThreadState(ctx.brainDir, ctx.thread, withDenial(readThreadState(ctx.brainDir, ctx.thread), { key: callKey(tool, toolInput), tool, paths, write, reason: out.hookSpecificOutput.permissionDecisionReason.slice(0, 160) }));
+    if (paths.length) { const denial = { key: callKey(tool, toolInput), tool, paths, write, reason: out.hookSpecificOutput.permissionDecisionReason.slice(0, 160) }; updateThreadState(ctx.brainDir, ctx.thread, (cur) => withDenial(cur, denial)); }
   }
   return out;
 }
@@ -1918,7 +1914,7 @@ export function run(input) {
 /** Catalog of project data (scripts/catalog/pretool.mjs): deny of a write into a read-only source, one refused reader command per session. Never throws. */
 function catalogCheck(input, ctx, cwd) {
   try {
-    return catalogPreTool(input, ctx, cwd, { bashTargets, bashEdits, shellWrites, maskShell, unmask, leadOf, readThreadState, writeThreadState });
+    return catalogPreTool(input, ctx, cwd, { bashTargets, bashEdits, shellWrites, maskShell, unmask, leadOf, readThreadState, patchThreadState });
   } catch {
     return null;
   }
@@ -2025,7 +2021,7 @@ function pathChecks(input, ctx, cwd) {
         const state = readThreadState(ctx.brainDir, ctx.thread);
         const seen = state.signaled_relates || [];
         if (!seen.includes(rel)) {
-          writeThreadState(ctx.brainDir, ctx.thread, { ...state, signaled_relates: [...seen, rel] });
+          updateThreadState(ctx.brainDir, ctx.thread, (cur) => ({ ...cur, signaled_relates: [...(cur.signaled_relates || []).filter((r) => r !== rel), rel] }));
           const m = matches[0];
           const line = `decision ${m.id || m.key} relates to ${rel}: ${m.description} (read ${m.path} before changing, P-008)`;
           if (out) out.hookSpecificOutput.additionalContext = line;

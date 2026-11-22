@@ -4,7 +4,7 @@
 // the thread state so the start after it can weigh the handover against the summary. Never blocks: compaction inside a
 // unit of work must not be blocked (P-026), so every error ends with exit 0 and the plain prompt.
 import { readHookInput, isMain } from '../scripts/hooks-io.mjs';
-import { loadContext, readThreadState, writeThreadState } from '../scripts/config.mjs';
+import { loadContext, patchThreadState } from '../scripts/config.mjs';
 import { heldTopics } from '../scripts/topic.mjs';
 import { COMPACT_PROMPT, compactInstructions } from '../scripts/compact.mjs';
 
@@ -15,7 +15,7 @@ export function run(input, now = Date.now()) {
   if (!ctx.brainDir || !ctx.thread) return compactInstructions({ now });
   const held = heldTopics(ctx.brainDir, ctx.thread);
   try {
-    writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), compacted_at: new Date(now).toISOString(), compact_trigger: input.trigger || null });
+    patchThreadState(ctx.brainDir, ctx.thread, { compacted_at: new Date(now).toISOString(), compact_trigger: input.trigger || null });
   } catch { /* state is best effort */ }
   return compactInstructions({ held, brainDir: ctx.brainDir, now });
 }

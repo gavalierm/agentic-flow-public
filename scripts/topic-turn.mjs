@@ -5,7 +5,7 @@
 // The reply text is never read here; the hook checks the reply's state line against these facts.
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { readThreadState, writeThreadState } from './config.mjs';
+import { readThreadState, patchThreadState } from './config.mjs';
 import { handoverNextStep, handoverQuestions, handoverTasks } from './brain-checks.mjs';
 import { turnAlarms, turnFields } from './topic-state.mjs';
 import { fieldsOp, holderFileRel } from './topic-files.mjs';
@@ -91,7 +91,7 @@ export function progressed(ctx, topic, state) {
 /** Records a progress event of this thread (save, pickup of a message, operator prompt): the next count starts from zero. */
 export function markProgress(brainDir, thread, now = Date.now()) {
   if (!brainDir || !thread) return;
-  writeThreadState(brainDir, thread, { ...readThreadState(brainDir, thread), progress_at: new Date(now).toISOString() });
+  patchThreadState(brainDir, thread, { progress_at: new Date(now).toISOString() });
 }
 
 /**

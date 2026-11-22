@@ -6,7 +6,7 @@ import path from 'node:path';
 import { readHookInput, emit, contextOutput, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext } from '../scripts/config.mjs';
 import { buildBootContext, stampBootPull, layoutGuard } from '../scripts/boot.mjs';
-import { readThreadState, writeThreadState } from '../scripts/config.mjs';
+import { readThreadState, patchThreadState } from '../scripts/config.mjs';
 import { installedWorkflow } from '../scripts/update-notice.mjs';
 import { handleT3Session } from '../scripts/t3-clear.mjs';
 import { brainPull, brainPullNote } from '../scripts/brain.mjs';
@@ -52,7 +52,7 @@ export function run(input) {
   // compacted context starts with an empty read budget (post-tool-use readNudge). A resume keeps the context, so the
   // compaction nudge stays spent (T3 resumes the session every turn: the line repeated each turn, 2026-11-18).
   if (ctx.brainDir && ctx.thread) {
-    try { const w = installedWorkflow(); writeThreadState(ctx.brainDir, ctx.thread, { ...readThreadState(ctx.brainDir, ctx.thread), plugin_sha: w.sha, plugin_version: w.version, boot_plugin_sha: w.sha, boot_plugin_version: w.version, read_budget: null, ...(input.source === 'resume' ? {} : { compact_nudged: false }), ...(catalog.stateHash ? { catalog_boot_hash: catalog.stateHash } : {}) }); } catch { /* state is best effort */ }
+    try { const w = installedWorkflow(); patchThreadState(ctx.brainDir, ctx.thread, { plugin_sha: w.sha, plugin_version: w.version, boot_plugin_sha: w.sha, boot_plugin_version: w.version, read_budget: null, ...(input.source === 'resume' ? {} : { compact_nudged: false }), ...(catalog.stateHash ? { catalog_boot_hash: catalog.stateHash } : {}) }); } catch { /* state is best effort */ }
   }
   // flow-public#46: a compaction inside a turn drops which targets the turn refused; the refusals still lock (P-054).
   const closed = input.source === 'compact' ? closedTargetsNote(ctx, input) : null;
@@ -162,7 +162,8 @@ export function t3Session(ctx, input) {
   try {
     const state = readThreadState(ctx.brainDir, ctx.thread);
     const r = handleT3Session(input, state, { thread: process.env.T3CODE_THREAD_ID, logDir: process.env.WORKFLOW_T3_PROVIDER_LOGS || undefined });
-    if (r.state !== state) writeThreadState(ctx.brainDir, ctx.thread, r.state);
+    // Only the keys the handler set (t3_cursor, t3_cleared_*): the rest of the state keeps its current value.
+    if (r.state !== state) patchThreadState(ctx.brainDir, ctx.thread, Object.fromEntries(Object.entries(r.state).filter(([k, v]) => state[k] !== v)));
     return r.note;
   } catch (err) {
     return `T3 /clear: workaround failed (${err.message})`;
