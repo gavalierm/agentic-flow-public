@@ -23,7 +23,59 @@ export function brainLockPath(brainDir) {
 
 export function withBrainLock(brainDir, fn) {
   if (!brainDir || !fs.existsSync(path.join(brainDir, '.git'))) return fn();
-  return withLock(brainLockPath(brainDir), fn, 'brain is busy');
+  return withLock(brainLockPath(brainDir), () => { recoverWrite(brainDir); return fn(); }, 'brain is busy');
+}
+
+// A write that died between its file changes and its commit (the turn was interrupted, the process was killed) left the
+// brain with uncommitted changes: the files of a topic removed by done --topic and never committed blocked every sync,
+// the claim of the topic and its own second done (doma-pc 2026-11-22). The writer notes its paths before it changes a
+// file and drops the note when it is through; the next script that takes the brain lock finds the note of a dead writer
+// and puts those paths back to HEAD. The step runs again from a consistent brain.
+const journalPath = (brainDir) => path.join(brainDir, '.git', 'workflow-write.journal');
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } };
+
+/** Puts paths back to HEAD, the index too: a tracked one is restored (a removed file comes back), a new one goes. */
+function backToHead(brainDir, rels) {
+  for (const rel of new Set(rels)) {
+    if (git(['cat-file', '-e', `HEAD:${rel}`], { cwd: brainDir }).ok) git(['checkout', '--quiet', 'HEAD', '--', rel], { cwd: brainDir });
+    else { git(['rm', '-r', '--quiet', '--cached', '--ignore-unmatch', '--', rel], { cwd: brainDir }); fs.rmSync(path.join(brainDir, rel), { recursive: true, force: true }); }
+  }
+}
+
+/** Under the brain lock: the write of a dead process is rolled back (its note names the paths). */
+function recoverWrite(brainDir) {
+  const file = journalPath(brainDir);
+  if (!fs.existsSync(file)) return;
+  const note = readJson(file, null);
+  if (note && note.pid === process.pid) return; // our own write, the lock is re-entrant
+  if (note && Array.isArray(note.paths) && note.paths.length) {
+    // A live writer under a lock taken over as stale is left alone.
+    if (alive(note.pid)) return;
+    const dirty = git(['status', '--porcelain', '--', ...note.paths], { cwd: brainDir }).stdout.trim();
+    if (dirty) {
+      backToHead(brainDir, note.paths);
+      process.stderr.write(`workflow: an interrupted brain write was rolled back (${String(note.message).slice(0, 120)}; ${note.paths.slice(0, 3).join(', ')}${note.paths.length > 3 ? ', …' : ''}): the brain is as before it, run that step again\n`);
+    }
+  }
+  fs.rmSync(file, { force: true });
+}
+
+/**
+ * Removes the files under a path and the folders that let go; returns the files left. A folder that stays without a
+ * file is nothing to git, so the removal of the path is complete when this returns 0.
+ */
+function removeFiles(abs) {
+  let st;
+  try { st = fs.lstatSync(abs); } catch { return 0; }
+  if (!st.isDirectory()) {
+    try { fs.rmSync(abs, { force: true, maxRetries: 5, retryDelay: 50 }); return 0; } catch { return 1; }
+  }
+  let left = 0;
+  let names = [];
+  try { names = fs.readdirSync(abs); } catch { return 1; }
+  for (const e of names) left += removeFiles(path.join(abs, e));
+  if (!left) { try { fs.rmdirSync(abs); } catch { /* held open: an empty folder stays */ } }
+  return left;
 }
 
 /**
@@ -223,7 +275,7 @@ function brainSyncUnlocked(brainDir, { attempts = 3, resolutions = {} } = {}) {
         // Uncommitted changes make the rebase refuse; that is not a disagreement with origin (it read as "disagreement: ").
         const dirty = git(['diff', '--name-only', 'HEAD'], { cwd: brainDir }).stdout.split('\n').filter(Boolean);
         if (dirty.length) {
-          result.error = `uncommitted changes in brain block the update from origin: ${dirty.slice(0, 3).join(', ')}${dirty.length > 3 ? ', …' : ''}; commit them through the workflow or restore them (P-040)`;
+          result.error = `uncommitted changes in brain block the update from origin: ${dirty.slice(0, 3).join(', ')}${dirty.length > 3 ? ', …' : ''}; a hand edit, not a workflow write (an interrupted one is rolled back by itself): save it through the workflow (brain.mjs write) or the operator restores it (git -C <brain> checkout HEAD -- <file>) (P-040)`;
           result.unpushed = unpushedCount(brainDir);
           return result;
         }
@@ -484,6 +536,40 @@ function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, 
   if (access) throw new Error(access);
 
   const restore = snapshot(brainDir, ops);
+  // A failed write leaves nothing behind: removed and moved paths come back from HEAD, written files from the snapshot.
+  const undo = () => { backToHead(brainDir, ops.filter((op) => op.remove || op.from).flatMap((op) => (op.from ? [op.from, op.to] : [op.path]))); restore(); };
+  const journal = journalPath(brainDir);
+  const note = (paths) => fs.writeFileSync(journal, JSON.stringify({ pid: process.pid, at: new Date().toISOString(), message, paths: [...new Set(paths)] }));
+  note([...rels, ...(hasDataIndex(brainDir) ? [INDEX_FILE] : [])]);
+  try {
+    return applyWrite(ctx, { ops, message, sync, extraEnv, touched, undo, note });
+  } finally {
+    // Through (committed, or put back): no note. A killed process leaves it for the next lock holder (recoverWrite).
+    fs.rmSync(journal, { force: true });
+  }
+}
+
+function applyWrite(ctx, { ops, message, sync, extraEnv, touched, undo, note }) {
+  const { brainDir } = ctx;
+  try { applyOps(brainDir, ops, touched); } catch (err) { undo(); throw err; }
+  const env = { ...brainScriptEnv(), ...extraEnv };
+  const add = gitRetry(['add', '-A', '--', ...touched], { cwd: brainDir, env });
+  if (!add.ok) {
+    undo();
+    throw new Error(`git add failed: ${firstLine(add.stderr)}`);
+  }
+  // Layout 2: INDEX.md of the staged files goes into the same commit.
+  // Deploy ignore files of the repository (.assetsignore ...) get the internal folders and INDEX.md in the same commit.
+  let deployIgnores = [];
+  try {
+    if (refreshIndex(brainDir, env)) touched.push(INDEX_FILE);
+    deployIgnores = refreshDeployIgnores(brainDir, env);
+    if (deployIgnores.length) { touched.push(...deployIgnores.map((x) => x.file)); note(touched); }
+  } catch (err) { undo(); throw err; }
+  return commitWrite(ctx, { message, sync, env, touched, deployIgnores });
+}
+
+function applyOps(brainDir, ops, touched) {
   for (const op of ops) {
     if (op.from) {
       const from = path.join(brainDir, op.from);
@@ -492,8 +578,12 @@ function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, 
       fs.renameSync(from, to);
       touched.push(op.from, op.to);
     } else if (op.remove) {
-      fs.rmSync(path.join(brainDir, op.path), { recursive: true, force: true });
       touched.push(op.path);
+      const abs = path.join(brainDir, op.path);
+      // Windows refuses to remove a file or a folder a program holds (the shell stands in it, a viewer shows it): a moment
+      // later it often goes. A folder that stays without a file is no change for git: the removal is complete.
+      try { fs.rmSync(abs, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); }
+      catch (err) { if (removeFiles(abs)) throw new Error(`${op.path}: could not be removed (${err.code || err.message}: a program holds a file of it open); nothing changed, close it and run the step again`); }
     } else if (op.append !== undefined) {
       // Append-only files (logs/<machine>/<date>.log): only this machine writes them, so a sync never conflicts.
       const file = path.join(brainDir, op.path);
@@ -507,20 +597,10 @@ function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, 
       touched.push(op.path);
     }
   }
-  const env = { ...brainScriptEnv(), ...extraEnv };
-  const add = gitRetry(['add', '-A', '--', ...touched], { cwd: brainDir, env });
-  if (!add.ok) {
-    restore();
-    throw new Error(`git add failed: ${firstLine(add.stderr)}`);
-  }
-  // Layout 2: INDEX.md of the staged files goes into the same commit.
-  // Deploy ignore files of the repository (.assetsignore ...) get the internal folders and INDEX.md in the same commit.
-  let deployIgnores = [];
-  try {
-    if (refreshIndex(brainDir, env)) touched.push(INDEX_FILE);
-    deployIgnores = refreshDeployIgnores(brainDir, env);
-    touched.push(...deployIgnores.map((x) => x.file));
-  } catch (err) { restore(); throw err; }
+}
+
+function commitWrite(ctx, { message, sync, env, touched, deployIgnores }) {
+  const { brainDir } = ctx;
   const staged = git(['diff', '--cached', '--quiet'], { cwd: brainDir });
   const result = { committed: false, sha: null, sync: null, unpushed: unpushedCount(brainDir), warnings: [], deployIgnores };
   if (deployIgnores.length) result.warnings.push(formatDeployIgnores(deployIgnores));
@@ -528,10 +608,7 @@ function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, 
     const commit = gitRetry(['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} ${message}`], { cwd: brainDir, env });
     if (!commit.ok) {
       // A refused commit (pre-commit check) leaves nothing behind: the touched paths go back to HEAD.
-      for (const rel of new Set(touched)) {
-        if (git(['cat-file', '-e', `HEAD:${rel}`], { cwd: brainDir }).ok) git(['checkout', '--quiet', 'HEAD', '--', rel], { cwd: brainDir });
-        else { git(['rm', '-r', '--quiet', '--cached', '--ignore-unmatch', '--', rel], { cwd: brainDir }); fs.rmSync(path.join(brainDir, rel), { recursive: true, force: true }); }
-      }
+      backToHead(brainDir, touched);
       throw new Error(`commit failed: ${String(commit.stderr || commit.stdout).trim().split('\n').slice(0, 6).join('\n')}`);
     }
     result.committed = true;
