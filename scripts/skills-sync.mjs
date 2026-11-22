@@ -2,7 +2,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import { PLUGIN_ROOT, copyDir, readJson, writeJson, readText, writeText } from './util.mjs';
+import { withLock } from './lock.mjs';
 import { dataPath, dataRel } from './layout.mjs';
 import { resolveBrain } from './config.mjs';
 import { PERSONA_REPO_RE, PERSONA_PREFIX } from './persona-name.mjs';
@@ -11,6 +13,13 @@ import { forkOf, excludeLocal } from './fork.mjs';
 export const GENERATED_MARKER = '.workflow-generated.json';
 export const PROJECT_SKILLS_DIR = path.join('.claude', 'skills');
 export const CODEX_SKILLS_DIR = path.join('.agents', 'skills');
+// The lock of a sync, a folder in the generated skills directory (ignored by git with it). A sync takes milliseconds; a
+// session start waits for another one at most 10 s, and a lock older than 2 min belongs to a killed process.
+const SYNC_LOCK = '.workflow-sync.lock';
+// The new and the replaced copies of a sync, beside the lock and not in it: a replaced copy that a running program still
+// holds open (Windows) must not keep the lock from being released.
+const SYNC_STAGE = '.workflow-sync';
+const SYNC_WAIT = { waitMs: 10_000, staleMs: 120_000, sleepMs: 20 };
 
 /** Generated skills directory of a harness (relative to the project) and whether workflow skills are copied too. */
 export function harnessSkills(harness = 'claude-code') {
@@ -147,6 +156,11 @@ export function skillFiles(dir, base = dir) {
   return out;
 }
 
+/** Signature of a skill source: its files with size and time of change (an edit, a new or a removed file changes it). */
+function sourceSignature(dir) {
+  return skillFiles(dir).sort().map((rel) => { const st = fs.statSync(path.join(dir, rel)); return `${rel}:${st.size}:${Math.round(st.mtimeMs)}`; }).join('|');
+}
+
 /**
  * Paths a deployed copy still names under an unprefixed own skill folder (D-0065): "$<var>/<name>/<file>" (also
  * "${<var>}", a quote before "/") where the target has no folder <name> but has <prefix><name>/<file>, a form
@@ -241,12 +255,18 @@ function prefixSkillDir(dir, opts) {
  * <persona>-<name> (D-0065, personaSkillPrefix); the collision checks use the brain names, and the old unprefixed copies
  * go with the marker's previous list.
  * Returns { copied: [names], removed: [names], conflicts: [names] }. Throws on name conflict with workflow skills (P-024).
+ *
+ * The threads of a project deploy into one folder at the same time (every session start, every save.mjs skill). Before
+ * 2026-11-22 a sync removed every copy and copied all again without a lock: two of them failed in each other's files
+ * (ENOTEMPTY, ENOENT) and left skills out, and a skill did not exist while a sync ran (error report doma-pc: a brain
+ * skill missing in .claude/skills). Now one sync runs at a time (the lock is a folder in the target), only a skill
+ * whose source changed is deployed (the marker keeps the signature of each source), and its new copy takes the place of
+ * the old one by a rename.
  */
 export function syncBrainSkills({ projectDir, brainDir, harness = 'claude-code', repoSources = [], domainBrainDir = null }) {
   const h = harnessSkills(harness);
   const target = path.join(projectDir, h.dir);
   const marker = path.join(target, GENERATED_MARKER);
-  const previous = readJson(marker, { generated: [] }).generated || [];
   const domainSkills = domainBrainDir && path.resolve(domainBrainDir) !== path.resolve(brainDir || '') ? brainSkillDirs(domainBrainDir) : [];
   const own = brainDir ? brainSkillDirs(brainDir) : [];
   const workflowNames = workflowSkillNames();
@@ -276,30 +296,63 @@ export function syncBrainSkills({ projectDir, brainDir, harness = 'claude-code',
   if (clash.length) throw new Error(`repo skill name(s) collide with brain, workflow or another repo skill: ${[...new Set(clash)].join(', ')}; keep one (save.mjs move or --remove, D-0002)`);
   const unique = new Set();
   skills.push(...fromRepos.filter((s) => (unique.has(s.name) ? false : (unique.add(s.name), true))));
-  for (const name of previous) fs.rmSync(path.join(target, name), { recursive: true, force: true });
-  fs.mkdirSync(target, { recursive: true });
   // Another project on a persona brain: paths into the brain repo's skills point to its prefixed copies (report-117ef1b9).
   const brainPrefix = prefix ? '' : brainRepoSkillPrefix(brainDir);
   const ownFiles = prefix ? new Map(own.map((s) => [s.name, new Set(skillFiles(s.dir))])) : null;
-  for (const s of skills) {
-    const dest = path.join(target, s.deployed || s.name);
-    copyDir(s.dir, dest);
-    if (s.deployed) prefixSkillDir(dest, { projectDir, prefix, names: ownNames, self: s.name, files: ownFiles });
-    else if (brainPrefix && own.includes(s)) {
-      rewriteSkillDir(dest, (text) => brainSkillPathText(text, { brainDir, prefix: brainPrefix, names: ownNames }));
+  const items = skills.map((s) => ({
+    name: s.deployed || s.name,
+    src: s.dir,
+    rewrite: s.deployed ? (dest) => prefixSkillDir(dest, { projectDir, prefix, names: ownNames, self: s.name, files: ownFiles })
+      : brainPrefix && own.includes(s) ? (dest) => rewriteSkillDir(dest, (text) => brainSkillPathText(text, { brainDir, prefix: brainPrefix, names: ownNames }))
+        : null,
+  }));
+  if (h.withWorkflowSkills) for (const name of workflowNames) items.push({ name, src: path.join(PLUGIN_ROOT, 'skills', name), rewrite: substitutePluginRoot });
+  const generated = items.map((it) => it.name);
+  // What the text of a copy depends on besides its source: a change of it deploys every skill again.
+  const context = JSON.stringify([readJson(path.join(PLUGIN_ROOT, 'package.json'), {}).version || '', PLUGIN_ROOT, prefix, brainPrefix, prefix || brainPrefix ? ownNames : [], ownFiles ? [...ownFiles].map(([n, f]) => [n, [...f]]) : []]);
+  fs.mkdirSync(target, { recursive: true });
+  const lock = path.join(target, SYNC_LOCK);
+  const { previous, inUse } = withLock(lock, { ...SYNC_WAIT, busy: (dir, age) => `skills: another process deploys them into ${target} for ${Math.round(age / 1000)} s; nothing deployed by this one, the next session start or save.mjs skill deploys them` }, () => {
+    const before = readJson(marker, { generated: [] });
+    const previous = before.generated || [];
+    const sources = {};
+    const inUse = [];
+    // One folder per sync: what an earlier sync could not remove does not stand in the way.
+    const stage = path.join(target, SYNC_STAGE, `${process.pid}-${Date.now()}`);
+    for (const it of items) {
+      const dest = path.join(target, it.name);
+      const sig = crypto.createHash('sha1').update(context).update(sourceSignature(it.src)).digest('hex');
+      if (before.sources?.[it.name] === sig && fs.existsSync(path.join(dest, 'SKILL.md'))) { sources[it.name] = sig; continue; }
+      // The new copy is built beside the deployed one and takes its place by a rename: the skill is there the whole time.
+      const fresh = path.join(stage, 'new', it.name);
+      const old = path.join(stage, 'old', it.name);
+      copyDir(it.src, fresh);
+      it.rewrite?.(fresh);
+      try {
+        // A folder of this name the sync did not make (a hand-written project skill) is never moved away: the copy goes
+        // over it, as before, and its other files stay.
+        if (fs.existsSync(dest) && !previous.includes(it.name)) copyDir(fresh, dest);
+        else {
+          fs.mkdirSync(path.dirname(old), { recursive: true });
+          if (fs.existsSync(dest)) fs.renameSync(dest, old);
+          fs.renameSync(fresh, dest);
+        }
+        sources[it.name] = sig;
+      } catch (err) {
+        // Windows refuses the rename of a folder with an open file: the deployed copy stays and the next sync tries again.
+        if (!fs.existsSync(dest) && fs.existsSync(old)) { try { fs.renameSync(old, dest); } catch { /* reported below */ } }
+        inUse.push(`skill ${it.name}: its deployed copy is in use, not updated (${err.code || err.message}); the next session start or save.mjs skill deploys it`);
+      }
     }
-  }
+    for (const name of previous.filter((n) => !generated.includes(n))) {
+      try { fs.rmSync(path.join(target, name), { recursive: true, force: true }); } catch (err) { inUse.push(`skill ${name}: removed from the brain, its deployed copy is in use (${err.code || err.message}); remove ${path.join(target, name)} by hand`); }
+    }
+    writeJson(marker, { generated, sources, note: 'generated from brain skills at session start; do not edit' });
+    ensureGitignore(projectDir, [h.gitignore, `${dataRel(projectDir, 'local')}/`]);
+    try { fs.rmSync(path.join(target, SYNC_STAGE), { recursive: true, force: true, maxRetries: 2, retryDelay: 50 }); } catch { /* a copy still open somewhere: the next sync removes it */ }
+    return { previous, inUse };
+  });
   // All copies in place: a path the prefix did not reach names a folder that does not exist (alice-fix 2026-11-15).
-  const warnings = skills.filter((s) => s.deployed).flatMap((s) => unprefixedPathWarnings(path.join(target, s.deployed), { target, prefix, names: ownNames, deployed: s.deployed }));
-  const generated = skills.map((s) => s.deployed || s.name);
-  if (h.withWorkflowSkills) {
-    for (const name of workflowNames) {
-      copyDir(path.join(PLUGIN_ROOT, 'skills', name), path.join(target, name));
-      substitutePluginRoot(path.join(target, name));
-      generated.push(name);
-    }
-  }
-  writeJson(marker, { generated, note: 'generated from brain skills at session start; do not edit' });
-  ensureGitignore(projectDir, [h.gitignore, `${dataRel(projectDir, 'local')}/`]);
+  const warnings = [...inUse, ...skills.filter((s) => s.deployed).flatMap((s) => unprefixedPathWarnings(path.join(target, s.deployed), { target, prefix, names: ownNames, deployed: s.deployed }))];
   return { copied: generated, removed: previous.filter((p) => !generated.includes(p)), conflicts: [], prefix, renamed: prefix ? ownNames : [], warnings };
 }
