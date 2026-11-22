@@ -103,12 +103,23 @@ export function topicFromMessageLine(projectName, named, topics = []) {
 }
 
 /**
+ * T3 Code marks a message its tools sent (a bell of the mail, a timer bell), before the text and with a space or an empty
+ * line after it: "[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat.]" (T3 Code
+ * from 2026-11-22). With the mark the bell was no longer the whole prompt, so every bell ran as a turn of the operator:
+ * the mail it rang for was held for a discussion that did not exist and rang again each 30 minutes, and the guards of a
+ * turn started by a message (P-047) were off (bob 2026-11-23). The mark is not text of the sender: it is removed before
+ * the prompt is read.
+ */
+const T3_MARK = /^\s*\[T3 Code: [^\]\n]{1,200}\]\s*/;
+export const withoutT3Mark = (prompt) => String(prompt ?? '').replace(T3_MARK, '');
+
+/**
  * Kind of the prompt. Bells (wake, no-reply, undelivered, keepalive) are recognised ONLY when the whole prompt (trimmed)
  * is exactly the bell text: an operator prompt quoting a template is an operator prompt, not a wake (P-047).
  * Returns { kind, id } for bells with a message id, else the kind string or null (error/save phrases stay substring hints).
  */
 export function parsePrompt(prompt, policy) {
-  const p = String(prompt || '').trim();
+  const p = withoutT3Mark(prompt).trim();
   const cfg = policy?.prompt || {};
   const exact = (tpl, tail) => (tpl ? new RegExp(`^${escapeRe(String(tpl).trim()).replace(/ /g, '\\s+')}${tail}$`, 'i').exec(p) : null);
   if (exact(cfg.wake_template, `\\s+${TOPIC}${FROM}`)) return { kind: 'wake' };
@@ -253,6 +264,8 @@ export function messageBellLine(kind, id, data) {
 }
 
 export async function run(input) {
+  // Every reader below (kind, question, topic, operator_prompts) gets the text without the mark of T3 Code.
+  if (typeof input?.prompt === 'string') input = { ...input, prompt: withoutT3Mark(input.prompt) };
   const ctx = loadContext({ requireBrain: false });
   const parsed = parsePrompt(input.prompt, ctx.policy);
   const kind = parsed.kind;
