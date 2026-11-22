@@ -27,7 +27,7 @@ function inWorkFiles(ctx, abs) {
   return isSessionWorkPath(ctx.brainDir, ctx.projectDir, abs);
 }
 const workDirText = (ctx) => toPosix(workDir(ctx));
-import { inWorkScratch, ownedEdit, claimOwn, inPlaceEdits, snapshotShell, foreignScratch } from '../scripts/own-files.mjs';
+import { inWorkScratch, ownedEdit, claimForCall, createdByThread, inPlaceEdits, snapshotShell, foreignScratch } from '../scripts/own-files.mjs';
 import { catalogPreTool } from '../scripts/catalog/pretool.mjs';
 import { bigWriteDeny } from '../scripts/materialy.mjs';
 import { isDataIndexPath, INDEX_FILE } from '../scripts/data-index.mjs';
@@ -81,16 +81,6 @@ function isWorkflowProject(dir) {
   try { return /\bworkflow\b/.test(fs.readFileSync(path.join(dir, '.codex', 'config.toml'), 'utf8')); } catch { return false; }
 }
 
-/** Files this thread created (P-018): rewriting or deleting them is recoverable from the agent's own work. */
-const CREATED_LIMIT = 500;
-function createdByThread(ctx) {
-  if (!ctx.brainDir || !ctx.thread) return new Set();
-  return new Set(readThreadState(ctx.brainDir, ctx.thread).created_files || []);
-}
-function rememberCreated(ctx, abs) {
-  if (!ctx.brainDir || !ctx.thread) return;
-  updateThreadState(ctx.brainDir, ctx.thread, (state) => ({ ...state, created_files: [...(state.created_files || []).filter((f) => f !== abs), abs].slice(-CREATED_LIMIT) }));
-}
 
 /** Data heredocs (scripts/bypass.mjs): bodies stored or read, not executed. */
 export { withoutDataHeredocs, stripHeredocs };
@@ -1867,7 +1857,8 @@ export function run(input) {
   // P-012: the choice of the topic, after every other check; its refusal locks no path.
   if (decision !== 'deny' && decision !== 'ask') {
     const choice = topicChoice(ctx, input, tool, toolInput, cwd);
-    if (choice) return permissionOutput('deny', choice);
+    // The context of the checks before (the decision line of P-031 is recorded as said by then) goes with the refusal.
+    if (choice) return permissionOutput('deny', choice, out?.hookSpecificOutput?.additionalContext || null);
   }
   // P-001 bulk read of docs/principles/ is a hint, not a deny: the check reads the command text and cannot tell a
   // search over the directory from a mention of it, and a wrong deny stopped the work (operator 2026-11-08, hooks
@@ -2000,9 +1991,10 @@ function pathChecks(input, ctx, cwd) {
     }
     const inScratch = inWorkFiles(ctx, abs) || inWorkScratch(abs);
     const createdHere = createdByThread(ctx).has(abs);
-    const cls = inScratch || createdHere || ownedEdit(ctx, abs) ? { dangerous: false, exists: fs.existsSync(abs) } : classifyTarget(abs);
-    if (!cls.exists && !inScratch) rememberCreated(ctx, abs);
-    if (cls.reason === 'tracked and clean') claimOwn(ctx, [abs]);
+    const own = !inScratch && !createdHere && ownedEdit(ctx, abs);
+    const cls = inScratch || createdHere || own ? { dangerous: false, exists: fs.existsSync(abs) } : classifyTarget(abs);
+    // Recorded for this call; PostToolUse makes it the thread's own when the call has run (scripts/own-files.mjs).
+    claimForCall(ctx, input.tool_use_id, { own: own || cls.reason === 'tracked and clean' ? [abs] : [], born: !cls.exists && !inScratch ? [abs] : [] });
     let out = null;
     if (cls.dangerous && cls.exists) {
       const removed = removedLines(toolInput, abs);
@@ -2127,14 +2119,17 @@ function pathChecks(input, ctx, cwd) {
     // The same for what mkdir, touch and tee create, and for the new directories above a new file: `mkdir -p d/sub && cp a d/sub/f`
     // is cleaned up by `rm -rf d` without asking (the thread made all of d).
     const born = [...targets, ...shellWriteTargets(cmd, cwd).filter((w) => w.sure).map((w) => w.path)].filter((t) => !fs.existsSync(t));
+    const tops = new Set();
     for (const t of new Set(born)) {
       if (inWorkFiles(ctx, t)) continue;
       let top = t;
       while (!fs.existsSync(path.dirname(top)) && path.dirname(top) !== top) top = path.dirname(top);
-      rememberCreated(ctx, top);
+      tops.add(top);
     }
-    // A tracked clean file this command changes becomes the thread's own edit (hash recorded by PostToolUse).
-    claimOwn(ctx, [...targets, ...edits].filter((t) => fs.existsSync(t) && !ownWork(ctx, t) && classifyTarget(t).reason === 'tracked and clean'));
+    // A tracked clean file this command changes becomes the thread's own edit, and what it creates the thread's own
+    // file, when the command has run (PostToolUse, scripts/own-files.mjs).
+    // A file that is own now is claimed too: the command changes it further and the hash follows after the call.
+    claimForCall(ctx, input.tool_use_id, { own: [...new Set([...targets, ...edits])].filter((t) => fs.existsSync(t) && (ownedEdit(ctx, t) || (!ownWork(ctx, t) && classifyTarget(t).reason === 'tracked and clean'))), born: [...tops] });
     const grepHint = grepNoFilename(cmd);
     if (grepHint) return contextOutput('PreToolUse', grepHint);
 

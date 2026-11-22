@@ -16,12 +16,22 @@ test('snapshot: a handover of this turn, no continuation after it, the handover 
   try {
     assert.equal(fx.run('topic.mjs', ['create', 'alpha', '--subject', 'Alpha', '--class', 'ops']).status, 0);
     assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--task', 'T', '--next', 'krok A']).status, 0);
-    const old = new Date(Date.now() - 60000);
-    fs.utimesSync(path.join(fx.brain, 'topics', 'alpha', 'handover.md'), old, old);
     fx.hook('user-prompt-submit.mjs', { prompt: 'sprav si snapshot témy' });
+    // The commit of the handover says when it was saved (git keeps seconds): the turn starts after it.
+    const file = path.join(fx.brain, 'local', 'threads', 'a1.json');
+    const state = stateOf(fx);
+    fs.writeFileSync(file, JSON.stringify({ ...state, turn_started_at: new Date(Date.now() + 2000).toISOString() }));
     let r = fx.run('topic.mjs', ['snapshot']);
     assert.notEqual(r.status, 0); assert.match(r.out, /before this turn; save it first/);
+    fs.writeFileSync(file, JSON.stringify(state));
     assert.equal(fx.run('save.mjs', ['handover', 'alpha', '--done', 'krok 0 overený']).status, 0);
+    // A save that did not reach its commit left a new file: not a saved handover (the next brain write puts the old one back).
+    const handover = path.join(fx.brain, 'topics', 'alpha', 'handover.md');
+    const saved = fs.readFileSync(handover);
+    fs.appendFileSync(handover, '\nnot committed\n');
+    r = fx.run('topic.mjs', ['snapshot']);
+    assert.notEqual(r.status, 0); assert.match(r.out, /its last save did not finish/);
+    fs.writeFileSync(handover, saved);
     r = fx.run('topic.mjs', ['snapshot']);
     assert.equal(r.status, 0, r.out); assert.match(r.out, /snapshot of alpha: .*without a continuation/);
     assert.equal(stop(fx, 'čakám (na /clear operátora)').decision, undefined);

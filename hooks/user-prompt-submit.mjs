@@ -261,6 +261,15 @@ export async function run(input) {
   // Mail model 2, first run (4b step 5): the local waits go to the mail, the local message state goes (once per brain).
   if (ctx.brainDir && ctx.thread) { try { migrateLocalMail(ctx); } catch { /* retried at the next prompt */ } }
   const prior = ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : null;
+  // Who started this turn and when, before the mail is asked (a network call, the hook has 15 s): a hook killed after the
+  // mail opened the turn left the state of the turn before. Its refusals stayed in force, its consents too, and a turn a
+  // message started read as the operator's (audit 2026-11-22). The keys that grant something start closed; the write at
+  // the end sets them. A turn that ends here without a model call puts the keys back (quietEnd).
+  const startedAt = new Date().toISOString();
+  // turn_opened_at: the record of this turn in the mail is not known yet; the Stop hook then closes the open turn without it
+  // (with the time of the turn before, the mail refused the close and the turn stayed open).
+  const turnKeys = { turn_started_at: startedAt, turn_source: turnSource, turn_supervisor: false, turn_intent: null, topic_gate: null, turn_protocol_only: false, turn_opened_at: null };
+  if (prior) updateThreadState(ctx.brainDir, ctx.thread, (cur) => ({ ...cur, ...turnKeys }));
   // D-0015, D-0022: a discussion with the operator (the operator started this turn) gets no steer/assist lines; a blocker
   // passes. The mail learns it with the turn record and holds back those rings.
   const discussion = prior ? turnDiscussion(turnSource, prior, kind) : turnSource === 'operator';
@@ -304,7 +313,7 @@ export async function run(input) {
   const lastClose = state?.last_close || (threadTimers(state)[0] ? { next: threadTimers(state)[0].then, resume_at: threadTimers(state)[0].at } : null);
   const quietEnd = async (reason, close) => {
     // turn_opened_at: the wake job timer-check closes this record again with it (a stale one is refused by the mail).
-    patchThreadState(ctx.brainDir, ctx.thread, { last_close: { next: close.next ?? null, resume_at: close.resume_at ?? null }, ...(openedAt ? { turn_opened_at: openedAt } : {}) });
+    patchThreadState(ctx.brainDir, ctx.thread, { ...(prior ? Object.fromEntries(Object.keys(turnKeys).map((key) => [key, prior[key] ?? null])) : {}), last_close: { next: close.next ?? null, resume_at: close.resume_at ?? null }, ...(openedAt ? { turn_opened_at: openedAt } : {}) });
     await recordTurn(ctx, 'closed', info.held, { openedAt, next: close.next ?? null, resumeAt: close.resume_at ?? null, discussion });
     return { decision: 'block', reason };
   };
@@ -461,7 +470,6 @@ export async function run(input) {
   if (openStep) extras.push(`the handover of topic ${openStep.id} has a next step ("${openStep.next}"): the question does not close or cancel it, so do not end "**Stav:** hotovo"; a step the operator already approved for the topic is no new change: do it after the answer (repeat the refused write, P-059, P-026); else end "**Stav:** čakám (na <what>)" with a waker or "**Stav:** otázka" with the step as a numbered item (P-061)`);
   // P-012: an operator task (no bell, no question, no done/nudge/save/error phrase) while the thread holds a work topic: a judge
   // compares the task with the topic subject in the background; PreToolUse refuses the first write of the turn once on a mismatch.
-  const startedAt = new Date().toISOString();
   // flow-public#72: a thread holding several work topics: the task is judged against all of them, not only the first.
   const heldWork = (info.held || []).filter((t) => t && !isMainTopic(t) && t.subject);
   const heldTopic = heldWork[0];

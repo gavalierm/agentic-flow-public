@@ -33,9 +33,17 @@ export function writeJson(file, data) {
   // A link stays a link: the write goes through it to its target, a rename would put a file in its place.
   if (old?.isSymbolicLink()) return fs.writeFileSync(file, text);
   const tmp = `${file}.${process.pid}.tmp`;
+  // The copy beside the file must be complete before anything touches the file: a full disk (or a size limit) that
+  // refused the copy went on to the direct write, which cut the file to nothing first and left the thread state as
+  // invalid JSON (audit 2026-11-22). Now it fails and the file stays as it was.
   try {
     fs.writeFileSync(tmp, text);
     if (old) fs.chmodSync(tmp, old.mode & 0o777);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+  try {
     fs.renameSync(tmp, file);
   } catch {
     // The system refused the rename (Windows: the target is open elsewhere): the direct write, as before.
@@ -162,11 +170,13 @@ export function git(args, { cwd, env, input } = {}) {
     env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: '0' },
     encoding: 'utf8',
     input,
+    // In a hook (hooks/run.mjs): git ends before the harness kills the hook; git removes its lock files when it is ended.
+    timeout: globalThis.workflowHookDeadline ? Math.max(1000, globalThis.workflowHookDeadline - Date.now()) : undefined,
   });
   const out = {
     status: res.status,
     stdout: (res.stdout || '').trim(),
-    stderr: (res.stderr || '').trim(),
+    stderr: res.error?.code === 'ETIMEDOUT' ? `git ${args[0]} was stopped: the hook ran out of its time` : (res.stderr || '').trim(),
     ok: res.status === 0,
     error: res.error,
   };
@@ -193,17 +203,57 @@ export function removeTree(abs) {
 }
 
 /**
- * Removes the index lock a killed git left in a repo only the workflow writes (a brain, an own clone): git never
- * removes it and every later write failed on it ("index.lock: File exists", audit 2026-11-22). Not for a code repo:
- * there a person's own git (a commit with its editor open) holds the lock for minutes.
+ * Removes the lock files a killed git left in `dir` (index.lock, HEAD.lock, packed-refs.lock, a ref lock: git fails on
+ * each of them for good, "Unable to create '….lock': File exists"). Only files older than staleMs: a git that runs holds
+ * its lock for a moment, and a git child outlives its killed parent for that moment. `since`: files older than this
+ * time are not the caller's (a person's commit with its editor open). `wait`: stay until every younger lock is gone or
+ * old enough, at most staleMs (a write that went on at once failed on the young lock and left more behind). The caller
+ * knows that the workflow's own process died in this repo (a note in .git, the lock of a dead holder, the own clone);
+ * a checkout without such a sign is not touched. Returns the names removed.
  */
-export function dropStaleIndexLock(dir, staleMs = 60000) {
-  const file = path.join(dir, '.git', 'index.lock');
-  try {
-    if (Date.now() - fs.statSync(file).mtimeMs <= staleMs) return false;
-    fs.rmSync(file, { force: true });
-    return true;
-  } catch { return false; }
+export function dropStaleGitLocks(dir, { staleMs = 60000, since = 0, wait = false } = {}) {
+  const gitDir = path.join(dir, '.git');
+  const gone = [];
+  const files = [];
+  const list = (folder, deep) => {
+    let entries = [];
+    try { entries = fs.readdirSync(folder, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.isDirectory()) { if (deep) list(path.join(folder, e.name), true); } else if (e.isFile() && e.name.endsWith('.lock')) files.push(path.join(folder, e.name));
+    }
+  };
+  for (;;) {
+    files.length = 0;
+    list(gitDir, false);
+    list(path.join(gitDir, 'refs'), true);
+    let young = 0;
+    for (const abs of files) {
+      try {
+        const ms = fs.statSync(abs).mtimeMs;
+        if (ms < since) continue;
+        if (Date.now() - ms <= staleMs) { young += 1; continue; }
+        fs.rmSync(abs, { force: true });
+        gone.push(toPosix(path.relative(gitDir, abs)));
+      } catch { /* held or gone meanwhile */ }
+    }
+    if (!wait || !young) return gone;
+    Atomics.wait(lockSleeper, 0, 0, 200);
+  }
+}
+const lockSleeper = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * The way out for a git call that failed on a lock file, or '' for another failure: git only says "File exists", and
+ * the step and its repeat failed with it for good.
+ */
+export function gitLockHint(stderr) {
+  const file = /Unable to create '([^']+\.lock)'/.exec(String(stderr || ''))?.[1];
+  if (!file) return '';
+  let age = null;
+  try { age = Date.now() - fs.statSync(file).mtimeMs; } catch { return '; the git lock is gone now: run the step again'; }
+  return age > 60000
+    ? `; the lock ${toPosix(file)} is ${Math.round(age / 60000)} min old: a git that was killed left it. When no git runs in that repo, remove the file and run the step again`
+    : '; another git command runs in that repo, or one was killed a moment ago: run the step again in a minute';
 }
 
 /** Retry a git call while it fails on index.lock (P-040 item 4). Synchronous with a short random wait. */

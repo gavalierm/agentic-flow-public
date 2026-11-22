@@ -201,7 +201,9 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   else if (ctx.thread && ctx.brainDir) status += `\nyour first reply in this session starts with the line "${ctx.projectName} / <topic>": the topic comes from the operator's first message (the one it names, "Téma: X", or the open topic it continues, else a new one); claim or create it before the reply; "${ctx.projectName} / bez témy" only for a reply without any work (spec 10.7, P-012; never a skill or thread name in place of the topic)`;
   if (ctx.brainDir && ctx.thread) {
     const recorded = recordRules ? { rules_hash: rulesHash(rules.text), rules_sections: rulesSections(rules.text) } : null;
-    updateThreadState(ctx.brainDir, ctx.thread, (state) => ({ ...state, turn_source: 'operator', session_source: source, mail_signaled: info.mail.count, last_status: info.line, rules_hash: recorded ? recorded.rules_hash : state.rules_hash ?? null, rules_sections: recorded ? recorded.rules_sections : state.rules_sections ?? null, rules_hook: rulesHook }));
+    // A compaction runs inside a turn: the turn keeps who started it (a turn a message started read as the operator's
+    // after it and the locks of P-047 were off, audit 2026-11-22). Any other start is before the first prompt of the session.
+    updateThreadState(ctx.brainDir, ctx.thread, (state) => ({ ...state, turn_source: source === 'compact' ? state.turn_source || 'operator' : 'operator', session_source: source, mail_signaled: info.mail.count, last_status: info.line, rules_hash: recorded ? recorded.rules_hash : state.rules_hash ?? null, rules_sections: recorded ? recorded.rules_sections : state.rules_sections ?? null, rules_hook: rulesHook }));
     registerHeldTopics(ctx, info);
   }
   if (source === 'compact' && ctx.brainDir) {

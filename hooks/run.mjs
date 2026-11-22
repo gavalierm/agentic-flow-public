@@ -15,6 +15,14 @@ if (!/^[a-z][a-z-]*$/.test(process.argv[2] || '') || !fs.existsSync(file)) {
   process.stderr.write(`run.mjs: no hook "${process.argv[2] ?? ''}" (usage: node run.mjs <hook> [args], hooks/<hook>.mjs)\n`);
   process.exit(1);
 }
+// The harness kills a hook at its timeout (hooks.json), wherever it is: between two writes, inside a git push. So a git
+// call of the hook ends itself before that (scripts/util.mjs reads this time) and the hook goes on to its last steps: the
+// Stop hook closes the turn in the mail, the state is written. The last fifth of the time (at least 4 s) is for them.
+try {
+  const text = fs.readFileSync(path.join(path.dirname(file), 'hooks.json'), 'utf8');
+  const seconds = Number(new RegExp(`"${process.argv[2]}"[^\\]]*\\][^}]*"timeout":\\s*(\\d+)`).exec(text)?.[1]);
+  if (seconds) globalThis.workflowHookDeadline = Date.now() + seconds * 1000 - Math.max(4000, seconds * 200);
+} catch { /* no limit: git runs as long as it needs */ }
 // The hook sees itself as the entry script (isMain) with its own arguments.
 process.argv.splice(1, 2, file);
 await import(pathToFileURL(file).href);

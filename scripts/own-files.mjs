@@ -13,7 +13,14 @@ import { git } from './util.mjs';
 import { dataPath, layoutOf, layoutFor, layoutVersions, hasScratch, ROLE_BRAIN, ROLE_REPO } from './layout.mjs';
 
 const OWN_LIMIT = 500;
+// A claim that waits for its tool call: "pending:<call id>:<hash of the file when it was the thread's own, else empty>".
+// Only the PostToolUse of that call turns it into the hash of what the thread left. Before (one word "pending" for every
+// call), the claim of a call that never ran (refused, the turn interrupted) was settled by the next call on that file:
+// what somebody else had written into the file meanwhile became the thread's own, and a later git checkout or whole
+// rewrite of it passed without consent (audit 2026-11-22).
 const PENDING = 'pending';
+const pendingOf = (id, was = '') => `${PENDING}:${id || ''}:${was || ''}`;
+const isPending = (h) => typeof h === 'string' && h.startsWith(PENDING);
 
 /**
  * abs lies under `<repo>/scratch/` and the repo ignores scratch/ (the scratch dir itself is not a work file); in a repo of
@@ -68,33 +75,59 @@ function withOwnEdits(state, changes) {
   return { ...state, own_edits: keys.length > OWN_LIMIT ? Object.fromEntries(keys.slice(-OWN_LIMIT).map((k) => [k, edits[k]])) : edits };
 }
 
-const saveOwnEdits = (ctx, changes) => updateThreadState(ctx.brainDir, ctx.thread, (state) => withOwnEdits(state, changes));
-
-/** The current content of abs is exactly what this thread left: its uncommitted changes are the thread's own. */
+/**
+ * The current content of abs is exactly what this thread left: its uncommitted changes are the thread's own. A claim
+ * that still waits (its call did not run, or failed before it wrote) keeps a file that was own while it is unchanged.
+ */
 export function ownedEdit(ctx, abs) {
   const h = ownEdits(ctx)?.[abs];
-  return Boolean(h && h !== PENDING && h === fileHash(abs));
+  if (!h) return false;
+  const left = isPending(h) ? h.split(':')[2] : h;
+  return Boolean(left && left === fileHash(abs));
 }
 
-/** PreToolUse: a tracked clean file the tool is about to change becomes the thread's own edit (hash set after the tool). */
-export function claimOwn(ctx, files) {
-  const edits = ownEdits(ctx);
-  if (!edits || !files.length) return;
-  const changes = {};
-  for (const abs of files) {
-    if (edits[abs] && (edits[abs] === PENDING || edits[abs] === fileHash(abs))) continue;
-    changes[abs] = PENDING;
-  }
-  if (Object.keys(changes).length) saveOwnEdits(ctx, changes);
+/** Files this thread created (P-018): rewriting or deleting them is recoverable from the agent's own work. */
+const CREATED_LIMIT = 500;
+export function createdByThread(ctx) {
+  if (!ctx.brainDir || !ctx.thread) return new Set();
+  return new Set(readThreadState(ctx.brainDir, ctx.thread).created_files || []);
+}
+const withCreated = (state, born) => (born.length ? { ...state, created_files: [...(state.created_files || []).filter((f) => !born.includes(f)), ...born].slice(-CREATED_LIMIT) } : state);
+
+/**
+ * PreToolUse, one state write: what the call `id` is about to make the thread's own. `own`: a tracked clean file, or
+ * a file that is own now, that the call changes (the hash is set after the call). `born`: files and folders that do
+ * not exist and that the call creates; they count as created by the thread only when the call has run and they exist
+ * (a file recorded before the call, which then never ran, was removable without consent once somebody else made it).
+ * A harness that sends no call id: the files are recorded at once, as before.
+ */
+export function claimForCall(ctx, id, { own = [], born = [] } = {}) {
+  if (!ctx.brainDir || !ctx.thread || (!own.length && !born.length)) return;
+  const was = Object.fromEntries(own.map((abs) => [abs, ownedEdit(ctx, abs) ? fileHash(abs) : '']));
+  updateThreadState(ctx.brainDir, ctx.thread, (state) => {
+    const next = own.length ? withOwnEdits(state, Object.fromEntries(own.map((abs) => [abs, pendingOf(id, was[abs])]))) : state;
+    if (!born.length) return next;
+    if (!id) return withCreated(next, born);
+    const waiting = Object.entries(next.created_pending || {}).filter(([key]) => key !== id).slice(-(SHELL_LIMIT - 1));
+    return { ...next, created_pending: { ...Object.fromEntries(waiting), [id]: [...new Set([...(next.created_pending?.[id] || []), ...born])] } };
+  });
 }
 
-/** PostToolUse: record what the thread left in each own file; a deleted file leaves the list. */
-export function settleOwn(ctx, files) {
-  const edits = ownEdits(ctx);
-  if (!edits) return;
+/** PostToolUse of the call `id`: its claims get the hash of what the thread left (a deleted file leaves the list), its new files join the created ones. */
+export function settleCall(ctx, id, files) {
+  if (!ctx.brainDir || !ctx.thread) return;
+  const state = readThreadState(ctx.brainDir, ctx.thread);
+  const edits = state.own_edits || {};
+  const mine = `${PENDING}:${id || ''}:`;
   const changes = {};
-  for (const abs of files) if (abs in edits) changes[abs] = fileHash(abs) || null;
-  if (Object.keys(changes).length) saveOwnEdits(ctx, changes);
+  for (const abs of files) if (isPending(edits[abs]) && edits[abs].startsWith(mine)) changes[abs] = fileHash(abs) || null;
+  const waiting = id ? state.created_pending?.[id] : null;
+  if (!Object.keys(changes).length && !waiting) return;
+  const born = (waiting || []).filter((abs) => fs.existsSync(abs));
+  updateThreadState(ctx.brainDir, ctx.thread, (cur) => {
+    const { [id]: _, ...rest } = cur.created_pending || {};
+    return withOwnEdits(withCreated({ ...cur, created_pending: rest }, born), changes);
+  });
 }
 
 /** Files a shell command edits in place (`sed -i`, `perl -i`): not deleted, but changed like an Edit. */
@@ -118,7 +151,6 @@ export function inPlaceEdits(words) {
 // after was changed by this command, so it is the thread's own edit like an Edit or `sed -i` (alice 2026-11-03:
 // edits by a python heredoc were not own and the later `git restore` asked the operator, P-018).
 const SHELL_LIMIT = 20;
-const CREATED_LIMIT = 500; // same cap as created_files in pre-tool-use
 
 function dirtyTracked(top) {
   const r = git(['diff', '--name-only', 'HEAD'], { cwd: top });
@@ -180,8 +212,7 @@ export function settleShell(ctx, id) {
   // One change of the current state: the snapshot of this call leaves, its new files and own edits join the lists.
   updateThreadState(ctx.brainDir, ctx.thread, (state) => {
     const { [id]: _, ...rest } = state.shell_before || {};
-    const created = [...(state.created_files || []).filter((f) => !born.includes(f)), ...born].slice(-CREATED_LIMIT);
-    return withOwnEdits({ ...state, shell_before: rest, created_files: created }, changes);
+    return withOwnEdits(withCreated({ ...state, shell_before: rest }, born), changes);
   });
 }
 

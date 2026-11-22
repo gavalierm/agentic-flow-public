@@ -15,7 +15,7 @@ import { mailboxTopics } from '../scripts/topic.mjs';
 import path from 'node:path';
 import { heldTopics, topicCopyPath, taskCopyPaths } from '../scripts/topic.mjs';
 import { pushFailureLines } from '../scripts/push-hook.mjs';
-import { settleOwn, settleShell, recordScratch, inWorkScratch } from '../scripts/own-files.mjs';
+import { settleCall, settleShell, recordScratch, inWorkScratch } from '../scripts/own-files.mjs';
 import { bashTargets, bashEdits } from './pre-tool-use.mjs';
 import { wakerFromTool, recordWaker } from '../scripts/waker.mjs';
 import { updateNotice } from '../scripts/update-notice.mjs';
@@ -213,7 +213,7 @@ export async function run(input, now = Date.now()) {
   if (!input.agent_id) { try { published = recordPublish(ctx, input, now); } catch { /* the record never fails the hook */ } }
   // P-078: a work file shown to the operator (Artifact, html_preview) is a result of the held topic, saved at once.
   const shown = !input.agent_id && input.hook_event_name !== 'PostToolUseFailure' ? saveShown(ctx, input, published, now) : null;
-  settleOwn(ctx, changedFiles(input));
+  settleCall(ctx, input.tool_use_id, changedFiles(input));
   // report-143e7cdb: what this thread leaves in a scratch/ is its own; another thread's recursive rm of the dir asks (P-018).
   // The work files are in the topic home (a brain in layout 2, D-0056), isSessionWorkPath.
   recordScratch(ctx, changedFiles(input), (abs) => (ctx.projectDir && isSessionWorkPath(ctx.brainDir, ctx.projectDir, abs)) || inWorkScratch(abs));

@@ -13,7 +13,7 @@ import { isMainTopic } from './comms.mjs';
 import { handoverNextStep } from './brain-checks.mjs';
 import { syncResults, savedLine } from './results.mjs';
 import { scratchReminder } from './materialy.mjs';
-import { localTime } from './util.mjs';
+import { git, localTime } from './util.mjs';
 
 /** The time of a snapshot made in the current turn of the thread, or null (stop.mjs: no continuation after it). */
 export function snapshotThisTurn(state) {
@@ -34,12 +34,18 @@ export function snapshotTopic(ctx, id = null, now = Date.now()) {
   if (!topic) throw new Error(`snapshot: topic ${id} does not exist`);
   if (!isHolderOf(readHolder(ctx.brainDir, id), ctx.thread)) throw new Error(`snapshot: topic ${id} is not held by this thread; only its holder snapshots it`);
   const state = readThreadState(ctx.brainDir, ctx.thread);
-  const file = path.join(ctx.brainDir, topicRel(ctx.brainDir, id, 'handover'));
-  const savedAt = (() => { try { return fs.statSync(file).mtimeMs; } catch { return null; } })();
+  // The time of the commit, not of the file: a save that was killed before its commit (or whose commit was refused)
+  // left a new file time, the snapshot said "handover saved" and the next brain write put the old handover back.
+  const rel = topicRel(ctx.brainDir, id, 'handover');
+  const file = path.join(ctx.brainDir, rel);
+  const log = fs.existsSync(file) && !git(['status', '--porcelain', '--', rel], { cwd: ctx.brainDir }).stdout.trim()
+    ? git(['log', '-1', '--format=%ct', '--', rel], { cwd: ctx.brainDir }) : null;
+  // git keeps whole seconds: the end of that second.
+  const savedAt = log?.ok && Number(log.stdout) ? Number(log.stdout) * 1000 + 999 : null;
   const started = Date.parse(state.turn_started_at || '');
   // The handover is the only state a fresh session gets: one from before this turn misses what this turn did.
   if (!savedAt || (Number.isFinite(started) && savedAt < started)) {
-    throw new Error(`snapshot: the handover of ${id} was ${savedAt ? `saved ${localTime(savedAt)}, before this turn` : 'never saved'}; save it first with all six sections (save.mjs handover ${id}: the task verbatim with the operator's standing instructions, Hotové with the facts that verify it, the exact Ďalší krok, the files, the questions, the tasks), then run topic.mjs snapshot ${id} again`);
+    throw new Error(`snapshot: the handover of ${id} was ${savedAt ? `saved ${localTime(savedAt)}, before this turn` : 'not saved (never, or its last save did not finish)'}; save it first with all six sections (save.mjs handover ${id}: the task verbatim with the operator's standing instructions, Hotové with the facts that verify it, the exact Ďalší krok, the files, the questions, the tasks), then run topic.mjs snapshot ${id} again`);
   }
   const lines = [];
   const res = syncResults(ctx.brainDir, id, { policy: ctx.policy, now });

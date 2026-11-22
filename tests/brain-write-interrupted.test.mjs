@@ -73,7 +73,7 @@ test('a stale index lock and a rebase left in progress do not block the brain', 
     fs.writeFileSync(lock, '');
     fs.utimesSync(lock, new Date(Date.now() - 600000), new Date(Date.now() - 600000));
     const syncNote = path.join(fx.brain, '.git', 'workflow-sync.note');
-    const dead = () => fs.writeFileSync(syncNote, JSON.stringify({ pid: 2 ** 22 + 12345, at: new Date().toISOString() }));
+    const dead = () => fs.writeFileSync(syncNote, JSON.stringify({ pid: 2 ** 22 + 12345, at: new Date(Date.now() - 660000).toISOString() }));
     dead();
     let r = write(fx, 'operator-a');
     assert.equal(r.status, 0, r.out);
@@ -101,6 +101,22 @@ test('a stale index lock and a rebase left in progress do not block the brain', 
     assert.equal(fs.existsSync(path.join(fx.brain, '.git', 'rebase-merge')), false);
     assert.equal(fx.git(fx.brain, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main');
     assert.match(fx.git(fx.brain, 'log', '--format=%s', '-3'), /write operator-b\n.*local change/, 'the local commits are intact');
+    // a fast-forward at the session start killed while git wrote the files: a new file of origin lies there untracked,
+    // a changed one is cut short; every later update failed on them
+    fx.git(other, 'pull', '-q');
+    fs.writeFileSync(path.join(other, 'memory', 'operator-n.md'), memoryRecord('operator-n', 'name: new on origin'));
+    fs.writeFileSync(path.join(other, 'memory', 'operator-b.md'), memoryRecord('operator-b', 'name: changed on origin, a longer line'));
+    fx.git(other, 'add', '-A');
+    fx.git(other, 'commit', '-qm', '[brain-script] remote change 2', '--no-verify');
+    fx.git(other, 'push', '-q');
+    fx.git(fx.brain, 'fetch', '-q', 'origin');
+    const forward = { from: fx.git(fx.brain, 'rev-parse', 'HEAD').trim(), to: fx.git(fx.brain, 'rev-parse', 'origin/main').trim() };
+    fs.copyFileSync(path.join(other, 'memory', 'operator-n.md'), path.join(fx.brain, 'memory', 'operator-n.md'));
+    fs.writeFileSync(path.join(fx.brain, 'memory', 'operator-b.md'), fs.readFileSync(path.join(other, 'memory', 'operator-b.md'), 'utf8').slice(0, 40));
+    fs.writeFileSync(syncNote, JSON.stringify({ pid: 2 ** 22 + 12345, at: new Date().toISOString(), forward }));
+    r = fx.run('brain.mjs', ['sync']);
+    assert.match(r.stderr, /half written was reset \(2 file/);
+    assert.equal(fx.git(fx.brain, 'status', '--porcelain').trim(), '', 'the tree is the last commit again: the next update can run');
   } finally { fx.cleanup(); }
 });
 
