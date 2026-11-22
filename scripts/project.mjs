@@ -19,7 +19,7 @@ import { ensureLineEndings, EOL_RULE } from './eol.mjs';
 import { forkOf, setupFork } from './fork.mjs';
 import { redactUrl } from './secrets.mjs';
 import { servicesClient, machineMailFile } from './comms.mjs';
-import { gh, ghOwner, ghOwnedRepos, ghOwnerRepos, ghRootNames, grantAgentAccess, checkOwner, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_AGENT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
+import { gh, ghOwner, emptyRepo, ghOwnedRepos, ghOwnerRepos, ghRootNames, grantAgentAccess, checkOwner, readToken, sshRemote, DEFAULT_TOKEN_FILE, DEFAULT_AGENT_TOKEN_FILE, DEFAULT_API_URL } from './github.mjs';
 
 export const DEFAULT_ROOT = path.join(os.homedir(), 'agentic');
 const NAME_RE = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
@@ -154,13 +154,24 @@ function adapter(projectDir, brainRel) {
 export function stampRepoLayout(projectDir, brainDir) {
   let bv;
   try { bv = dataLayoutVersion(brainDir); if (!splitRoles(bv)) return null; } catch { return null; }
-  if (VERSION_FILES.some((rel) => exists(path.join(projectDir, ...rel.split('/'))))) return null;
-  if (exists(path.join(projectDir, LAYOUT.projectKnowledge))) return `data: ${path.basename(projectDir)} has ${LAYOUT.projectKnowledge}/ of data 1: move it first (migrate.mjs ${toPosix(projectDir)}, then --apply), the session refuses it beside a brain in data ${dataName(bv)}`;
   const rel = layoutFor(bv, ROLE_REPO).policy;
-  fs.mkdirSync(path.dirname(path.join(projectDir, rel)), { recursive: true });
-  fs.writeFileSync(path.join(projectDir, rel), `${JSON.stringify({ data_layout: dataName(bv) }, null, 2)}\n`);
-  if (forkOf(projectDir)) return `data: ${rel} with data ${dataName(bv)} of the brain, local (a fork commits no workflow file)`;
+  const text = `${JSON.stringify({ data_layout: dataName(bv) }, null, 2)}\n`;
   const env = brainScriptEnv();
+  // A run that stopped after the file was written, or whose push failed: the file was there, so the next run did nothing
+  // and the stamp stayed on this machine only (audit 2026-11-22). The stamp this function writes is finished here.
+  let half = null;
+  try { half = !forkOf(projectDir) && fs.readFileSync(path.join(projectDir, rel), 'utf8') === text ? (git(['status', '--porcelain', '--', rel], { cwd: projectDir }).stdout ? 'file' : (git(['log', '--format=%h', '@{u}..HEAD', '--', rel], { cwd: projectDir }).stdout ? 'commit' : null)) : null; } catch { half = null; }
+  if (half === 'commit') {
+    const push = gitRemote(['push', '--quiet'], { cwd: projectDir });
+    return `data: ${rel} with data ${dataName(bv)} of the brain, ${push.ok ? 'pushed now (an earlier push failed)' : `still not pushed: ${(push.stderr || '').split('\n')[0]}`}`;
+  }
+  if (!half && VERSION_FILES.some((file) => exists(path.join(projectDir, ...file.split('/'))))) return null;
+  if (!half && exists(path.join(projectDir, LAYOUT.projectKnowledge))) return `data: ${path.basename(projectDir)} has ${LAYOUT.projectKnowledge}/ of data 1: move it first (migrate.mjs ${toPosix(projectDir)}, then --apply), the session refuses it beside a brain in data ${dataName(bv)}`;
+  if (!half) {
+    fs.mkdirSync(path.dirname(path.join(projectDir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, rel), text);
+  }
+  if (forkOf(projectDir)) return `data: ${rel} with data ${dataName(bv)} of the brain, local (a fork commits no workflow file)`;
   const add = git(['add', '--', rel], { cwd: projectDir, env });
   const commit = add.ok ? git(['commit', '--quiet', '--no-verify', '-m', `${BRAIN_COMMIT_TAG} data ${dataName(bv)} of the domain's brain (project.mjs)`, '--', rel], { cwd: projectDir, env }) : add;
   if (!commit.ok) return `data: ${rel} written (data ${dataName(bv)}), commit failed: ${(commit.stderr || '').split('\n')[0]}; commit and push it`;
@@ -360,12 +371,22 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
   lines.push(...(await cloneCodeRepo({ apiUrl, token, owner, repoName, agentTokenFile, foreign, remoteFor, projectDir })));
 
   if (brain && brain !== brainName) {
-    if (!renameBrain) throw new Error(`brain repository ${brainOwner}/${brain} must be named ${brainName}; run again with --rename-brain (renames it on GitHub, the old name redirects)`);
-    const taken = await gh(apiUrl, token, 'GET', `/repos/${brainOwner}/${brainName}`);
-    if (taken.status === 200) throw new Error(`${brainOwner}/${brainName} already exists; resolve it first`);
-    const r = await gh(apiUrl, token, 'PATCH', `/repos/${brainOwner}/${brain}`, { name: brainName });
-    if (r.status !== 200 || r.json.name !== brainName) throw new Error(`renaming ${brainOwner}/${brain} failed (HTTP ${r.status}): ${r.json.message || ''}`);
-    lines.push(`brain repository renamed: ${brain} -> ${brainName}`);
+    // A run that stopped after the rename (the clone failed) could not be repeated: with --rename-brain it said
+    // "already exists; resolve it first", without it "run again with --rename-brain" (audit 2026-11-22). The old name
+    // is asked first: GitHub answers it with the renamed repository (its redirect).
+    const old = await gh(apiUrl, token, 'GET', `/repos/${brainOwner}/${brain}`);
+    if (old.status === 200 && old.json?.name === brainName) lines.push(`brain repository ${brain} is ${brainName} already (renamed by an earlier run)`);
+    else {
+      const taken = await gh(apiUrl, token, 'GET', `/repos/${brainOwner}/${brainName}`);
+      if (old.status === 404) throw new Error(taken.status === 200
+        ? `brain repository ${brainOwner}/${brain} does not exist and ${brainOwner}/${brainName} does: when an earlier run renamed it, run the command again without --brain (it takes ${brainName})`
+        : `brain repository ${brainOwner}/${brain} does not exist`);
+      if (!renameBrain) throw new Error(`brain repository ${brainOwner}/${brain} must be named ${brainName}; run again with --rename-brain (renames it on GitHub, the old name redirects)`);
+      if (taken.status === 200) throw new Error(`${brainOwner}/${brainName} already exists and ${brainOwner}/${brain} is another repository: one of them must go or get another name before the rename`);
+      const r = await gh(apiUrl, token, 'PATCH', `/repos/${brainOwner}/${brain}`, { name: brainName });
+      if (r.status !== 200 || r.json.name !== brainName) throw new Error(`renaming ${brainOwner}/${brain} failed (HTTP ${r.status}): ${r.json.message || ''}`);
+      lines.push(`brain repository renamed: ${brain} -> ${brainName}`);
+    }
   }
   if (foreign) lines.push(brainOwner === owner ? `brain: from ${owner}/${brainName}` : `brain: in the operator's account, ${me}/${brainName} (${owner} has no ${brain || brainName})`);
   const brainExists = brain || exists(brainDir) || (await gh(apiUrl, token, 'GET', `/repos/${brainOwner}/${brainName}`)).status === 200;
@@ -374,16 +395,19 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
     if (brainAccess) lines.push(brainAccess);
     lines.push(cloneInto(remoteFor(brainOwner, brainName), brainDir, 'brain'));
     if (brainBranch && brainBranch !== 'main') {
-      gitRemote(['fetch', '--quiet', 'origin'], { cwd: brainDir });
+      // Each git step is checked: an unchecked one said "fast-forwarded" over a brain that stayed where it was (audit
+      // 2026-11-22). The steps leave what is done as it is, so the same command runs again after a failure.
+      const must = (r, what) => { if (!r.ok) throw new Error(`brain: ${what} failed: ${redactUrl(String(r.stderr || r.stdout).split('\n')[0])}; nothing is lost, run the command again`); };
+      must(gitRemote(['fetch', '--quiet', 'origin'], { cwd: brainDir }), 'fetch from origin');
       const target = `origin/${brainBranch}`;
       if (!git(['rev-parse', '--verify', '--quiet', target], { cwd: brainDir }).ok) throw new Error(`brain branch ${brainBranch} not found`);
       const hasMain = git(['rev-parse', '--verify', '--quiet', 'origin/main'], { cwd: brainDir }).ok;
       if (!hasMain || git(['merge-base', '--is-ancestor', 'origin/main', target], { cwd: brainDir }).ok) {
-        git(['checkout', '--quiet', '-B', 'main', target], { cwd: brainDir });
+        must(git(['checkout', '--quiet', '-B', 'main', target], { cwd: brainDir }), `checkout of main at ${brainBranch}`);
         lines.push(`brain main fast-forwarded to ${brainBranch}`);
       } else {
         // main has only merge commits of the branch (the older "merge dev" habit): merging adds no content of main.
-        git(['checkout', '--quiet', '-B', 'main', 'origin/main'], { cwd: brainDir });
+        must(git(['checkout', '--quiet', '-B', 'main', 'origin/main'], { cwd: brainDir }), 'checkout of main');
         const merge = git(['merge', '--no-ff', '--quiet', '-m', `${BRAIN_COMMIT_TAG} adopt brain into the workflow: merge ${brainBranch}`, target], { cwd: brainDir, env: brainScriptEnv() });
         if (!merge.ok || !git(['diff', '--quiet', 'HEAD', target], { cwd: brainDir }).ok) {
           git(['merge', '--abort'], { cwd: brainDir });
@@ -473,12 +497,15 @@ async function joinDomain({ base, brainName, owner, me, repoName, foreign, setAs
 // The machine's agent account gets push access before the first push (Repository not found otherwise, Alice 2026-11-09).
 async function createRepo(apiUrl, token, owner, repo, agentTokenFile = DEFAULT_AGENT_TOKEN_FILE) {
   const probeRes = await gh(apiUrl, token, 'GET', `/repos/${owner}/${repo}`);
-  if (probeRes.status === 200) throw new Error(`repository ${owner}/${repo} already exists; connect it instead`);
-  if (probeRes.status !== 404) throw new Error(`cannot verify that ${owner}/${repo} is free (HTTP ${probeRes.status})`);
-  const made = await gh(apiUrl, token, 'POST', '/user/repos', { name: repo, private: true });
-  if (made.status !== 201 || made.json.name !== repo) throw new Error(`creating ${owner}/${repo} failed (HTTP ${made.status}): ${made.json.message || made.json.name || ''}`);
+  const reuse = probeRes.status === 200 && await emptyRepo(apiUrl, token, owner, repo);
+  if (probeRes.status === 200 && !reuse) throw new Error(`repository ${owner}/${repo} already exists; connect it instead`);
+  if (!reuse && probeRes.status !== 404) throw new Error(`cannot verify that ${owner}/${repo} is free (HTTP ${probeRes.status})`);
+  if (!reuse) {
+    const made = await gh(apiUrl, token, 'POST', '/user/repos', { name: repo, private: true });
+    if (made.status !== 201 || made.json.name !== repo) throw new Error(`creating ${owner}/${repo} failed (HTTP ${made.status}): ${made.json.message || made.json.name || ''}`);
+  }
   const access = await grantAgentAccess(apiUrl, token, owner, repo, agentTokenFile);
-  return [`repository created: ${owner}/${repo} (private)`, ...(access ? [access] : [])];
+  return [reuse ? `repository ${owner}/${repo} exists and is empty (an earlier create made it): used` : `repository created: ${owner}/${repo} (private)`, ...(access ? [access] : [])];
 }
 
 /** New project: folder, private code and brain repositories, a first commit with the purpose, settings. */
@@ -487,7 +514,7 @@ export async function create({ name, repo = null, purpose, domain = null, root =
   const repoName = checkName(repo || name);
   if (!String(purpose || '').trim()) throw new Error('create needs --purpose "<one sentence>"');
   const base = domainDir(root, name, domain);
-  if (exists(base)) throw new Error(`${base} already exists; nothing is overwritten (P-018)`);
+  if (exists(base)) throw new Error(`${base} already exists; nothing is overwritten (P-018). When an earlier create of this project stopped and the folder holds nothing of yours, remove the folder and run create again: the empty repositories it made on GitHub are used again`);
   const projectDir = path.join(base, repoName);
   const brainDir = path.join(base, `${name}-brain`);
   const token = readToken(tokenFile);
@@ -609,13 +636,23 @@ export function issueMailKey({ projectDir, brainDir, sessionBrain, client = serv
   if (!exists(client)) return `mail: NOT set up (mail client ${toPosix(client)} not found): ${how}`;
   const json = (text) => { try { return JSON.parse(String(text || '')); } catch { return null; } };
   const r = run(process.execPath, [client, 'key', 'add', '--instance', src.instance, '--sender', sender], { encoding: 'utf8', timeout: 15000 });
-  const res = json(r.stdout);
+  let res = json(r.stdout);
   if (r.status !== 0 || !res?.key) {
+    // A run that stopped after the key was issued, before the config below: the mail has the key of this sender, no
+    // file has it. A second "key add" is refused, and so was the command this message named (audit 2026-11-22). The
+    // mail lists its keys: the one of this sender is taken.
+    const list = json(run(process.execPath, [client, 'key', 'list', '--instance', src.instance], { encoding: 'utf8', timeout: 15000 }).stdout);
+    const own = (list?.keys || []).find((k) => k?.sender === sender && k.key);
+    if (own) res = { key: own.key };
+  }
+  if (!res?.key) {
     const why = json(r.stderr)?.error || String(r.stderr || r.error?.message || `exit ${r.status}`).trim().split('\n')[0];
     return `mail: NOT set up (key add failed: ${why}): ${how}`;
   }
+  // Whole or not at all (a rename): a config cut short reads as "exists" and holds no key.
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, `${JSON.stringify({ instance: src.instance, key: res.key, instance_id: src.instance_id }, null, 2)}\n`, { mode: 0o600 });
+  fs.writeFileSync(`${target}.tmp`, `${JSON.stringify({ instance: src.instance, key: res.key, instance_id: src.instance_id }, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(`${target}.tmp`, target);
   const h = run(process.execPath, [client, 'health', '--config', target], { encoding: 'utf8', timeout: 15000 });
   const ok = h.status === 0 && json(h.stdout)?.instance_id === src.instance_id;
   return `mail: key issued for sender ${sender} (<brain>/local/comms.json)${ok ? ', service answers' : '; the service did NOT answer: run comms.mjs status in the project'}`;

@@ -22,11 +22,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { git, gitRemote, readJson, PLUGIN_ROOT } from './util.mjs';
+import { git, gitRemote, readJson, writeJson, dropStaleGitLocks, PLUGIN_ROOT } from './util.mjs';
+import { stamp, live } from './lock.mjs';
 import { BRAIN_COMMIT_TAG, MIGRATE_MOVE_ENV, DOMAIN_MARKER, brainScriptEnv, loadPolicy, threadId } from './config.mjs';
 import { checkBrainFile } from './brain-checks.mjs';
 import { LAYOUTS, LAYOUT_KEY, dataLayoutVersion, dataName } from './layout.mjs';
-import { brainWrite, gitAccessProblem } from './brain.mjs';
+import { brainWrite, withBrainLock, gitAccessProblem } from './brain.mjs';
 import { branchProblems } from './topic-branches.mjs';
 import { INDEX_FILE, refreshIndex, indexProblem, commitIndexAfterMerge, refreshDeployIgnores, deployIgnoreGaps, deployIgnoreLines, formatDeployIgnores } from './data-index.mjs';
 import { CLASSES, MOVED_CLASSES, BRAIN_SUFFIX, classTargetIn } from './triage.mjs';
@@ -662,12 +663,123 @@ function sessionBrainIs(dir, { project, cwd }) {
   return real(m[1]) === real(dir);
 }
 
+// ---- a move that stopped ------------------------------------------------------------------------------------------------
+// A move is several parts (work files outside git, the commit of the repository, a commit in the brain, the clean-up). A
+// run that stopped between them had no way on: the repository read as moved ("nothing to move") while a part was not
+// done, or a staged half waited for the next commit of someone else (audit 2026-11-22). A note in .git says that a run
+// is in the middle; the next --apply settles it first: before the commit the half is undone, after it the rest is done.
+
+/** The note of a move in the middle. The move 2.0 -> 2.1 keeps its own (in the brain of the domain). */
+export const moveNote = (dir, name = 'workflow-migrate-1.note') => path.join(dir, '.git', name);
+const STOPPED_STASH = 'workflow: left by a data move that stopped';
+
+/** Commits on top of `head` that are not commits of the move (subject): short shas; one line of the error when git fails. */
+export function otherCommitsSince(dir, head, subject) {
+  const since = git(['log', '--format=%h\t%s', `${head}..HEAD`], { cwd: dir });
+  if (!since.ok) return [`git log failed: ${firstLine(since.stderr)}`];
+  return since.stdout.split('\n').filter((l) => l && !l.split('\t')[1].startsWith(subject)).map((l) => l.split('\t')[0]);
+}
+
+/**
+ * A repository back on the commit it had before a move that stopped. Nothing is thrown away: what the run left in the
+ * working tree goes into a stash. The caller checked that no other commit is on top. Returns { error } or { note }.
+ */
+export function backToHead(dir, head, { at, env }) {
+  const name = path.basename(dir);
+  dropStaleGitLocks(dir, { staleMs: 0 });
+  let aside = 0;
+  const putAside = () => {
+    if (!git([...GIT_PATHS, 'status', '--porcelain', '--untracked-files=normal'], { cwd: dir }).stdout) return null;
+    const st = git(['stash', 'push', '--quiet', '--include-untracked', '-m', `${STOPPED_STASH} (${at})`], { cwd: dir, env });
+    if (st.ok) aside++;
+    return st.ok ? null : { error: `a move of ${at} stopped in its commit; ${dir}: what it left is not put aside (git stash: ${firstLine(st.stderr || st.stdout)}); settle the working tree by hand, then run the move again` };
+  };
+  const first = putAside();
+  if (first) return first;
+  const back = git(['reset', '--quiet', '--hard', head], { cwd: dir, env });
+  if (!back.ok) return { error: `a move of ${at} stopped in its commit; ${dir}: git reset to ${head.slice(0, 7)} failed (${firstLine(back.stderr)})` };
+  // A file the commit of the move made ignored (its rule went with the reset) is in the way now: aside too.
+  const second = putAside();
+  if (second) return second;
+  return { note: aside ? `${name}: what the stopped run left in the working tree is in git stash (${aside} entr${aside === 1 ? 'y' : 'ies'} "${STOPPED_STASH}"); drop ${aside === 1 ? 'it' : 'them'} when not needed: git -C ${dir} stash list` : null };
+}
+
+const scratchLeftLine = (dir) => `${L1.scratch}/ stays (outside git, not confirmed, ${sizeText(sizeOf(path.join(dir, L1.scratch)))}); data ${dataName(TO_VERSION)} has no ${L1.scratch}/: triage it with the operator, entry by entry: remove what is not needed (exports, backups, generated files), move the rest into the work folder of its topic ${L2.topics}/<topic>/${L2.topicTmp}/ (${SCRATCH_TARGET} only for work of no topic); outside git: git does not restore it`;
+
+/** The part of the move after its commits: confirmed pomocne files deleted, junk and empty folders removed, catalog, adapter, check. */
+function afterCommits(dir, { rows, deleted, units = null, kind, check }) {
+  // The last part that changes something ends before the check: the note goes there, the check reads a finished move.
+  const removedOutside = [];
+  for (const m of deleted) {
+    if (units?.has(m.from)) { process.stderr.write(`${m.from}: not deleted (${units.get(m.from).why}: the move deletes no folder of its own; move it to a topic's work folder or remove it by hand)\n`); continue; }
+    if (!fs.existsSync(path.join(dir, m.from))) continue;
+    try { fs.rmSync(path.join(dir, m.from)); removedOutside.push(m.from); } catch (err) { process.stderr.write(`${m.from}: not deleted (${err.message})\n`); }
+  }
+  // Junk outside git (__pycache__, *.pyc, .DS_Store) kept a folder of data 1 alive after its files moved (doma-pc
+  // 2026-11-16: materialy/ with only .pyc): removed with the folders it leaves empty; other files there the check reports.
+  const junk = removeJunk(dir, { version: TO_VERSION, role: kind });
+  const pruned = pruneOldFolders(dir, rows);
+  let catalogs = [];
+  try { catalogs = rescanStale(dir); } catch (err) { catalogs = [`catalog not scanned (${err.message}); migrate.mjs ${dir} --check --fix`]; }
+  const adapter = regenerateAdapter(dir);
+  // scratch/ left (not confirmed): said in one line with the row that moves it, not only as a triage item that stays.
+  const scratchLeft = fs.existsSync(path.join(dir, L1.scratch)) ? scratchLeftLine(dir) : null;
+  fs.rmSync(moveNote(dir), { force: true });
+  return { deleted: removedOutside, junk, pruned, catalogs, adapter, check: checkMigration(dir, check), scratchLeft };
+}
+
+/** Settle a run that stopped: null (none), { error }, { notes } (undone, the move starts again) or { result } (its rest is done). */
+function settleStopped(dir, { project, cwd }) {
+  const file = moveNote(dir);
+  const note = readJson(file, null);
+  if (!note) return null;
+  if (live(note)) return { error: `a move of this repository runs now (pid ${note.pid}, started ${note.at}); wait for it` };
+  const env = { ...brainScriptEnv(), [MIGRATE_MOVE_ENV]: '1' };
+  const subject = `${BRAIN_COMMIT_TAG} ${COMMIT_SUBJECT}`;
+  // A brain write that stopped is finished or put back by the writer (its journal), before its commit is looked for.
+  if (note.kind === 'brain') withBrainLock(dir, () => {});
+  const made = git(['log', '--format=%h', '--fixed-strings', `--grep=${subject}`, `${note.head}..HEAD`], { cwd: dir }).stdout.split('\n').filter(Boolean)[0];
+  if (!made || dataLayoutVersion(dir) !== TO_VERSION) {
+    const other = otherCommitsSince(dir, note.head, subject);
+    if (other.length) return { error: `a move of ${note.at} stopped before its commit and ${dir} has other commits since (${other.join(', ')}): it is not reset. Settle the working tree by hand (git -C ${dir} status), remove ${file}, then run the move again` };
+    const notes = [`a move of ${note.at} stopped before its commit: the repository is as it was, the move starts again`];
+    if (note.kind !== 'brain') {
+      const back = backToHead(dir, note.head, { at: note.at, env });
+      if (back.error) return back;
+      if (back.note) notes.push(back.note);
+    }
+    for (const o of note.outside || []) {
+      const from = path.join(dir, o.from); const to = path.join(dir, o.to);
+      try { if (!fs.existsSync(from) && fs.existsSync(to)) { fs.mkdirSync(path.dirname(from), { recursive: true }); fs.renameSync(to, from); } } catch (err) { notes.push(`${o.to}: not moved back to ${o.from} (${err.code || err.message})`); }
+    }
+    fs.rmSync(file, { force: true });
+    return { notes };
+  }
+  // The commit is made: the rest is read from the record it holds.
+  const rows = readRecord(dir)?.rows || [];
+  let brainSha = null;
+  const into = note.brain ? rows.filter((r) => r.status === STATUS.toBrain && !fs.existsSync(path.join(note.brain, r.to))) : [];
+  if (into.length) {
+    const blob = (rel) => { const r = spawnSync('git', ['show', `${note.head}:${rel}`], { cwd: dir, maxBuffer: 1 << 30 }); if (r.status !== 0) throw new Error(`${rel} is not in ${note.head.slice(0, 7)}`); return r.stdout.includes(0) ? r.stdout : r.stdout.toString('utf8'); };
+    try {
+      brainSha = commitBrain(note.brain, [], new Map(into.map((r) => [r.to, blob(r.from)])), `${COMMIT_SUBJECT}: ${into.length} file(s) of ${path.basename(dir)} into ${L2.topics}/ of the brain (migrate.mjs, D-0048)`);
+    } catch (err) {
+      return { error: `a move of ${note.at} stopped after its commit ${made}; its ${into.length} file(s) for the brain ${note.brain} are not written (${err.message}); they are in ${note.head.slice(0, 7)} of ${dir}. Run the same command again` };
+    }
+  }
+  const rest = afterCommits(dir, { rows, deleted: rows.filter((r) => r.status === STATUS.deleted), kind: note.kind, check: { project, cwd, outsideHere: true } });
+  return { result: { ok: true, resumed: note.at, kind: note.kind, sha: made, brainSha, brainDir: note.brain, plan: null, moves: rows, outside: [], note: null, deployIgnores: [], ...rest } };
+}
+
 /**
  * Apply the plan: one commit (brain: brainWrite with moves, merged .tema.json, rewritten paths, .gitignore, data_layout 2
  * and the record; project repo: the same with git mv and a commit tagged as the brain script). Nothing is deleted
  * (holder.json lives on in .tema.json; untracked work files move outside git only when confirmed).
  */
 export function applyMigration(dir, { confirmedFile = null, proposalsFile = null, project = null, cwd = process.cwd() } = {}) {
+  const settled = settleStopped(dir, { project, cwd });
+  if (settled?.error) return { ok: false, error: settled.error };
+  if (settled?.result) return settled.result;
   const version = dataLayoutVersion(dir);
   if (version === TO_VERSION) return { ok: true, nothing: true, message: `already in data ${dataName(TO_VERSION)}: nothing to move` };
   if (version !== FROM_VERSION) return { ok: false, error: `data ${dataName(version)}: this tool moves only data ${dataName(FROM_VERSION)} to ${dataName(TO_VERSION)}` };
@@ -699,6 +811,8 @@ export function applyMigration(dir, { confirmedFile = null, proposalsFile = null
     const to = path.join(dir, m.to);
     if (fs.existsSync(to)) return { ok: false, error: `${m.to} exists; untracked ${m.from} not moved` };
   }
+  const noteFile = moveNote(dir);
+  writeJson(noteFile, { ...stamp(), head: git(['rev-parse', 'HEAD'], { cwd: dir }).stdout, kind: plan.kind, brain: brainOps.length ? plan.brainDir : null, outside: outside.map((m) => ({ from: m.from, to: m.to })) });
   for (const m of outside) {
     fs.mkdirSync(path.dirname(path.join(dir, m.to)), { recursive: true });
     fs.renameSync(path.join(dir, m.from), path.join(dir, m.to));
@@ -710,6 +824,7 @@ export function applyMigration(dir, { confirmedFile = null, proposalsFile = null
     sha = plan.kind === 'brain' ? commitBrain(dir, tracked, content, message, info) : commitProject(dir, projectMoves, content, message, info);
   } catch (err) {
     for (const m of outside) { try { fs.renameSync(path.join(dir, m.to), path.join(dir, m.from)); } catch { /* left where it is, reported */ } }
+    fs.rmSync(noteFile, { force: true });
     return { ok: false, error: err.message, plan };
   }
   let brainSha = null;
@@ -720,27 +835,12 @@ export function applyMigration(dir, { confirmedFile = null, proposalsFile = null
       // The project commit is local (not pushed): it goes back, so no file is lost from both repositories.
       git(['reset', '--quiet', '--hard', 'HEAD~1'], { cwd: dir, env: { ...brainScriptEnv(), [MIGRATE_MOVE_ENV]: '1' } });
       for (const m of outside) { try { fs.renameSync(path.join(dir, m.to), path.join(dir, m.from)); } catch { /* left where it is, reported */ } }
+      fs.rmSync(noteFile, { force: true });
       return { ok: false, error: `brain ${path.basename(plan.brainDir)}: ${err.message}; the move of ${path.basename(dir)} was undone`, plan };
     }
   }
-  const removedOutside = [];
-  for (const m of deleted) {
-    if (plan.units?.has(m.from)) { process.stderr.write(`${m.from}: not deleted (${plan.units.get(m.from).why}: the move deletes no folder of its own; move it to a topic's work folder or remove it by hand)\n`); continue; }
-    try { fs.rmSync(path.join(dir, m.from)); removedOutside.push(m.from); } catch (err) { process.stderr.write(`${m.from}: not deleted (${err.message})\n`); }
-  }
-  // Junk outside git (__pycache__, *.pyc, .DS_Store) kept a folder of data 1 alive after its files moved (doma-pc
-  // 2026-11-16: materialy/ with only .pyc): removed with the folders it leaves empty; other files there the check reports.
-  const junk = removeJunk(dir, { version: TO_VERSION, role: plan.kind });
-  const pruned = pruneOldFolders(dir, moves);
-  let catalogs = [];
-  try { catalogs = rescanStale(dir); } catch (err) { catalogs = [`catalog not scanned (${err.message}); migrate.mjs ${dir} --check --fix`]; }
-  const adapter = regenerateAdapter(dir);
-  const check = checkMigration(dir, { before, project, cwd, consolidate, outsideHere: true });
-  // scratch/ left (not confirmed): said in one line with the row that moves it, not only as a triage item that stays.
-  const scratchLeft = fs.existsSync(path.join(dir, L1.scratch))
-    ? `${L1.scratch}/ stays (outside git, not confirmed, ${sizeText(sizeOf(path.join(dir, L1.scratch)))}); data ${dataName(TO_VERSION)} has no ${L1.scratch}/: triage it with the operator, entry by entry: remove what is not needed (exports, backups, generated files), move the rest into the work folder of its topic ${L2.topics}/<topic>/${L2.topicTmp}/ (${SCRATCH_TARGET} only for work of no topic); outside git: git does not restore it`
-    : null;
-  return { ok: true, sha, brainSha, plan, moves, outside, deleted: removedOutside, note: ready.note, adapter, check, pruned, junk, catalogs, scratchLeft, deployIgnores: info.deployIgnores || [] };
+  const rest = afterCommits(dir, { rows: moves, deleted, units: plan.units, kind: plan.kind, check: { before, project, cwd, consolidate, outsideHere: true } });
+  return { ok: true, sha, brainSha, plan, moves, outside, note: ready.note, stopped: settled?.notes || [], deployIgnores: info.deployIgnores || [], ...rest };
 }
 
 /** Content of a file for the brain writer: text when it is text, else the bytes. */
@@ -959,6 +1059,8 @@ export function checkMigration(dir, { before = null, project = null, cwd = proce
   const notes = [];
   const outsideAway = [];
   const version = dataLayoutVersion(dir);
+  const stopped = readJson(moveNote(dir), null);
+  if (stopped && !live(stopped)) problems.push(`a move of ${stopped.at} stopped in the middle: run migrate.mjs ${dir} --apply again with the same --confirmed file (it undoes the half or does the rest)`);
   if (version !== TO_VERSION) problems.push(`data layout is ${version}, not ${TO_VERSION}`);
   const rows = readRecord(dir)?.rows;
   if (!rows) return { ok: false, problems: [...problems, `${RECORD_REL} missing: no move record`], notes };
@@ -1173,6 +1275,36 @@ export function crossRepoRefs(dir, rows) {
  * --supersedes, a handover only by its holder; report-ed8bbae2, 2026-11-15).
  * Returns [{ repo, files: [{ file, count }], skipped: [file], sha, error }] (sha null when nothing was rewritten).
  */
+// --check --fix writes files and commits them alone. A run that stopped between the two, or whose commit failed, left
+// the files changed or staged, and no later run committed or restored them: the next fix found nothing to do (audit
+// 2026-11-22). The note names the files; the next fix of the repository puts them back first and does its work again.
+const fixNote = (dir) => path.join(dir, '.git', 'workflow-fix.note');
+
+/** The files of a fix back as HEAD has them (a file the fix created goes). */
+function undoFix(dir, paths) {
+  const env = brainScriptEnv();
+  for (const rel of paths) {
+    git(['reset', '--quiet', '--', rel], { cwd: dir, env });
+    if (git(['cat-file', '-e', `HEAD:${rel}`], { cwd: dir }).ok) git(['checkout', '--', rel], { cwd: dir, env });
+    else fs.rmSync(path.join(dir, rel), { force: true });
+  }
+  fs.rmSync(fixNote(dir), { force: true });
+}
+
+/** What a fix that stopped left in this repository: put back. A fix that runs now (a live maker) is left alone. */
+function settleFix(dir) {
+  const note = readJson(fixNote(dir), null);
+  if (!note || live(note)) return;
+  dropStaleGitLocks(dir, { staleMs: 0 });
+  undoFix(dir, note.paths || []);
+}
+
+/** Run the write and the commit of a fix under its note; a failure puts the files back and goes on to the caller. */
+function underFixNote(dir, paths, fn) {
+  writeJson(fixNote(dir), { ...stamp(), paths });
+  try { const res = fn(); fs.rmSync(fixNote(dir), { force: true }); return res; } catch (err) { undoFix(dir, paths); throw err; }
+}
+
 export function fixCrossRefs(dir, rows = readRecord(dir)?.rows || []) {
   const kind = repoKind(dir);
   const name = path.basename(path.resolve(dir));
@@ -1189,6 +1321,8 @@ export function fixCrossRefs(dir, rows = readRecord(dir)?.rows || []) {
     if (!pairs.length) continue;
     const { rewrite } = makeRewriter(pairs, { tracked: stayed, kind });
     const res = { repo: path.basename(other), files: [], skipped: [], sha: null, error: null };
+    settleFix(other);
+    const texts = new Map();
     let files;
     try { files = trackedFiles(other).map((f) => f.rel); } catch { continue; }
     const own = new Set(files);
@@ -1214,22 +1348,26 @@ export function fixCrossRefs(dir, rows = readRecord(dir)?.rows || []) {
       next = bare.text;
       if (!count || next === text) continue;
       if (dirty.has(rel)) { res.skipped.push(rel); continue; }
-      fs.writeFileSync(path.join(other, rel), next);
+      texts.set(rel, next);
       res.files.push({ file: rel, count });
     }
     if (res.files.length) {
       const paths = res.files.map((f) => f.file);
       if (!git(['diff', '--cached', '--quiet'], { cwd: other }).ok) {
-        git(['checkout', '--', ...paths], { cwd: other });
         res.error = 'staged changes; commit or unstage them first (the rewritten files are committed alone)';
         res.files = [];
       } else {
-        const c = spawnSync('git', ['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} rewrite references to moved paths of ${name} (migrate --check --fix)`, '--', ...paths], { cwd: other, encoding: 'utf8', env: { ...process.env, ...brainScriptEnv() } });
-        if (c.status !== 0) {
-          git(['checkout', '--', ...paths], { cwd: other });
-          res.error = `commit failed: ${firstLine(c.stderr || c.stdout)}`;
+        try {
+          res.sha = underFixNote(other, paths, () => {
+            for (const [rel, next] of texts) fs.writeFileSync(path.join(other, rel), next);
+            const c = spawnSync('git', ['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} rewrite references to moved paths of ${name} (migrate --check --fix)`, '--', ...paths], { cwd: other, encoding: 'utf8', env: { ...process.env, ...brainScriptEnv() } });
+            if (c.status !== 0) throw new Error(`commit failed: ${firstLine(c.stderr || c.stdout)}`);
+            return git(['rev-parse', '--short', 'HEAD'], { cwd: other }).stdout;
+          });
+        } catch (err) {
+          res.error = err.message;
           res.files = [];
-        } else res.sha = git(['rev-parse', '--short', 'HEAD'], { cwd: other }).stdout;
+        }
       }
     }
     if (res.files.length || res.skipped.length || res.error) out.push(res);
@@ -1288,13 +1426,17 @@ export function removedByScript(dir, rel) {
 export function fixDeployIgnores(dir) {
   const v = dataLayoutVersion(dir);
   if (v !== TO_VERSION && v !== 3) throw new Error(`${dir}: data ${dataName(v)}, deploy ignores are filled only in data ${dataName(TO_VERSION)} and 2.1`);
-  if (!deployIgnoreGaps(dir).length) return { added: [], sha: null };
+  settleFix(dir);
+  const gaps = deployIgnoreGaps(dir);
+  if (!gaps.length) return { added: [], sha: null };
   if (!git(['diff', '--cached', '--quiet'], { cwd: dir }).ok) throw new Error(`${dir}: staged changes; commit or unstage them first (the deploy ignore files are committed alone)`);
   const env = brainScriptEnv();
-  const added = refreshDeployIgnores(dir, env);
-  const c = spawnSync('git', ['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} add internal data to deploy ignores (migrate --check --fix)`, '--', ...added.map((x) => x.file)], { cwd: dir, encoding: 'utf8', env: { ...process.env, ...env } });
-  if (c.status !== 0) throw new Error(`commit of the deploy ignore files failed: ${firstLine(c.stderr || c.stdout)}`);
-  return { added, sha: git(['rev-parse', '--short', 'HEAD'], { cwd: dir }).stdout };
+  return underFixNote(dir, gaps.map((g) => g.file), () => {
+    const added = refreshDeployIgnores(dir, env);
+    const c = spawnSync('git', ['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} add internal data to deploy ignores (migrate --check --fix)`, '--', ...added.map((x) => x.file)], { cwd: dir, encoding: 'utf8', env: { ...process.env, ...env } });
+    if (c.status !== 0) throw new Error(`commit of the deploy ignore files failed: ${firstLine(c.stderr || c.stdout)}; the files are as they were`);
+    return { added, sha: git(['rev-parse', '--short', 'HEAD'], { cwd: dir }).stdout };
+  });
 }
 
 export function formatCheck(check) {

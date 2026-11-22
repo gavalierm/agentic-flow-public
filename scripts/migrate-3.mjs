@@ -23,7 +23,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { git, readJson, PLUGIN_ROOT } from './util.mjs';
+import { git, readJson, writeJson, PLUGIN_ROOT } from './util.mjs';
+import { stamp, live } from './lock.mjs';
 import { BRAIN_COMMIT_TAG, MIGRATE_MOVE_ENV, DOMAIN_MARKER, WORKFLOW_CONFIG, WORKTREES_DIR, brainScriptEnv } from './config.mjs';
 import { LAYOUTS, LAYOUT_KEY, ROLE_BRAIN, ROLE_REPO, layoutFor, dataLayoutVersion, layoutRole, dataName } from './layout.mjs';
 import { checkBrainFile, checkHandover, TASKS_SECTION, QUESTIONS_SECTION, handoverNextStep, handoverQuestions, handoverTasks } from './brain-checks.mjs';
@@ -32,7 +33,7 @@ import { MODES } from './topic-files.mjs';
 import { turnFields } from './topic-state.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { operatorRepo, readPeople } from './people.mjs';
-import { trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand, leftoverProblems, fixDeployIgnores, removedByScript, removedNote, removedNotes } from './migrate.mjs';
+import { moveNote as noteIn, otherCommitsSince, backToHead, trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand, leftoverProblems, fixDeployIgnores, removedByScript, removedNote, removedNotes } from './migrate.mjs';
 import { gitAccessProblem } from './brain.mjs';
 import { staleCatalog, rescanStale } from './catalog/stale.mjs';
 const LOCAL_CATALOG = 'local/catalog';
@@ -1026,13 +1027,113 @@ function pruneEmpty(dir, rel) {
   return out;
 }
 
+// The apply has three parts: the commits (one in each repository), the work files outside git, the clean-up. A run that
+// stopped between them had no way on: the brain was in data 2.1 ("nothing to move") while the project repos never got
+// their commit or the work files never moved, and a staged half of a commit waited for the next commit of someone else
+// (audit 2026-11-22). The note in .git of the brain says how far the run got. The next --apply settles it first: a stop
+// in the commits is undone (the move starts again), a stop after them goes on with the files.
+const moveNote = (brainDir) => noteIn(brainDir, 'workflow-migrate.note');
+
+/** The note of a move of this domain that did not finish, or null. */
+export function stoppedMove(dir) {
+  return readJson(moveNote(domainOf(dir).brain), null);
+}
+
+/**
+ * Undo a run that stopped in its commits: each repository goes back to the commit it had. Nothing is thrown away: what
+ * the run left in the working tree goes into a stash, and a repository with other commits on top is not touched.
+ * Returns { error } or { notes }.
+ */
+function undoStoppedCommits(note, env) {
+  const subject = `${BRAIN_COMMIT_TAG} ${COMMIT_SUBJECT}`;
+  for (const r of note.repos) {
+    const other = otherCommitsSince(r.dir, r.head, subject);
+    if (other.length) return { error: `a move of ${note.at} stopped in its commits and ${r.dir} has other commits since (${other.join(', ')}): it is not reset. Bring each repository of the domain back to the commit before the move by hand (${note.repos.map((x) => `${x.name} ${x.head.slice(0, 7)}`).join(', ')}; keep the other commits), remove ${note.file}, then run the move again` };
+  }
+  const notes = [`a move of ${note.at} stopped in its commits: every repository is back on its commit, the move starts again`];
+  for (const r of note.repos) {
+    const back = backToHead(r.dir, r.head, { at: note.at, env });
+    if (back.error) return back;
+    if (back.note) notes.push(back.note);
+  }
+  fs.rmSync(note.file, { force: true });
+  return { notes };
+}
+
+/**
+ * The part after the commits: the work files outside git move, the junk and the empty folders of data 2.0 go, the
+ * catalogs are scanned again. `spec` is plain data (it is the note of a run, read again when the run stopped here).
+ * A file that does not move (Windows: a program holds it) is listed and the rest goes on; a second run does only what is
+ * left. Returns { moved, notMoved, notes: [{ dir, text }], junk, pruned, catalogs }.
+ */
+function finishFiles(spec) {
+  const moved = []; const notMoved = []; const notes = [];
+  const hold = (err) => `${err.code || err.message}${['EPERM', 'EBUSY', 'EACCES'].includes(err.code) ? ': a program holds a file in it' : ''}`;
+  for (const m of spec.tmp) {
+    if (!fs.existsSync(m.fromAbs)) continue;
+    const to = path.join(m.dir, m.to);
+    try {
+      if (fs.existsSync(to)) {
+        // The work folder exists (a thread wrote into it already): the entries move into it; a name both have stays and is
+        // listed, nothing is overwritten.
+        let n = 0;
+        for (const e of fs.readdirSync(m.fromAbs)) {
+          if (fs.existsSync(path.join(to, e))) { notes.push({ dir: m.dir, text: `${posix(path.join(m.fromAbs, e))}: not moved, ${m.to}/${e} exists` }); continue; }
+          fs.renameSync(path.join(m.fromAbs, e), path.join(to, e));
+          n++;
+        }
+        try { if (!fs.readdirSync(m.fromAbs).length) fs.rmdirSync(m.fromAbs); } catch { /* stays */ }
+        moved.push(`${posix(m.fromAbs)} -> ${m.name}:${m.to}/ (${n} entr${n === 1 ? 'y' : 'ies'} merged)`);
+      } else {
+        fs.mkdirSync(path.dirname(to), { recursive: true });
+        fs.renameSync(m.fromAbs, to);
+        moved.push(`${posix(m.fromAbs)} -> ${m.name}:${m.to}`);
+      }
+      if (m.prune) pruneEmpty(m.prune, posix(path.relative(m.prune, m.fromAbs)).split('/')[0]);
+    } catch (err) {
+      notMoved.push(`${posix(m.fromAbs)} -> ${m.name}:${m.to} (${hold(err)})`);
+    }
+  }
+  // Junk outside git in the old folders (generated, never work) goes with the folders it leaves empty.
+  const junk = [];
+  for (const t of [spec.brain, ...spec.repos, ...spec.done]) {
+    // The old folders of data 2.1 include those of data 1 (scratch/, materialy/, docs/); memory/ … of data 1 are folders
+    // of the brain again, never pruned here.
+    junk.push(...removeJunk(t.dir, { version: TO, role: t === spec.brain ? ROLE_BRAIN : ROLE_REPO }).removed.map((r) => `${t.name}:${r}`));
+  }
+  const pruned = [L2.topics, OUTPUTS, L2.materialy, KNOWLEDGE].flatMap((rel) => pruneEmpty(spec.brain.dir, rel));
+  // The local catalog of a repo indexes its sources on the old path: scanned again where the move changed it.
+  const catalogs = [];
+  for (const t of spec.repos) { try { catalogs.push(...rescanStale(t.dir)); } catch (err) { catalogs.push(`${t.name}: catalog not scanned (${err.message}); migrate.mjs ${spec.brain.dir} --to 2.1 --check --fix`); } }
+  // The empty vystupy/rozhodnutia/ a project repo's decisions left (they moved to .brain/decisions/).
+  for (const t of spec.repos) pruned.push(...pruneEmpty(t.dir, L2.decisions).map((p) => `${t.name}:${p}`));
+  return { moved, notMoved, notes, junk, pruned, catalogs };
+}
+
 /**
  * The apply: every repository ready (clean, up to date with origin), no blocker, no content problem; then one commit in
  * each (brain, project repos, targets outside the domain), all or none (a failure resets the commits made before it;
  * nothing is pushed). Work files outside git move after the commits. Returns { ok, commits: [{ dir, sha }], plan, check }.
+ * A run that stopped is settled first (the note above): { ok, resumed, … } without a plan when only its files part ran.
  */
 export function applyDomain(dir, { confirmedFile = null, approveFile = null, env = process.env } = {}) {
   const dom = domainOf(dir);
+  const env2 = { ...brainScriptEnv(), [MIGRATE_MOVE_ENV]: '1' };
+  const noteFile = moveNote(dom.brain);
+  const stopped = readJson(noteFile, null);
+  const carried = [];
+  if (stopped) {
+    if (live(stopped)) return { ok: false, error: `a move of this domain runs now (pid ${stopped.pid}, started ${stopped.at}); wait for it` };
+    if (stopped.phase === 'files') {
+      const files = finishFiles(stopped.spec);
+      if (!files.notMoved.length) fs.rmSync(noteFile, { force: true });
+      const adapter = regenerateAdapter(stopped.spec.brain.dir);
+      return { ok: true, resumed: stopped.at, commits: stopped.spec.commits, ...files, notes: files.notes.map((n) => n.text), adapters: adapter ? [{ name: stopped.spec.brain.name, res: adapter }] : [], deploy: [], check: checkDomain(stopped.spec.brain.dir) };
+    }
+    const undone = undoStoppedCommits({ ...stopped, file: noteFile }, env2);
+    if (undone.error) return { ok: false, error: undone.error };
+    carried.push(...undone.notes);
+  }
   if (dataLayoutVersion(dom.brain) === TO) return { ok: true, nothing: true, message: `brain ${dom.brain} is in data 2.1 already: nothing to move` };
   const confirmed = readTriage(confirmedFile);
   const approve = readApprove(approveFile);
@@ -1047,11 +1148,13 @@ export function applyDomain(dir, { confirmedFile = null, approveFile = null, env
   if (plan.blockers.length) return { ok: false, error: `${plan.blockers.length} item(s) to settle first:\n${plan.blockers.map((b) => `  ${b}`).join('\n')}`, plan };
   const problems = contentProblems(plan);
   if (problems.length) return { ok: false, error: `content checks of data 2.1 refuse files the move writes (${problems.length}):\n${problems.map((p) => `  ${p}`).join('\n')}`, plan };
+  plan.notes.push(...carried);
   const commits = [];
   const heads = [];
-  const env2 = { ...brainScriptEnv(), [MIGRATE_MOVE_ENV]: '1' };
+  const all = [plan.brain, ...plan.repos, ...plan.targets];
+  writeJson(noteFile, { ...stamp(), phase: 'commits', repos: all.map((t) => ({ dir: t.dir, name: t.name, head: git(['rev-parse', 'HEAD'], { cwd: t.dir }).stdout })) });
   try {
-    for (const t of [plan.brain, ...plan.repos, ...plan.targets]) {
+    for (const t of all) {
       heads.push({ dir: t.dir, head: git(['rev-parse', 'HEAD'], { cwd: t.dir }).stdout });
       const what = t === plan.brain ? `${t.moves.length} file(s) moved, ${t.removes.length} removed, ${t.outgoing.length} into project repos`
         : t.external ? `${t.incoming.length} file(s) from brain ${plan.brain.name}` : `${t.incoming.length} file(s) from brain ${plan.brain.name}, ${t.removes.length} removed`;
@@ -1061,49 +1164,24 @@ export function applyDomain(dir, { confirmedFile = null, approveFile = null, env
     for (const h of heads) {
       git(['reset', '--quiet', '--hard', h.head], { cwd: h.dir, env: env2 });
     }
+    fs.rmSync(noteFile, { force: true });
     return { ok: false, error: `${err.message}; every commit of the move was reset, nothing changed`, plan };
   }
-  const moved = [];
-  for (const t of [plan.brain, ...plan.repos, ...plan.targets]) {
-    for (const m of t.tmp) {
-      const to = path.join(t.dir, m.to);
-      if (fs.existsSync(to)) {
-        // The work folder exists (a thread wrote into it already): the entries move into it; a name both have stays and is
-        // listed, nothing is overwritten.
-        let n = 0;
-        for (const e of fs.readdirSync(m.fromAbs)) {
-          if (fs.existsSync(path.join(to, e))) { t.notes.push(`${posix(path.join(m.fromAbs, e))}: not moved, ${m.to}/${e} exists`); continue; }
-          fs.renameSync(path.join(m.fromAbs, e), path.join(to, e));
-          n++;
-        }
-        try { if (!fs.readdirSync(m.fromAbs).length) fs.rmdirSync(m.fromAbs); } catch { /* stays */ }
-        moved.push(`${posix(m.fromAbs)} -> ${t.name}:${m.to}/ (${n} entr${n === 1 ? 'y' : 'ies'} merged)`);
-      } else {
-        fs.mkdirSync(path.dirname(to), { recursive: true });
-        fs.renameSync(m.fromAbs, to);
-        moved.push(`${posix(m.fromAbs)} -> ${t.name}:${m.to}`);
-      }
-      if (m.prune) pruneEmpty(m.prune, posix(path.relative(m.prune, m.fromAbs)).split('/')[0]);
-    }
-  }
-  // Junk outside git in the old folders (generated, never work) goes with the folders it leaves empty.
-  const junk = [];
-  for (const t of [plan.brain, ...plan.repos, ...(plan.done || [])]) {
-    const role = t === plan.brain ? ROLE_BRAIN : ROLE_REPO;
-    // The old folders of data 2.1 include those of data 1 (scratch/, materialy/, docs/); memory/ … of data 1 are folders
-    // of the brain again, never pruned here.
-    junk.push(...removeJunk(t.dir, { version: TO, role }).removed.map((r) => `${t.name}:${r}`));
-  }
-  const pruned = [L2.topics, OUTPUTS, L2.materialy, KNOWLEDGE].flatMap((rel) => pruneEmpty(plan.brain.dir, rel));
-  // The local catalog of a repo indexes its sources on the old path: scanned again where the move changed it.
-  const catalogs = [];
-  for (const t of plan.repos) { try { catalogs.push(...rescanStale(t.dir)); } catch (err) { catalogs.push(`${t.name}: catalog not scanned (${err.message}); migrate.mjs ${dom.brain} --to 2.1 --check --fix`); } }
-  // The empty vystupy/rozhodnutia/ a project repo's decisions left (they moved to .brain/decisions/).
-  for (const t of plan.repos) pruned.push(...pruneEmpty(t.dir, L2.decisions).map((p) => `${t.name}:${p}`));
+  const slim = (t) => ({ dir: t.dir, name: t.name });
+  const spec = {
+    brain: slim(plan.brain), repos: plan.repos.map(slim), done: (plan.done || []).map(slim), commits,
+    tmp: all.flatMap((t) => t.tmp.map((m) => ({ dir: t.dir, name: t.name, to: m.to, fromAbs: m.fromAbs, prune: m.prune || null }))),
+  };
+  writeJson(noteFile, { ...stamp(), phase: 'files', spec });
+  const files = finishFiles(spec);
+  for (const n of files.notes) all.find((t) => t.dir === n.dir)?.notes.push(n.text);
+  // A file that did not move keeps the note: the same command does the rest (and only the rest) again.
+  if (!files.notMoved.length) fs.rmSync(noteFile, { force: true });
+  const { moved, notMoved, junk, pruned, catalogs } = files;
   const adapters = [...plan.repos.map((t) => ({ name: t.name, res: t.adapter })), { name: plan.brain.name, res: regenerateAdapter(plan.brain.dir) }].filter((a) => a.res);
   const check = checkDomain(plan.brain.dir);
   const deploy = [...plan.repos, ...plan.targets].filter((t) => t.deployAdded?.length).map((t) => `${t.name}: ${formatDeployIgnores(t.deployAdded)}`);
-  return { ok: true, commits, plan, moved, pruned, junk, catalogs, adapters, deploy, check };
+  return { ok: true, commits, plan, moved, notMoved, pruned, junk, catalogs, adapters, deploy, check };
 }
 
 // ---- check ------------------------------------------------------------------------------------------------------------
@@ -1227,6 +1305,8 @@ export function checkRepo(dir, { brainDir = null } = {}) {
 export function checkDomain(dir) {
   const dom = domainOf(dir);
   const results = [checkRepo(dom.brain), ...dom.repos.map((r) => checkRepo(r, { brainDir: dom.brain }))];
+  const stopped = readJson(moveNote(dom.brain), null);
+  if (stopped && !live(stopped)) results[0].problems.push(`a move of ${stopped.at} stopped ${stopped.phase === 'files' ? 'after its commits, in the work files outside git' : 'in its commits'}: run migrate.mjs ${dom.brain} --to 2.1 --apply again (it ${stopped.phase === 'files' ? 'does the rest' : 'resets the half and starts the move again; give the same --confirmed and --approve files'})`);
   return { ok: results.every((r) => !r.problems.length), results };
 }
 

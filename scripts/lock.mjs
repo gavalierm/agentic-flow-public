@@ -143,6 +143,29 @@ export function withLock(dir, { waitMs = 1000, staleMs = 10 * 60 * 1000, sleepMs
   }
 }
 
+/**
+ * One try for the lock `dir`, for a caller whose work is asynchronous (withLock runs a synchronous function): a release
+ * function, or null while a live process holds it. The lock of a holder that is gone is taken over as in withLock.
+ */
+export function tryLock(dir, { staleMs = 10 * 60 * 1000 } = {}) {
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  for (let i = 0; i < 2; i++) {
+    try {
+      fs.mkdirSync(dir);
+      try { fs.writeFileSync(path.join(dir, 'owner'), `${JSON.stringify(stamp())}\n`); } catch { /* a lock without the note goes stale by its age */ }
+      return () => { remove(dir); };
+    } catch (err) {
+      if (!taken(err)) throw err;
+      let age;
+      try { age = Date.now() - fs.statSync(dir).mtimeMs; } catch { continue; } // released meanwhile
+      const note = ownerOf(dir);
+      const dead = note && !live(note) ? note : null;
+      if (!(dead || age > staleMs) || !takeOver(dir, dead, staleMs)) return null;
+    }
+  }
+  return null;
+}
+
 // Windows reports a folder that another process is just removing (delete pending) as EPERM or EACCES, not EEXIST: for
 // the next writer it is a held lock, not an error (a hook must not fail on it).
 const taken = (err) => err.code === 'EEXIST' || (process.platform === 'win32' && (err.code === 'EPERM' || err.code === 'EACCES'));

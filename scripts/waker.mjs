@@ -197,13 +197,14 @@ export function recordWaker(brainDir, thread, waker) {
 /** Add a thread timer: the wake module rings the thread at `at` with the step `then` (via the closed turn, P-061). Other
  * timers stay, none is lost (2026-11-13); it replaces only its own earlier entry (the same step). No timer is bound to a
  * message: the mail rings for an answer (1e, P-072). */
-export function setTimer(brainDir, thread, { delayMs, then, reason = null, until = null, deadline = null, everyMs = null, minMs = TIMER_MIN_MS }, now = Date.now()) {
+export function setTimer(brainDir, thread, { delayMs, then, reason = null, until = null, deadline = null, everyMs = null, minMs = TIMER_MIN_MS, patch = null }, now = Date.now()) {
   const ms = Math.min(Math.max(delayMs, minMs), TIMER_MAX_MS);
   // A condition (--until): the prompt hook runs it at `at` and rings the model only when it holds or `deadline` passed.
   const cond = until ? { until: String(until).slice(0, 300), deadline, every_ms: everyMs || ms } : {};
   const setAt = new Date(now).toISOString();
   const timer = { at: new Date(now + ms).toISOString(), then: String(then || '').slice(0, 300), set_at: setAt, ...(reason ? { reason } : {}), ...cond };
-  updateThreadState(brainDir, thread, (state) => ({ ...state, ...timersPatch([...threadTimers(state).filter((t) => t.then !== timer.then), timer]) }));
+  // `patch`: other fields of the state that must change in the same write as the timer.
+  updateThreadState(brainDir, thread, (state) => ({ ...state, ...timersPatch([...threadTimers(state).filter((t) => t.then !== timer.then), timer]), ...(patch || {}) }));
   return timer;
 }
 
@@ -294,7 +295,8 @@ export function preRing(brainDir, thread, { now = Date.now(), cwd = process.cwd(
   if (now >= dl) return { action: 'ring', timer, reason: 'deadline' };
   const met = run(timer.until, cwd);
   if (met !== false) return { action: 'ring', timer, reason: met ? 'met' : 'cannot-run' };
-  const moved = setTimer(brainDir, thread, { delayMs: Math.min(timer.every_ms || AUTO_TIMER_MS, dl - now), then: timer.then, reason: timer.reason || null, until: timer.until, deadline: timer.deadline, everyMs: timer.every_ms }, now);
+  // resume_behind: the turn record (resume_at) does not know the new time yet; the wake job clears the mark when it does.
+  const moved = setTimer(brainDir, thread, { delayMs: Math.min(timer.every_ms || AUTO_TIMER_MS, dl - now), then: timer.then, reason: timer.reason || null, until: timer.until, deadline: timer.deadline, everyMs: timer.every_ms, patch: { resume_behind: new Date(now).toISOString() } }, now);
   const first = threadTimers(readThreadState(brainDir, thread))[0] || moved;
   return { action: 'rearm', timer: moved, resume: { next: state.last_close?.next || first.then, at: first.at } };
 }

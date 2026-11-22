@@ -9,7 +9,7 @@ import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext, readThreadState, patchThreadState } from '../scripts/config.mjs';
 import { recordTurn } from '../scripts/comms.mjs';
 import { heldTopics } from '../scripts/topic.mjs';
-import { preRing, readTimerIndex, updateTimerIndex, threadTimers, resumeAtFor, sameTimer } from '../scripts/waker.mjs';
+import { preRing, readTimerIndex, updateTimerIndex, threadTimers, resumeAtFor, sameTimer, turnRunning } from '../scripts/waker.mjs';
 
 // Code without a thread id of its own: each turn record names its thread (ctx.thread), never an inherited one.
 delete process.env.WORKFLOW_THREAD_ID;
@@ -39,13 +39,23 @@ try {
       if (r.action !== 'rearm') break;
       done.push(r);
     }
-    if (!done.length) continue;
-    const left = threadTimers(readThreadState(entry.brain, thread));
-    r = { ...done[done.length - 1], resume: { next: left.length ? readThreadState(entry.brain, thread).last_close?.next || left[0].then : null, at: left.length ? resumeAtFor(left[0], now) : null } };
+    // The move of a timer, the new resume_at in the state and the turn record in the mail are three steps. A run that
+    // stopped after the first left resume_at on the old time: the bell rang, the prompt hook found no due timer and the
+    // model got a turn for nothing (audit 2026-11-22). The move marks the state in its own write (resume_behind); a
+    // later run that finds the mark does the other two steps.
+    const cur = readThreadState(entry.brain, thread);
+    const behind = !done.length && !!cur.resume_behind;
+    if (!done.length && !behind) continue;
+    // An open turn sends the time itself when it ends (its Stop).
+    if (behind && turnRunning(cur)) { patchThreadState(entry.brain, thread, { resume_behind: null }); continue; }
+    const left = threadTimers(cur);
+    r = { ...(done[done.length - 1] || { timer: left[0] || null }), resume: { next: left.length ? readThreadState(entry.brain, thread).last_close?.next || left[0].then : null, at: left.length ? resumeAtFor(left[0], now) : null } };
     const st = patchThreadState(entry.brain, thread, { last_close: { next: r.resume.next, resume_at: r.resume.at } });
     // The same close the Stop hook sent, with the new time: discussion as that turn ended (Stop: state otázka).
     const res = await recordTurn(ctx, 'closed', heldTopics(entry.brain, thread), { openedAt: st.turn_opened_at || null, next: r.resume.next, resumeAt: r.resume.at, discussion: st.last_end_state === 'otázka' });
     const mail = res.ok ? (res.stale ? 'turn record newer, left' : 'turn record moved') : `turn record not moved (${res.error || 'mail off'}): the prompt hook checks it`;
+    patchThreadState(entry.brain, thread, { resume_behind: null });
+    if (behind) { process.stdout.write(`${thread}: a timer moved by a run that stopped: resume time set to ${r.resume.at || 'none'}; ${mail}\n`); continue; }
     for (const d of done.slice(0, -1)) process.stdout.write(`${thread}: condition does not hold (${d.timer.until}), timer moved to ${d.timer.at}\n`);
     process.stdout.write(`${thread}: condition does not hold (${r.timer.until}), timer moved to ${r.timer.at}; ${mail}\n`);
   }

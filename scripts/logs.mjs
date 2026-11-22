@@ -239,8 +239,44 @@ export function bufferAppend(brainDir, sessionId, entry) {
   fs.appendFileSync(file, JSON.stringify({ t: nowIso(), ...entry }) + '\n');
 }
 
+const bufferEntries = (text) => text.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
 export function readBuffer(brainDir, sessionId) {
-  return readText(bufferFile(brainDir, sessionId), '').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  return bufferEntries(readText(bufferFile(brainDir, sessionId), ''));
+}
+
+// A flush reads the buffer, writes the brain and removes the buffer. A flush that stopped after its commit (in the push,
+// at the timeout of the hook) left the buffer, and the next flush wrote the same lines again; an entry another hook
+// added during the flush went with the removed file (audit 2026-11-22). The buffer leaves its name before it is read (a
+// part, one rename), the commit names the parts it holds, and a later flush drops a part a commit names and takes the
+// others. Git is asked only about a part an earlier flush left: a flush without one costs no call more.
+const PART = /\.(\d+)\.part$/;
+// A part younger than this can belong to a flush that still runs (a hook has 60 s): two flushes of one session at the
+// same time would write its lines twice. It waits for a later flush.
+const PART_BUSY_MS = 120000;
+const partId = (text) => `p:${crypto.createHash('sha1').update(text).digest('hex').slice(0, 10)}`;
+const partCommitted = (brainDir, id) => !!git(['log', '-1', '--format=%h', '--fixed-strings', `--grep=${id}`], { cwd: brainDir }).stdout;
+
+/** The parts of a session's buffer that no commit holds yet, oldest first: [{ file, id, text }]. */
+function takeParts(brainDir, sessionId) {
+  const buffer = bufferFile(brainDir, sessionId);
+  const fresh = `${buffer}.${Date.now()}.part`;
+  let renamed = true;
+  try { fs.renameSync(buffer, fresh); } catch (err) { renamed = false; if (err.code !== 'ENOENT' && !fs.existsSync(buffer)) throw err; }
+  const dir = path.dirname(buffer);
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((n) => n.startsWith(`${path.basename(buffer)}.`) && PART.test(n)).sort(); } catch { /* no buffer folder */ }
+  const parts = [];
+  for (const n of names) {
+    const file = path.join(dir, n);
+    if (file !== fresh && Date.now() - Number(PART.exec(n)[1]) < PART_BUSY_MS) continue;
+    const text = readText(file, '');
+    const id = partId(text);
+    if (!text.trim() || (file !== fresh && partCommitted(brainDir, id))) { fs.rmSync(file, { force: true }); continue; }
+    parts.push({ file, id, text });
+  }
+  // The rename was refused (Windows: another hook holds the file open): the buffer is read in place, as before.
+  if (!renamed && fs.existsSync(buffer)) { const text = readText(buffer, ''); if (text.trim()) parts.push({ file: buffer, id: partId(text), text }); }
+  return parts;
 }
 
 const INTERPRETERS = ['node', 'python', 'python3', 'bash', 'sh'];
@@ -419,10 +455,12 @@ export function proposalKey(signal) {
  */
 export function flushBuffer(ctx, sessionId, { sync = true, ops: extra = [], message = null } = {}) {
   const { brainDir, policy } = ctx;
-  const entries = readBuffer(brainDir, sessionId);
+  const parts = takeParts(brainDir, sessionId);
+  const entries = parts.flatMap((p) => bufferEntries(p.text));
   const signals = [];
   if (!entries.length && !extra.length) return { written: false, signals };
   if (!entries.length) {
+    for (const p of parts) fs.rmSync(p.file, { force: true });
     const res = brainWrite(ctx, { ops: extra, internal: true, sync, message: message || 'turn state' });
     return { written: res.committed, signals, unpushed: res.unpushed, sync: res.sync, sequences: 0, failures: 0 };
   }
@@ -480,8 +518,9 @@ export function flushBuffer(ctx, sessionId, { sync = true, ops: extra = [], mess
 
   const ops = [appendOp('sequences.log', seqEntries, { brainDir }), appendOp('failures.log', newFails, { brainDir }), ...(noise.length ? [dropOp('failures.log', noise, brainDir)] : [])].filter((o) => o.append);
   ops.push(...rotationOps(brainDir, policy.logs.rotation_days), ...extra);
-  const res = ops.length ? brainWrite(ctx, { ops, internal: true, sync, message: message ? `${message}; logs flush ${sessionId}` : `logs flush ${sessionId}` }) : { committed: false, unpushed: 0 };
-  fs.rmSync(bufferFile(brainDir, sessionId), { force: true });
+  const named = `logs flush ${sessionId} (${parts.map((p) => p.id).join(' ')})`;
+  const res = ops.length ? brainWrite(ctx, { ops, internal: true, sync, message: message ? `${message}; ${named}` : named }) : { committed: false, unpushed: 0 };
+  for (const p of parts) fs.rmSync(p.file, { force: true });
   return { written: res.committed, signals, unpushed: res.unpushed, sync: res.sync, sequences: newSeqs.length, failures: entries.filter((e) => e.kind === 'fail').length };
 }
 
@@ -552,6 +591,7 @@ export function restoreFailuresOp(brainDir, commit) {
   return { op: { path: machineLogPath(today(), machineName(), brainDir), append: lines.map((l) => `undrop failures ${l}\n`).join('') }, lines };
 }
 
+/** The buffer files of the sessions with entries to flush (a part a stopped flush left counts for its session). */
 export function pendingBuffers(brainDir) {
-  return listFiles(dataPath(brainDir, 'local', 'log-buffer'), (f) => f.endsWith('.jsonl'));
+  return [...new Set(listFiles(dataPath(brainDir, 'local', 'log-buffer'), (f) => f.endsWith('.jsonl') || PART.test(f)).map((f) => f.replace(PART, '')))];
 }

@@ -107,19 +107,54 @@ function oldAllowOutside(brain, src, home) {
   return list.filter((p) => typeof p === 'string' && p !== 'sudo' && isInside(abs(p), src));
 }
 
+// The move is a rename and then many steps (the link at the old path, the history links, trust, the brains, the
+// adapters). A run that stopped after the rename had no way on: the old path was gone or a link ("give the real
+// folder"), the new one "already lies in" the root, and finish found nothing (audit 2026-11-22). A note inside the
+// domain folder travels with the rename and names both paths; a run that finds it does the steps after the rename again
+// (each of them leaves what is done as it is).
+const MOVE_NOTE = '.agentic-move.json';
+const lexists = (p) => !!fs.lstatSync(p, { throwIfNoEntry: false });
+
+/** The plan of a move whose rename is done and whose other steps are not: found from the old path, the new one, or the root. */
+function unfinishedMove(domainDir, { root, home }) {
+  const given = path.resolve(domainDir);
+  const places = [given, root ? path.join(path.resolve(root), path.basename(given)) : null].filter(Boolean);
+  for (const place of places) {
+    let note = null;
+    try { note = JSON.parse(fs.readFileSync(path.join(place, MOVE_NOTE), 'utf8')); } catch { continue; }
+    if (!note?.from || !note?.to || fs.realpathSync(place) !== fs.realpathSync(note.to)) continue;
+    const src = path.resolve(note.from); const dest = path.resolve(note.to);
+    const historyDir = path.join(home, '.claude', 'projects');
+    const oldName = historyName(src);
+    let history = [];
+    try { history = fs.readdirSync(historyDir).filter((n) => (n === oldName || n.startsWith(`${oldName}-`)) && !fs.lstatSync(path.join(historyDir, n)).isSymbolicLink()); } catch {}
+    const back = (p) => path.join(src, path.relative(dest, p));
+    return { src, dest, resumed: true, projects: domainProjects(dest).map((p) => ({ ...p, dir: back(p.dir), brain: p.brain ? back(p.brain) : null })), historyDir, history: history.map((n) => ({ from: n, to: historyName(dest) + n.slice(oldName.length) })) };
+  }
+  return null;
+}
+
 /** Move the domain. Returns the report lines and the T3 steps the agent does with the T3 tool. */
 export function moveDomain(domainDir, { root = machineRoot(), home = os.homedir(), trustFile = claudeConfigFile(), env = process.env, adapter = true } = {}) {
-  const plan = planMove(domainDir, { root, home });
+  const plan = unfinishedMove(domainDir, { root, home }) || planMove(domainDir, { root, home });
   const { src, dest } = plan;
   const lines = [];
-  try { fs.renameSync(src, dest); } catch (err) {
-    throw new Error(err.code === 'EXDEV' ? `${dest} is on another file system than ${src}; this script moves only within one file system` : err.message);
+  if (plan.resumed) lines.push(`a move ${toPosix(src)} -> ${toPosix(dest)} that stopped after its rename goes on`);
+  else {
+    fs.writeFileSync(path.join(src, MOVE_NOTE), `${JSON.stringify({ from: src, to: dest, at: new Date().toISOString() }, null, 2)}\n`);
+    try { fs.renameSync(src, dest); } catch (err) {
+      fs.rmSync(path.join(src, MOVE_NOTE), { force: true });
+      throw new Error(err.code === 'EXDEV' ? `${dest} is on another file system than ${src}; this script moves only within one file system` : err.message);
+    }
   }
-  fs.symlinkSync(dest, src, 'dir');
-  lines.push(`moved ${toPosix(src)} -> ${toPosix(dest)} (old path kept as a symlink for running threads and scripts)`);
+  if (!lexists(src)) {
+    try { fs.symlinkSync(dest, src, 'dir'); lines.push(`moved ${toPosix(src)} -> ${toPosix(dest)} (old path kept as a symlink for running threads and scripts)`); }
+    catch (err) { lines.push(`moved ${toPosix(src)} -> ${toPosix(dest)}; the old path is NOT kept as a link (${err.code || err.message}): threads, scripts and services that use it need the new path`); }
+  }
   for (const h of plan.history) {
     const to = path.join(plan.historyDir, h.to);
-    if (!fs.existsSync(to)) { fs.symlinkSync(h.from, to); lines.push(`history: ${h.to} -> ${h.from}`); }
+    if (lexists(to)) continue;
+    try { fs.symlinkSync(h.from, to); lines.push(`history: ${h.to} -> ${h.from}`); } catch (err) { lines.push(`history: ${h.to} NOT linked to ${h.from} (${err.code || err.message})`); }
   }
   const trusted = copyTrust(src, dest, trustFile);
   lines.push(`trust: ${trusted} entries copied in ${toPosix(trustFile)}`);
@@ -143,31 +178,49 @@ export function moveDomain(domainDir, { root = machineRoot(), home = os.homedir(
       lines.push(`adapter ${path.basename(dir)}: ${r.status === 0 ? 'settings regenerated' : `FAILED (${(r.stderr || r.stdout).trim().split('\n').pop()})`}`);
     }
   }
-  return { ...plan, lines, steps };
+  fs.rmSync(path.join(dest, MOVE_NOTE), { force: true });
+  return { ...plan, lines, steps, linked: lexists(src) };
 }
 
 /**
  * After the T3 server restart on the new paths: the new history dirs become real, the old names symlinks to them.
  * Returns the report lines; idempotent.
  */
-export function finishMove(oldDir, { home = os.homedir() } = {}) {
+export function finishMove(oldDir, { home = os.homedir(), to = null } = {}) {
   const src = path.resolve(oldDir);
-  if (!fs.lstatSync(src).isSymbolicLink()) throw new Error(`${src} is not the symlink of a moved domain`);
-  const dest = path.resolve(path.dirname(src), fs.readlinkSync(src));
+  const link = fs.lstatSync(src, { throwIfNoEntry: false });
+  // A move that could not keep the old path as a link has no link to read the new place from: the caller names it.
+  if (!link?.isSymbolicLink() && !(to && !link)) throw new Error(`${src} is not the symlink of a moved domain${link ? '' : ': it does not exist; when the move kept no link, name the new place: finish <old domain path> --to <new domain path>'}`);
+  const dest = link ? path.resolve(path.dirname(src), fs.readlinkSync(src)) : path.resolve(to);
   const dir = path.join(home, '.claude', 'projects');
   const oldName = historyName(src); const newName = historyName(dest);
   const lines = [];
-  let names = [];
-  try { names = fs.readdirSync(dir).filter((n) => n === newName || n.startsWith(`${newName}-`)); } catch {}
-  for (const n of names) {
-    const p = path.join(dir, n);
-    if (!fs.lstatSync(p).isSymbolicLink()) continue;
-    const o = path.resolve(dir, fs.readlinkSync(p));
-    if (!fs.existsSync(o) || fs.lstatSync(o).isSymbolicLink()) { lines.push(`skip ${n}`); continue; }
-    fs.rmSync(p); fs.renameSync(o, p); fs.symlinkSync(n, o);
+  // One swap: the real folder of the old name becomes the real folder of the new name, the old name a link to it. The
+  // folder waits as <new name>.moving between the parts: a swap that stopped left the history at neither name the new
+  // path reads, and the next finish said "nothing to swap" (audit 2026-11-22). Every state a stop leaves is finished here.
+  const of = (n, prefix) => n === prefix || n.startsWith(`${prefix}-`);
+  const swap = (n) => {
+    const p = path.join(dir, n); const o = path.join(dir, oldName + n.slice(newName.length)); const moving = `${p}.moving`;
+    const real = (x) => { const st = fs.lstatSync(x, { throwIfNoEntry: false }); return !!st && st.isDirectory() && !st.isSymbolicLink(); };
+    if (real(p) && !lexists(moving)) { if (!lexists(o)) fs.symlinkSync(n, o); return false; }
+    if (!lexists(moving)) { if (!real(o)) return false; fs.renameSync(o, moving); }
+    if (!lexists(o)) fs.symlinkSync(n, o);
+    if (lexists(p)) fs.rmSync(p);
+    fs.renameSync(moving, p);
     lines.push(`history: ${n} is the real folder, ${path.basename(o)} -> ${n}`);
-  }
+    return true;
+  };
+  let all = [];
+  try { all = fs.readdirSync(dir); } catch {}
+  // The names to look at: the links of the move, a folder left as .moving, and a real folder under the old name (a swap
+  // an older version left half done, or a session that ran through the link of the old path).
+  const names = new Set([
+    ...all.filter((n) => of(n, newName) && !n.endsWith('.moving')),
+    ...all.filter((n) => n.endsWith('.moving') && of(n.slice(0, -7), newName)).map((n) => n.slice(0, -7)),
+    ...all.filter((n) => of(n, oldName) && !of(n, newName)).map((n) => newName + n.slice(oldName.length)),
+  ]);
+  for (const n of names) { try { swap(n); } catch (err) { lines.push(`history: ${n} NOT swapped (${err.code || err.message}); run finish again`); } }
   if (!lines.length) lines.push(`history of ${toPosix(dest)}: nothing to swap`);
-  lines.push(`the symlink ${toPosix(src)} stays while threads, scripts or services use the old path (${oldName})`);
+  if (link) lines.push(`the symlink ${toPosix(src)} stays while threads, scripts or services use the old path (${oldName})`);
   return lines;
 }

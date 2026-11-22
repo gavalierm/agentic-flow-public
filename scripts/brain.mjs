@@ -343,19 +343,51 @@ function brainSyncUnlocked(brainDir, opts = {}) {
   try { return syncSteps(brainDir, opts); } finally { if (own && !['rebase-merge', 'rebase-apply'].some((d) => fs.existsSync(path.join(brainDir, '.git', d)))) fs.rmSync(file, { force: true }); }
 }
 
+/**
+ * The close of a topic removes topics/<id>/ as its last step in the brain (done --topic: after the outputs are written
+ * and the branches merged). A close that stopped there left the removal on the disk and not in git. The thread no
+ * longer held the topic, so no write of the workflow could commit or restore it (git commit, brain.mjs remove and a
+ * claim were all refused) and every update from origin was refused for good (doma-pc 2026-11-22, Windows: a
+ * shell stood in the folder). A topic whose every tracked file is gone from the disk, its topic file with them, is such
+ * a close: its removal is committed here. A topic with a file left is not touched. Returns one notice per topic.
+ */
+function finishTopicRemovals(brainDir, dirty) {
+  const P = patternsOf(brainDir);
+  const notices = [];
+  const env = brainScriptEnv();
+  for (const file of dirty) {
+    const id = P.topicFile.exec(file)?.[1];
+    if (!id) continue;
+    const dir = path.posix.dirname(file);
+    const tracked = git(['ls-tree', '-r', '--name-only', 'HEAD', '--', dir], { cwd: brainDir }).stdout.split('\n').filter(Boolean);
+    if (!tracked.length || tracked.some((rel) => fs.existsSync(path.join(brainDir, rel)))) continue;
+    if (!git(['rm', '-r', '--quiet', '--cached', '--ignore-unmatch', '--', dir], { cwd: brainDir, env }).ok) continue;
+    const paths = [dir];
+    try { if (refreshIndex(brainDir, env)) paths.push(INDEX_FILE); } catch { /* the sync writes the index again */ }
+    const commit = gitRetry(['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} topic ${id}: the removal a close that stopped left uncommitted is finished`, '--', ...paths], { cwd: brainDir, env });
+    if (!commit.ok) { git(['reset', '--quiet', '--', ...paths], { cwd: brainDir, env }); continue; }
+    // No sha: the sync rebases this commit onto origin right after.
+    notices.push(`topic ${id}: its removal, left uncommitted by a close that stopped, is committed; its history keeps it (the commit to revert: git log -1 --grep "topic ${id}: the removal")`);
+  }
+  return notices;
+}
+
 function syncSteps(brainDir, { attempts = 3, resolutions = {} } = {}) {
   const branch = currentBranch(brainDir);
   const result = { pushed: false, unpushed: 0, conflict: null, error: null, remoteAhead: false, notices: [] };
+  // Notices of this function's own repairs: they stay when a later step of the sync clears the others.
+  const finished = [];
+  const done = () => { result.notices = [...finished, ...result.notices]; return result; };
   if (!hasRemote(brainDir)) {
     result.error = 'no remote origin';
-    return result;
+    return done();
   }
   for (let attempt = 0; attempt < attempts; attempt++) {
     const fetch = gitRemote(['fetch', '--quiet', 'origin'], { cwd: brainDir });
     if (!fetch.ok) {
       result.error = withDiagnosis(`fetch failed: ${firstLine(fetch.stderr)}`, fetch.stderr);
       result.unpushed = unpushedCount(brainDir);
-      return result;
+      return done();
     }
     const remoteRef = git(['rev-parse', '--verify', '--quiet', `origin/${branch}`], { cwd: brainDir });
     if (remoteRef.ok) {
@@ -373,14 +405,17 @@ function syncSteps(brainDir, { attempts = 3, resolutions = {} } = {}) {
         if (both.length) {
           result.conflict = both;
           result.unpushed = unpushedCount(brainDir);
-          return result;
+          return done();
         }
         // Uncommitted changes make the rebase refuse; that is not a disagreement with origin (it read as "disagreement: ").
         const dirty = git(['diff', '--name-only', 'HEAD'], { cwd: brainDir }).stdout.split('\n').filter(Boolean);
         if (dirty.length) {
+          // The removal of a closed topic is finished; the checks above run again on the new commit.
+          const removals = finishTopicRemovals(brainDir, dirty);
+          if (removals.length) { finished.push(...removals); continue; }
           result.error = `uncommitted changes in brain block the update from origin: ${dirty.slice(0, 3).join(', ')}${dirty.length > 3 ? ', …' : ''}; a hand edit, not a workflow write (an interrupted one is rolled back by itself): save it through the workflow (brain.mjs write) or the operator restores it (git -C <brain> checkout HEAD -- <file>) (P-040)`;
           result.unpushed = unpushedCount(brainDir);
-          return result;
+          return done();
         }
         const env = { ...brainScriptEnv(), GIT_EDITOR: 'true' };
         let rebase = gitRetry(['rebase', '--quiet', `origin/${branch}`], { cwd: brainDir, env });
@@ -397,7 +432,7 @@ function syncSteps(brainDir, { attempts = 3, resolutions = {} } = {}) {
             else result.error = `rebase onto origin failed: ${firstLine(rebase.stderr)}`;
             result.notices = [];
             result.unpushed = unpushedCount(brainDir);
-            return result;
+            return done();
           }
           result.notices.push(...notes.filter(Boolean));
           // A commit that became empty (our claim replaced by origin's holder) is dropped, not committed empty.
@@ -409,7 +444,7 @@ function syncSteps(brainDir, { attempts = 3, resolutions = {} } = {}) {
           result.error = `rebase onto origin failed: ${firstLine(rebase.stderr)}`;
           result.notices = [];
           result.unpushed = unpushedCount(brainDir);
-          return result;
+          return done();
         }
         // A rebase that merged INDEX.md by lines without a conflict: written again from the merged files.
         try { commitIndexAfterMerge(brainDir, { env, message: `${BRAIN_COMMIT_TAG} regenerate ${INDEX_FILE} after sync` }); }
@@ -418,23 +453,23 @@ function syncSteps(brainDir, { attempts = 3, resolutions = {} } = {}) {
     }
     if (unpushedCount(brainDir) === 0 && remoteRef.ok) {
       result.pushed = true;
-      return result;
+      return done();
     }
     const push = gitRemote(['push', '--quiet', '-u', 'origin', `HEAD:${branch}`], { cwd: brainDir });
     if (push.ok) {
       result.pushed = true;
       result.unpushed = 0;
-      return result;
+      return done();
     }
     if (!/rejected|fetch first|non-fast-forward|failed to push/.test(push.stderr)) {
       result.error = withDiagnosis(`push failed: ${firstLine(push.stderr)}`, push.stderr);
       result.unpushed = unpushedCount(brainDir);
-      return result;
+      return done();
     }
   }
   result.error = 'push rejected repeatedly';
   result.unpushed = unpushedCount(brainDir);
-  return result;
+  return done();
 }
 
 /**
@@ -458,8 +493,12 @@ export function brainPull(brainDir) {
     const behind = git(['rev-list', '--count', `HEAD..origin/${branch}`], { cwd: brainDir });
     result.behind = behind.ok ? Number(behind.stdout) : 0;
     if (!result.behind) return result;
+    const changed = () => git(['diff', '--name-only', 'HEAD'], { cwd: brainDir }).stdout.split('\n').filter(Boolean);
+    let dirty = changed();
+    // The removal of a closed topic that a stopped close left uncommitted is committed (finishTopicRemovals); the clone
+    // then goes on as one with a local commit.
+    if (dirty.length && finishTopicRemovals(brainDir, dirty).length) dirty = changed();
     const unpushed = unpushedCount(brainDir);
-    const dirty = git(['diff', '--name-only', 'HEAD'], { cwd: brainDir }).stdout.split('\n').filter(Boolean);
     // Local commits (the log commit Stop leaves local, audit 2.3a) go out first: rebase onto origin and push, so the
     // session does not start behind origin.
     if (unpushed > 0 && !dirty.length) {

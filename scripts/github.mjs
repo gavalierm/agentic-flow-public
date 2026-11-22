@@ -45,6 +45,16 @@ export async function gh(apiUrl, token, method, route, body, extra = {}, { timeo
 }
 
 /** Login of the token's account. */
+/**
+ * The repository exists and has no commit (GitHub answers its commit list with 409). A create that stopped after it made
+ * the repository left exactly that; the next run said "already exists" and named a way that did not fit (audit
+ * 2026-11-22). An empty repository holds nothing, so the create goes on with it.
+ */
+export async function emptyRepo(apiUrl, token, owner, repo) {
+  const r = await gh(apiUrl, token, 'GET', `/repos/${owner}/${repo}/commits?per_page=1`);
+  return r.status === 409;
+}
+
 export async function ghOwner(apiUrl, token) {
   const me = await gh(apiUrl, token, 'GET', '/user');
   if (me.status !== 200 || !me.json.login) throw new Error(`GitHub /user failed (HTTP ${me.status})`);

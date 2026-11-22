@@ -99,7 +99,9 @@ export function setupT3(dir, { name, repo = path.basename(dir), policy = {}, wel
   const exists = !add.ok && /already exists/i.test(`${add.stderr || ''}${add.stdout || ''}`);
   let added = false;
   if (add.ok) { added = true; lines.push(`t3: project ${repo} added`); }
-  else if (exists) lines.push(`t3: project ${repo} already in T3`);
+  // A setup that stopped after the project was added never came back to the welcome thread, and this line did not say how
+  // (audit 2026-11-22): the thread is not started again here, the project may have it.
+  else if (exists) lines.push(`t3: project ${repo} already in T3${welcome && !deferWelcome ? `; its welcome thread "${WELCOME_TITLE}" is not started again: when the project has none (a setup that stopped), start it with project.mjs t3 ${toPosix(dir)} --welcome` : ''}`);
   else {
     pending.push(`t3_project_create (title ${repo}, workspaceRoot ${dir})`);
     lines.push(`t3: project NOT added (${add.reason}): create it with the T3 tool t3_project_create (title ${repo}, workspaceRoot ${dir})`);

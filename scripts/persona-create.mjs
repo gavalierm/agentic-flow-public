@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { personaRepoName } from './persona-name.mjs';
 import { brainInit } from '../bin/brain-init.mjs';
-import { gh, sshRemote, DEFAULT_TOKEN_FILE } from './github.mjs';
+import { gh, emptyRepo, sshRemote, DEFAULT_TOKEN_FILE } from './github.mjs';
 import { DOMAIN_MARKER, domainDir } from './config.mjs';
 import { projectRoots } from './project.mjs';
 
@@ -21,7 +21,7 @@ export async function createPersona(name, {
   const repo = personaRepoName(name);
   const domain = domainDir(path.resolve(root), name);
   const dir = path.join(domain, repo);
-  if (fs.existsSync(dir)) throw new Error(`${dir} already exists`);
+  if (fs.existsSync(dir)) throw new Error(`${dir} already exists. When an earlier create of this persona stopped and the folder holds nothing of yours, remove the folder and run again: the empty repository it made on GitHub is used again`);
   const marker = path.join(domain, DOMAIN_MARKER);
   if (fs.existsSync(marker) && (JSON.parse(fs.readFileSync(marker, 'utf8') || '{}').brain || repo) !== repo) throw new Error(`${marker} names another brain; a domain has one brain`);
   const token = fs.readFileSync(tokenFile, 'utf8').trim();
@@ -31,12 +31,16 @@ export async function createPersona(name, {
   const owner = me.json.login;
 
   const probe = await gh(apiUrl, token, 'GET', `/repos/${owner}/${repo}`);
-  if (probe.status === 200) throw new Error(`repository ${owner}/${repo} already exists; resolve it (archive/rename the old one) and run again - no other name is used`);
-  if (probe.status !== 404) throw new Error(`cannot verify that ${owner}/${repo} is free (HTTP ${probe.status})`);
+  // An empty repository of this name is what an earlier run of this command left (it stopped before the first push).
+  const reuse = probe.status === 200 && await emptyRepo(apiUrl, token, owner, repo);
+  if (probe.status === 200 && !reuse) throw new Error(`repository ${owner}/${repo} already exists; resolve it (archive/rename the old one) and run again - no other name is used`);
+  if (!reuse && probe.status !== 404) throw new Error(`cannot verify that ${owner}/${repo} is free (HTTP ${probe.status})`);
 
-  const made = await gh(apiUrl, token, 'POST', '/user/repos', { name: repo, private: true });
-  if (made.status !== 201) throw new Error(`creating ${owner}/${repo} failed (HTTP ${made.status}): ${made.json.message || ''}`);
-  if (made.json.name !== repo) throw new Error(`GitHub created "${made.json.name}" instead of "${repo}"`);
+  if (!reuse) {
+    const made = await gh(apiUrl, token, 'POST', '/user/repos', { name: repo, private: true });
+    if (made.status !== 201) throw new Error(`creating ${owner}/${repo} failed (HTTP ${made.status}): ${made.json.message || ''}`);
+    if (made.json.name !== repo) throw new Error(`GitHub created "${made.json.name}" instead of "${repo}"`);
+  }
 
   fs.mkdirSync(domain, { recursive: true });
   const res = brainInit(dir, { remote: remoteFor(owner, repo), persona: true });

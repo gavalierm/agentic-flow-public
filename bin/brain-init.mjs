@@ -66,7 +66,7 @@ export function brainInit(target, { attach = false, adopt = false, remote = null
   if (adopt && !attach) throw new Error('--adopt needs --attach');
 
   if (!isRepo) {
-    if (exists(brainDir) && fs.readdirSync(brainDir).length) throw new Error(`${brainDir} exists and is not empty`);
+    if (exists(brainDir) && fs.readdirSync(brainDir).length) throw new Error(`${brainDir} exists and is not empty; when a run of this command that stopped left it and it holds nothing of yours, remove the folder and run again`);
     copyDir(template, brainDir, { filter: (p) => path.basename(p) !== 'README.md' || path.dirname(p) === template });
     // Mail model 3: the brain's own id (scripts/brain-id.mjs); random, so a copy of the template is another brain.
     const policyFile = dataPath(brainDir, 'policy');

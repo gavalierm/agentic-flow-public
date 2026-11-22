@@ -210,3 +210,30 @@ test('own clone: a repo without origin is refused with the command, nothing writ
     assert.match(r.stderr, /repo: no remote origin; save writes into a repo through the own clone of the workflow .*remote add origin <url>\); nothing written/);
   } finally { fx.cleanup(); }
 });
+
+test('the removal of a closed topic that a stopped close left uncommitted is committed by the sync; a topic with a file left is not touched', () => {
+  // doma-pc 2026-11-22: the thread held no topic any more, so no write of the workflow could commit or restore
+  // the removal, and every update from origin was refused for good.
+  const fx = setup3({ thread: 'b4' });
+  try {
+    for (const id of ['t1', 't2']) assert.equal(fx.run('topic.mjs', ['create', id, '--subject', `Topic ${id}`, '--class', 'discussion']).status, 0);
+    // Another machine pushed: the sync must rebase, and a rebase refuses uncommitted changes.
+    const other = path.join(fx.root, 'other');
+    fx.git(fx.root, 'clone', '-q', fx.origin, other);
+    fs.writeFileSync(path.join(other, 'other.txt'), 'x\n');
+    fx.git(other, 'add', '-A');
+    fx.git(other, '-c', 'user.name=o', '-c', 'user.email=o@example.com', 'commit', '-q', '--no-verify', '-m', 'other machine');
+    fx.git(other, 'push', '-q', 'origin', 'HEAD');
+    fs.rmSync(path.join(fx.brain, 'topics', 't1'), { recursive: true });
+    fs.rmSync(path.join(fx.brain, 'topics', 't2', 'handover.md'));
+    const r = fx.run('brain.mjs', ['sync']);
+    assert.match(r.stdout, /topic t1: its removal, left uncommitted by a close that stopped, is committed/, r.out);
+    assert.match(r.stdout, /uncommitted changes in brain block the update from origin: topics\/t2\/handover\.md/, r.out);
+    assert.ok(!fx.git(fx.brain, 'ls-tree', '-r', '--name-only', 'HEAD').includes('topics/t1/'), 't1 is removed in git');
+    assert.ok(fx.git(fx.brain, 'ls-tree', '-r', '--name-only', 'HEAD').includes('topics/t2/handover.md'), 't2 is as it was');
+    fx.git(fx.brain, 'checkout', 'HEAD', '--', 'topics/t2/handover.md');
+    assert.match(fx.run('brain.mjs', ['sync']).stdout, /^pushed; unpushed: 0/m);
+    const origin = fx.git(fx.origin, 'ls-tree', '-r', '--name-only', 'main');
+    assert.ok(!origin.includes('topics/t1/') && origin.includes('other.txt') && origin.includes('topics/t2/handover.md'), origin);
+  } finally { fx.cleanup(); }
+});

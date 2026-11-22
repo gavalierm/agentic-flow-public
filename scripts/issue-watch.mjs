@@ -12,6 +12,7 @@ import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh, readToken } from './github.mjs
 import { heldTopics } from './topic.mjs';
 import { readJson, writeJson, nowIso, toPosix } from './util.mjs';
 import { LAYOUT, dataPath } from './layout.mjs';
+import { tryLock as tryLockDir } from './lock.mjs';
 
 export const ISSUES_FILE = 'reported-issues.json';
 export const WATCH_LOG = 'issue-watch.log';
@@ -275,16 +276,13 @@ async function watchBase(base, entry, { token, api, now }) {
   return out;
 }
 
-/** The lock of the check round (`<index>.lock`, stale after 30 min): a release function, or null while another holds it. */
-function tryLock(file) {
-  const lock = `${file}.lock`;
-  fs.mkdirSync(path.dirname(lock), { recursive: true });
-  try { if (Date.now() - fs.statSync(lock).mtimeMs > 30 * 60000) fs.rmSync(lock, { force: true }); } catch { /* no lock */ }
-  let fd;
-  try { fd = fs.openSync(lock, 'wx'); } catch { return null; }
-  fs.closeSync(fd);
-  return () => fs.rmSync(lock, { force: true });
-}
+/**
+ * The lock of the check round (`<index>.lock.d`): a release function, or null while another process holds it. The lock
+ * of a round that was killed (the wake stops a job past its time) is taken at once (scripts/lock.mjs): as a plain file
+ * without an owner it stopped every round and every confirm for 30 min (audit 2026-11-22).
+ */
+const lockOf = (file) => `${file}.lock.d`;
+const tryLock = (file) => tryLockDir(lockOf(file), { staleMs: 30 * 60000 });
 
 function withLock(file, fn) {
   const release = tryLock(file);
@@ -304,7 +302,7 @@ async function withLockWait(file, what, fn, env) {
   const until = Date.now() + wait;
   let release;
   while (!(release = tryLock(file))) {
-    if (Date.now() >= until) throw new Error(`a round of the issue check is running (lock ${shortPath(`${file}.lock`, env)}, waited ${wait / 1000} s): nothing posted; run error.mjs ${what} again in a minute`);
+    if (Date.now() >= until) throw new Error(`a round of the issue check is running (lock ${shortPath(lockOf(file), env)}, waited ${wait / 1000} s): nothing posted; run error.mjs ${what} again in a minute`);
     await new Promise((r) => setTimeout(r, 200));
   }
   try { return await fn(); } finally { release(); }
@@ -356,11 +354,23 @@ function findRecord(ctx, url) {
   return { base, key: hit[0], rec: hit[1] };
 }
 
+/**
+ * The comment of confirm or reopen. GitHub takes it first, the record second: a run that stopped between the two left a
+ * comment the record does not know; the next run posted it again, and the watch took the first for an answer of the
+ * maintainer (audit 2026-11-22). So the issue is asked first: a comment with this very text is that leftover (or the
+ * same answer given before), and it is taken instead of a second post (one GET more per confirm or reopen).
+ */
 async function comment(env, rec, body) {
   const { token, file } = tokenOf(env);
   if (!token) throw new Error(`no GitHub token (${shortPath(file, env)}): the answer was not posted`);
   const api = env.WORKFLOW_GITHUB_API || DEFAULT_API_URL;
-  return { token, api, post: await gh(api, token, 'POST', `/repos/${rec.repo}/issues/${rec.number}/comments`, { body }) };
+  const path_ = `/repos/${rec.repo}/issues/${rec.number}/comments`;
+  try {
+    const there = await gh(api, token, 'GET', `${path_}?per_page=100`);
+    const left = there.status === 200 && Array.isArray(there.json) ? [...there.json].reverse().find((c) => c?.id && String(c.body || '').trim() === String(body).trim()) : null;
+    if (left) return { token, api, post: { status: 201, json: left } };
+  } catch { /* the list cannot be read: the post below decides */ }
+  return { token, api, post: await gh(api, token, 'POST', path_, { body }) };
 }
 
 /** The fix works in the reported scenario: comment, `status: confirmed`; the handover section drops it on the next save. */
@@ -372,7 +382,7 @@ async function confirmLocked(ctx, url, text, env, scrubText) {
   const { base, key, rec } = findRecord(ctx, url);
   const { post } = await comment(env, rec, scrubText(text));
   if (post.status !== 201 || !post.json?.id) throw new Error(`comment on ${rec.url} failed (HTTP ${post.status})`);
-  updateIssue(base, key, { own_comment_ids: [...(rec.own_comment_ids || []), post.json.id], status: 'confirmed', confirmed_at: nowIso(), undelivered: null });
+  updateIssue(base, key, { own_comment_ids: [...new Set([...(rec.own_comment_ids || []), post.json.id])], status: 'confirmed', confirmed_at: nowIso(), undelivered: null });
   return `confirmed: ${rec.url} (comment ${post.json.id}); the section "## Otvorené hlásenia" leaves the handover at the next save.mjs handover`;
 }
 
@@ -390,6 +400,6 @@ async function reopenLocked(ctx, url, text, env, scrubText) {
   if (patch.status !== 200) throw new Error(`reopening ${rec.url} failed (HTTP ${patch.status})`);
   const { post } = await comment(env, rec, scrubText(text));
   if (post.status !== 201 || !post.json?.id) throw new Error(`issue ${rec.url} reopened, but the comment failed (HTTP ${post.status}): post the evidence again with error.mjs reopen`);
-  updateIssue(base, key, { own_comment_ids: [...(rec.own_comment_ids || []), post.json.id], status: 'waiting', state: 'open', confirmed_at: null, undelivered: null });
+  updateIssue(base, key, { own_comment_ids: [...new Set([...(rec.own_comment_ids || []), post.json.id])], status: 'waiting', state: 'open', confirmed_at: null, undelivered: null });
   return `reopened: ${rec.url} (comment ${post.json.id}); the check rings this topic on the maintainer's answer`;
 }

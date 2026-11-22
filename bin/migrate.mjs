@@ -88,9 +88,13 @@ try {
       const res = m3.applyDomain(target, { confirmedFile: file(args.confirmed, 'confirmed'), approveFile: file(args.approve, 'approve') });
       if (!res.ok) fail(`refused, nothing changed: ${res.error}`);
       if (res.nothing) { out(res.message); process.exit(0); }
-      out(m3.formatPlan(res.plan));
+      if (res.resumed) out(`a move of ${res.resumed} stopped after its commits: its work files and clean-up are done now`);
+      else out(m3.formatPlan(res.plan));
+      for (const n of res.notes || []) out(`note: ${n}`);
       for (const c of res.commits) out(`committed ${c.name}: ${c.sha} (not pushed)`);
       for (const l of res.moved) out(`moved outside git (a revert does not move it back): ${l}`);
+      for (const l of res.notMoved || []) out(`NOT moved outside git: ${l}`);
+      if (res.notMoved?.length) out(`the commits above are made and stay; close the program that holds the folder and run the same command again: it moves only what is left (migrate.mjs ${target} --to 2.1 --apply)`);
       if (res.pruned.length) out(`removed empty folders of data 2.0: ${res.pruned.join(', ')}`);
       for (const l of res.catalogs || []) out(l);
       if (res.junk?.length) out(`removed generated files outside git: ${res.junk.length} (${res.junk.slice(0, 5).join(', ')}${res.junk.length > 5 ? ', …' : ''})`);
@@ -99,7 +103,7 @@ try {
       out(m3.formatCheck(res.check));
       out(`push after the check (spec 11.10: the clones of other machines pull before the threads start): ${res.commits.map((c) => `git -C ${c.dir} push`).join('; ')}`);
       out(`return before the threads start (spec 11.7): migrate.mjs ${target} --to 2.1 --revert-list`);
-      process.exit(res.check.ok ? 0 : 1);
+      process.exit(res.check.ok && !res.notMoved?.length ? 0 : 1);
     }
     const plan = m3.planDomain(target, { confirmed: readTriage(file(args.confirmed, 'confirmed')), approve: m3.readApprove(file(args.approve, 'approve')) });
     out(m3.formatPlan(plan, { all: !!args.all }));
@@ -136,9 +140,12 @@ try {
     const res = applyMigration(target, { confirmedFile: file(args.confirmed, 'confirmed'), proposalsFile: file(args.triage, 'triage'), project });
     if (!res.ok) fail(`refused: ${res.error}`);
     if (res.nothing) { out(`${target}: ${res.message}`); process.exit(0); }
-    out(formatPlan(res.plan));
-    out(`committed: ${res.sha} (${res.plan.kind === 'brain' ? 'brain, pushed by the brain writer when origin exists' : 'project repo, not pushed'}); undo: WORKFLOW_BRAIN_SCRIPT=1 git -C ${target} revert ${res.sha}${adapterCommand(target) ? `, then ${adapterCommand(target)}` : ''}`);
-    if (res.brainSha) out(`into brain ${res.plan.brainDir}: ${res.brainSha} (temy/ of the brain; undo: WORKFLOW_BRAIN_SCRIPT=1 git -C ${res.plan.brainDir} revert ${res.brainSha})`);
+    if (res.resumed) out(`a move of ${res.resumed} stopped after its commit: the rest of it is done now`);
+    else out(formatPlan(res.plan));
+    for (const n of res.stopped || []) out(`note: ${n}`);
+    const brainDir = res.plan?.brainDir || res.brainDir;
+    out(`committed: ${res.sha} (${(res.plan?.kind || res.kind) === 'brain' ? 'brain, pushed by the brain writer when origin exists' : 'project repo, not pushed'}); undo: WORKFLOW_BRAIN_SCRIPT=1 git -C ${target} revert ${res.sha}${adapterCommand(target) ? `, then ${adapterCommand(target)}` : ''}`);
+    if (res.brainSha) out(`into brain ${brainDir}: ${res.brainSha} (temy/ of the brain; undo: WORKFLOW_BRAIN_SCRIPT=1 git -C ${brainDir} revert ${res.brainSha})`);
     if (res.note) out(`note: ${res.note}`);
     if (res.deployIgnores?.length) out(formatDeployIgnores(res.deployIgnores));
     if (res.outside.length) out(`moved outside git (not in the commit, a revert does not move them back): ${res.outside.map((m) => `${m.from} -> ${m.to}`).join(', ')}`);

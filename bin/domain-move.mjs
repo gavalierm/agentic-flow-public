@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Move a domain (persona or project folder) under the projects root of this machine (carol 2026-11-09).
 //   domain-move.mjs <domain dir> [--to <root>] [--dry]   plan (--dry) or move; the root is project.mjs root by default
-//   domain-move.mjs finish <old domain path>             after the T3 server restart: history swap (old path stays a symlink)
+//   domain-move.mjs finish <old domain path> [--to <new domain path>]   after the T3 server restart: history swap (old
+//                                                        path stays a symlink; --to when the move kept no link)
+// A move that stopped after its rename goes on when the same command runs again (old or new path).
 // The move writes outside the domain of the session (P-052): the write hook asks the operator before it runs.
 import { fail, parseArgs, toPosix } from '../scripts/util.mjs';
 import { planMove, moveDomain, finishMove } from '../scripts/domain-move.mjs';
@@ -12,8 +14,8 @@ const out = (s) => process.stdout.write(`${s}\n`);
 const list = (lines) => lines.map((l) => `- ${l}`).join('\n');
 try {
   if (first === 'finish') {
-    if (!second) fail('usage: domain-move.mjs finish <old domain path>');
-    out(list(finishMove(second)));
+    if (!second) fail('usage: domain-move.mjs finish <old domain path> [--to <new domain path>]');
+    out(list(finishMove(second, typeof args.to === 'string' ? { to: args.to } : {})));
   } else {
     if (!first) fail('usage: domain-move.mjs <domain dir> [--to <root>] [--dry] | finish <old domain path>');
     const opts = typeof args.to === 'string' ? { root: args.to } : {};
@@ -26,7 +28,7 @@ try {
       ])}`);
     } else {
       const r = moveDomain(first, opts);
-      out(`${list(r.lines)}\nT3 (the agent does these with the T3 tool now):\n${list(r.steps)}\nafter the T3 server restart: node ${toPosix(process.argv[1])} finish ${toPosix(r.src)}`);
+      out(`${list(r.lines)}\nT3 (the agent does these with the T3 tool now):\n${list(r.steps)}\nafter the T3 server restart: node ${toPosix(process.argv[1])} finish ${toPosix(r.src)}${r.linked ? '' : ` --to ${toPosix(r.dest)}`}`);
     }
   }
 } catch (err) {

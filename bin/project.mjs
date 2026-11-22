@@ -129,12 +129,17 @@ function t3Step(dirs, name, previous = {}) {
 function startDeferredWelcome(ctx) {
   const deferred = readThreadState(ctx.brainDir, ctx.thread).welcome_deferred || {};
   if (!Object.keys(deferred).length) return [];
-  updateThreadState(ctx.brainDir, ctx.thread, ({ welcome_deferred, ...state }) => state);
   const lines = []; const update = {};
   for (const [dir, name] of Object.entries(deferred)) {
     const r = startWelcome(dir, { name, policy: policyOf(dir), adopted: true }); // wizard end needs the T3 project set up
     lines.push(...r.lines.map((l) => `${path.basename(dir)}: ${l}`));
     if (r.pending.length) update[dir] = r.pending;
+    // One project at a time, after its thread: the whole list was dropped before the first start, so a wizard end that
+    // stopped lost the welcome threads of every project (audit 2026-11-22).
+    updateThreadState(ctx.brainDir, ctx.thread, ({ welcome_deferred = {}, ...state }) => {
+      const { [dir]: _, ...rest } = welcome_deferred;
+      return Object.keys(rest).length ? { ...state, welcome_deferred: rest } : state;
+    });
   }
   if (Object.keys(update).length) recordPending(update);
   return lines;
