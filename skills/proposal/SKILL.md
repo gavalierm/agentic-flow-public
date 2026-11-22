@@ -23,7 +23,12 @@ Bez nástroja Artifact platí HTML stránka.
    - možnosti ako karty alebo tabuľka, odporúčaná prvá a označená, pri každej cena a riziko;
    - dopady, riziká a čo si neoveril (P-019) v bodoch;
    - súbory a príkazy iba ako krátky zoznam na konci.
-3. Forma: jeden súbor bez externých zdrojov (CSS v `<style>`, SVG vnútri, žiadne CDN), `<meta name="viewport">`, šírka do 960 px, na úzkej obrazovke bez vodorovného posunu; farby ako premenné na `:root` a `@media (prefers-color-scheme: dark)`, telo s vlastným pozadím; systémové písmo. Kontrast textu voči pozadiu aspoň WCAG AA (4,5 : 1) v oboch režimoch, aj pri vedľajšom texte; nie tlmený sivý text na sivom podklade. Rozhodnutie, pozornosť, chyba a varovanie sú zvýraznené farbou, ikonou a miestom navrchu, nie iba vetou v texte. Text po slovensky.
+3. Forma: jeden súbor bez externých zdrojov (CSS v `<style>`, SVG vnútri, žiadne CDN), `<meta name="viewport">`, šírka do 960 px, na úzkej obrazovke bez vodorovného posunu; farby ako premenné na `:root` a `@media (prefers-color-scheme: dark)`, telo s vlastným pozadím; systémové písmo. Čitateľnosť podľa WCAG AA v oboch režimoch, meraná, nie odhadnutá:
+   - text voči pozadiu, na ktorom leží, aspoň 4,5 : 1 (veľký text od 24 px aspoň 3 : 1), aj vedľajší text, štítok a popis v diagrame; nie tlmený sivý text na sivom podklade;
+   - čiara a šípka diagramu voči pozadiu aspoň 3 : 1, aj „zrušené“ či „vypnuté“ (odlíš ich prerušovanou čiarou, nie bledou farbou);
+   - text stránky aspoň 12 px; text v SVG aspoň 11 px pri šírke stĺpca 720 px: `viewBox` najviac 720 široký, alebo väčšie písmo (text v kresbe širokej 960 sa zmenší na tri štvrtiny);
+   - farebný štítok: tmavá farba textu na svetlom podklade tej istej farby (v tmavom režime naopak), oranžová a žltá potrebujú tmavší odtieň než modrá.
+   Pred zobrazením spusti `node ${CLAUDE_PLUGIN_ROOT}/bin/page-check.mjs <súbor>`: vypíše každú dvojicu farieb a veľkosť, ktorá nevyhovuje, s miestom. Stránku s nálezom hook nezobrazí. Rozhodnutie, pozornosť, chyba a varovanie sú zvýraznené farbou, ikonou a miestom navrchu, nie iba vetou v texte. Text po slovensky.
 4. Zobrazenie: v T3 `html_preview` s cestou k súboru, potom `html_render` (vlákno stránku ukáže); bez T3 absolútna cesta k súboru v odpovedi. Server nespúšťaj.
 5. Odpoveď: 1–3 riadky k návrhu (čo navrhuješ, odporúčanie) a otázka v bloku Otázky, ak treba rozhodnutie (P-061). Text stránky do odpovede nekopíruj.
 6. Uchovanie: návrh, ktorý stojí za uchovanie (rozhodnutie sa naň odvoláva, téma pokračuje podľa neho), ulož `save.mjs result <súbor> --as navrh-<názov>.html` (P-067); zmenu návrhu `--replace`.
@@ -38,6 +43,7 @@ Report výsledku práce (porovnanie, migrácia, kontrola dát) je stránka podľ
 4. Výsledok jednej práce je jeden dokument: ďalšie zistenia doplň do neho (`--replace`, artefakt publikuj s jeho `url`), nová stránka nevzniká. Pred novou stránkou pozri stránky témy: tá istá práca alebo predmet → prepíš ju; iná práca a si si istý → nová; nie si istý → spýtaj sa operátora dialógom, či novú, alebo prepísať ktorú. Artefakt z vlákna T3 zmazať nejde (potvrdenie mazania sa v ňom nedá položiť), preto zbytočný nevytváraj. Prvý nový artefakt v téme, ktorá už stránky má, hook raz zamietne a vypíše ich; opakovanie prejde.
 
 nie ukážka 24 správnych riadkov z 11 664 ani samostatná stránka namiesto doplnenia, lebo operátor stránku prerábal 4× v jednej session („chcem len zoznam toho, čo treba skontrolovať alebo vyžaduje pozornosť“, 2026-11-17).
+nie farby „od oka“, lebo operátor diagram siete neprečítal: popisy 11,5 px v kresbe širokej 960, sivý popis 2,5 : 1 a oranžový 3,9 : 1 („toto určite nespĺňa čitateľnosť, neviem to prečítať“, 2026-11-22).
 nie nový artefakt bez pohľadu na stránky témy, lebo vznikli 2 takmer rovnaké reporty a zbytočný sa z vlákna nedal zmazať (operátor 2026-11-18).
 
 ## Mapa stavu
@@ -51,7 +57,7 @@ Prehľad, čo je hotové a čo nie (stav skillu, migrácie, plánu, práce po č
    - Stav položky: `done` hotové, `work` robí sa, `wait` čaká na operátora (poznámka = čo má urobiť), `miss` chýba, `off` zrušené (poznámka = prečo).
    - `done` iba po vlastnom overení (P-019); čo si neoveril naživo, napíš do poznámky položky.
 2. Stránka: `node ${CLAUDE_PLUGIN_ROOT}/bin/status-map.mjs <údaje.json>` zapíše `stav-<názov>.html` vedľa údajov. Neznámy stav či prázdnu položku odmietne s miestom chyby.
-3. Zobrazenie a uchovanie podľa krokov 4–6. Je to jeden dokument práce („Report výsledku“ bod 4): pri zmene uprav údaje, spusti skript znova a publikuj s tým istým `url`; ulož údaje aj stránku.
+3. Zobrazenie a uchovanie podľa krokov 4–6. Farby a veľkosti šablóny sú zmerané (WCAG AA), stránku z nej nekontroluješ. Je to jeden dokument práce („Report výsledku“ bod 4): pri zmene uprav údaje, spusti skript znova a publikuj s tým istým `url`; ulož údaje aj stránku.
 
 Hotové sú malé štítky a nehotové veľké lístky, preto oko ide na to, čo ostáva. Nie vlastná stránka stavu ani tabuľka so stĺpcom „stav“, lebo strom zo šablóny operátor číta na jeden pohľad („extrémne prehľadný o tom, čo je spravené a čo nie“, 2026-11-20).
 

@@ -142,6 +142,7 @@ export function writeOperatorRepo(repoDir, files, message) {
     name: 'operator repo',
     message,
     indexFiles: [PEOPLE_INDEX],
+    derived: true,
     ops: Object.entries(files).map(([rel, content]) => (content === null ? { path: rel, remove: true } : { path: rel, content })),
     index: (dir) => {
       fs.writeFileSync(path.join(dir, PEOPLE_INDEX), indexText(readPeople(dir)));

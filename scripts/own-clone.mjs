@@ -82,13 +82,13 @@ function resetClone(dir, branch, from = branch) {
  * commit is refused, the push fails for another reason than a newer commit, or another file conflicts (question to the
  * operator).
  */
-export function cloneWrite(repoDir, { branch, base = null, ops, message, env = {}, index = null, indexFiles = [], attempts = 3, name = path.basename(mainCheckout(repoDir)) }) {
+export function cloneWrite(repoDir, { branch, base = null, ops, message, env = {}, index = null, indexFiles = [], attempts = 3, derived = false, name = path.basename(mainCheckout(repoDir)) }) {
   const dir = ownCloneDir(repoDir);
   fs.mkdirSync(path.dirname(dir), { recursive: true });
-  return withLock(path.join(path.dirname(dir), `${CLONE_DIR}.lock`), () => cloneWriteLocked(repoDir, dir, { branch, base, ops, message, env, index, indexFiles, attempts, name }), `own clone of ${name} is busy`);
+  return withLock(path.join(path.dirname(dir), `${CLONE_DIR}.lock`), () => cloneWriteLocked(repoDir, dir, { branch, base, ops, message, env, index, indexFiles, attempts, derived, name }), `own clone of ${name} is busy`);
 }
 
-function cloneWriteLocked(repoDir, dir, { branch, base, ops, message, env, index, indexFiles, attempts, name }) {
+function cloneWriteLocked(repoDir, dir, { branch, base, ops, message, env, index, indexFiles, attempts, derived, name }) {
   ensureClone(repoDir, dir, name);
   const fetch = () => gitRemote(['fetch', '--quiet', '--prune', 'origin'], { cwd: dir });
   let f = fetch();
@@ -101,6 +101,25 @@ function cloneWriteLocked(repoDir, dir, { branch, base, ops, message, env, index
   if (!co.ok) throw new Error(`${name}: own clone not on origin/${start()}, nothing written: ${firstLine(co.stderr)}`);
   const drop = () => resetClone(dir, branch, start() || branch);
   const list = typeof ops === 'function' ? ops(dir) : ops;
+  // `derived`: the caller made its content from the files of the checkout (a record it changes); the write goes onto
+  // origin. A file that origin holds in another version than the checkout (the checkout is behind, or on another
+  // branch) would lose that version without a word: a save that keeps the body wrote the old body back and said
+  // "written" (audit 2026-11-22). An op the caller computed from the clone (`fresh`) read origin already.
+  if (derived) {
+    const paths = list.filter((op) => !op.remove && !op.fresh).map((op) => toPosix(op.path).replace(/^\.\//, ''));
+    const blobs = (cwd) => new Map((paths.length ? git(['ls-tree', 'HEAD', '--', ...paths], { cwd }).stdout : '').split('\n').filter(Boolean).map((line) => { const [meta, rel] = line.split('\t'); return [rel, meta.split(' ')[2]]; }));
+    const there = blobs(dir);
+    const staleIn = (here) => paths.filter((rel) => there.has(rel) && there.get(rel) !== here.get(rel));
+    const stale = staleIn(blobs(repoDir));
+    if (stale.length) {
+      drop();
+      const note = fastForwardCheckout(repoDir, branch);
+      const how = note ? `update the checkout first (${note})`
+        : staleIn(blobs(repoDir)).length ? `the checkout is not on ${branch} or keeps its own version: make the change in a checkout of ${branch}`
+          : 'the checkout is updated now';
+      throw new Error(`${name} (${branch}): ${stale.join(', ')} on origin is another version than the one in ${toPosix(repoDir)}; nothing written: ${how}, then run the save again (it reads the current version)`);
+    }
+  }
   const rels = [];
   for (const op of list) {
     const rel = toPosix(op.path).replace(/^\.\//, '');

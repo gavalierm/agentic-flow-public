@@ -306,13 +306,15 @@ export function repoWrite(ctx, repoName, { ops: given, message, rewrite = null }
     message: `${BRAIN_COMMIT_TAG} ${message}`,
     env,
     indexFiles: [INDEX_FILE],
+    // The given records were made from the checkout; the links the rewrite adds are read from the clone.
+    derived: true,
     ops: (dir) => {
       let ops = given;
       if (rewrite) {
         const extra = rewrite(dataPath(dir, 'projectKnowledge')).filter((op) => !ops.some((o) => toPosix(o.path) === toPosix(op.path)));
         const bad = extra.flatMap((op) => checkKnowledgeFile(op.path, op.content, ctx.policy, version));
         if (bad.length) throw new Error(bad.join('\n'));
-        ops = [...ops, ...extra];
+        ops = [...ops, ...extra.map((op) => ({ ...op, fresh: true }))];
       }
       const rels = ops.map((op) => dataRel(dir, 'projectKnowledge', toPosix(op.path)));
       paths = rels.map((r) => `${repo.name}/${r}`);

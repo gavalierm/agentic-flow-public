@@ -2137,10 +2137,24 @@ function pathChecks(input, ctx, cwd) {
   return {};
 }
 
+/**
+ * P-077 (operator 2026-11-22: "diagramy musia byť WCAG, toto neviem prečítať"): a page a call shows to the operator (an
+ * Artifact publish, html_preview) is measured first; the refusal names each colour pair and text size that fails. The
+ * skill proposal runs the same check before (bin/page-check.mjs). Its two modules load for these calls only (P-079),
+ * so it is a step of the entry: `run` is synchronous. Returns the refusal or null.
+ */
+export async function unreadableDeny(input) {
+  const tool = String(input?.tool_name || '');
+  if (tool !== 'Artifact' && !/(^|__)html_preview$/.test(tool)) return null;
+  const [{ unreadablePage }, { shownFile }] = await Promise.all([import('../scripts/page-check.mjs'), import('../scripts/results.mjs')]);
+  const why = unreadablePage(input, shownFile(input), (file) => fs.readFileSync(file, 'utf8'), `node ${toPosix(path.join(PLUGIN_ROOT, 'bin', 'page-check.mjs'))}`);
+  return why ? permissionOutput('deny', why) : null;
+}
+
 if (isMain(import.meta.url)) {
   try {
     const input = readHookInput();
-    const out = run(input);
+    const out = (await unreadableDeny(input)) || run(input);
     // Every deny/ask goes to <brain>/local/denials.jsonl, so false positives are counted, not only felt (bin/denials.mjs).
     if (['deny', 'ask'].includes(out?.hookSpecificOutput?.permissionDecision)) {
       try {
