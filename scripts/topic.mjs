@@ -2,7 +2,8 @@
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-import { git, gitRemote, readText, nowIso, relPosix, toPosix, realPathLoose } from './util.mjs';
+import { git, gitRemote, readText, readJson, nowIso, relPosix, toPosix, realPathLoose, cutShort } from './util.mjs';
+import { stamp, live } from './lock.mjs';
 import { installPushHook, pushBranch } from './push-hook.mjs';
 import { isWakeTurn, machineName, sameMachine, inSubagent, inHarness, readThreadState, updateThreadState, mainCheckout, WORKTREES_DIR, loadContext, readWorkflowConfig, PERSONA_BRAIN } from './config.mjs';
 import { domainRepos } from './repo-knowledge.mjs';
@@ -16,7 +17,7 @@ import { isValidId } from './keys.mjs';
 import { dataPath, dataRel, layoutOf, topicWorkDir } from './layout.mjs';
 import { ASSIGNED_OPERATOR, ASSIGNED_TECHNICAL, hasTriage } from './triage.mjs';
 import { topicOp, holderOp, fieldsOp, MODES, openTopicExists, closedTopicExists, closedTopicDir, readTopicRecord, holderFromText, workDir, workTopic } from './topic-files.mjs';
-import { registerTopic, mailCount, mailLines, isMainTopic, MAIN_TOPIC, runClient, commsConfigured, commsProjectName, supervisorOf } from './comms.mjs';
+import { registerTopic, releaseTopicInMail, mailCount, mailLines, isMainTopic, MAIN_TOPIC, runClient, commsConfigured, commsProjectName, supervisorOf } from './comms.mjs';
 import { checkOverlap, topicScopeText } from './overlap.mjs';
 import { freezeRefusal } from './freeze.mjs';
 import { forkOf, seedWorktree } from './fork.mjs';
@@ -165,7 +166,7 @@ function handoffTopicUnlocked(ctx, id, { handover = null, leaveOutbox = false } 
   const record = { handoff_from: { thread: ctx.thread, machine: machineName(), at: nowIso() } };
   ops.push(holderOp(ctx.brainDir, id, record));
   const res = brainWrite(ctx, { internal: true, ops, message: `topic handoff ${id} by ${ctx.thread} from ${machineName()}` });
-  const comms = registerTopic(ctx, id, { holder: null, release: true });
+  const comms = releaseTopicInMail(ctx, id);
   const sync = res.sync || {};
   if (!sync.pushed && sync.error !== 'no remote origin') {
     return { ok: false, steps, comms, reason: `handoff of ${id} committed but not pushed (${sync.conflict ? `conflict: ${sync.conflict.join(', ')}` : sync.error}): the other machine does not see it yet; fix the push (brain.mjs sync) (P-040)` };
@@ -328,7 +329,7 @@ function createTopicUnlocked(ctx, { id, subject, title = null, here = false, cla
     }
     // Mail registration only after a successful push, as in claim.
     const pushFailed = sync.error && sync.error !== 'no remote origin';
-    const comms = pushFailed ? { ok: false, reason: 'brain push failed: mail registration not done (repeat topic.mjs claim to register)', topic: id, skipped: false } : registerTopic(ctx, id);
+    const comms = pushFailed ? { ok: false, reason: 'brain push failed: mail registration not done (repeat topic.mjs claim to register)', topic: id, skipped: false } : registerTopic(ctx, id, { takeover: !sync.error || sync.error === 'no remote origin' });
     out.claim = { ok: true, holder, pushed: !!sync.pushed, sha: res.sha, comms, ...(pushFailed ? { warning: `claim committed but not pushed (${sync.error})` } : {}) };
     if (kind === 'code' && copy) out.copy = ensureCodeCopy(ctx, id);
   }
@@ -537,7 +538,7 @@ function assignTopic(ctx, id, thread, { mode, model = null } = {}) {
     ops: [holderOp(ctx.brainDir, id, holder)],
     message: `topic assign ${id} to ${thread} by ${ctx.thread}`,
   });
-  const comms = registerTopic(ctx, id, { holder: thread });
+  const comms = registerTopic(ctx, id, { holder: thread, takeover: onOrigin(res.sync) });
   return { ok: true, assigned: true, holder, pushed: !!res.pushed, sha: res.sha, comms };
 }
 
@@ -571,7 +572,7 @@ function claimTopicUnlocked(ctx, id, { force = false, operatorApproved = false, 
   }
   if (isHolderOf(holder, ctx.thread)) {
     // Idempotent re-registration: repairs a claim whose mail registration failed earlier (P-041).
-    if (!mode || holder.mode === mode) return { ok: true, already: true, holder, pushed: first.pushed, comms: registerTopic(ctx, id) };
+    if (!mode || holder.mode === mode) return { ok: true, already: true, holder, pushed: first.pushed, comms: registerTopic(ctx, id, { takeover: onOrigin(first) }) };
     // Holder changes its own mode (P-037): rewrite holder.json and re-register so wake events follow the new mode.
     const updated = { ...holder, mode };
     const w = brainWrite(ctx, {
@@ -579,7 +580,7 @@ function claimTopicUnlocked(ctx, id, { force = false, operatorApproved = false, 
       ops: [holderOp(ctx.brainDir, id, updated)],
       message: `topic mode ${id} ${mode} by ${ctx.thread}`,
     });
-    const comms = registerTopic(ctx, id);
+    const comms = registerTopic(ctx, id, { takeover: onOrigin(w.sync) });
     return { ok: true, modeChanged: true, holder: updated, pushed: !!w.pushed, sha: w.sha, comms };
   }
   const policyMode = ctx.policy?.topics?.default_holder_mode || 'operator';
@@ -621,8 +622,10 @@ function claimTopicUnlocked(ctx, id, { force = false, operatorApproved = false, 
     const comms = { ok: false, reason: 'brain push failed: mail registration not done (repeat topic.mjs claim to register)', topic: id, skipped: false };
     return { ok: true, holder: newHolder, pushed: false, warning: `claim committed but not pushed (${sync.error}); other machines will not see it until push succeeds`, comms };
   }
-  // A takeover replaces the other holder in the mail service too (the service refuses it without takeover, P-037).
-  const comms = registerTopic(ctx, id, { takeover: !!newHolder.took_over_from });
+  // The holder record is on origin now (or the brain has no origin): the mail follows it. Without `takeover` the mail
+  // refuses a holder other than the one it knows, and it knows an old one whenever the mail part of a release or a
+  // handoff did not arrive: the new holder was never registered and the bell went to the old thread (audit 2026-11-22).
+  const comms = registerTopic(ctx, id, { takeover: true });
   return { ok: true, holder: newHolder, pushed: sync.pushed, sha: res.sha, comms };
 }
 
@@ -683,7 +686,7 @@ function releaseTopicUnlocked(ctx, id, { force = false, operatorApproved = false
     message: `topic release ${id} by ${ctx.thread}`,
   }) : null;
   // The mail service stops carrying this thread as holder (wake events, P-043); messages for the topic keep waiting.
-  const comms = registerTopic(ctx, id, { holder: null, release: true });
+  const comms = releaseTopicInMail(ctx, id);
   return { ok: true, already: !holder.thread, write: res, comms, mail: freePointMail(ctx, id) };
 }
 
@@ -792,15 +795,80 @@ export function newBranchBase(repo) {
   return git(['merge-base', '--is-ancestor', 'HEAD', remote], { cwd: repo }).ok ? remote : null;
 }
 
+/**
+ * The brain of this clone is what origin has (the sync passed, or the brain has no origin): its holder record decides and
+ * the mail follows it (`takeover`). A clone that could not sync may be behind a takeover on another machine: there the
+ * mail keeps its holder.
+ */
+const onOrigin = (sync) => !!sync && !sync.conflict && (!sync.error || sync.error === 'no remote origin');
+
 // --no-track: topic/<id> must not get origin/dev as its upstream.
 const newBranchArgs = (branch, copy, base) => (base ? ['--no-track', '-b', branch, copy, base] : ['-b', branch, copy]);
+
+// A `git worktree add` that was killed (the hook's time limit, the turn stopped) leaves a worktree git still marks as
+// "locked: initializing": a part of the files, an index lock, sometimes only the entry in the repo. The next run took it
+// for a complete copy; every file read as deleted, no commit passed and done --topic could not remove it (audit
+// 2026-11-22). The maker leaves a note beside the copy; a copy whose maker does not run any more is finished here.
+const makingNote = (dir) => `${dir}.making`;
+
+/** The entry of the worktree `dir` in its repo (<repo>/.git/worktrees/<name>), or null: a clone, or no worktree. */
+export function worktreeEntry(dir) {
+  try { const m = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(path.join(dir, '.git'), 'utf8')); return m ? path.resolve(dir, m[1].trim()) : null; } catch { return null; }
+}
+
+const initializing = (entry) => { try { return fs.readFileSync(path.join(entry, 'locked'), 'utf8').trim() === 'initializing'; } catch { return false; } };
+
+/** Finish a worktree whose `git worktree add` stopped: the index as HEAD, the missing files written; a file that is there stays as it is. */
+export function finishWorktree(dir) {
+  const entry = worktreeEntry(dir);
+  if (!entry || !initializing(entry)) return;
+  const maker = readJson(makingNote(dir), null);
+  if (maker && live(maker)) throw new Error(`the copy ${toPosix(dir)} is being made by another process now (pid ${maker.pid}): run the command again when it ended`);
+  fs.rmSync(path.join(entry, 'index.lock'), { force: true });
+  const step = git(['read-tree', 'HEAD'], { cwd: dir });
+  if (step.ok) {
+    // Without --force: a file that is there is not written again (git says so by its exit code, which is no failure here).
+    git(['checkout-index', '--all', '--quiet'], { cwd: dir });
+    git(['update-index', '-q', '--refresh'], { cwd: dir });
+    // The file git was writing when it died is cut short; any other changed file is somebody's work and stays.
+    const cut = git(['diff', '--name-only'], { cwd: dir }).stdout.split('\n').filter(Boolean).filter((rel) => cutShort(dir, `HEAD:${rel}`, rel));
+    for (let i = 0; i < cut.length; i += 100) git(['checkout', 'HEAD', '--', ...cut.slice(i, i + 100)], { cwd: dir });
+  }
+  if (!step.ok) throw new Error(`the copy ${toPosix(dir)} was left half made by a run that stopped and cannot be finished (${step.stderr.split('\n')[0]}): remove it (git -C ${toPosix(dir)} worktree remove -f -f ${toPosix(dir)}), then run the command again`);
+  fs.rmSync(path.join(entry, 'locked'), { force: true });
+  fs.rmSync(makingNote(dir), { force: true });
+}
+
+/** `git worktree add` of `dir` in `repo`, with the note of its maker; an entry a stopped run left for the same folder goes first. */
+function addWorktree(repo, dir, args) {
+  const common = git(['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: repo }).stdout;
+  const entries = path.join(common, 'worktrees');
+  let stale = false;
+  for (const name of fs.existsSync(entries) ? fs.readdirSync(entries) : []) {
+    const entry = path.join(entries, name);
+    let target = null;
+    try { target = path.resolve(fs.readFileSync(path.join(entry, 'gitdir'), 'utf8').trim()); } catch { continue; }
+    if (target !== path.resolve(dir, '.git') || fs.existsSync(target) || !initializing(entry)) continue;
+    fs.rmSync(path.join(entry, 'locked'), { force: true });
+    stale = true;
+  }
+  if (stale) git(['worktree', 'prune'], { cwd: repo });
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  fs.writeFileSync(makingNote(dir), JSON.stringify(stamp()));
+  const add = git(['worktree', 'add', '--quiet', ...args], { cwd: repo });
+  fs.rmSync(makingNote(dir), { force: true });
+  return add;
+}
 
 export function ensureCodeCopy(ctx, id, { repo: repoName = null } = {}) {
   const copy = codeCopyPath(ctx, id, repoName);
   const branch = `topic/${id}`;
   // Spec 3.7, plan O16: each commit of the topic branch is pushed by the post-commit hook of the worktree (also one made
   // before the hook existed).
-  if (fs.existsSync(path.join(copy, '.git'))) return { path: copy, branch, created: false, hook: installPushHook(copy) };
+  if (fs.existsSync(path.join(copy, '.git'))) {
+    finishWorktree(copy);
+    return { path: copy, branch, created: false, hook: installPushHook(copy) };
+  }
   fs.mkdirSync(path.dirname(copy), { recursive: true });
   if (ctx.domain) {
     const repo = topicRepoDir(ctx, id, repoName);
@@ -810,9 +878,7 @@ export function ensureCodeCopy(ctx, id, { repo: repoName = null } = {}) {
     if (git(['remote', 'get-url', 'origin'], { cwd: repo }).ok) git(['fetch', '--quiet', 'origin'], { cwd: repo });
     const local = git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: repo }).ok;
     const remote = !local && git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], { cwd: repo }).ok;
-    const add = local ? git(['worktree', 'add', '--quiet', copy, branch], { cwd: repo })
-      : remote ? git(['worktree', 'add', '--quiet', '-b', branch, copy, `origin/${branch}`], { cwd: repo })
-        : git(['worktree', 'add', '--quiet', ...newBranchArgs(branch, copy, newBranchBase(repo))], { cwd: repo });
+    const add = addWorktree(repo, copy, local ? [copy, branch] : remote ? ['-b', branch, copy, `origin/${branch}`] : newBranchArgs(branch, copy, newBranchBase(repo)));
     if (!add.ok) throw new Error(`git worktree add ${copy} (${branch}) failed: ${add.stderr.split('\n')[0]}`);
     seedWorktree(repo, copy);
     return { path: copy, branch, created: true, worktree: true, hook: installPushHook(copy) };
@@ -871,14 +937,15 @@ export function taskCopy(ctx, task, { topic: asked = null } = {}) {
   const base = ensureCodeCopy(ctx, topic.id);
   const dir = taskCopyPath(ctx, topic, task);
   const branch = `topic/${topic.id}--${task}`;
-  if (fs.existsSync(path.join(dir, '.git'))) return { path: dir, branch, base: base.branch, created: false, hook: installPushHook(dir) };
+  if (fs.existsSync(path.join(dir, '.git'))) {
+    finishWorktree(dir);
+    return { path: dir, branch, base: base.branch, created: false, hook: installPushHook(dir) };
+  }
   const cwd = base.path;
   if (git(['remote', 'get-url', 'origin'], { cwd }).ok) git(['fetch', '--quiet', 'origin'], { cwd });
   const local = git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd }).ok;
   const remote = !local && git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`], { cwd }).ok;
-  const add = local ? git(['worktree', 'add', '--quiet', dir, branch], { cwd })
-    : remote ? git(['worktree', 'add', '--quiet', '-b', branch, dir, `origin/${branch}`], { cwd })
-      : git(['worktree', 'add', '--quiet', '--no-track', '-b', branch, dir, base.branch], { cwd });
+  const add = addWorktree(cwd, dir, local ? [dir, branch] : remote ? ['-b', branch, dir, `origin/${branch}`] : ['--no-track', '-b', branch, dir, base.branch]);
   if (!add.ok) throw new Error(`git worktree add ${toPosix(dir)} (${branch}) failed: ${add.stderr.split('\n')[0]}`);
   seedWorktree(cwd, dir);
   return { path: dir, branch, base: base.branch, created: true, hook: installPushHook(dir) };
@@ -915,14 +982,23 @@ export function taskMerge(ctx, task, { topic: asked = null } = {}) {
     }
     sha = git(['rev-parse', '--short', 'HEAD'], { cwd: base }).stdout;
     lines.push(`merged ${branch} into ${into} (${ahead} commit(s), ${sha})`);
-    const pushed = pushBranch(base, into);
-    lines.push(pushed || (git(['remote', 'get-url', 'origin'], { cwd: base }).ok ? `${into} pushed` : `${into}: no remote origin, not pushed`));
   } else lines.push(`${branch} has no commit beyond ${into}: nothing to merge`);
+  // The push is its own part, not a part of the merge: a run that stopped after the merge has nothing to merge on the
+  // next run, and it removed the task branch from origin while the topic branch was never pushed (audit 2026-11-22).
+  // The task worktree and its branch on origin go only when origin has the topic branch.
+  const origin = git(['remote', 'get-url', 'origin'], { cwd: base }).ok;
+  const tip = (ref) => git(['rev-parse', '--verify', '--quiet', ref], { cwd: base }).stdout;
+  if (!origin) { if (ahead) lines.push(`${into}: no remote origin, not pushed`); }
+  else if (tip(`refs/heads/${into}`) !== tip(`refs/remotes/origin/${into}`)) {
+    const failed = pushBranch(base, into);
+    if (failed) throw new Error(`${lines.join('; ')}; ${failed}; the task worktree and ${branch} stay: fix the cause, then task-merge ${task} again (it pushes ${into} and removes them)`);
+    lines.push(`${into} pushed`);
+  }
   const remove = git(['worktree', 'remove', dir], { cwd: base });
   if (!remove.ok) throw new Error(`${lines.join('; ')}; task worktree ${toPosix(dir)} not removed: ${remove.stderr.split('\n')[0]}`);
   const del = git(['branch', '-d', branch], { cwd: base });
   lines.push(del.ok ? `task worktree and branch ${branch} removed` : `task worktree removed; branch ${branch} kept (${del.stderr.split('\n')[0]})`);
-  if (git(['remote', 'get-url', 'origin'], { cwd: base }).ok && git(['ls-remote', '--exit-code', '--heads', 'origin', branch], { cwd: base }).ok) {
+  if (origin && git(['ls-remote', '--exit-code', '--heads', 'origin', branch], { cwd: base }).ok) {
     const gone = gitRemote(['push', '--quiet', 'origin', '--delete', branch], { cwd: base });
     lines.push(gone.ok ? `${branch} removed from origin` : `${branch} stays on origin (${gone.stderr.split('\n')[0]})`);
   }

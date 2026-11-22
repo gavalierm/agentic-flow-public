@@ -113,20 +113,40 @@ export function realSessionDirs(dir, ids) {
   const notes = [];
   for (const id of new Set(ids.filter((x) => SID.test(x || '')))) {
     const p = path.join(dir, id);
-    let st;
-    try { st = fs.lstatSync(p); } catch { continue; }
-    if (!st.isSymbolicLink()) continue;
+    // The swap has three parts. The real folder waits under this name between them, so a run that stopped in the middle
+    // is finished here: before, the folder was at neither place and the tool results of the session were out of reach
+    // (audit 2026-11-22).
+    const moving = `${p}.moving`;
+    let st = null;
+    try { st = fs.lstatSync(p); } catch { /* none */ }
+    if (fs.existsSync(moving) && (!st || st.isSymbolicLink())) {
+      try {
+        const old = st ? path.resolve(dir, fs.readlinkSync(p)) : null;
+        // lstat: the link at the old place can be there already and point back here (it reads as missing through existsSync).
+        if (old && old !== path.resolve(p) && !fs.lstatSync(old, { throwIfNoEntry: false })) fs.symlinkSync(p, old, 'dir');
+        if (st) fs.unlinkSync(p);
+        fs.renameSync(moving, p);
+        notes.push(`história: priečinok session ${id.slice(0, 8)} je skutočný (prerušená výmena je dokončená).`);
+      } catch (err) { notes.push(`história: prerušenú výmenu priečinka session ${id.slice(0, 8)} sa nepodarilo dokončiť (${err.code || err.message}); priečinok je v ${moving}.`); }
+      continue;
+    }
+    if (!st?.isSymbolicLink()) continue;
     let target;
     try { target = fs.realpathSync(p); } catch { continue; } // dangling link: Claude Code makes the folder itself once it is gone
     if (!fs.statSync(target).isDirectory() || target === path.resolve(p)) continue;
     const back = fs.readlinkSync(p);
     try {
-      fs.unlinkSync(p);
-      fs.renameSync(target, p);
+      fs.renameSync(target, moving);
       fs.symlinkSync(p, target, 'dir');
+      fs.unlinkSync(p);
+      fs.renameSync(moving, p);
       notes.push(`história: priečinok session ${id.slice(0, 8)} bol odkaz na ${target}; teraz je skutočný (staré miesto odkazuje naň), výstupy nástrojov sa znova ukladajú celé.`);
     } catch (err) {
-      try { if (!fs.existsSync(p)) fs.symlinkSync(back, p, 'dir'); } catch { /* best effort */ }
+      // Back to the start: the folder at its old place, the link to it here.
+      try {
+        if (fs.existsSync(moving)) { try { if (fs.lstatSync(target).isSymbolicLink()) fs.unlinkSync(target); } catch { /* none */ } fs.renameSync(moving, target); }
+        if (!fs.existsSync(p)) { try { fs.unlinkSync(p); } catch { /* none */ } fs.symlinkSync(back, p, 'dir'); }
+      } catch { /* best effort: the next start finishes the swap */ }
       notes.push(`história: priečinok session ${id.slice(0, 8)} je odkaz a nepodarilo sa ho nahradiť (${err.code || err.message}); veľké výstupy sa orežú.`);
     }
   }

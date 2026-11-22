@@ -9,7 +9,7 @@ import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext, readThreadState, patchThreadState } from '../scripts/config.mjs';
 import { recordTurn } from '../scripts/comms.mjs';
 import { heldTopics } from '../scripts/topic.mjs';
-import { preRing, readTimerIndex, writeTimerIndex, threadTimers, resumeAtFor, sameTimer } from '../scripts/waker.mjs';
+import { preRing, readTimerIndex, updateTimerIndex, threadTimers, resumeAtFor, sameTimer } from '../scripts/waker.mjs';
 
 // Code without a thread id of its own: each turn record names its thread (ctx.thread), never an inherited one.
 delete process.env.WORKFLOW_THREAD_ID;
@@ -19,11 +19,11 @@ const args = parseArgs(process.argv.slice(2));
 const now = typeof args.now === 'string' ? Date.parse(args.now) : Date.now();
 try {
   const idx = readTimerIndex();
-  let changed = false;
+  const gone = [];
   for (const [thread, entry] of Object.entries(idx.threads)) {
     const state = readThreadState(entry.brain, thread);
     // No condition left: the thread leaves the index (timer.mjs registers it again).
-    if (!threadTimers(state).some((t) => t.until)) { delete idx.threads[thread]; changed = true; continue; }
+    if (!threadTimers(state).some((t) => t.until)) { gone.push([thread, entry.since]); continue; }
     let ctx;
     try { ctx = { ...loadContext({ project: entry.project || entry.brain, requireBrain: false }), brainDir: entry.brain, thread }; } catch (e) { process.stdout.write(`${thread}: no context (${e.message})\n`); continue; }
     // The check runs as in the thread's prompt hook: with its project (an inherited WORKFLOW_PROJECT_DIR of another
@@ -49,7 +49,8 @@ try {
     for (const d of done.slice(0, -1)) process.stdout.write(`${thread}: condition does not hold (${d.timer.until}), timer moved to ${d.timer.at}\n`);
     process.stdout.write(`${thread}: condition does not hold (${r.timer.until}), timer moved to ${r.timer.at}; ${mail}\n`);
   }
-  if (changed) writeTimerIndex(idx);
+  // Only the entries this run saw leave: a thread that registered (again) while the checks ran stays.
+  if (gone.length) updateTimerIndex((cur) => gone.filter(([thread, since]) => cur.threads[thread] && cur.threads[thread].since === since && delete cur.threads[thread]).length > 0);
 } catch (err) {
   fail(`timer-check: ${err.message}`);
 }

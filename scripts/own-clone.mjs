@@ -45,8 +45,12 @@ function repoHooks(repoDir) {
 function ensureClone(repoDir, dir, name) {
   const url = originUrl(repoDir);
   if (!url) throw new Error(`${name}: no remote origin; save writes into a repo through the own clone of the workflow (pull, write, push; spec 4.1), so the repo needs its remote (git -C ${toPosix(repoDir)} remote add origin <url>); nothing written`);
-  if (fs.existsSync(path.join(dir, '.git'))) {
-    if (git(['remote', 'get-url', 'origin'], { cwd: dir }).stdout !== url) git(['remote', 'set-url', 'origin', url], { cwd: dir });
+  // A `git clone` that was killed leaves .git with the address of origin and no fetch rule: no fetch brings a branch, so
+  // every write said "branch main is not on origin … push it first" for good (audit 2026-11-22). The clone holds nothing
+  // of its own (resetClone), so a half made one is made again.
+  const remote = fs.existsSync(path.join(dir, '.git')) ? new Map(git(['config', '--get-regexp', String.raw`^remote\.origin\.(url|fetch)$`], { cwd: dir }).stdout.split('\n').filter(Boolean).map((line) => { const at = line.indexOf(' '); return [line.slice(0, at), line.slice(at + 1)]; })) : null;
+  if (remote?.has('remote.origin.fetch')) {
+    if (remote.get('remote.origin.url') !== url) git(['remote', 'set-url', 'origin', url], { cwd: dir });
   } else {
     fs.rmSync(dir, { recursive: true, force: true });
     const clone = gitRemote(['clone', '--quiet', '--no-checkout', '--reference-if-able', mainCheckout(repoDir), '--dissociate', url, dir]);

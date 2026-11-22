@@ -54,9 +54,11 @@ export function statusLine(ctx) {
 }
 
 /** Register held topics in the mail service at session start (idempotent, P-041); skipped during an outage. */
-export function registerHeldTopics(ctx, info) {
+export function registerHeldTopics(ctx, info, brainCurrent = false) {
   if (!commsConfigured(ctx) || !info.mail.available) return [];
-  const res = info.held.map((t) => registerTopic(ctx, t.id));
+  // `brainCurrent`: the start pulled the brain, so its holder records are what origin has and the mail follows them. A
+  // holder the mail knows from a release or a handoff whose mail part never arrived blocked the registration for good.
+  const res = info.held.map((t) => registerTopic(ctx, t.id, { takeover: brainCurrent }));
   closeArchivedTopics(ctx);
   return res;
 }
@@ -137,6 +139,33 @@ export function stampBootPull(brainDir, sessionId, now = Date.now(), extra = {})
   } catch { /* best effort: the rules hook waits at most maxMs */ }
 }
 
+// Three processes run at a session start: session-start.mjs records in the thread state that the rules were given, the
+// rules themselves come from the two session-start-rules.mjs processes. A rules process that did not finish (stopped at
+// its time limit, an error) left a session without rules and no later hook brought them (audit 2026-11-22). Each rules
+// process leaves a mark when its part went out; the first prompt of the session names the way when a mark is missing.
+const rulesMark = (brainDir, sessionId, part) => path.join(bootDir(brainDir), `${encodeURIComponent(sessionId)}.rules-${part}`);
+/** The sibling processes of one start begin together; a mark older than the start by more than this is of an earlier start. */
+const RULES_MARK_SLACK_MS = 5000;
+
+/** session-start-rules.mjs, after part `part` went out (or it said its failure with the way). Never throws. */
+export function markRulesPart(brainDir, sessionId, part) {
+  if (!brainDir || !sessionId) return;
+  try { fs.mkdirSync(bootDir(brainDir), { recursive: true }); fs.writeFileSync(rulesMark(brainDir, sessionId, part), ''); } catch { /* the prompt hook then names the way: one read of the rules too many */ }
+}
+
+/** Parts of the rules without a mark for the start `start` ({ session, at } of the thread state). */
+export function missingRulesParts(brainDir, start) {
+  if (!brainDir || !start?.session) return [];
+  const since = (Date.parse(start.at) || 0) - RULES_MARK_SLACK_MS;
+  return Array.from({ length: RULES_HOOK_PARTS }, (_, i) => i + 1).filter((part) => {
+    try { return fs.statSync(rulesMark(brainDir, start.session, part)).mtimeMs < since; } catch { return true; }
+  });
+}
+
+/** The way to the rules for a session that did not get them from its start. */
+export const RULES_READ_WAY = `read the rules now: node "${toPosix(path.join(PLUGIN_ROOT, 'bin', 'rules.mjs'))}" (P-021)`;
+export const rulesLostLine = (parts) => `rules: part ${parts.join(' and ')} of the rules did not reach this session (its start hook did not finish): ${RULES_READ_WAY}`;
+
 /** The stamp of this boot as stampBootPull wrote it, or null. */
 export function readBootStamp(brainDir, sessionId) {
   if (!brainDir || !sessionId) return null;
@@ -157,7 +186,7 @@ export function waitBootPull(brainDir, sessionId, { since = Date.now() - 30_000,
 
 // `rulesHook`: item 1 comes from session-start-rules.mjs (Claude Code); the hash is recorded, on resume it is left as it is.
 // `authors`: record authors (scripts/authors.mjs) the caller already read; else read here, the one git call they cost.
-export function buildBootContext(ctx, { source = 'startup', harness = 'claude-code', includeRules = true, rulesHook = false, t3Note = null, catalogLines = [], authors = null } = {}) {
+export function buildBootContext(ctx, { source = 'startup', harness = 'claude-code', includeRules = true, rulesHook = false, t3Note = null, catalogLines = [], authors = null, session = null, startedAt = Date.now(), brainCurrent = false } = {}) {
   const limits = ctx.policy?.limits || {};
   const notices = [];
   const parts = [];
@@ -203,8 +232,8 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
     const recorded = recordRules ? { rules_hash: rulesHash(rules.text), rules_sections: rulesSections(rules.text) } : null;
     // A compaction runs inside a turn: the turn keeps who started it (a turn a message started read as the operator's
     // after it and the locks of P-047 were off, audit 2026-11-22). Any other start is before the first prompt of the session.
-    updateThreadState(ctx.brainDir, ctx.thread, (state) => ({ ...state, turn_source: source === 'compact' ? state.turn_source || 'operator' : 'operator', session_source: source, mail_signaled: info.mail.count, last_status: info.line, rules_hash: recorded ? recorded.rules_hash : state.rules_hash ?? null, rules_sections: recorded ? recorded.rules_sections : state.rules_sections ?? null, rules_hook: rulesHook }));
-    registerHeldTopics(ctx, info);
+    updateThreadState(ctx.brainDir, ctx.thread, (state) => ({ ...state, turn_source: source === 'compact' ? state.turn_source || 'operator' : 'operator', session_source: source, mail_signaled: info.mail.count, last_status: info.line, rules_hash: recorded ? recorded.rules_hash : state.rules_hash ?? null, rules_sections: recorded ? recorded.rules_sections : state.rules_sections ?? null, rules_hook: rulesHook, rules_start: recorded && rulesHook && session ? { session, at: new Date(startedAt).toISOString() } : state.rules_start ?? null }));
+    registerHeldTopics(ctx, info, brainCurrent);
   }
   if (source === 'compact' && ctx.brainDir) {
     // The compaction summary is no source of rules (agentic-flow-public#18: a thread begun before a migration took the

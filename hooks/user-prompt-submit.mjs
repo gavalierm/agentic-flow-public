@@ -9,7 +9,7 @@ import path from 'node:path';
 import { readHookInput, emitAndExit, contextOutput, isMain, enforceLines } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState, updateThreadState, patchThreadState } from '../scripts/config.mjs';
 import { deployedSkillName } from '../scripts/skills-sync.mjs';
-import { statusInfo, rulesHash, rulesSections, changedRules, BOOT_MARKERS } from '../scripts/boot.mjs';
+import { statusInfo, rulesHash, rulesSections, changedRules, missingRulesParts, rulesLostLine, BOOT_MARKERS } from '../scripts/boot.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
 import { recordTurn, runClientAsync, promptMail, mailNoticeLine, heldMailLine, isMainTopic, turnDiscussion, recentLine, OWED_PREFIX, OWED_LINE, unansweredOwed, ageText, supervisorOf, fromSupervisor, mailSenders } from '../scripts/comms.mjs';
 import { migrateLocalMail } from '../scripts/comms-migrate.mjs';
@@ -439,6 +439,9 @@ export async function run(input) {
     // No hash after a Claude Code resume: session-start-rules.mjs brought the current rules (Codex keeps no hash, rules_hook false).
     if ((!hash && state.rules_hook) || (hash && now !== hash)) { hash = now; sections = rulesSections(rules.text); }
   }
+  // The first prompt after a start: a part of the rules its hook did not bring is named once, with the way (audit 2026-11-22).
+  const lostRules = state?.rules_hook && state.rules_start ? missingRulesParts(ctx.brainDir, state.rules_start) : [];
+  if (lostRules.length) extras.unshift(rulesLostLine(lostRules));
   // P-036: thread title follows the topic (not in bell turns, they handle one thing).
   const title = !BELLS.includes(kind) ? threadTitleSignal(ctx, info.held, state) : null;
   if (title?.line) extras.push(title.line);
@@ -498,7 +501,7 @@ export async function run(input) {
   // so what a background agent's hook or the wake job wrote meanwhile stays. The lists (timers, wakers, queued signals,
   // the operator's prompts) are changed from their current value: a signal queued after the read stays for the next prompt.
   const shown = Array.isArray(state?.pending_signals) ? state.pending_signals : [];
-  if (state) updateThreadState(ctx.brainDir, ctx.thread, (cur) => ({ ...cur, ...split.patch, ...keepTimer(cur), ...progress, ...taskSpent(cur), ...(upd?.patch || {}), ...operatorPrompts(cur), turn_started_at: startedAt, topic_gate: gate ? startedAt : null, ...(title?.patch || {}), turn_source: turnSource, turn_supervisor: supervisorMail, discussion, turn_intent: turnIntent, turn_protocol_only: protocolOnly, pending_signals: [...(quietBell ? pending : []), ...(cur.pending_signals || []).filter((l) => !shown.includes(l))], mail_signaled: messageBell ? signaled : info.mail.count, mail_held_signaled: heldKey, mail_cursor: cursor, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections }));
+  if (state) updateThreadState(ctx.brainDir, ctx.thread, (cur) => ({ ...cur, ...split.patch, ...keepTimer(cur), ...progress, ...taskSpent(cur), ...(upd?.patch || {}), ...operatorPrompts(cur), turn_started_at: startedAt, topic_gate: gate ? startedAt : null, ...(title?.patch || {}), turn_source: turnSource, turn_supervisor: supervisorMail, discussion, turn_intent: turnIntent, turn_protocol_only: protocolOnly, pending_signals: [...(quietBell ? pending : []), ...(cur.pending_signals || []).filter((l) => !shown.includes(l))], mail_signaled: messageBell ? signaled : info.mail.count, mail_held_signaled: heldKey, mail_cursor: cursor, turn_opened_at: openedAt, last_status: info.line, rules_hash: hash, rules_sections: sections, rules_start: state.rules_start && cur.rules_start?.at === state.rules_start.at ? null : cur.rules_start ?? null }));
   if (extras.length) lines.push(extras.join('; '));
   const limited = enforceLines(lines.join('\n'), ctx.policy?.limits?.hook_signal_lines ?? 2);
   // Nothing new: empty context (contextOutput leaves additionalContext out).

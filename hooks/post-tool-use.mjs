@@ -14,7 +14,7 @@ import { mailCountAsync, recordWaitingOperator, categoryOf } from '../scripts/co
 import { mailboxTopics } from '../scripts/topic.mjs';
 import path from 'node:path';
 import { heldTopics, topicCopyPath, taskCopyPaths } from '../scripts/topic.mjs';
-import { pushFailureLines } from '../scripts/push-hook.mjs';
+import { pushFailureLines, clearPushFailures } from '../scripts/push-hook.mjs';
 import { settleCall, settleShell, recordScratch, inWorkScratch } from '../scripts/own-files.mjs';
 import { bashTargets, bashEdits } from './pre-tool-use.mjs';
 import { wakerFromTool, recordWaker } from '../scripts/waker.mjs';
@@ -213,7 +213,7 @@ export async function run(input, now = Date.now()) {
   if (!input.agent_id) { try { published = recordPublish(ctx, input, now); } catch { /* the record never fails the hook */ } }
   // P-078: a work file shown to the operator (Artifact, html_preview) is a result of the held topic, saved at once.
   const shown = !input.agent_id && input.hook_event_name !== 'PostToolUseFailure' ? saveShown(ctx, input, published, now) : null;
-  settleCall(ctx, input.tool_use_id, changedFiles(input));
+  settleCall(ctx, input.tool_use_id, changedFiles(input), input.hook_event_name !== 'PostToolUseFailure' && input.tool_response?.interrupted !== true);
   // report-143e7cdb: what this thread leaves in a scratch/ is its own; another thread's recursive rm of the dir asks (P-018).
   // The work files are in the topic home (a brain in layout 2, D-0056), isSessionWorkPath.
   recordScratch(ctx, changedFiles(input), (abs) => (ctx.projectDir && isSessionWorkPath(ctx.brainDir, ctx.projectDir, abs)) || inWorkScratch(abs));
@@ -252,24 +252,25 @@ export function saveShown(ctx, input, url = null, now = Date.now()) {
  * Plan O16 (spec 3.7): one line per commit of a topic or task worktree of this thread that its post-commit hook could not
  * push, once, after a git command that commits. Null when nothing failed.
  */
-export function pushFailureLine(input) {
+export function pushFailureLine(input, said = null) {
   if (!['Bash', 'PowerShell'].includes(input.tool_name) || !/\b(commit|merge|cherry-pick|revert|rebase|am)\b/.test(String(input.tool_input?.command || ''))) return null;
   const ctx = loadContext({ requireBrain: false });
   if (!ctx.brainDir || !ctx.thread) return null;
   const dirs = heldTopics(ctx.brainDir, ctx.thread).flatMap((t) => [topicCopyPath(ctx, t), ...taskCopyPaths(ctx, t)]).filter(Boolean);
-  const lines = pushFailureLines(dirs);
+  const lines = pushFailureLines(dirs, said);
   return lines.length ? lines.join('\n') : null;
 }
 
 if (isMain(import.meta.url)) {
   let out = {};
+  const said = [];
   try {
     const input = readHookInput();
     out = await run(input);
-    const push = pushFailureLine(input);
+    const push = pushFailureLine(input, said);
     if (push) out = { ...out, ...contextOutput('PostToolUse', [out.hookSpecificOutput?.additionalContext, push].filter(Boolean).join('\n')) };
   } catch (err) {
     process.stderr.write(`post-tool-use: ${err.message}\n`);
   }
-  emitAndExit(out);
+  emitAndExit(out, () => clearPushFailures(said));
 }

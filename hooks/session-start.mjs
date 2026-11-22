@@ -24,6 +24,7 @@ import { indexBootLine } from '../scripts/data-index.mjs';
 export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: '9500 chars', principles: ['P-021', 'P-022', 'P-024', 'P-026', 'P-038'] };
 
 export function run(input) {
+  const startedAt = Date.now();
   let ctx;
   try {
     ctx = loadContext({ project: input.cwd && !process.env.CLAUDE_PROJECT_DIR ? input.cwd : undefined, requireBrain: false });
@@ -47,7 +48,7 @@ export function run(input) {
   const notes = [brainPullNote(pull), pinWorkflow(ctx), projectLineEndings(ctx), t3Session(ctx, input), projectMcpEnv(ctx)].filter(Boolean);
   // Catalog of project data: scan within its budget before the boot text; it never fails the boot and does nothing without a source.
   const catalog = catalogBoot(ctx, { source: input.source || 'startup', state: ctx.brainDir && ctx.thread ? readThreadState(ctx.brainDir, ctx.thread) : null });
-  const boot = buildBootContext(ctx, { source: input.source || 'startup', rulesHook: true, t3Note: notes.length ? notes.join('\n') : null, catalogLines: [...catalog.lines, ...indexLines(ctx)], authors });
+  const boot = buildBootContext(ctx, { source: input.source || 'startup', rulesHook: true, session: input.session_id || null, startedAt, brainCurrent: !!pull && !pull.error && !pull.behind, t3Note: notes.length ? notes.join('\n') : null, catalogLines: [...catalog.lines, ...indexLines(ctx)], authors });
   // P-021: the revision this session loaded; the prompt and tool hooks announce a later update once. P-001: a new or
   // compacted context starts with an empty read budget (post-tool-use readNudge). A resume keeps the context, so the
   // compaction nudge stays spent (T3 resumes the session every turn: the line repeated each turn, 2026-11-18).

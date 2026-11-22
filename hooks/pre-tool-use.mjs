@@ -1838,10 +1838,12 @@ export function run(input) {
       const key = callKey(tool, toolInput);
       const granted = (Array.isArray(st.consents_granted) ? st.consents_granted : []).filter((g) => g && (!since || g.at >= since));
       const targets = consentTargets(tool, toolInput, cwd, anchors, policy);
-      const lift = targets.length ? turnLifts(st).find((l) => !granted.some((g) => g.key === key && g.lift === l.at) && targets.every((t) => namesTarget(l.text, t, cwd))) : null;
+      // Spent = the call ran (PostToolUse took `call` off, own-files.mjs settleCall). A grant that still names its call is
+      // open: the call did not run or failed, and the same call passes again (it took a second dialog, audit 2026-11-22).
+      const lift = targets.length ? turnLifts(st).find((l) => !granted.some((g) => g.key === key && g.lift === l.at && !g.call) && targets.every((t) => namesTarget(l.text, t, cwd))) : null;
       if (lift) {
         // The list of this turn (`granted`, filtered above) plus what a parallel call recorded meanwhile.
-        updateThreadState(ctx.brainDir, ctx.thread, (cur) => ({ ...cur, consents_granted: [...(Array.isArray(cur.consents_granted) ? cur.consents_granted : []).filter((g) => g && (!since || g.at >= since)), { key, lift: lift.at, at: new Date().toISOString() }].slice(-20) }));
+        updateThreadState(ctx.brainDir, ctx.thread, (cur) => ({ ...cur, consents_granted: [...(Array.isArray(cur.consents_granted) ? cur.consents_granted : []).filter((g) => g && (!since || g.at >= since) && !(g.key === key && g.lift === lift.at)), { key, lift: lift.at, at: new Date().toISOString(), ...(input.tool_use_id ? { call: input.tool_use_id } : {}) }].slice(-20) }));
         return permissionOutput('allow', 'granted by the operator\'s answer in the dialog of this turn (D-0042)');
       }
       // The targets the dialog must name stay allowed in it for the rest of the turn (D-0039 vs P-018, report-dd7a8da4).

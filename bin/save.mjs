@@ -1121,12 +1121,15 @@ function saveMove(ctx) {
   } else if (MOVE_DECISION.test(rel)) {
     const parsed = parseFrontmatter(fs.readFileSync(abs, 'utf8'));
     const oldId = String(parsed.data.id || parsed.data.key || path.basename(rel, '.md'));
-    const id = nextRepoDecisionId(ctx.domain, repo);
+    // A move that stopped after its repo commit left the decision in the repo (moved_from names this one): the same
+    // number goes on. A second run took the next number and the decision was in the repo twice (audit 2026-11-22).
+    const there = listFiles(dataPath(repoKnowledge, 'decisions'), (f) => f.endsWith('.md')).find((f) => String(parseFrontmatter(readText(f, '')).data.moved_from || '') === `${brainName}/${oldId}`);
+    const id = there ? String(parseFrontmatter(readText(there, '')).data.id) : nextRepoDecisionId(ctx.domain, repo);
     const newRef = `${repo}/${id}`;
     const slug = path.basename(rel, '.md').replace(/^d-\d+-?/i, '') || normalizeKey(String(parsed.data.title || '')).slice(0, 40);
     // In the repo a bare D-NNNN means the repo's own decision: the moved record names brain decisions <brain>/D-NNNN.
     const content = rewriteDecisionRefs(serializeFrontmatter({ ...parsed.data, key: id, id, moved_from: `${brainName}/${oldId}`, updated: today() }, parsed.body), { bare: (d) => (d === oldId ? newRef : `${brainName}/${d}`), qualified: (s, d) => (s === brainName && d === oldId ? newRef : null) });
-    ops = [{ path: dataRel(repoKnowledge, 'decisions', `${id.toLowerCase()}-${slug}.md`), content }];
+    ops = there ? [{ path: relPosix(repoKnowledge, there), content: readText(there, '') }] : [{ path: dataRel(repoKnowledge, 'decisions', `${id.toLowerCase()}-${slug}.md`), content }];
     removed = [rel];
     const old = (s, d) => s === brainName && d === oldId;
     brainEdit = (text) => rewriteDecisionRefs(text, { bare: (d) => (d === oldId ? newRef : null), qualified: (s, d) => (old(s, d) ? newRef : null) });
@@ -1175,8 +1178,13 @@ function saveMove(ctx) {
     return;
   }
   const exists = ops.map((o) => path.join(repoKnowledge, o.path)).find((f) => fs.existsSync(f));
-  if (exists) fail(`${toPosixPath(path.relative(ctx.domain.root, exists))} already exists in the repo; nothing moved`);
-  out(formatRepoWrite(repoWrite(ctx, repo, { ops, message: `move ${brainName}/${rel} into ${repo}`, rewrite: repoEdit ? repoOps : null })));
+  // The repo holds exactly what this move writes: an earlier run stopped between its two commits. It goes on with the
+  // brain part. Before, the second run said "already exists", a brain save said "save it with --repo" and a repo save
+  // said "move it": no command finished the move.
+  const half = !!exists && ops.every((o) => readText(path.join(repoKnowledge, o.path), null) === o.content);
+  if (exists && !half) fail(`${toPosixPath(path.relative(ctx.domain.root, exists))} already exists in the repo with another content; nothing moved`);
+  if (half) out(`${target.join(', ')} is in the repo already (an earlier move stopped there); the move goes on with the brain part`);
+  else out(formatRepoWrite(repoWrite(ctx, repo, { ops, message: `move ${brainName}/${rel} into ${repo}`, rewrite: repoEdit ? repoOps : null })));
   let res;
   try {
     res = brainWrite(ctx, { ops: [...removed.map((r) => ({ path: r, remove: true })), ...brainOps], message: `move ${rel} to ${repoHome(ctx, repo)}`, env: { WORKFLOW_DECISION_MOVED: removed.join(',') } });

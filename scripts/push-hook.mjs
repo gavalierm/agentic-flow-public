@@ -86,11 +86,16 @@ export function pushBranch(dir, branch) {
   return push.ok ? null : `push of ${branch} failed: ${push.stderr.split('\n').find((l) => l.trim()) || 'unknown error'}`;
 }
 
+/** The marks `pushFailureLines` gave in `said`, removed once their lines are out. */
+export const clearPushFailures = (marks) => { for (const mark of marks) fs.rmSync(mark, { force: true }); };
+
 /**
  * One line per failed push the post-commit hook left in the git dir of the worktrees `dirs` (PostToolUse, plan O16);
- * each is reported once (the mark is removed).
+ * each is reported once. `said` (an array) gets the marks instead of their removal: the caller removes them after its output
+ * is written, so a hook that stops before it says the line again (the line was lost and the commit stayed on one machine
+ * without a word, audit 2026-11-22). Without `said` the mark is removed here.
  */
-export function pushFailureLines(dirs) {
+export function pushFailureLines(dirs, said = null) {
   const lines = [];
   for (const dir of dirs) {
     if (!dir || !fs.existsSync(dir)) continue;
@@ -98,7 +103,7 @@ export function pushFailureLines(dirs) {
     const mark = gitDir && path.join(gitDir, PUSH_FAILED);
     if (!mark || !fs.existsSync(mark)) continue;
     const [branch, why] = fs.readFileSync(mark, 'utf8').trim().split('\t');
-    fs.rmSync(mark, { force: true });
+    if (said) said.push(mark); else fs.rmSync(mark, { force: true });
     lines.push(`push: ${branch} of ${toPosix(dir)} not pushed (${why || 'unknown error'}); the commit is only on this machine: fix the cause and push it (git -C ${toPosix(dir)} push origin ${branch}); a push refused as not fast-forward means another holder pushed after you (spec 4.2.4)`);
   }
   return lines;

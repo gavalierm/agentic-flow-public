@@ -4,7 +4,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { git } from './util.mjs';
+import { git, readJson, dropStaleGitLocks, gitLockHint, toPosix } from './util.mjs';
+import { stamp, live } from './lock.mjs';
 
 const semver = (t) => (/^v(\d+)\.(\d+)\.(\d+)$/.exec(t) || []).slice(1).map(Number);
 const newer = (a, b) => { const x = semver(a), y = semver(b); for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i]; return false; };
@@ -15,12 +16,50 @@ const releaseTags = (root) => git(['tag', '-l', 'v*'], { cwd: root }).stdout.spl
 /** Newest of `tags` not older than `from` (null: any), optionally within major version `maj`. */
 const newest = (tags, from, maj = null) => tags.filter((t) => maj === null || major(t) === maj).reduce((b, t) => (!b || newer(t, b) ? t : b), from);
 
+// The switch of an installed release is a checkout of every changed file. One that stops in the middle (killed at the
+// hook's time limit, or Windows: "unable to unlink old" on a file a program holds, exit 0) left a mix of two releases:
+// it was reported as "updated" and every later start said "skipped: local changes in the clone" (audit 2026-11-22).
+// The note says a switch is under way; the next run finishes it. The tree was clean before the switch, so every file
+// in it is of one of the two releases, nobody's work: the finish may force the checkout.
+const switchNote = (root) => path.join(root, '.git', 'workflow-switch.note');
+const dirtyOf = (root) => git(['status', '--porcelain', '--untracked-files=no'], { cwd: root }).stdout;
+
+/**
+ * Checkout of release `to` in the installed clone `root`, done only when every file is of that release.
+ * -> { ok } or { ok: false, reason }; the note stays after a failure and the next call finishes the switch.
+ */
+export function switchRelease(root, to, { force = false } = {}) {
+  fs.writeFileSync(switchNote(root), JSON.stringify({ ...stamp(), to }));
+  const co = git(['-c', 'advice.detachedHead=false', 'checkout', '--quiet', ...(force ? ['--force'] : []), to], { cwd: root });
+  if (!co.ok) {
+    // Refused before it changed a file (a first try on a clean tree): nothing is half done.
+    if (!force && !dirtyOf(root)) fs.rmSync(switchNote(root), { force: true });
+    return { ok: false, reason: `git checkout: ${gitLockHint(co.stderr) || co.stderr.split('\n')[0]}` };
+  }
+  const left = dirtyOf(root);
+  if (left) return { ok: false, reason: `the checkout of ${to} left ${left.split('\n').length} file(s) of the other release (a program holds them: ${left.split('\n').slice(0, 3).map((l) => l.replace(/^\s*\S+\s+/, '')).join(', ')}); the next session start finishes it` };
+  fs.rmSync(switchNote(root), { force: true });
+  return { ok: true };
+}
+
+/** A switch that stopped is finished first: null when there is none or it is done now, else the result to return. */
+export function finishSwitch(root) {
+  const note = readJson(switchNote(root), null);
+  if (!note?.to) return null;
+  if (note.pid && live(note)) return { status: 'skipped', to: note.to, reason: `another process switches this install to ${note.to} now` };
+  dropStaleGitLocks(root);
+  const done = switchRelease(root, note.to, { force: true });
+  return done.ok ? null : { status: 'failed', to: note.to, reason: `a switch to ${note.to} that stopped half way could not be finished: ${done.reason}` };
+}
+
 /** Release install on a clean tree: { tag } or a skipped result (a development or dirty clone is never switched). */
 function releaseInstall(root) {
   if (git(['symbolic-ref', '-q', 'HEAD'], { cwd: root }).ok) return { status: 'skipped', dev: true, reason: 'the clone is on a branch (development clone)' };
+  const half = finishSwitch(root);
+  if (half) return half;
   const cur = git(['describe', '--tags', '--exact-match', '--match', 'v*'], { cwd: root });
   if (!cur.ok || !semver(cur.stdout).length) return { status: 'skipped', reason: 'not a release install (HEAD is not on a release tag)' };
-  if (git(['status', '--porcelain'], { cwd: root }).stdout) return { status: 'skipped', from: cur.stdout, reason: 'local changes in the clone' };
+  if (git(['status', '--porcelain'], { cwd: root }).stdout) return { status: 'skipped', from: cur.stdout, reason: `local changes in the clone (an installed release is never edited in place; see them: git -C ${toPosix(root)} status; drop them: git -C ${toPosix(root)} checkout -f ${cur.stdout})` };
   return { tag: cur.stdout };
 }
 
@@ -80,8 +119,8 @@ export function pinClone(root, version, { min = PIN_MIN } = {}) {
     if (!fetch.ok) return { status: 'failed', from: inst.tag, to: want, reason: `git fetch: ${fetch.stderr.split('\n')[0]}` };
     if (!has()) return { status: 'failed', from: inst.tag, to: want, reason: `release ${want} does not exist` };
   }
-  const co = git(['checkout', '--quiet', want], { cwd: root });
-  if (!co.ok) return { status: 'failed', from: inst.tag, to: want, reason: `git checkout: ${co.stderr.split('\n')[0]}` };
+  const co = switchRelease(root, want);
+  if (!co.ok) return { status: 'failed', from: inst.tag, to: want, reason: co.reason };
   return { status: 'updated', from: inst.tag, to: want };
 }
 
@@ -131,7 +170,7 @@ export function updateClone(root, { major: maj = null } = {}) {
   const best = maj === null ? newest(tags, cur.stdout, major(cur.stdout)) : newest(tags, major(cur.stdout) === maj ? cur.stdout : null, maj);
   if (!best) return { status: 'failed', from: cur.stdout, to: String(maj), reason: `no release of major version ${maj} exists` };
   if (best === cur.stdout) return { status: 'current', from: cur.stdout, to: best };
-  const co = git(['checkout', '--quiet', best], { cwd: root });
-  if (!co.ok) return { status: 'failed', from: cur.stdout, to: best, reason: `git checkout: ${co.stderr.split('\n')[0]}` };
+  const co = switchRelease(root, best);
+  if (!co.ok) return { status: 'failed', from: cur.stdout, to: best, reason: co.reason };
   return { status: 'updated', from: cur.stdout, to: best };
 }

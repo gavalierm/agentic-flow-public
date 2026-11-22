@@ -18,7 +18,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { readJson, PLUGIN_ROOT, toPosix } from './util.mjs';
+import { readJson, writeJson, PLUGIN_ROOT, toPosix } from './util.mjs';
+import { withLock } from './lock.mjs';
 import { machineName, servicesDir, threadStateFile } from './config.mjs';
 import { knownBrains } from './update.mjs';
 import { PERSONA_REPO_RE, PERSONA_PREFIX } from './persona-name.mjs';
@@ -834,7 +835,7 @@ export function recordWaitingOperator(ctx, waiting, openedAt = null) {
  * on operator instruction, P-037, P-045); `release: true` clears the holder (client flags `--takeover`, `--release`);
  * `close: true` marks the closed topic closed: the mail refuses new mail for it (410) and bounces what still waits.
  */
-export function registerTopic(ctx, topicId, { holder = undefined, subject, takeover = false, release = false, close = false } = {}) {
+export function registerTopic(ctx, topicId, { holder = undefined, subject, takeover = false, release = false, close = false, project: inProject = null } = {}) {
   const s = commsSettings(ctx);
   if (!s.enabled) return { ok: false, reason: s.reason, topic: topicId, project: s.project, skipped: true };
   const record = ctx.brainDir ? readTopicRecord(ctx.brainDir, topicId) || readTopicRecord(ctx.brainDir, topicId, { closed: true }) || {} : {};
@@ -842,7 +843,7 @@ export function registerTopic(ctx, topicId, { holder = undefined, subject, takeo
   // Topic `main` of a persona is its main thread `@<persona>/main` in the mail service (P-045).
   const main = isMainTopic({ id: topicId, ...topic });
   // D-0035: a topic that records its project is registered there, else under the session's project (mail model 3).
-  const project = topicProject(s, topic);
+  const project = inProject || topicProject(s, topic);
   const args = main
     ? ['register-topic', '--persona', s.project, '--main']
     : ['register-topic', '--project', project, '--topic', topicId, '--subject', topic.subject || topicId];
@@ -866,6 +867,56 @@ export function registerTopic(ctx, topicId, { holder = undefined, subject, takeo
   return { ok: true, created: !!res.data.created, topic: main ? 'main' : topicId, project: main ? `@${s.project}` : project, holder: h || null, moved: res.data.moved || null, moved_from: res.data.moved_from || null };
 }
 
+// The mail part of a close (done --topic) or of a release that the mail did not take (an outage). Nothing named the
+// topic again: a closed topic is gone from the brain in layout 3, so the mail kept it open with its holder and took mail
+// nobody read, though done said "the next session start retries"; a released topic kept its old holder in the mail and
+// the bell went to that thread (audit 2026-11-22). The list is the workflow's own duty, not a copy of the mail's state
+// (P-072): an entry goes when the mail answered. One file for all threads of the brain: changed under a lock.
+const pendingMailFile = (brainDir) => dataPath(brainDir, 'local', 'mail-pending.json');
+const samePending = (a, b) => a.id === b.id && a.project === b.project && a.op === b.op;
+function changePendingMail(brainDir, change) {
+  try {
+    withLock(`${pendingMailFile(brainDir)}.lock`, { waitMs: 3000, staleMs: 30000 }, () => {
+      const now = readJson(pendingMailFile(brainDir), []);
+      const next = change(Array.isArray(now) ? now : []);
+      if (next.length) writeJson(pendingMailFile(brainDir), next);
+      else fs.rmSync(pendingMailFile(brainDir), { force: true });
+    });
+  } catch { /* the step stays undone until the next run that can write */ }
+}
+
+/** One mail step of a topic that ends its holder; a step the mail could not take is kept for the next session start. */
+function endInMail(ctx, id, op) {
+  const res = registerTopic(ctx, id, op === 'close' ? { close: true } : { holder: null, release: true });
+  if (!ctx.brainDir || res.ok || res.skipped) return res;
+  const entry = { id, project: res.project, op, at: new Date().toISOString() };
+  if (res.unavailable) changePendingMail(ctx.brainDir, (list) => (list.some((p) => samePending(p, entry)) ? list : [...list, entry]));
+  return res;
+}
+/** Close topic `id` in the mail (done --topic). */
+export const closeTopicInMail = (ctx, id) => endInMail(ctx, id, 'close');
+/** The mail stops carrying a holder of topic `id` (release, handoff). */
+export const releaseTopicInMail = (ctx, id) => endInMail(ctx, id, 'release');
+
+/** The kept steps, tried again; stops at the first outage. Returns the ids closed now. */
+function settlePendingMail(ctx) {
+  const list = readJson(pendingMailFile(ctx.brainDir), null);
+  if (!Array.isArray(list) || !list.length) return [];
+  const settled = [];
+  const closed = [];
+  for (const p of list) {
+    // A topic that is held again: its claim registered the new holder, the old release must not take it away.
+    const r = p.op === 'release' && readHolderRecord(ctx.brainDir, p.id).thread ? { ok: true }
+      : registerTopic(ctx, p.id, { ...(p.op === 'close' ? { close: true } : { holder: null, release: true }), project: p.project });
+    if (r.unavailable) break;
+    // Done, or refused by the mail (it does not know the topic any more): the same call would get the same answer.
+    settled.push(p);
+    if (r.ok && p.op === 'close') closed.push(p.id);
+  }
+  if (settled.length) changePendingMail(ctx.brainDir, (now) => now.filter((p) => !settled.some((d) => samePending(p, d))));
+  return closed;
+}
+
 /**
  * Archived topics (topics/archive/<id>) the mail service still holds open are closed there. Topics archived before the
  * mail knew `close` kept their holder and took mail nobody read (alice 2026-11-02). Which ones the mail closed already is
@@ -875,14 +926,14 @@ export function registerTopic(ctx, topicId, { holder = undefined, subject, takeo
 export function closeArchivedTopics(ctx) {
   const s = commsSettings(ctx);
   if (!s.enabled || !ctx.brainDir) return [];
+  const out = settlePendingMail(ctx);
   // Layout 1: the folders of topics/archive; layout 2: the topics with state closed (they stay in temy/).
   const closed = listTopicRecords(ctx.brainDir, { closed: true }).map((t) => t.id).filter((id) => id !== MAIN_TOPIC);
-  if (!closed.length) return [];
+  if (!closed.length) return out;
   const recs = new Map(listTopicRecords(ctx.brainDir, { closed: true }).map((t) => [t.id, t]));
   const res = readObligations(ctx, { topics: closed.map((id) => `${topicProject(s, recs.get(id))}/${id}`), thread: null });
-  if (!res.ok || res.data?.offline) return [];
+  if (!res.ok || res.data?.offline) return out;
   const open = new Set((res.data.topics || []).filter((t) => t.registered && t.state !== 'closed').map((t) => t.topic));
-  const out = [];
   for (const id of closed) {
     if (!open.has(id)) continue;
     const r = registerTopic(ctx, id, { close: true });

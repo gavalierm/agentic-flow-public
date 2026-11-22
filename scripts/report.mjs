@@ -12,7 +12,8 @@ import { spawnSync } from 'node:child_process';
 import { DEFAULT_TOKEN_FILE, DEFAULT_API_URL, gh } from './github.mjs';
 import { recordIssue } from './issue-watch.mjs';
 import { commsSettings, runClient, parseAddress, formatAddress, addressArgs, ambiguousLine, markMaintainerMail, MAIL_FIX } from './comms.mjs';
-import { PLUGIN_ROOT, toPosix } from './util.mjs';
+import { PLUGIN_ROOT, toPosix, writeJson } from './util.mjs';
+import { withLock } from './lock.mjs';
 import { channelOf } from './config.mjs';
 import { parseFrontmatter, asList } from './frontmatter.mjs';
 import { LAYOUT, dataPath, dataRel } from './layout.mjs';
@@ -138,10 +139,16 @@ export function reportsFile(ctx) {
 export function readReports(ctx) {
   try { return JSON.parse(fs.readFileSync(reportsFile(ctx), 'utf8')) || {}; } catch { return {}; }
 }
+// Every thread of the brain writes this one file: read, change and write under a lock, in one piece (writeJson). Two
+// reports at the same moment lost one record, and its --from then said "send it again": a second report (audit 2026-11-22).
 function writeReport(ctx, id, rec) {
-  const all = readReports(ctx);
-  all[id] = { ...(all[id] || {}), ...rec };
-  try { fs.mkdirSync(path.dirname(reportsFile(ctx)), { recursive: true }); fs.writeFileSync(reportsFile(ctx), `${JSON.stringify(all, null, 2)}\n`); } catch { /* the record only helps the late fallback */ }
+  try {
+    withLock(`${reportsFile(ctx)}.lock`, { waitMs: 3000, staleMs: 30000 }, () => {
+      const all = readReports(ctx);
+      all[id] = { ...(all[id] || {}), ...rec };
+      writeJson(reportsFile(ctx), all);
+    });
+  } catch { /* the record only helps the late fallback */ }
 }
 
 /**

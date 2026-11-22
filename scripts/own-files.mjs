@@ -113,8 +113,13 @@ export function claimForCall(ctx, id, { own = [], born = [] } = {}) {
   });
 }
 
-/** PostToolUse of the call `id`: its claims get the hash of what the thread left (a deleted file leaves the list), its new files join the created ones. */
-export function settleCall(ctx, id, files) {
+/**
+ * PostToolUse of the call `id`: its claims get the hash of what the thread left (a deleted file leaves the list), its new
+ * files join the created ones. A consent of the operator that let the call pass (consents_granted, `call: id`) is spent
+ * when the call ran (`ran`); a call that failed or was interrupted gives it back, so the same call passes again without
+ * a second dialog. A call with no PostToolUse at all (the turn was stopped) leaves it open the same way.
+ */
+export function settleCall(ctx, id, files, ran = true) {
   if (!ctx.brainDir || !ctx.thread) return;
   const state = readThreadState(ctx.brainDir, ctx.thread);
   const edits = state.own_edits || {};
@@ -122,11 +127,14 @@ export function settleCall(ctx, id, files) {
   const changes = {};
   for (const abs of files) if (isPending(edits[abs]) && edits[abs].startsWith(mine)) changes[abs] = fileHash(abs) || null;
   const waiting = id ? state.created_pending?.[id] : null;
-  if (!Object.keys(changes).length && !waiting) return;
+  const consent = !!id && (state.consents_granted || []).some((g) => g?.call === id);
+  if (!Object.keys(changes).length && !waiting && !consent) return;
   const born = (waiting || []).filter((abs) => fs.existsSync(abs));
   updateThreadState(ctx.brainDir, ctx.thread, (cur) => {
     const { [id]: _, ...rest } = cur.created_pending || {};
-    return withOwnEdits(withCreated({ ...cur, created_pending: rest }, born), changes);
+    const next = withOwnEdits(withCreated({ ...cur, created_pending: rest }, born), changes);
+    if (!consent) return next;
+    return { ...next, consents_granted: (next.consents_granted || []).filter((g) => ran || g?.call !== id).map((g) => { if (g?.call !== id) return g; const { call: _c, ...spent } = g; return spent; }) };
   });
 }
 

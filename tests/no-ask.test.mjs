@@ -64,9 +64,13 @@ test('D-0042 with D-0039: the dialog may name the paths of a step refused for co
     assert.match(out.permissionDecisionReason, /local\/cache\/ine\.json \(file path\)/);
     assert.match(out.permissionDecisionReason, /targets of a step refused for consent \(P-018\)/);
     fx.hook('post-tool-use.mjs', { tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: q, header: 'Zmazanie', options: [{ label: 'Zmazať (Recommended)' }, { label: 'Nechať' }] }] }, tool_response: { answers: { [q]: 'Zmazať (Recommended)' } } });
-    const granted = bash(fx, cmd);
+    const call = { tool_name: 'Bash', tool_input: { command: cmd }, cwd: fx.project, tool_use_id: 'c1' };
+    const granted = fx.hook('pre-tool-use.mjs', call).json?.hookSpecificOutput || {};
     assert.equal(granted.permissionDecision, 'allow', granted.permissionDecisionReason);
     assert.ok(fs.existsSync(other), 'nothing else is touched');
+    // One yes, one run: the consent is spent when the call ran (PostToolUse), not before it (audit 2026-11-22).
+    fx.hook('post-tool-use.mjs', { ...call, hook_event_name: 'PostToolUse', tool_response: { stdout: '' } });
+    assert.equal(bash(fx, cmd).permissionDecision, 'deny', 'the same call after its run needs a new yes');
   } finally { fx.cleanup(); }
 });
 

@@ -1,7 +1,7 @@
 // Single writer for the brain repository (P-040, P-037, P-025, P-013).
 import fs from 'node:fs';
 import path from 'node:path';
-import { git, gitRetry, gitRemote, remoteDiagnosis, readJson, toPosix, removeTree, dropStaleGitLocks, gitLockHint, PLUGIN_ROOT } from './util.mjs';
+import { git, gitRetry, gitRemote, remoteDiagnosis, readJson, toPosix, removeTree, dropStaleGitLocks, gitLockHint, cutShort, PLUGIN_ROOT } from './util.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv, inSubagent, machineName, sameMachine } from './config.mjs';
 import { checkBrainFile } from './brain-checks.mjs';
 import { withLock as dirLock, stamp, live } from './lock.mjs';
@@ -143,13 +143,12 @@ function undoHalfForward(brainDir, { from, to }, say) {
   const there = paths.filter((rel) => fs.existsSync(path.join(brainDir, rel)));
   const hashes = there.length ? git(['hash-object', '--stdin-paths'], { cwd: brainDir, input: `${there.join('\n')}\n` }).stdout.split('\n') : [];
   const now = new Map(there.map((rel, i) => [rel, hashes[i]]));
-  // The file git was writing when it died holds the start of the new content.
-  const cutShort = (rel) => { try { return git(['cat-file', 'blob', next.get(rel)], { cwd: brainDir }).stdout.startsWith(fs.readFileSync(path.join(brainDir, rel), 'utf8').trimEnd()); } catch { return false; } };
   const back = paths.filter((rel) => {
     if (!old.has(rel)) return now.has(rel);
     if (!now.has(rel)) return true;
     if (now.get(rel) === old.get(rel)) return false;
-    return next.has(rel) && (now.get(rel) === next.get(rel) || cutShort(rel));
+    // The file git was writing when it died holds the start of the new content.
+    return next.has(rel) && (now.get(rel) === next.get(rel) || cutShort(brainDir, next.get(rel), rel));
   });
   if (!back.length) return;
   backToHead(brainDir, back);

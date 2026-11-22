@@ -10,6 +10,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { readThreadState, updateThreadState } from './config.mjs';
 import { PLUGIN_ROOT, writeJson } from './util.mjs';
+import { withLock } from './lock.mjs';
 
 /**
  * Absolute paths in the prompt of a recurring task whose folder does not exist (alice 2026-11-19: the daily report sent
@@ -308,17 +309,28 @@ export function readTimerIndex(env = process.env) {
     return d && typeof d.threads === 'object' && d.threads ? d : { threads: {} };
   } catch { return { threads: {} }; }
 }
-export function writeTimerIndex(idx, env = process.env) {
-  writeJson(timerIndexFile(env), idx);
+/**
+ * One change of the index: read, `change(idx)` (true = write), write, under a lock. Every writer goes through here. The
+ * wake job read the index, ran its checks for seconds and wrote its old copy back: a thread that registered meanwhile
+ * was gone and nothing checked its condition (audit 2026-11-22). Serial on purpose: the file is shared by all threads.
+ */
+export function updateTimerIndex(change, env = process.env) {
+  return withLock(`${timerIndexFile(env)}.lock`, { waitMs: 3000, staleMs: 30000 }, () => {
+    const idx = readTimerIndex(env);
+    if (change(idx)) writeJson(timerIndexFile(env), idx);
+    return idx;
+  });
 }
 /** Register the thread of `ctx` (brain, project dir: the check's cwd and the mail settings of its turn). Never throws. */
 export function registerTimerThread(ctx, env = process.env) {
   try {
     if (!ctx?.brainDir || !ctx.thread) return;
-    const idx = readTimerIndex(env);
-    const cur = idx.threads[ctx.thread];
-    if (cur?.brain === ctx.brainDir && cur?.project === ctx.projectDir) return;
-    idx.threads[ctx.thread] = { brain: ctx.brainDir, project: ctx.projectDir || null, since: new Date().toISOString() };
-    writeTimerIndex(idx, env);
+    const same = (cur) => cur?.brain === ctx.brainDir && cur?.project === ctx.projectDir;
+    if (same(readTimerIndex(env).threads[ctx.thread])) return;
+    updateTimerIndex((idx) => {
+      if (same(idx.threads[ctx.thread])) return false;
+      idx.threads[ctx.thread] = { brain: ctx.brainDir, project: ctx.projectDir || null, since: new Date().toISOString() };
+      return true;
+    }, env);
   } catch { /* the prompt hook still checks the timer when it rings */ }
 }

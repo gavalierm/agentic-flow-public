@@ -202,6 +202,11 @@ export function removeTree(abs) {
   return left;
 }
 
+/** The file `rel` of `dir` holds only the start of the blob `ref`: git was writing it when it died. */
+export function cutShort(dir, ref, rel) {
+  try { return git(['cat-file', 'blob', ref], { cwd: dir }).stdout.startsWith(fs.readFileSync(path.join(dir, rel), 'utf8').trimEnd()); } catch { return false; }
+}
+
 /**
  * Removes the lock files a killed git left in `dir` (index.lock, HEAD.lock, packed-refs.lock, a ref lock: git fails on
  * each of them for good, "Unable to create '….lock': File exists"). Only files older than staleMs: a git that runs holds

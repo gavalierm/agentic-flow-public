@@ -25,7 +25,7 @@
 // unless the message was the supervisor's instruction (plan O7: done within the mandate, spec 5.2).
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseArgs, fail, nowIso, git, gitRemote, removeTree } from '../scripts/util.mjs';
+import { parseArgs, fail, nowIso, git, gitRemote, removeTree, toPosix } from '../scripts/util.mjs';
 import { loadContext, isWakeTurn, supervisorTurn, dialogAnsweredInTurn, inSubagent, foreignProjectCwd, resolveBrain, threadId, loadPolicy, brainScriptEnv } from '../scripts/config.mjs';
 import { brainWrite, brainSync, formatWriteResult, readHolder, isHolderOf } from '../scripts/brain.mjs';
 import { freeHandover, renderHandover, sectionItems, QUESTIONS_SECTION, TASKS_SECTION } from '../scripts/brain-checks.mjs';
@@ -33,9 +33,9 @@ import { mergeWithIndex, INDEX_FILE, refreshIndex } from '../scripts/data-index.
 import { closedTopicsPlan, archiveClosed, formatClosedPlan } from '../scripts/archive-closed.mjs';
 import { recordNames, existingNames } from '../scripts/logs.mjs';
 import { rejectedProposal } from '../scripts/find.mjs';
-import { heldTopics, readTopic, freePointMail, hasCodeCopy, codeCopyPath, topicRel, topicOp, holderOp, closedTopicDir, topicRepoContext, isDiscussionMode, removeTaskCopies } from '../scripts/topic.mjs';
+import { heldTopics, readTopic, freePointMail, hasCodeCopy, codeCopyPath, topicRel, topicOp, holderOp, closedTopicDir, topicRepoContext, isDiscussionMode, removeTaskCopies, worktreeEntry, finishWorktree } from '../scripts/topic.mjs';
 import { dataPath, dataRel, layoutOf, topicHome, topicWorkLabel, hasData } from '../scripts/layout.mjs';
-import { registerTopic } from '../scripts/comms.mjs';
+import { closeTopicInMail } from '../scripts/comms.mjs';
 import { buildIndexes } from '../scripts/index.mjs';
 import { bellContinuation } from '../scripts/waker.mjs';
 import { asList } from '../scripts/frontmatter.mjs';
@@ -163,15 +163,18 @@ function unitMerge3(ctx, id, topic) {
  * Uncommitted files of the main checkout that the topic branch brings with the same content: the settings that connect
  * generated in the checkout and the topic committed (.workflow.json untracked, .gitignore and settings modified) blocked
  * the merge (Windows instance 2026-11-07, adopt). Same blob as in the branch: set back, the merge writes it again.
- * Anything else stays and is reported.
+ * Anything else stays and is reported. `untracked`: only the files git does not track (removed here), else only the
+ * tracked ones (set back to HEAD). The untracked ones go right before the merge that writes them again and every stop
+ * after a set back puts the files back (putBack): a done that failed on a conflict had removed .workflow.json and every
+ * later command said "brain unavailable" (audit 2026-11-22).
  */
-function setBackSameAsBranch(dir, branch) {
-  if (!git(['rev-parse', '--verify', '--quiet', branch], { cwd: dir }).ok) return [];
+function setBackSameAsBranch(dir, branch, untracked) {
+  if (!branch) return [];
   const inBranch = new Set(git(['diff', '--name-only', 'HEAD', branch], { cwd: dir }).stdout.split('\n').filter(Boolean));
-  const tracked = git(['diff', '--name-only', 'HEAD'], { cwd: dir }).stdout.split('\n').filter(Boolean);
-  const untracked = git(['ls-files', '--others', '--exclude-standard'], { cwd: dir }).stdout.split('\n').filter(Boolean);
+  const files = untracked ? git(['ls-files', '--others', '--exclude-standard'], { cwd: dir }).stdout.split('\n').filter(Boolean)
+    : git(['diff', '--name-only', 'HEAD'], { cwd: dir }).stdout.split('\n').filter(Boolean);
   const done = [];
-  for (const f of [...new Set([...tracked, ...untracked])]) {
+  for (const f of files) {
     if (!inBranch.has(f) || !fs.existsSync(path.join(dir, f))) continue;
     const want = git(['rev-parse', '--verify', '--quiet', `${branch}:${f}`], { cwd: dir });
     const have = git(['hash-object', '--', f], { cwd: dir });
@@ -183,6 +186,14 @@ function setBackSameAsBranch(dir, branch) {
   return done;
 }
 
+/** The files setBackSameAsBranch took: in the working tree again with the content of `branch`, the index as HEAD has it. */
+function putBack(dir, branch, files) {
+  for (let i = 0; i < files.length; i += 100) {
+    const part = files.slice(i, i + 100);
+    if (git(['checkout', branch, '--', ...part], { cwd: dir }).ok) git(['reset', '--quiet', '--', ...part], { cwd: dir });
+  }
+}
+
 /** origin/<branch> and the local branch each have commits the other lacks; false when origin is unreachable. */
 function divergedFromOrigin(dir, branch) {
   if (!git(['fetch', '--quiet', 'origin', branch], { cwd: dir }).ok) return false;
@@ -191,11 +202,37 @@ function divergedFromOrigin(dir, branch) {
   return !!remote && !ancestor(remote, 'HEAD') && !ancestor('HEAD', remote);
 }
 
+/**
+ * A worktree copy out of its repo. Windows: a shell standing in the copy holds a file (EPERM, Windows instance
+ * 2026-11-07); git then drops its entry and leaves the folder, and the rerun the old message asked for found no
+ * repository there (audit 2026-11-22). The work is merged or given up by then, so a held file does not fail the step:
+ * what can go goes, git forgets the entry. Returns the words about what stays ('' when nothing does).
+ */
+function dropWorktree(repo, copy) {
+  const rm = git(['worktree', 'remove', '--force', copy], { cwd: repo });
+  if (rm.ok) return '';
+  const left = removeTree(copy);
+  git(['worktree', 'prune'], { cwd: repo });
+  return left ? ` except ${left} file(s) a program holds (${rm.stderr.split('\n')[0]}): remove the folder when it lets go` : '';
+}
+
 function mergeCode(ctx, id, topic, { keepCopy = !!args['keep-copy'], label = `done --topic ${id}`, push = false } = {}) {
   // A copy that claim made (topic created without one, e.g. a report intake) has no recorded path: the path claim used.
   const copy = topic.copy ? path.resolve(ctx.projectDir, topic.copy) : codeCopyPath(ctx, id);
   const branch = `topic/${id}`;
   if (!fs.existsSync(path.join(copy, '.git'))) return { merged: false, note: `no code copy at ${copy}; nothing to merge` };
+  // What a removal that stopped left: the folder with its .git file, the entry in the repo gone. It is no repository, so
+  // every git call in it failed and done said "conflicts in the copy" for good (audit 2026-11-22).
+  const entry = worktreeEntry(copy);
+  if (entry && !fs.existsSync(entry)) {
+    const there = git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: ctx.projectDir }).ok;
+    if (there && !git(['merge-base', '--is-ancestor', branch, 'HEAD'], { cwd: ctx.projectDir }).ok) fail(`${copy} is no git worktree any more (its entry in ${ctx.projectDir} is gone) and ${branch} is not merged: move what you need out of the folder, remove it, then topic.mjs copy ${id} makes the copy again from ${branch}`);
+    const left = removeTree(copy);
+    if (there) git(['branch', '-d', branch], { cwd: ctx.projectDir });
+    return { merged: true, note: `${branch} was merged by an earlier run; the rest of its copy ${copy} removed${left ? ` (${left} file(s) a program holds stay)` : ''}` };
+  }
+  // A copy whose making stopped is finished first (scripts/topic.mjs).
+  finishWorktree(copy);
   const dirtyCopy = git(['status', '--porcelain', '--untracked-files=no'], { cwd: copy }).stdout;
   if (dirtyCopy) fail(`code copy ${copy} has uncommitted changes; commit or discard them in the copy first`);
   const mainBranch = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ctx.projectDir }).stdout || 'main';
@@ -205,11 +242,13 @@ function mergeCode(ctx, id, topic, { keepCopy = !!args['keep-copy'], label = `do
   if (push && hasOrigin && divergedFromOrigin(ctx.projectDir, mainBranch)) fail(`origin/${mainBranch} diverged from local ${mainBranch} in ${ctx.projectDir}: nothing merged, ${mainBranch} not pushed, topic ${id} stays open; reconcile ${mainBranch} with origin/${mainBranch}, then rerun done --topic`);
   // A legacy clone copy: its branch is fetched first, so the comparison sees what the merge brings.
   const isWorktree = fs.statSync(path.join(copy, '.git')).isFile();
-  const ref = isWorktree ? branch : (git(['fetch', '--quiet', copy, branch], { cwd: ctx.projectDir }).ok ? 'FETCH_HEAD' : null);
-  const setBack = ref ? setBackSameAsBranch(ctx.projectDir, ref) : [];
+  // The commit, not the name: a later fetch moves FETCH_HEAD.
+  const ref = git(['rev-parse', '--verify', '--quiet', isWorktree ? branch : (git(['fetch', '--quiet', copy, branch], { cwd: ctx.projectDir }).ok ? 'FETCH_HEAD' : branch)], { cwd: ctx.projectDir }).stdout || null;
+  const setBack = setBackSameAsBranch(ctx.projectDir, ref, false);
+  const stop = (message) => { putBack(ctx.projectDir, ref, setBack); fail(message); };
   if (setBack.length) out(`project checkout: ${setBack.length} uncommitted file(s) equal to ${branch} set back for the merge: ${setBack.slice(0, 5).join(', ')}${setBack.length > 5 ? ', …' : ''}`);
   const dirtyProject = git(['status', '--porcelain', '--untracked-files=no'], { cwd: ctx.projectDir }).stdout;
-  if (dirtyProject) fail(`project checkout has uncommitted changes; commit or stash them before merging ${branch}: ${git(['diff', '--name-only', 'HEAD'], { cwd: ctx.projectDir }).stdout.split('\n').slice(0, 5).join(', ')}`);
+  if (dirtyProject) stop(`project checkout has uncommitted changes; commit or stash them before merging ${branch}: ${git(['diff', '--name-only', 'HEAD'], { cwd: ctx.projectDir }).stdout.split('\n').slice(0, 5).join(', ')}`);
   let pulled = false;
   if (hasOrigin) {
     const pull = git(['pull', '--ff-only', '--quiet', 'origin', mainBranch], { cwd: ctx.projectDir });
@@ -220,27 +259,30 @@ function mergeCode(ctx, id, topic, { keepCopy = !!args['keep-copy'], label = `do
   const worktree = fs.statSync(path.join(copy, '.git')).isFile();
   if (!worktree) {
     const fetch = git(['fetch', '--quiet', 'origin', mainBranch], { cwd: copy });
-    if (!fetch.ok) fail(`fetch of ${mainBranch} into the copy failed: ${fetch.stderr}`);
+    if (!fetch.ok) stop(`fetch of ${mainBranch} into the copy failed: ${fetch.stderr}`);
   }
   // Layout 2: INDEX.md is written again after the merge, not merged by lines (scripts/data-index.mjs).
   const merge = mergeWithIndex(copy, ['--quiet', '--no-edit', worktree ? mainBranch : 'FETCH_HEAD']);
   if (!merge.ok) {
     const files = git(['diff', '--name-only', '--diff-filter=U'], { cwd: copy }).stdout;
     git(['merge', '--abort'], { cwd: copy });
-    fail(`merge of ${mainBranch} into ${branch} has conflicts in the copy: ${files.split('\n').join(', ')}; resolve them in ${copy}, verify, commit, then rerun`);
+    stop(`merge of ${mainBranch} into ${branch} has conflicts in the copy: ${files.split('\n').join(', ')}; resolve them in ${copy}, verify, commit, then rerun`);
   }
   if (!worktree) {
     const fetchBranch = git(['fetch', '--quiet', copy, branch], { cwd: ctx.projectDir });
-    if (!fetchBranch.ok) fail(`fetch of ${branch} from copy failed: ${fetchBranch.stderr}`);
+    if (!fetchBranch.ok) stop(`fetch of ${branch} from copy failed: ${fetchBranch.stderr}`);
   }
   // The repo HANDOVER is the project state (D-0002): a code topic that leaves it untouched is reported, not refused.
   const handoverRel = dataRel(ctx.projectDir, 'projectKnowledge', dataRel(dataPath(ctx.projectDir, 'projectKnowledge'), 'repoHandover'));
   const handoverDiff = git(['diff', '--name-only', `${mainBranch}...${worktree ? branch : 'FETCH_HEAD'}`, '--', handoverRel], { cwd: ctx.projectDir });
   if (handoverDiff.ok && !handoverDiff.stdout) out(`note: ${handoverRel} did not change in ${branch}; if the project state moved, update it (save.mjs handover --repo ${ctx.projectName} --file <file>, D-0002)`);
+  const late = setBackSameAsBranch(ctx.projectDir, ref, true);
+  setBack.push(...late);
+  if (late.length) out(`project checkout: ${late.length} file(s) git does not track, equal to ${branch}, removed for the merge that writes them again: ${late.slice(0, 5).join(', ')}${late.length > 5 ? ', …' : ''}`);
   const mergeMain = mergeWithIndex(ctx.projectDir, ['--no-ff', '--quiet', '-m', `Merge ${branch} (${label})`, worktree ? branch : 'FETCH_HEAD']);
   if (!mergeMain.ok) {
     git(['merge', '--abort'], { cwd: ctx.projectDir });
-    fail(`merge of ${branch} into ${mainBranch} failed: ${mergeMain.stderr}`);
+    stop(`merge of ${branch} into ${mainBranch} failed: ${mergeMain.stderr}`);
   }
   let pushNote = '';
   if (push && pulled) {
@@ -249,19 +291,18 @@ function mergeCode(ctx, id, topic, { keepCopy = !!args['keep-copy'], label = `do
     if (!pushed.ok) fail(`push of ${mainBranch} to origin failed (${pushed.stderr.split('\n')[0]}): ${branch} is merged into local ${mainBranch}, not pushed; topic ${id} stays open; reconcile with origin/${mainBranch}, push, then rerun done --topic`);
     pushNote = `; pushed ${mainBranch} to origin`;
   }
+  let held = '';
   if (!keepCopy) {
     // The task worktrees and local task branches end with the topic (spec 3.7); pushed ones stay on origin.
     for (const line of removeTaskCopies(worktree ? ctx.projectDir : copy, id)) out(line);
     // A worktree (v3) is removed through git, so the repo forgets it; its merged branch goes too. A legacy clone is a dir.
     if (worktree) {
-      const rm = git(['worktree', 'remove', '--force', copy], { cwd: ctx.projectDir });
-      // Windows: a shell standing in the copy holds it (EPERM, Windows instance 2026-11-07); the merge is done, rerun closes.
-      if (!rm.ok) fail(`git worktree remove ${copy} failed: ${rm.stderr}${/EPERM|EBUSY|Permission denied|being used|Invalid argument/i.test(rm.stderr) ? `; a process has its working directory or a file open in the copy (a shell: cd ${ctx.projectDir}), then rerun done --topic ${id} (the merge is already done)` : ''}`);
+      held = dropWorktree(ctx.projectDir, copy);
       git(['branch', '-d', branch], { cwd: ctx.projectDir });
       try { fs.rmdirSync(path.dirname(copy)); } catch { /* other topics of the repo remain */ }
     } else removeTree(copy); // a held file must not fail the close: the merge is done
   }
-  return { merged: true, note: `${branch} merged into ${mainBranch}${pushNote}${keepCopy ? '' : `; copy ${copy} removed`}` };
+  return { merged: true, note: `${branch} merged into ${mainBranch}${pushNote}${keepCopy ? '' : `; copy ${copy} removed${held}`}` };
 }
 
 /**
@@ -415,9 +456,9 @@ function doneTopic(ctx, id) {
 /** After a topic closed: the mail service closes it, the thread is settled (P-036, P-045), the previous holders named. */
 function closedTail(ctx, id, holder) {
   // The mail closes the topic too: new mail gets 410 at once, waiting mail bounces to its senders (alice 2026-11-02).
-  const comms = registerTopic(ctx, id, { close: true });
+  const comms = closeTopicInMail(ctx, id);
   if (comms.ok) out(`mail: topic ${id} closed in the mail service (new mail refused, waiting mail returned to the senders)`);
-  else if (!comms.skipped) out(`mail: closing ${id} in the mail service failed (${comms.reason}); the next session start retries`);
+  else if (!comms.skipped) out(`mail: closing ${id} in the mail service failed (${comms.reason}); ${comms.unavailable ? 'the next session start of this brain does it again' : 'the mail refused it, it is not repeated'}`);
   // P-036: the topic's T3 thread is settled with the topic (only inside T3). A thread that also holds the persona main
   // topic is never settled or archived (P-045; alice 2026-11-02: main stayed held by an archived thread and @alice/main went unread).
   // The thread is settled only when it holds no other open topic after this one.
@@ -531,20 +572,21 @@ function openHandover(ctx, id, { done = [], files = [], failures = [], requests 
  * Remove the worktrees (and legacy clones) of the topic in its target repos, with its task worktrees and local task branches
  * (spec 3.7); the branches stay on origin.
  */
-function removeCopies(ctx, id, topic, names) {
+function removeCopies(ctx, id, topic, names, keepBranch = new Set()) {
   const lines = [];
   for (const name of names) {
     const dir = targetRepoDir(ctx, name);
     if (dir) lines.push(...removeTaskCopies(dir, id));
     const copy = copyIn(ctx, id, topic, name);
     if (!copy) continue;
+    let held = '';
     if (fs.statSync(path.join(copy, '.git')).isFile() && dir) {
-      const rm = git(['worktree', 'remove', '--force', copy], { cwd: dir });
-      if (!rm.ok) { lines.push(`copy ${copy} not removed: ${rm.stderr.split('\n')[0]}${/EPERM|EBUSY|Permission denied|being used|Invalid argument/i.test(rm.stderr) ? ` (a process has its working directory in it: cd ${dir})` : ''}`); continue; }
-      git(['branch', '-D', topicBranch(id)], { cwd: dir });
+      held = dropWorktree(dir, copy);
+      // A branch that is on no origin is the only place of its commits (cancel): it stays.
+      if (!keepBranch.has(name)) git(['branch', '-D', topicBranch(id)], { cwd: dir });
       try { fs.rmdirSync(path.dirname(copy)); } catch { /* other topics of the repo remain */ }
     } else removeTree(copy); // a held file must not fail the close: the merge is done
-    lines.push(`copy ${copy} removed`);
+    lines.push(`copy ${copy} removed${held}`);
   }
   return lines;
 }
@@ -656,14 +698,19 @@ function doneTopic3(ctx, id, topic, knowledge) {
 function cancelTopic3(ctx, id, topic) {
   const holder = readHolder(ctx.brainDir, id);
   const targets = targetRepos(ctx, topic);
-  // The topic branch goes to origin before its worktree is removed (it stays there, 5.4).
+  // The topic branch goes to origin before its worktree is removed (it stays there, 5.4). A repo without origin keeps the
+  // branch locally: the cancel removed it with the copy and said "stays on origin" (audit 2026-11-22). A file of the
+  // copy that is in no commit would go with the copy: the cancel stops first.
+  const local = new Set();
   for (const name of targets.list) {
     const dir = targetRepoDir(ctx, name);
     const copy = dir ? copyIn(ctx, id, topic, name) : null;
+    const loose = copy ? git(['status', '--porcelain'], { cwd: copy }).stdout.split('\n').filter(Boolean) : [];
+    if (loose.length) fail(`done --topic --cancel ${id}: ${name}: the copy ${toPosix(copy)} has ${loose.length} file(s) that are in no commit (${loose.slice(0, 3).map((l) => l.replace(/^\s*\S{1,2}\s+/, '')).join(', ')}${loose.length > 3 ? ', …' : ''}); commit them into ${topicBranch(id)} or remove them in the copy first; nothing removed`);
     if (dir && git(['remote', 'get-url', 'origin'], { cwd: dir }).ok) {
       const pushed = pushTopicBranch(dir, copy, topicBranch(id));
       if (pushed) fail(`done --topic --cancel ${id}: ${name}: ${pushed}; nothing removed`);
-    }
+    } else if (dir && git(['rev-parse', '--verify', '--quiet', `refs/heads/${topicBranch(id)}`], { cwd: dir }).ok) local.add(name);
   }
   const settled = settleRepos(ctx, id, topic, targets.list, { contentOnly: true });
   for (const line of settled.lines.filter((l) => !/nothing to merge/.test(l))) out(line);
@@ -676,12 +723,12 @@ function cancelTopic3(ctx, id, topic) {
     if (settled.failures.length) process.exitCode = 1;
     return;
   }
-  for (const line of removeCopies(ctx, id, topic, targets.list)) out(line);
+  for (const line of removeCopies(ctx, id, topic, targets.list, local)) out(line);
   const base = topicRel(ctx.brainDir, id);
   const res = brainWrite(ctx, { ops: [{ path: base, remove: true }], internal: true, message: `done --topic --cancel ${id}: cancelled on the operator's instruction, topic removed` });
   out(formatWriteResult(res, [`${base}/`]));
   for (const dir of removeTopicTmp(ctx.brainDir, ctx.projectDir, id)) out(`tmp: ${dir} removed`);
-  out(`topic ${id} cancelled (spec 5.4): no triage, no merge; ${base}/ removed in git, ${topicBranch(id)} stays on origin; saved sources and facts stay.`);
+  out(`topic ${id} cancelled (spec 5.4): no triage, no merge; ${base}/ removed in git, ${topicBranch(id)} stays on origin${local.size ? ` (${[...local].join(', ')} has no origin: the branch stays in that repo)` : ''}; saved sources and facts stay.`);
   closedTail(ctx, id, holder);
 }
 

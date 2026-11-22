@@ -7,9 +7,13 @@
 import { readHookInput, emit, contextOutput, isMain } from '../scripts/hooks-io.mjs';
 import { loadContext, readThreadState } from '../scripts/config.mjs';
 import { assembleRules } from '../scripts/rules.mjs';
-import { rulesParts, waitBootPull, readBootStamp, BOOT_MARKERS, RULES_HOOK_PARTS, RULES_PART_CHARS } from '../scripts/boot.mjs';
+import { rulesParts, waitBootPull, readBootStamp, markRulesPart, BOOT_MARKERS, RULES_HOOK_PARTS, RULES_PART_CHARS, RULES_READ_WAY } from '../scripts/boot.mjs';
 
 export const HOOK_META = { event: 'SessionStart', class: 'boot', limit: `${RULES_PART_CHARS} chars per part`, principles: ['P-021', 'P-022'] };
+
+/** The brain of an output whose part is through (the mark is written after the output, never before it). */
+const through = new WeakMap();
+const done = (out, ctx) => { if (ctx.brainDir) through.set(out, ctx.brainDir); return out; };
 
 export function run(input, part = 1) {
   let ctx;
@@ -25,18 +29,21 @@ export function run(input, part = 1) {
   const foreign = ctx.brainDir && waitBootPull(ctx.brainDir, input.session_id) ? readBootStamp(ctx.brainDir, input.session_id)?.foreign_rules || {} : {};
   const rules = assembleRules({ brainDir: ctx.brainDir, policy: ctx.policy, harness: 'claude-code', foreign: (rel) => foreign[rel] || null, layers: ctx.layers });
   const parts = rulesParts(rules.shown);
-  if (part > parts.length) return {};
+  if (part > parts.length) return done({}, ctx);
   const shown = Math.min(parts.length, RULES_HOOK_PARTS);
   const text = part < RULES_HOOK_PARTS ? parts[part - 1] : parts.slice(part - 1).join('\n');
   const over = part === RULES_HOOK_PARTS && parts.length > RULES_HOOK_PARTS ? `\nlimit: rules need ${parts.length} parts of ${RULES_PART_CHARS} chars, the start carries ${RULES_HOOK_PARTS}; shorten the rules or run consolidate (P-022)` : '';
-  return contextOutput('SessionStart', `${BOOT_MARKERS[0]}${shown > 1 ? ` (${part}/${shown})` : ''}\n${text}${over}`);
+  return done(contextOutput('SessionStart', `${BOOT_MARKERS[0]}${shown > 1 ? ` (${part}/${shown})` : ''}\n${text}${over}`), ctx);
 }
 
 if (isMain(import.meta.url)) {
   const part = Math.max(1, Number.parseInt(process.argv[2] || '1', 10) || 1);
   try {
-    emit(run(readHookInput(), part));
+    const input = readHookInput();
+    const out = run(input, part);
+    emit(out, () => { if (through.has(out)) markRulesPart(through.get(out), input.session_id, part); });
   } catch (err) {
-    emit(contextOutput('SessionStart', `## Workflow\nworkflow: session-start-rules ${part} failed (${err.message})`));
+    // No mark: the first prompt of the session names the missing part and the way once more.
+    emit(contextOutput('SessionStart', `## Workflow\nworkflow: session-start-rules ${part} failed (${err.message}); this part of the rules is missing: ${RULES_READ_WAY}`));
   }
 }

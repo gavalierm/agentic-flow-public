@@ -31,16 +31,17 @@ export function isMain(metaUrl) {
   }
 }
 
-export function emit(obj) {
-  process.stdout.write(JSON.stringify(obj) + '\n');
+export function emit(obj, then = undefined) {
+  process.stdout.write(JSON.stringify(obj) + '\n', then);
 }
 
 /**
  * emit for a hook that called the mail client inside its process (scripts/comms.mjs clientInProcess): the process ends once
- * the output is written, whatever the client left open (a connection kept alive, a request past its deadline).
+ * the output is written, whatever the client left open (a connection kept alive, a request past its deadline). `then` runs
+ * after the write: the place for a mark that says "this line was given".
  */
-export function emitAndExit(obj) {
-  process.stdout.write(JSON.stringify(obj) + '\n', () => process.exit(0));
+export function emitAndExit(obj, then = null) {
+  process.stdout.write(JSON.stringify(obj) + '\n', () => { try { then?.(); } finally { process.exit(0); } });
 }
 
 export function contextOutput(event, text, extra = {}) {

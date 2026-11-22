@@ -5,6 +5,7 @@ import path from 'node:path';
 import { git } from './util.mjs';
 import { servicesDir } from './config.mjs';
 import { redactUrl } from './secrets.mjs';
+import { switchRelease, finishSwitch } from './update.mjs';
 
 function must(r, what) {
   if (r.status !== 0) throw new Error(`${what}: ${redactUrl(r.stderr || r.stdout)}`);
@@ -34,10 +35,14 @@ export function install(repo, tag, env = process.env) {
     const origin = git(['remote', 'get-url', 'origin'], { cwd: src });
     must(git(['clone', '-q', origin.status === 0 ? origin.stdout : src, dst]), 'git clone');
   } else {
+    // A switch that stopped half way is finished first (scripts/update.mjs): it read as "local changes" for good.
+    const half = finishSwitch(dst);
+    if (half) throw new Error(`${dst}: ${half.reason}`);
     const dirty = must(git(['status', '--porcelain', '--untracked-files=no'], { cwd: dst }), 'git status');
     if (dirty) throw new Error(`${dst} has local changes; an installed release is never edited in place:\n${dirty}`);
   }
   must(git(['fetch', '-q', '--tags', 'origin'], { cwd: dst }), 'git fetch');
-  must(git(['-c', 'advice.detachedHead=false', 'checkout', '-q', want], { cwd: dst }), `git checkout ${want}`);
+  const co = switchRelease(dst, want);
+  if (!co.ok) throw new Error(`${dst}: ${redactUrl(co.reason)}`);
   return { name, dir: dst, tag: want };
 }
