@@ -5,8 +5,12 @@
 //                          test of a rarely changed part, e.g. a migration, ran at every release); never expires
 //   // ttl: YYYY-MM-DD     any other test (a test of one fix): it is removed by `expire` after that day
 // A new non-core test gets a ttl 30 days after it is written.
-//   node tests/ttl.mjs check                       lists files without a valid header (exit 1) and the expired ones
-//   node tests/ttl.mjs expire [--dry] [--today D]  git rm of every expired test in one commit; prints them
+// The amount of tests is bound by the test budget of the repo (scripts/test-header.mjs, operator 2026-11-22): the lasting
+// tests that fit stay lasting, a temporary test lives at most 30 days after its first commit, and of the temporary ones
+// the newest that fit stay. `expire` removes the rest at the release; nobody decides it by hand.
+//   node tests/ttl.mjs check                       lists files without a valid header (exit 1), the budget and what leaves
+//   node tests/ttl.mjs expire [--dry] [--today D]  git rm of every test past its day or over the budget, one commit
+//   --root <dir>                                   another repo (the mail has no copy of this script)
 //   node tests/ttl.mjs run [--since <ref>]         the suite through scripts/test-slot.mjs (npm test); with --since only the
 //                                                  core tests and the guarded and temporary tests whose guarded code
 //                                                  changed (D-0085)
@@ -17,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export { DEFAULT_TTL_DAYS, header, today } from '../scripts/test-header.mjs';
-import { header, today } from '../scripts/test-header.mjs';
+import { today, plan, testBudget, commitDays, budgetLine, lineCount, CODE_FILE } from '../scripts/test-header.mjs';
 
 /** Test files npm test runs (tests/**\/*.test.mjs), repo-relative, sorted. */
 export function testFiles(root = ROOT) {
@@ -33,12 +37,41 @@ export function testFiles(root = ROOT) {
   return out.sort();
 }
 
-/** Every test file with its header; expired = ttl before `day`. */
-export function survey(root = ROOT, day = today()) {
-  return testFiles(root).map((file) => {
-    const h = header(fs.readFileSync(path.join(root, file), 'utf8'));
-    return { file, ...h, expired: !!h.ttl && h.ttl < day };
-  });
+/**
+ * The budget of the repo: shares of its tracked code lines outside tests/ (scripts/test-header.mjs), or the fixed numbers
+ * of package.json "testBudget" { keepLines, tempLines } (the mail: its risk is the delivery, not its size).
+ */
+export function repoBudget(root = ROOT) {
+  let set = {};
+  try { set = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).testBudget || {}; } catch { /* no package.json */ }
+  if (set.keepLines != null && set.tempLines != null) return testBudget(0, set);
+  let code = 0;
+  for (const file of git(root, ['ls-files']).split('\n')) {
+    if (!CODE_FILE.test(file) || file.startsWith('tests/') || file.startsWith('scratch/')) continue;
+    try { code += lineCount(fs.readFileSync(path.join(root, file), 'utf8')); } catch { /* removed, not committed yet */ }
+  }
+  return testBudget(code, set);
+}
+
+/** The plan of the repo's tests against its budget (scripts/test-header.mjs plan); a test without a header is refused, not rotated. */
+export function repoPlan(root = ROOT, day = today()) {
+  const days = commitDays(path.join(root, 'tests'));
+  const rel = (file) => file.slice('tests/'.length);
+  return plan(testFiles(root).map((file) => ({ file, text: fs.readFileSync(path.join(root, file), 'utf8'), added: days.added[rel(file)], changed: days.changed[rel(file)] })), repoBudget(root), { day, untaggedDays: null });
+}
+
+/**
+ * Every test file with what it is now: keep (a lasting core test), guarded (a lasting guarded test), ttl (the day a
+ * temporary test leaves; a "// keep:" test that found no lasting room is temporary), error (no valid header);
+ * expired = it leaves now (past its day, or over the budget: `reason`).
+ */
+export function survey(root = ROOT, day = today(), p = repoPlan(root, day)) {
+  return p.rows.map((r) => ({
+    file: r.file,
+    ...(r.head.error ? { error: r.head.error } : r.lasting ? (r.head.keep ? { keep: true } : { guarded: true }) : { ttl: r.expires }),
+    expired: !!r.gone,
+    ...(r.gone ? { reason: r.gone === 'budget' ? 'over the budget' : `ttl ${r.expires}` } : {}),
+  }));
 }
 
 function git(root, args) {
@@ -47,15 +80,15 @@ function git(root, args) {
   return r.stdout;
 }
 
-/** Removes the expired tests with git rm in one commit of its own. Returns the removed files. */
+/** Removes the tests past their day or over the budget with git rm in one commit of its own. Returns the removed files. */
 export function expire(root = ROOT, { day = today(), dry = false } = {}) {
   const gone = survey(root, day).filter((t) => t.expired);
   if (!gone.length || dry) return gone;
   const staged = git(root, ['diff', '--cached', '--name-only']).trim();
   if (staged) throw new Error(`staged changes would go into the expire commit: ${staged.split('\n').join(', ')}`);
   git(root, ['rm', '-q', '--', ...gone.map((t) => t.file)]);
-  const body = gone.map((t) => `${t.file} (ttl ${t.ttl})`).join('\n');
-  git(root, ['commit', '-q', '-m', `tests: remove ${gone.length} test file(s) past their ttl\n\n${body}`]);
+  const body = gone.map((t) => `${t.file} (${t.reason})`).join('\n');
+  git(root, ['commit', '-q', '-m', `tests: remove ${gone.length} test file(s) past their ttl or over the test budget\n\n${body}`]);
   return gone;
 }
 
@@ -101,6 +134,22 @@ export function guarded(root, files) {
   return out;
 }
 
+/**
+ * Files outside tests/ that import one of `targets` directly. A changed file no test guards (a new file, logic moved out
+ * of a tested one: the lock left config.mjs and the release that changed only the lock picked 0 of 92 tests, v2.0.71) is
+ * tested through its users. Not the whole import chain: through tests/helpers.mjs it reaches 124 of 135 tests.
+ */
+export function importers(root, targets) {
+  const out = new Set();
+  for (const file of git(root, ['ls-files', '*.mjs']).split('\n')) {
+    if (!file || file.startsWith('tests/')) continue;
+    let text;
+    try { text = fs.readFileSync(path.join(root, file), 'utf8'); } catch { continue; }
+    for (const i of imports(file, text)) if (targets.has(i)) { out.add(file); break; }
+  }
+  return out;
+}
+
 /** Files changed in <ref>..HEAD (from their merge base) and not committed yet, untracked ones too. */
 export function changedSince(root, ref) {
   const base = git(root, ['merge-base', ref, 'HEAD']).trim();
@@ -126,7 +175,10 @@ export function selectSince(root, ref) {
   let picked = temporary;
   if (!shared.length) {
     const g = guarded(root, temporary);
-    picked = temporary.filter((t) => changed.has(t) || [...g.get(t)].some((f) => changed.has(f)));
+    const known = new Set([...g.values()].flatMap((set) => [...set]));
+    const unguarded = new Set([...changed].filter((f) => guardable(f) && f.endsWith('.mjs') && !known.has(f)));
+    const users = unguarded.size ? importers(root, unguarded) : unguarded;
+    picked = temporary.filter((t) => changed.has(t) || [...g.get(t)].some((f) => changed.has(f) || users.has(f)));
   }
   return { files: [...core, ...picked].sort(), core, temporary, picked, shared };
 }
@@ -135,17 +187,19 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const [cmd, ...rest] = process.argv.slice(2);
   const opt = (n) => { const i = rest.indexOf(n); return i >= 0 ? rest[i + 1] : undefined; };
   const day = opt('--today') || today();
+  const root = opt('--root') ? path.resolve(opt('--root')) : ROOT;
   if (cmd === 'check') {
-    const all = survey(ROOT, day);
+    const p = repoPlan(root, day);
+    const all = survey(root, day, p);
     const bad = all.filter((t) => t.error);
     for (const t of bad) console.log(`${t.file}: ${t.error}`);
-    for (const t of all.filter((x) => x.expired)) console.log(`${t.file}: expired (ttl ${t.ttl}), removed by: node tests/ttl.mjs expire`);
-    console.log(`${all.length} test file(s): ${all.filter((t) => t.keep).length} core, ${all.filter((t) => t.guarded).length} guarded, ${all.filter((t) => t.ttl).length} with ttl, ${bad.length} without a valid header`);
+    console.log(`${all.length} test file(s): ${all.filter((t) => t.keep).length} core, ${all.filter((t) => t.guarded).length} guarded, ${all.filter((t) => t.ttl).length} temporary, ${bad.length} without a valid header`);
+    console.log(budgetLine(p, 'the next release (node tests/ttl.mjs expire)'));
     process.exit(bad.length ? 1 : 0);
   } else if (cmd === 'expire') {
     try {
-      const gone = expire(ROOT, { day, dry: rest.includes('--dry') });
-      for (const t of gone) console.log(`${rest.includes('--dry') ? 'would remove' : 'removed'} ${t.file} (ttl ${t.ttl})`);
+      const gone = expire(root, { day, dry: rest.includes('--dry') });
+      for (const t of gone) console.log(`${rest.includes('--dry') ? 'would remove' : 'removed'} ${t.file} (${t.reason})`);
       console.log(gone.length ? `expired: ${gone.length}` : 'expired: none');
     } catch (e) {
       console.error(`expire: ${e.message}`);
@@ -157,15 +211,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       const since = opt('--since');
       if (!since) { console.error('run: --since needs a git ref'); process.exit(2); }
       let s;
-      try { s = selectSince(ROOT, since); } catch (e) { console.error(`run: ${e.message}`); process.exit(2); }
+      try { s = selectSince(root, since); } catch (e) { console.error(`run: ${e.message}`); process.exit(2); }
       const why = s.shared.length ? `; shared infrastructure changed: ${s.shared.join(', ')}` : '';
       console.log(`tests: core ${s.core.length} + changed ${s.picked.length} of ${s.temporary.length} guarded or temporary (since ${since}${why})`);
       files = s.files;
     }
-    const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'test-slot.mjs'), '--', 'node', '--test', ...files], { cwd: ROOT, stdio: 'inherit' });
+    const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'test-slot.mjs'), '--', 'node', '--test', ...files], { cwd: root, stdio: 'inherit' });
     process.exit(r.status ?? 1);
   } else {
-    console.error('usage: node tests/ttl.mjs check | expire [--dry] [--today YYYY-MM-DD] | run [--since <ref>]');
+    console.error('usage: node tests/ttl.mjs check | expire [--dry] [--today YYYY-MM-DD] | run [--since <ref>]   [--root <repo>]');
     process.exit(2);
   }
 }

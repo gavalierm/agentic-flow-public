@@ -10,7 +10,7 @@ import { parseFrontmatter } from './frontmatter.mjs';
 import { readSkills } from './records.mjs';
 import { workflowSkillNames, GENERATED_MARKER, PROJECT_SKILLS_DIR, personaSkillPrefix } from './skills-sync.mjs';
 import { dataLayoutVersion, topicHome, layoutFor, layoutVersions } from './layout.mjs';
-import { TEST_FILE, header, today, addDays, DEFAULT_TTL_DAYS, UNTAGGED_TTL_DAYS, skillTests } from './test-header.mjs';
+import { isTestFile, header, today, addDays, DEFAULT_TTL_DAYS, skillPlan, budgetLine } from './test-header.mjs';
 
 const TRIGGER = /^(Použi|Použij|Use)\b/i;
 
@@ -142,10 +142,10 @@ export function checkSkill({ name, dir, text, owner, projectDir, home = os.homed
   const own = [...new Set([...(dir && fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /\.(mjs|js|sh|py)$/.test(f)) : []), ...pendingScripts])].filter((f) => !removedScripts.includes(f));
   // P-079 (operator 2026-11-22): a test saved into a skill names what it is; one without a header is rotated after 3 days.
   for (const [file, t] of Object.entries(scriptTexts)) {
-    if (!TEST_FILE.test(file)) continue;
+    if (!isTestFile(file, t)) continue;
     const h = header(t);
-    if (h.error) add('error', 0, 'test-header', `test ${file}: ${h.error}; a test of one fix: "// ttl: ${addDays(today(), DEFAULT_TTL_DAYS)}" (P-079)`);
-    else if (h.ttl && h.ttl < today()) add('error', 0, 'test-header', `test ${file}: ttl ${h.ttl} is past; a test of one fix lives ${DEFAULT_TTL_DAYS} days, a lasting one is "// keep: core" (P-079)`);
+    if (h.error) add('error', 0, 'test-header', `test ${file}: ${h.error}; a test of one fix: "// ttl: ${addDays(today(), DEFAULT_TTL_DAYS)}"; a "// keep:" test holds lasting room only within the test budget of the skill (P-079)`);
+    else if (h.ttl && h.ttl < today()) add('error', 0, 'test-header', `test ${file}: ttl ${h.ttl} is past; a test of one fix lives at most ${DEFAULT_TTL_DAYS} days after its first commit (P-079)`);
   }
   const referenced = new Set();
   const lines = body.split('\n');
@@ -231,19 +231,29 @@ export function checkProject(ctx, only = null) {
   const known = knownSkillNames(ctx, skills);
   return skills.filter((s) => !only || s.name === only).map((s) => ({
     ...s,
-    findings: [...checkSkill({ name: s.name, dir: s.dir, text: fs.readFileSync(s.file, 'utf8'), owner: s.owner, projectDir: ctx.projectDir, limit, known, layout: workLayout(ctx) }), ...testRotation(s.dir)],
+    findings: [...checkSkill({ name: s.name, dir: s.dir, text: fs.readFileSync(s.file, 'utf8'), owner: s.owner, projectDir: ctx.projectDir, limit, known, layout: workLayout(ctx) }), ...testRotation(s.dir, fs.readFileSync(s.file, 'utf8'))],
   }));
 }
 
-/** Temporary tests of a skill (P-079): the next save of the skill removes them after their day; lasting ones need "// keep:". */
-function testRotation(dir) {
-  let files = [];
-  try { files = fs.readdirSync(dir); } catch { return []; }
-  const tests = skillTests(dir, files, (f) => fs.readFileSync(path.join(dir, f), 'utf8'));
-  if (!tests.length) return [];
-  const untagged = tests.filter((t) => t.untagged).length;
-  const first = tests.map((t) => t.expires).sort()[0];
-  return [{ level: 'warn', line: 0, code: 'test-ttl', message: `${tests.length} temporary test file(s)${untagged ? ` (${untagged} without a header: last change + ${UNTAGGED_TTL_DAYS} days)` : ''}, first expiry ${first}; the next save of the skill removes expired ones; a lasting test gets "// keep: core" (P-079)` }];
+/**
+ * Whether a skill body still calls its own script `base`: a bare name or a path through this skill's folder counts, a
+ * path through another skill's folder (`<other-skill>/<base>`, the script moved there) does not (a project 2026-11-18).
+ */
+export function namesOwnScript(text, base, skillName) {
+  const esc = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const m of String(text).matchAll(new RegExp(`(?:([\\w.-]+)/)?${esc}(?![\\w.-])`, 'g'))) {
+    if (m.index > 0 && /[\w.-]/.test(text[m.index - 1]) && !m[1]) continue; // part of a longer name
+    if (!m[1] || m[1] === skillName) return true;
+  }
+  return false;
+}
+
+/** The test budget of a skill (P-079): its use, and what the next save of the skill removes. */
+function testRotation(dir, text) {
+  const p = skillPlan(dir, { pinned: (f) => namesOwnScript(text, f, path.basename(dir)) });
+  // Only when the author can act on it: a line for every skill with tests is noise.
+  if (!p || !p.rows.some((r) => r.gone || r.demoted)) return [];
+  return [{ level: 'warn', line: 0, code: 'test-budget', message: budgetLine(p, 'the next save of the skill') }];
 }
 
 /**

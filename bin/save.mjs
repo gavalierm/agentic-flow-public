@@ -73,8 +73,8 @@ import { NOTE_STATES, newNote, readNotes, similarNotes, appendedNote, statedNote
 import { resultsActive, tmpOwner, readBindings, stalePages } from '../scripts/results.mjs';
 import { uncitedDecisions, uncitedLine, boundSkills, boundLine } from '../scripts/skill-decisions.mjs';
 import { decisionCheckLine, validDecision } from '../scripts/decision-overlap.mjs';
-import { checkSkill, meaningDiff, workLayout } from '../scripts/skill-check.mjs';
-import { skillTests } from '../scripts/test-header.mjs';
+import { checkSkill, meaningDiff, workLayout, namesOwnScript } from '../scripts/skill-check.mjs';
+import { skillPlan, budgetLine } from '../scripts/test-header.mjs';
 import { unseenSkillCommits, recordSkillSave, UNSEEN_REASON } from '../scripts/skill-base.mjs';
 import { personRedirect, requireOperatorRepo, readPeople, findPeople, newPerson, changePerson, shortIdProblem, proposedId } from '../scripts/people.mjs';
 import { machineStores, machineRecords, targetStore, sameStore, checkDecisionRefs, decisionRefs, rewriteDecisionRefs, subjectMatch, saveHint, displayPath, refFiles, isTombstone, SUBJECT_TYPES, ID_LINE, lc } from '../scripts/stores.mjs';
@@ -847,31 +847,17 @@ function editBasis(name) {
 }
 
 /**
- * Whether a skill body still calls its own script `base`: a bare name or a path through this skill's folder counts, a
- * path through another skill's folder (`<other-skill>/<base>`, the script moved there) does not (a project 2026-11-18).
- */
-/**
  * P-079 (operator 2026-11-22: domain skills gathered ~1550 tests in a week that nobody rotated; one worker run held 1309):
- * a save of a skill removes its temporary tests past their day (the ttl, or the last change + 3 days without a header)
- * in the same commit. A file of this save and a test the skill text names stay.
+ * a save of a skill removes in the same commit the tests the test budget of the skill does not hold (scripts/test-header.mjs:
+ * past their day, or over the budget). A file of this save stays; a test the skill text names stays and takes lasting room.
+ * fresh: { name: content } of the files of this save, removed: the files it removes. Returns { ops, line }.
  */
-function expiredSkillTests(dir, relDir, text, skip) {
-  let files = [];
-  try { files = fs.readdirSync(dir); } catch { return []; }
-  const day = today();
-  return skillTests(dir, files.filter((f) => !skip.includes(f)), (f) => fs.readFileSync(path.join(dir, f), 'utf8'))
-    .filter((t) => t.expires < day && !namesOwnScript(text, t.file, path.basename(dir)))
-    .map((t) => ({ path: `${relDir}/${t.file}`, remove: true, expired: t.expires }));
-}
-const expiredLine = (ops) => `removed ${ops.length} expired test file(s) of the skill (P-079): ${ops.map((o) => `${path.posix.basename(o.path)} (${o.expired})`).join(', ')}`;
-
-export function namesOwnScript(text, base, skillName) {
-  const esc = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  for (const m of String(text).matchAll(new RegExp(`(?:([\\w.-]+)/)?${esc}(?![\\w.-])`, 'g'))) {
-    if (m.index > 0 && /[\w.-]/.test(text[m.index - 1]) && !m[1]) continue; // part of a longer name
-    if (!m[1] || m[1] === skillName) return true;
-  }
-  return false;
+function skillTestRotation(dir, relDir, text, fresh, removed) {
+  const p = skillPlan(dir, { fresh, skip: removed, pinned: (f) => namesOwnScript(text, f, path.basename(dir)) });
+  if (!p) return { ops: [], line: '' };
+  const gone = p.rows.filter((r) => r.gone);
+  const ops = gone.map((r) => ({ path: `${relDir}/${r.file}`, remove: true }));
+  return { ops, line: gone.length || p.rows.some((r) => r.demoted) ? budgetLine(p, 'this save') : '' };
 }
 
 function saveSkill(ctx) {
@@ -973,7 +959,8 @@ function saveSkill(ctx) {
     }
   }
   const scriptTexts = Object.fromEntries(ops.slice(1).filter((o) => !o.remove).map((o) => [path.posix.basename(o.path), o.content]));
-  const expired = hit ? expiredSkillTests(skillDir, path.posix.dirname(toPosixPath(rel)), ops[0].content, [...scriptFiles, ...removeList]) : [];
+  const rotation = hit ? skillTestRotation(skillDir, path.posix.dirname(toPosixPath(rel)), ops[0].content, scriptTexts, removeList) : { ops: [], line: '' };
+  const expired = rotation.ops;
   ops.push(...expired);
   const found = checkSkill({ name: path.basename(path.dirname(rel)), dir: skillDir, text: ops[0].content, owner: rel.split('/')[1], projectDir: ctx.projectDir, limit: ctx.policy?.limits?.skill_description_chars ?? 300, pendingScripts: scripts.map((s) => path.posix.basename(s)), removedScripts: [...removeList, ...expired.map((o) => path.posix.basename(o.path))], layout: workLayout(ctx), scriptTexts });
   const errors = found.filter((x) => x.level === 'error');
@@ -987,7 +974,7 @@ function saveSkill(ctx) {
   const notDeployed = deploySkills(ctx);
   out(hit ? `${sed !== null ? 'edited' : 'refactored'} existing skill ${hit.skillName}` : `new skill ${name} (origin: ${origin})`);
   if (removeList.length) out(`removed from skill ${name}: ${removeList.join(', ')} (brain and deployed copy; save.mjs share removes them in the other brain too)`);
-  if (expired.length) out(expiredLine(expired));
+  if (rotation.line) out(rotation.line);
   // D-0065: in a persona its own skill is deployed as <persona>-<name>; the brain keeps the name.
   const deployedName = deployedSkillName(ctx.projectDir, name);
   out(notDeployed ? `not deployed to the project (${notDeployed}); it reaches the project at the next session start` : `deployed to ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR))}${deployedName !== name ? ` as skill ${deployedName}` : ''}`);
@@ -1059,7 +1046,8 @@ function saveRepoSkill(ctx, repo, name) {
     runners.set(base, scriptRunner(base, process.platform, ops[ops.length - 1].content));
   }
   const scriptTexts2 = Object.fromEntries(ops.slice(1).map((o) => [path.posix.basename(o.path), o.content]));
-  const expired = hit ? expiredSkillTests(dirAbs, path.posix.dirname(rel), text, scriptFiles) : [];
+  const rotation = hit ? skillTestRotation(dirAbs, path.posix.dirname(rel), text, scriptTexts2, []) : { ops: [], line: '' };
+  const expired = rotation.ops;
   ops.push(...expired);
   const found2 = checkSkill({ name, dir: dirAbs, text, owner: 'agentic', projectDir: ctx.projectDir, limit: ctx.policy?.limits?.skill_description_chars ?? 300, pendingScripts: scripts, removedScripts: expired.map((o) => path.posix.basename(o.path)), layout: workLayout(ctx), scriptTexts: scriptTexts2 });
   const errors = found2.filter((x) => x.level === 'error');
@@ -1068,7 +1056,7 @@ function saveRepoSkill(ctx, repo, name) {
   out(formatRepoWrite(repoWrite(ctx, repo, { ops, message: `save skill ${name} (${hit ? `${sed !== null ? 'edit' : 'refactor'}, ${basis}` : origin})` })));
   const notDeployed = deploySkills(ctx);
   out(hit ? `${sed !== null ? 'edited' : 'extended'} skill ${name} of repo ${repo}` : `new skill ${name} of repo ${repo} (origin: ${origin})`);
-  if (expired.length) out(expiredLine(expired));
+  if (rotation.line) out(rotation.line);
   out(notDeployed ? `not deployed to this project (${notDeployed}); other sessions of the repo get it at their next start` : `deployed to ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR))}; other sessions of the repo get it at their next start`);
   for (const base of scripts) out(`script runs as: ${runners.get(base)} ${toPosixPath(path.join(ctx.projectDir, PROJECT_SKILLS_DIR, name, base))} (write this path in the skill text)`);
 }

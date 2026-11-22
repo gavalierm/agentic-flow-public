@@ -30,7 +30,7 @@ test('skill tests: header required at save, expired ones removed by the next sav
     for (const a of [['add', '-A'], ['commit', '-qm', 'old tests', '--no-verify']]) { const g = spawnSync('git', ['-C', fx.brain, ...a], { env, encoding: 'utf8' }); assert.equal(g.status, 0, g.stderr + g.stdout); }
     r = save('--description', 'Použi, keď skúšaš rotáciu testov znova.');
     assert.equal(r.status, 0, r.out);
-    assert.match(r.out, /removed 2 expired test file\(s\)/);
+    assert.match(r.out, /2 file\(s\) leave at this save: .*expired 2020-01-0[14]/);
     assert.deepEqual(fs.readdirSync(dir).filter((f) => f.endsWith('.test.mjs')), ['keep.test.mjs']);
   } finally { fx.cleanup?.(); }
 });

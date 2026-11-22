@@ -73,3 +73,13 @@ test('a changed or renamed test selects itself and keeps its guarded files; a ch
     assert.deepEqual(s.picked, ['tests/a2.test.mjs', 'tests/b.test.mjs']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a changed file no test guards selects the tests of the files that import it (logic moved out of a tested file)', () => {
+  const { dir, git, commit } = fixture();
+  try {
+    commit({ 'src/moved.mjs': '1\n', 'src/b.mjs': "import './moved.mjs';\n" }, 'move');
+    git('tag', '-f', 'base');
+    commit({ 'src/moved.mjs': '2\n' }, 'change of the moved logic');
+    assert.deepEqual(picked(dir), ['tests/b.test.mjs']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
