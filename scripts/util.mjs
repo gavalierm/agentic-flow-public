@@ -174,6 +174,38 @@ export function git(args, { cwd, env, input } = {}) {
   return out;
 }
 
+/**
+ * Removes the files under a path and the folders that let go; never throws, returns the files left. Windows refuses a
+ * file or a folder a program holds (a shell stands in it, a viewer shows it); a folder that stays without a file is
+ * nothing to git and nothing to the workflow, so the removal is complete when this returns 0.
+ */
+export function removeTree(abs) {
+  try { fs.rmSync(abs, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); return 0; } catch { /* file by file below */ }
+  let st;
+  try { st = fs.lstatSync(abs); } catch { return 0; }
+  if (!st.isDirectory()) return 1;
+  let left = 0;
+  let names = [];
+  try { names = fs.readdirSync(abs); } catch { return 1; }
+  for (const e of names) left += removeTree(path.join(abs, e));
+  if (!left) { try { fs.rmdirSync(abs); } catch { /* held open: an empty folder stays */ } }
+  return left;
+}
+
+/**
+ * Removes the index lock a killed git left in a repo only the workflow writes (a brain, an own clone): git never
+ * removes it and every later write failed on it ("index.lock: File exists", audit 2026-11-22). Not for a code repo:
+ * there a person's own git (a commit with its editor open) holds the lock for minutes.
+ */
+export function dropStaleIndexLock(dir, staleMs = 60000) {
+  const file = path.join(dir, '.git', 'index.lock');
+  try {
+    if (Date.now() - fs.statSync(file).mtimeMs <= staleMs) return false;
+    fs.rmSync(file, { force: true });
+    return true;
+  } catch { return false; }
+}
+
 /** Retry a git call while it fails on index.lock (P-040 item 4). Synchronous with a short random wait. */
 export function gitRetry(args, opts = {}, attempts = 6) {
   let res;

@@ -1,7 +1,7 @@
 // Single writer for the brain repository (P-040, P-037, P-025, P-013).
 import fs from 'node:fs';
 import path from 'node:path';
-import { git, gitRetry, gitRemote, remoteDiagnosis, readJson, toPosix, PLUGIN_ROOT } from './util.mjs';
+import { git, gitRetry, gitRemote, remoteDiagnosis, readJson, toPosix, removeTree, dropStaleIndexLock, PLUGIN_ROOT } from './util.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv, inSubagent, machineName, sameMachine } from './config.mjs';
 import { checkBrainFile } from './brain-checks.mjs';
 import { withLock as dirLock } from './lock.mjs';
@@ -23,8 +23,14 @@ export function brainLockPath(brainDir) {
 
 export function withBrainLock(brainDir, fn) {
   if (!brainDir || !fs.existsSync(path.join(brainDir, '.git'))) return fn();
-  return withLock(brainLockPath(brainDir), () => { recoverWrite(brainDir); return fn(); }, 'brain is busy');
+  // Only the outermost entry settles what a dead process left: a nested one is inside our own write or rebase.
+  return withLock(brainLockPath(brainDir), () => {
+    if (!lockDepth) recoverWrite(brainDir);
+    lockDepth += 1;
+    try { return fn(); } finally { lockDepth -= 1; }
+  }, 'brain is busy');
 }
+let lockDepth = 0;
 
 // A write that died between its file changes and its commit (the turn was interrupted, the process was killed) left the
 // brain with uncommitted changes: the files of a topic removed by done --topic and never committed blocked every sync,
@@ -46,7 +52,7 @@ function backToHead(brainDir, rels) {
   const held = [];
   for (const rel of new Set(rels)) {
     if (git(['cat-file', '-e', `HEAD:${rel}`], { cwd: brainDir }).ok) git(['checkout', '--quiet', 'HEAD', '--', rel], { cwd: brainDir });
-    else { git(['rm', '-r', '--quiet', '--cached', '--ignore-unmatch', '--', rel], { cwd: brainDir }); if (removeFiles(path.join(brainDir, rel))) held.push(rel); }
+    else { git(['rm', '-r', '--quiet', '--cached', '--ignore-unmatch', '--', rel], { cwd: brainDir }); if (removeTree(path.join(brainDir, rel))) held.push(rel); }
   }
   return held;
 }
@@ -54,13 +60,24 @@ function backToHead(brainDir, rels) {
 /** Paths removed in git whose files a program held: tried again at every lock, dropped once gone (or committed anew). */
 function later(brainDir, rels) {
   const file = cleanupPath(brainDir);
-  const all = [...new Set([...(readJson(file, []) || []), ...rels])].filter((rel) => !git(['cat-file', '-e', `HEAD:${rel}`], { cwd: brainDir }).ok && removeFiles(path.join(brainDir, rel)));
+  const all = [...new Set([...(readJson(file, []) || []), ...rels])].filter((rel) => !git(['cat-file', '-e', `HEAD:${rel}`], { cwd: brainDir }).ok && removeTree(path.join(brainDir, rel)));
   if (all.length) fs.writeFileSync(file, JSON.stringify(all)); else fs.rmSync(file, { force: true });
   return all;
 }
 
-/** Under the brain lock: the write of a dead process is rolled back (its note names the paths). */
+/**
+ * Under the brain lock, before the holder works: what a dead process left is settled. A rebase left in progress is
+ * aborted (the brain stood on a detached HEAD: every write failed and `sync` said "pushed" with the local commit not
+ * applied, audit 2026-11-22; the commits are intact, the sync rebases again), a stale index lock goes, the paths of an
+ * interrupted write become what the last commit says.
+ */
 function recoverWrite(brainDir) {
+  const say = (text) => process.stderr.write(`workflow: ${text}\n`);
+  if (dropStaleIndexLock(brainDir)) say('the index lock a killed git left in the brain was removed');
+  if (['rebase-merge', 'rebase-apply'].some((d) => fs.existsSync(path.join(brainDir, '.git', d)))) {
+    const abort = git(['rebase', '--abort'], { cwd: brainDir });
+    say(abort.ok ? 'a brain update from origin a killed process left half done was reset; the next sync runs it again' : `a rebase is left in the brain and could not be aborted: ${firstLine(abort.stderr)}`);
+  }
   const file = journalPath(brainDir);
   if (fs.existsSync(file)) {
     const note = readJson(file, null);
@@ -77,24 +94,6 @@ function recoverWrite(brainDir) {
     fs.rmSync(file, { force: true });
   }
   if (fs.existsSync(cleanupPath(brainDir))) later(brainDir, []);
-}
-
-/**
- * Removes the files under a path and the folders that let go; returns the files left. A folder that stays without a
- * file is nothing to git, so the removal of the path is complete when this returns 0.
- */
-function removeFiles(abs) {
-  let st;
-  try { st = fs.lstatSync(abs); } catch { return 0; }
-  if (!st.isDirectory()) {
-    try { fs.rmSync(abs, { force: true, maxRetries: 5, retryDelay: 50 }); return 0; } catch { return 1; }
-  }
-  let left = 0;
-  let names = [];
-  try { names = fs.readdirSync(abs); } catch { return 1; }
-  for (const e of names) left += removeFiles(path.join(abs, e));
-  if (!left) { try { fs.rmdirSync(abs); } catch { /* held open: an empty folder stays */ } }
-  return left;
 }
 
 /**
@@ -608,7 +607,7 @@ function applyOps(brainDir, ops, touched, deferred) {
       // Windows refuses to remove a file or a folder a program holds (the shell stands in it, a viewer shows it): a moment
       // later it often goes. A folder that stays without a file is no change for git: the removal is complete.
       try { fs.rmSync(abs, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); }
-      catch (err) { if (removeFiles(abs)) throw new Error(`${op.path}: could not be removed (${err.code || err.message}: a program holds a file of it open); nothing changed, close it and run the step again`); }
+      catch (err) { if (removeTree(abs)) throw new Error(`${op.path}: could not be removed (${err.code || err.message}: a program holds a file of it open); nothing changed, close it and run the step again`); }
     } else if (op.append !== undefined) {
       // Append-only files (logs/<machine>/<date>.log): only this machine writes them, so a sync never conflicts.
       const file = path.join(brainDir, op.path);

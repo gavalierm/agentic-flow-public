@@ -25,7 +25,7 @@
 // unless the message was the supervisor's instruction (plan O7: done within the mandate, spec 5.2).
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseArgs, fail, nowIso, git, gitRemote } from '../scripts/util.mjs';
+import { parseArgs, fail, nowIso, git, gitRemote, removeTree } from '../scripts/util.mjs';
 import { loadContext, isWakeTurn, supervisorTurn, dialogAnsweredInTurn, inSubagent, foreignProjectCwd, resolveBrain, threadId, loadPolicy, brainScriptEnv } from '../scripts/config.mjs';
 import { brainWrite, brainSync, formatWriteResult, readHolder, isHolderOf } from '../scripts/brain.mjs';
 import { freeHandover, renderHandover, sectionItems, QUESTIONS_SECTION, TASKS_SECTION } from '../scripts/brain-checks.mjs';
@@ -259,7 +259,7 @@ function mergeCode(ctx, id, topic, { keepCopy = !!args['keep-copy'], label = `do
       if (!rm.ok) fail(`git worktree remove ${copy} failed: ${rm.stderr}${/EPERM|EBUSY|Permission denied|being used|Invalid argument/i.test(rm.stderr) ? `; a process has its working directory or a file open in the copy (a shell: cd ${ctx.projectDir}), then rerun done --topic ${id} (the merge is already done)` : ''}`);
       git(['branch', '-d', branch], { cwd: ctx.projectDir });
       try { fs.rmdirSync(path.dirname(copy)); } catch { /* other topics of the repo remain */ }
-    } else fs.rmSync(copy, { recursive: true, force: true });
+    } else removeTree(copy); // a held file must not fail the close: the merge is done
   }
   return { merged: true, note: `${branch} merged into ${mainBranch}${pushNote}${keepCopy ? '' : `; copy ${copy} removed`}` };
 }
@@ -543,7 +543,7 @@ function removeCopies(ctx, id, topic, names) {
       if (!rm.ok) { lines.push(`copy ${copy} not removed: ${rm.stderr.split('\n')[0]}${/EPERM|EBUSY|Permission denied|being used|Invalid argument/i.test(rm.stderr) ? ` (a process has its working directory in it: cd ${dir})` : ''}`); continue; }
       git(['branch', '-D', topicBranch(id)], { cwd: dir });
       try { fs.rmdirSync(path.dirname(copy)); } catch { /* other topics of the repo remain */ }
-    } else fs.rmSync(copy, { recursive: true, force: true });
+    } else removeTree(copy); // a held file must not fail the close: the merge is done
     lines.push(`copy ${copy} removed`);
   }
   return lines;

@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { setup, memoryRecord } from './helpers.mjs';
 
 const dirty = (fx) => fx.git(fx.brain, 'status', '--porcelain', '--untracked-files=no').trim();
@@ -60,5 +61,35 @@ test('a removal cannot stay half done: a dead writer is settled by the next scri
     assert.equal(r.status, 0, r.out);
     assert.equal(fs.existsSync(dir), false);
     assert.equal(dirty(fx), '');
+  } finally { fx.cleanup(); }
+});
+
+// Audit 2026-11-22 of the same class: what else a killed process leaves in a brain that no thread could clear.
+test('a stale index lock and a rebase left in progress do not block the brain', () => {
+  const fx = setup();
+  try {
+    // a killed git left its index lock: every write failed on it for good
+    const lock = path.join(fx.brain, '.git', 'index.lock');
+    fs.writeFileSync(lock, '');
+    fs.utimesSync(lock, new Date(Date.now() - 600000), new Date(Date.now() - 600000));
+    let r = write(fx, 'operator-a');
+    assert.equal(r.status, 0, r.out);
+    assert.equal(fs.existsSync(lock), false);
+    // a sync killed while it rebased: the brain stood on a detached HEAD, a write failed and sync said "pushed"
+    const other = fs.mkdtempSync(path.join(path.dirname(fx.brain), 'other-'));
+    fx.git(path.dirname(other), 'clone', '-q', fx.origin, other);
+    fs.writeFileSync(path.join(other, 'memory', 'operator-a.md'), memoryRecord('operator-a', 'name: remote'));
+    fx.git(other, 'commit', '-qam', '[brain-script] remote change', '--no-verify');
+    fx.git(other, 'push', '-q');
+    fs.writeFileSync(path.join(fx.brain, 'memory', 'operator-a.md'), memoryRecord('operator-a', 'name: local'));
+    fx.git(fx.brain, 'commit', '-qam', '[brain-script] local change', '--no-verify');
+    fx.git(fx.brain, 'fetch', '-q', 'origin');
+    spawnSync('git', ['rebase', '-q', 'origin/main'], { cwd: fx.brain, env: { ...process.env, GIT_EDITOR: 'true' } });
+    assert.equal(fs.existsSync(path.join(fx.brain, '.git', 'rebase-merge')), true, 'the rebase stopped and stays');
+    r = write(fx, 'operator-b');
+    assert.equal(r.status, 0, r.out);
+    assert.equal(fs.existsSync(path.join(fx.brain, '.git', 'rebase-merge')), false);
+    assert.equal(fx.git(fx.brain, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main');
+    assert.match(fx.git(fx.brain, 'log', '--format=%s', '-3'), /write operator-b\n.*local change/, 'the local commits are intact');
   } finally { fx.cleanup(); }
 });

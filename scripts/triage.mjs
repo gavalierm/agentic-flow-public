@@ -6,6 +6,7 @@
 // migration of an older repo (scripts/migrate.mjs).
 import fs from 'node:fs';
 import path from 'node:path';
+import { removeTree } from './util.mjs';
 import { isWakeTurn, supervisorTurn, dialogAnsweredInTurn } from './config.mjs';
 import { bellContinuation } from './waker.mjs';
 import { brainWrite, readHolder, isHolderOf } from './brain.mjs';
@@ -140,8 +141,10 @@ export function removeTopicTmp(brainDir, projectDir, id, extra = []) {
   const removed = [];
   for (const dir of dirs) {
     if (!fs.existsSync(dir)) continue;
-    fs.rmSync(dir, { recursive: true, force: true });
-    removed.push(dir);
+    // After the topic is closed in git: a file a program holds must not fail the close (the mail close and the thread
+    // settle come after this). What stays is outside git.
+    const left = removeTree(dir);
+    removed.push(left ? `${dir} (${left} file(s) stay: a program holds them open)` : dir);
   }
   return removed;
 }

@@ -6,7 +6,7 @@
 // The brain itself is no such repo: its checkout is the clone of the workflow (O8), brainWrite keeps writing it.
 import fs from 'node:fs';
 import path from 'node:path';
-import { git, gitRetry, gitRemote, toPosix } from './util.mjs';
+import { git, gitRetry, gitRemote, toPosix, dropStaleIndexLock } from './util.mjs';
 import { WORKTREES_DIR, mainCheckout } from './config.mjs';
 import { withLock } from './brain.mjs';
 
@@ -65,6 +65,7 @@ function ensureClone(repoDir, dir, name) {
  * aborted rebase, a commit that was not pushed, stray files).
  */
 function resetClone(dir, branch, from = branch) {
+  dropStaleIndexLock(dir);
   for (const d of ['rebase-merge', 'rebase-apply']) if (fs.existsSync(path.join(dir, '.git', d))) git(['rebase', '--abort'], { cwd: dir });
   const co = git(['checkout', '--quiet', '-f', '-B', branch, `origin/${from}`], { cwd: dir });
   if (!co.ok) return co;
