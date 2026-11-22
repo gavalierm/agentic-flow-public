@@ -1,6 +1,8 @@
 // Single writer for the brain repository (P-040, P-037, P-025, P-013).
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { git, gitRetry, gitRemote, remoteDiagnosis, readJson, toPosix, removeTree, dropStaleIndexLock, PLUGIN_ROOT } from './util.mjs';
 import { BRAIN_COMMIT_TAG, BRAIN_SCRIPT_ENV, brainScriptEnv, inSubagent, machineName, sameMachine } from './config.mjs';
 import { checkBrainFile } from './brain-checks.mjs';
@@ -42,7 +44,40 @@ let lockDepth = 0;
 // uncommitted change is undone). A file a program still holds after the commit waits in a list and goes at a later lock.
 const journalPath = (brainDir) => path.join(brainDir, '.git', 'workflow-write.journal');
 const cleanupPath = (brainDir) => path.join(brainDir, '.git', 'workflow-write.cleanup');
+const syncNotePath = (brainDir) => path.join(brainDir, '.git', 'workflow-sync.note');
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } };
+// The minute this machine started: a pid of before a restart belongs to another program now (audit 2026-11-22: a note
+// with a pid that was alive again was never settled and the next write committed the dead writer's staged removal).
+const bootMinute = () => Math.round((Date.now() - os.uptime() * 1000) / 60000);
+const NOTE_LIVE_MS = 10 * 60 * 1000;
+const stamp = () => ({ pid: process.pid, boot: bootMinute(), at: new Date().toISOString() });
+/** When the process with this pid started (ms), or null when the system does not say. Only asked for a note with a living pid. */
+function startedAt(pid) {
+  try {
+    if (process.platform === 'linux') {
+      // Field 22 of /proc/<pid>/stat: the start in ticks (100 a second) after the boot. The boot comes from the uptime:
+      // btime of /proc/stat is cut to a second, which made a process of up to a second after the note look older.
+      const ticks = Number(fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ').pop().split(' ')[19]);
+      return Number.isFinite(ticks) ? Date.now() - os.uptime() * 1000 + ticks * 10 : null;
+    }
+    const r = process.platform === 'win32'
+      ? spawnSync('powershell', ['-NoProfile', '-Command', `(Get-Process -Id ${Number(pid)}).StartTime.ToUniversalTime().ToString('o')`], { encoding: 'utf8', timeout: 8000, windowsHide: true })
+      : spawnSync('ps', ['-p', String(Number(pid)), '-o', 'lstart='], { encoding: 'utf8', timeout: 8000 });
+    const t = Date.parse(String(r.stdout || '').trim());
+    return Number.isNaN(t) ? null : t;
+  } catch { return null; }
+}
+/**
+ * The writer of a note still runs: its pid lives, in this run of the machine, and the process is older than the note
+ * (a pid given to another program after the writer died belongs to a younger process; Windows reuses pids within
+ * minutes). Where the system does not tell the start, a young note counts as live.
+ */
+function live(note) {
+  if (!note || !alive(note.pid) || Math.abs((note.boot ?? bootMinute()) - bootMinute()) > 1) return false;
+  const at = Date.parse(note.at || 0);
+  const start = startedAt(note.pid);
+  return start === null ? Date.now() - at < NOTE_LIVE_MS : start <= at;
+}
 
 /**
  * Makes paths what HEAD says, the index too: a tracked one is restored (a removed file comes back), one HEAD does not
@@ -66,34 +101,48 @@ function later(brainDir, rels) {
 }
 
 /**
- * Under the brain lock, before the holder works: what a dead process left is settled. A rebase left in progress is
- * aborted (the brain stood on a detached HEAD: every write failed and `sync` said "pushed" with the local commit not
- * applied, audit 2026-11-22; the commits are intact, the sync rebases again), a stale index lock goes, the paths of an
- * interrupted write become what the last commit says.
+ * Under the lock, before the holder works: what a dead workflow process left is settled, and only that. The lock is
+ * also taken on a code checkout (save.mjs of a repo decision, a project repo of data 1 and 2), where a person's own
+ * rebase or git lock must stay (audit 2026-11-22: the first version aborted a person's rebase there). So every step
+ * needs a note the workflow wrote: the sync note (a rebase left in progress is aborted: the brain stood on a detached
+ * HEAD, every write failed and `sync` said "pushed"; the commits are intact, the sync rebases again) or the write
+ * journal (its paths become what the last commit says; a path whose file the writer did not change, a document the
+ * agent wrote in place, is only taken out of the index, its file is the only copy). With a note of a dead process a
+ * stale index lock goes too.
  */
 function recoverWrite(brainDir) {
   const say = (text) => process.stderr.write(`workflow: ${text}\n`);
-  if (dropStaleIndexLock(brainDir)) say('the index lock a killed git left in the brain was removed');
-  if (['rebase-merge', 'rebase-apply'].some((d) => fs.existsSync(path.join(brainDir, '.git', d)))) {
-    const abort = git(['rebase', '--abort'], { cwd: brainDir });
-    say(abort.ok ? 'a brain update from origin a killed process left half done was reset; the next sync runs it again' : `a rebase is left in the brain and could not be aborted: ${firstLine(abort.stderr)}`);
-  }
-  const file = journalPath(brainDir);
-  if (fs.existsSync(file)) {
-    const note = readJson(file, null);
-    if (note && note.pid === process.pid) return; // our own write, the lock is re-entrant
-    if (note && Array.isArray(note.paths) && note.paths.length) {
-      // A live writer under a lock taken over as stale is left alone.
-      if (alive(note.pid)) return;
-      const dirty = git(['status', '--porcelain', '--', ...note.paths], { cwd: brainDir }).stdout.trim();
-      if (dirty) {
-        later(brainDir, backToHead(brainDir, note.paths));
-        process.stderr.write(`workflow: an interrupted brain write was settled (${String(note.message).slice(0, 120)}; ${note.paths.slice(0, 3).join(', ')}${note.paths.length > 3 ? ', …' : ''}): its paths are as the last commit says; a step that did not finish runs again\n`);
+  const notes = [syncNotePath(brainDir), journalPath(brainDir)].filter((file) => fs.existsSync(file)).map((file) => ({ file, note: readJson(file, null) }));
+  // Our own note (the lock is re-entrant) or a live writer under a lock taken over as stale: left alone.
+  if (notes.some((n) => n.note?.pid === process.pid || live(n.note))) return;
+  if (notes.length && dropStaleIndexLock(brainDir)) say('the index lock a killed git left was removed');
+  for (const { file, note } of notes) {
+    if (file === syncNotePath(brainDir)) {
+      if (['rebase-merge', 'rebase-apply'].some((d) => fs.existsSync(path.join(brainDir, '.git', d)))) {
+        const abort = git(['rebase', '--abort'], { cwd: brainDir });
+        say(abort.ok ? 'a brain update from origin a killed process left half done was reset; the next sync runs it again' : `a rebase is left in the brain and could not be aborted: ${firstLine(abort.stderr)}`);
+      }
+    } else if (note && Array.isArray(note.paths) && note.paths.length) {
+      const keep = Array.isArray(note.keep) ? note.keep : [];
+      if (git(['status', '--porcelain', '--', ...note.paths], { cwd: brainDir }).stdout.trim()) {
+        later(brainDir, backToHead(brainDir, note.paths.filter((rel) => !keep.includes(rel))));
+        if (keep.length) git(['reset', '--quiet', '--', ...keep], { cwd: brainDir });
+        say(`an interrupted brain write was settled (${String(note.message).slice(0, 120)}; ${note.paths.slice(0, 3).join(', ')}${note.paths.length > 3 ? ', …' : ''}): its paths are as the last commit says${keep.length ? `, the file(s) written in place stay as they are (${keep.slice(0, 3).join(', ')})` : ''}; a step that did not finish runs again`);
       }
     }
     fs.rmSync(file, { force: true });
   }
   if (fs.existsSync(cleanupPath(brainDir))) later(brainDir, []);
+}
+
+/**
+ * A rebase the recovery left: no note of the workflow, so a person (or a workflow before the note) started it. The repo
+ * stands on a detached HEAD: a write failed with a git hint and `sync` said "pushed". Returns the way out, or null.
+ */
+function leftRebase(brainDir) {
+  if (!['rebase-merge', 'rebase-apply'].some((d) => fs.existsSync(path.join(brainDir, '.git', d)))) return null;
+  const dir = toPosix(brainDir);
+  return `a git rebase is in progress in ${dir} and the workflow did not start it: no write and no sync runs until it ends. The operator finishes it (git -C ${dir} rebase --continue) or drops it (git -C ${dir} rebase --abort; the commits stay)`;
 }
 
 /**
@@ -255,12 +304,20 @@ function resolveConflict(brainDir, file, how) {
  * opts.resolutions: { <file>: 'local' | 'remote' } settles a disagreement the operator chose (brain.mjs resolve).
  */
 export function brainSync(brainDir, opts = {}) {
-  return withBrainLock(brainDir, () => brainSyncUnlocked(brainDir, opts));
+  return withBrainLock(brainDir, () => {
+    // The note says a rebase found later in this repo is the workflow's own (recoverWrite); a nested sync keeps the outer one.
+    const file = syncNotePath(brainDir);
+    const own = !fs.existsSync(file);
+    if (own) { try { fs.writeFileSync(file, JSON.stringify(stamp())); } catch { /* a read-only repo: no rebase either */ } }
+    try { return brainSyncUnlocked(brainDir, opts); } finally { if (own) fs.rmSync(file, { force: true }); }
+  });
 }
 
 function brainSyncUnlocked(brainDir, { attempts = 3, resolutions = {} } = {}) {
   const branch = currentBranch(brainDir);
   const result = { pushed: false, unpushed: 0, conflict: null, error: null, remoteAhead: false, notices: [] };
+  result.error = leftRebase(brainDir);
+  if (result.error) return result;
   if (!hasRemote(brainDir)) {
     result.error = 'no remote origin';
     return result;
@@ -550,24 +607,32 @@ function brainWriteUnlocked(ctx, { ops, message, internal = false, sync = true, 
     }
   }
   if (errors.length) throw new Error(errors.join('\n'));
-  const access = gitAccessProblem(brainDir);
+  const access = gitAccessProblem(brainDir) || leftRebase(brainDir);
   if (access) throw new Error(access);
 
   const restore = snapshot(brainDir, ops);
   // A failed write leaves nothing behind: removed and moved paths come back from HEAD, written files from the snapshot.
   const undo = () => { backToHead(brainDir, ops.filter((op) => op.remove || op.from).flatMap((op) => (op.from ? [op.from, op.to] : [op.path]))); restore(); };
   const journal = journalPath(brainDir);
-  const note = (paths) => fs.writeFileSync(journal, JSON.stringify({ pid: process.pid, at: new Date().toISOString(), message, paths: [...new Set(paths)] }));
+  // A path whose file already holds the content (save.mjs docs, a result in place: the agent wrote it by hand and the op
+  // only commits it) is the only copy of that content: no failure and no recovery removes it or puts it back to HEAD.
+  const inPlace = (op) => { try { return !op.remove && !op.from && op.content !== undefined && fs.readFileSync(path.join(brainDir, op.path)).equals(Buffer.from(op.content)); } catch { return false; } };
+  const keep = ops.filter(inPlace).map((op) => toPosix(op.path).replace(/^\.\//, ''));
+  const note = (paths) => fs.writeFileSync(journal, JSON.stringify({ ...stamp(), message, paths: [...new Set(paths)], keep }));
+  // A note the recovery left belongs to a writer that still runs (this lock was taken over as stale): its staged
+  // changes must not go into this commit and its note must not be lost.
+  const other = readJson(journal, null);
+  if (other && other.pid !== process.pid) throw new Error(`another brain write is in progress (pid ${other.pid}, since ${other.at}: ${String(other.message).slice(0, 80)}); run the step again in a moment`);
   note([...rels, ...(hasDataIndex(brainDir) ? [INDEX_FILE] : [])]);
   try {
-    return applyWrite(ctx, { ops, message, sync, extraEnv, touched, undo, note });
+    return applyWrite(ctx, { ops, message, sync, extraEnv, touched, undo, note, keep, journal });
   } finally {
     // Through (committed, or put back): no note. A killed process leaves it for the next lock holder (recoverWrite).
     fs.rmSync(journal, { force: true });
   }
 }
 
-function applyWrite(ctx, { ops, message, sync, extraEnv, touched, undo, note }) {
+function applyWrite(ctx, { ops, message, sync, extraEnv, touched, undo, note, keep, journal }) {
   const { brainDir } = ctx;
   // A removal no other op writes into is committed first and its files go after the commit (see journalPath).
   const inside = (rel, dir) => rel === dir || rel.startsWith(`${dir}/`);
@@ -589,7 +654,7 @@ function applyWrite(ctx, { ops, message, sync, extraEnv, touched, undo, note }) 
     deployIgnores = refreshDeployIgnores(brainDir, env);
     if (deployIgnores.length) { touched.push(...deployIgnores.map((x) => x.file)); note(touched); }
   } catch (err) { undo(); throw err; }
-  return commitWrite(ctx, { message, sync, env, touched, deployIgnores, deferred });
+  return commitWrite(ctx, { message, sync, env, touched, deployIgnores, deferred, keep, journal });
 }
 
 function applyOps(brainDir, ops, touched, deferred) {
@@ -623,7 +688,7 @@ function applyOps(brainDir, ops, touched, deferred) {
   }
 }
 
-function commitWrite(ctx, { message, sync, env, touched, deployIgnores, deferred }) {
+function commitWrite(ctx, { message, sync, env, touched, deployIgnores, deferred, keep, journal }) {
   const { brainDir } = ctx;
   const staged = git(['diff', '--cached', '--quiet'], { cwd: brainDir });
   const result = { committed: false, sha: null, sync: null, unpushed: unpushedCount(brainDir), warnings: [], deployIgnores };
@@ -631,8 +696,10 @@ function commitWrite(ctx, { message, sync, env, touched, deployIgnores, deferred
   if (!staged.ok) {
     const commit = gitRetry(['commit', '--quiet', '-m', `${BRAIN_COMMIT_TAG} ${message}`], { cwd: brainDir, env });
     if (!commit.ok) {
-      // A refused commit (pre-commit check) leaves nothing behind: the touched paths go back to HEAD.
-      backToHead(brainDir, touched);
+      // A refused commit (pre-commit check) leaves nothing behind: the touched paths go back to HEAD; a file written in
+      // place only leaves the index.
+      backToHead(brainDir, touched.filter((rel) => !keep.includes(rel)));
+      if (keep.length) git(['reset', '--quiet', '--', ...keep], { cwd: brainDir });
       throw new Error(`commit failed: ${String(commit.stderr || commit.stdout).trim().split('\n').slice(0, 6).join('\n')}`);
     }
     result.committed = true;
@@ -640,6 +707,8 @@ function commitWrite(ctx, { message, sync, env, touched, deployIgnores, deferred
   }
   // The removal is in git (or the path never was): its files leave the disk now. What a program holds goes later.
   const held = deferred.length ? later(brainDir, deferred) : [];
+  // The write is through before the network: a slow push must not look like an interrupted write to a later lock holder.
+  fs.rmSync(journal, { force: true });
   if (held.length) result.warnings.push(`removed in git, but a program holds file(s) of ${held.join(', ')} open on this machine: they go at a later brain write, nothing to do`);
   if (sync) {
     result.sync = brainSync(brainDir);

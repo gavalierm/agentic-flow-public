@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { setup, memoryRecord } from './helpers.mjs';
 
 const dirty = (fx) => fx.git(fx.brain, 'status', '--porcelain', '--untracked-files=no').trim();
@@ -68,10 +68,13 @@ test('a removal cannot stay half done: a dead writer is settled by the next scri
 test('a stale index lock and a rebase left in progress do not block the brain', () => {
   const fx = setup();
   try {
-    // a killed git left its index lock: every write failed on it for good
+    // a killed git of a workflow write left its index lock: every write failed on it for good
     const lock = path.join(fx.brain, '.git', 'index.lock');
     fs.writeFileSync(lock, '');
     fs.utimesSync(lock, new Date(Date.now() - 600000), new Date(Date.now() - 600000));
+    const syncNote = path.join(fx.brain, '.git', 'workflow-sync.note');
+    const dead = () => fs.writeFileSync(syncNote, JSON.stringify({ pid: 2 ** 22 + 12345, at: new Date().toISOString() }));
+    dead();
     let r = write(fx, 'operator-a');
     assert.equal(r.status, 0, r.out);
     assert.equal(fs.existsSync(lock), false);
@@ -86,10 +89,45 @@ test('a stale index lock and a rebase left in progress do not block the brain', 
     fx.git(fx.brain, 'fetch', '-q', 'origin');
     spawnSync('git', ['rebase', '-q', 'origin/main'], { cwd: fx.brain, env: { ...process.env, GIT_EDITOR: 'true' } });
     assert.equal(fs.existsSync(path.join(fx.brain, '.git', 'rebase-merge')), true, 'the rebase stopped and stays');
+    // without a note of the workflow it is a person's own rebase (the lock is taken on a code checkout too): it stays
+    r = write(fx, 'operator-b');
+    assert.notEqual(r.status, 0);
+    assert.match(r.out, /rebase is in progress .*rebase --abort/);
+    assert.match(fx.run('brain.mjs', ['sync']).out, /rebase is in progress/, 'the sync does not say "pushed"');
+    assert.equal(fs.existsSync(path.join(fx.brain, '.git', 'rebase-merge')), true);
+    dead();
     r = write(fx, 'operator-b');
     assert.equal(r.status, 0, r.out);
     assert.equal(fs.existsSync(path.join(fx.brain, '.git', 'rebase-merge')), false);
     assert.equal(fx.git(fx.brain, 'rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main');
     assert.match(fx.git(fx.brain, 'log', '--format=%s', '-3'), /write operator-b\n.*local change/, 'the local commits are intact');
+  } finally { fx.cleanup(); }
+});
+
+test('a file the agent wrote in place is never removed by a failed or interrupted write; a reused pid is a dead writer', () => {
+  const fx = setup();
+  try {
+    // the content is already on the disk (the only copy) and the commit is refused
+    const rel = 'memory/operator-c.md';
+    const text = memoryRecord('operator-c', 'name: hand written');
+    fs.writeFileSync(path.join(fx.brain, rel), text);
+    const refLock = path.join(fx.brain, '.git', 'refs', 'heads', 'main.lock');
+    fs.writeFileSync(refLock, '');
+    let r = fx.run('brain.mjs', ['write', rel, '--message', 'write c', '--content', text]);
+    fs.rmSync(refLock);
+    assert.notEqual(r.status, 0);
+    assert.equal(fs.readFileSync(path.join(fx.brain, rel), 'utf8'), text, 'still there after the refused commit');
+    // the writer died after it staged the file; its pid belongs to a younger process now
+    fx.git(fx.brain, 'add', rel);
+    const at = new Date(Date.now() - 5000).toISOString();
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { stdio: 'ignore' });
+    try {
+      fs.writeFileSync(path.join(fx.brain, '.git', 'workflow-write.journal'), JSON.stringify({ pid: child.pid, at, message: 'write c', paths: [rel], keep: [rel] }));
+      r = write(fx, 'operator-d');
+      assert.equal(r.status, 0, r.out);
+      assert.match(r.stderr, /written in place stay as they are/);
+    } finally { child.kill(); }
+    assert.equal(fs.readFileSync(path.join(fx.brain, rel), 'utf8'), text);
+    assert.equal(fx.git(fx.brain, 'ls-files', rel).trim(), '', 'not swept into the next commit');
   } finally { fx.cleanup(); }
 });
