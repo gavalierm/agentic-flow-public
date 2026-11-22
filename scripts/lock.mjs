@@ -34,11 +34,13 @@ export function withLock(dir, { waitMs = 1000, staleMs = 10 * 60 * 1000, sleepMs
       if (owner) { try { fs.writeFileSync(path.join(dir, 'owner'), `${process.pid} ${new Date().toISOString()}\n`); } catch { /* owner is informative */ } }
       break;
     } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-      let age = 0;
-      try { age = Date.now() - fs.statSync(dir).mtimeMs; } catch { continue; }
-      if (age > staleMs) { fs.rmSync(dir, { recursive: true, force: true }); continue; }
-      if (Date.now() - started >= waitMs) throw new LockBusy(dir, age, busy ? busy(dir, age) : undefined);
+      if (!taken(err)) throw err;
+      let age = null;
+      try { age = Date.now() - fs.statSync(dir).mtimeMs; } catch { /* released meanwhile */ }
+      if (age !== null && age > staleMs && remove(dir)) continue;
+      if (Date.now() - started >= waitMs) throw new LockBusy(dir, age ?? 0, busy ? busy(dir, age ?? 0) : undefined);
+      // Released between the two calls: take it at once. Windows (EPERM, the folder is still going away) waits a moment.
+      if (age === null && err.code === 'EEXIST') continue;
       Atomics.wait(sleeper, 0, 0, sleepMs + Math.floor(Math.random() * sleepMs));
     }
   }
@@ -47,6 +49,15 @@ export function withLock(dir, { waitMs = 1000, staleMs = 10 * 60 * 1000, sleepMs
     return fn();
   } finally {
     held.set(dir, 0);
-    fs.rmSync(dir, { recursive: true, force: true });
+    remove(dir);
   }
+}
+
+// Windows reports a folder that another process is just removing (delete pending) as EPERM or EACCES, not EEXIST: for
+// the next writer it is a held lock, not an error (a hook must not fail on it).
+const taken = (err) => err.code === 'EEXIST' || (process.platform === 'win32' && (err.code === 'EPERM' || err.code === 'EACCES'));
+
+/** Removes the lock folder; false when the system refuses (Windows: another process looks at it): it then goes stale. */
+function remove(dir) {
+  try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 10 }); return true; } catch { return false; }
 }
