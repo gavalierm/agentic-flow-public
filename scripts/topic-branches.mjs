@@ -1,12 +1,11 @@
 // Topic branches with work on paths of an older data layout (a shop repo 2026-11-16): a migration moves only the target
 // branch; a branch of an open topic forked before it keeps adding files in materialy/, docs/ … and done --topic would
 // merge a folder the data of the repo no longer knows. The check and the session check list them; done refuses the merge.
-import { git } from './util.mjs';
+import { git, GIT_PATHS } from './util.mjs';
 import { dataLayoutVersion, layoutRole, ROLE_REPO } from './layout.mjs';
 import { oldFolders } from './leftovers.mjs';
 import { targetBranch } from './target.mjs';
 
-const GIT_PATHS = ['-c', 'core.quotepath=false'];
 const under = (rel, dir) => rel === dir || rel.startsWith(`${dir}/`);
 
 /** Top folders of older layouts a repository of this version must not get (folders reported as leftovers). */

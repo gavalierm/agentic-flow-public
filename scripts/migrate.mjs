@@ -22,7 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { git, gitRemote, readJson, writeJson, dropStaleGitLocks, PLUGIN_ROOT } from './util.mjs';
+import { git, gitRemote, readJson, writeJson, dropStaleGitLocks, PLUGIN_ROOT, GIT_PATHS } from './util.mjs';
 import { stamp, live } from './lock.mjs';
 import { BRAIN_COMMIT_TAG, MIGRATE_MOVE_ENV, DOMAIN_MARKER, brainScriptEnv, loadPolicy, threadId } from './config.mjs';
 import { checkBrainFile } from './brain-checks.mjs';
@@ -111,7 +111,6 @@ export function repoKind(dir) {
  * Every git call here that prints paths: names as they are, never quoted (core.quotepath turns "ľ" into "\304\276"),
  * and lists split on NUL (-z) where a name may hold a newline.
  */
-const GIT_PATHS = ['-c', 'core.quotepath=false'];
 
 /** Files git tracks: [{ rel, mode }] (mode 160000 is a nested repository, a gitlink). */
 export function trackedFiles(dir) {
@@ -1090,7 +1089,7 @@ export function checkMigration(dir, { before = null, project = null, cwd = proce
       continue;
     }
     if (!now.has(r.to) && !archivedTopicPlaces(r.to).some((p) => now.has(p))) {
-      const gone = removedByScript(dir, r.to);
+      const gone = removedOnPurpose(dir, r.to);
       if (gone) removedNote(removedLater, gone, r.to);
       else problems.push(`${r.from}: ${r.from === r.to ? 'should stay' : `new place ${r.to}`}, not tracked`);
     }
@@ -1401,21 +1400,27 @@ export function fixIndex(dir) {
 
 /** Files removed after the move, grouped by the commit that removed them (a closed topic: one line, not one per file). */
 export function removedNote(map, gone, rel) {
-  if (!map.has(gone.sha)) map.set(gone.sha, { ...gone, files: [] });
-  map.get(gone.sha).files.push(rel);
+  const key = `${gone.sha}${gone.moved ? ' moved' : ''}`;
+  if (!map.has(key)) map.set(key, { ...gone, files: [] });
+  map.get(key).files.push(rel);
 }
-export const removedNotes = (map) => [...map.values()].map((g) => `${g.files.length === 1 ? g.files[0] : `${g.files.length} file(s) (${g.files.slice(0, 3).join(', ')}${g.files.length > 3 ? ', …' : ''})`}: removed after the move by ${g.sha} (${g.subject})`);
+export const removedNotes = (map) => [...map.values()].map((g) => `${g.files.length === 1 ? g.files[0] : `${g.files.length} file(s) (${g.files.slice(0, 3).join(', ')}${g.files.length > 3 ? ', …' : ''})`}: ${g.moved ? 'moved to another place' : 'removed'} after the move by ${g.sha} (${g.subject})`);
 
 /**
- * The commit of a brain script that removed `rel` after the move (save ... --remove, a skill or record dropped on purpose):
- * { sha, subject }, or null when the last removal was no brain script's (a move lost the file). A check names it as a note.
+ * The commit that took `rel` away on purpose after the move: a brain script removed it (save ... --remove, a skill or
+ * record dropped), { sha, subject }; or any commit gave the file another name (a renamed or archived skill), { sha,
+ * subject, moved: true } (a brain of doma-pc 2026-11-23: 20 files of renamed skills were reported lost at every check).
+ * Null when the last removal was neither (a move or a hand lost the file). A check names it as a note.
  */
-export function removedByScript(dir, rel) {
+export function removedOnPurpose(dir, rel) {
   const r = git([...GIT_PATHS, 'log', '-1', '--diff-filter=D', '--format=%h%x09%s', '--', rel], { cwd: dir });
   if (!r.ok || !r.stdout) return null;
   const [sha, ...rest] = r.stdout.split('\t');
   const subject = rest.join('\t');
-  return subject.startsWith(`${BRAIN_COMMIT_TAG} `) ? { sha, subject } : null;
+  if (subject.startsWith(`${BRAIN_COMMIT_TAG} `)) return { sha, subject };
+  const names = git([...GIT_PATHS, 'show', '-M', '--name-status', '--format=', sha], { cwd: dir });
+  const moved = names.ok && names.stdout.split('\n').some((l) => { const [st, from] = l.split('\t'); return st.startsWith('R') && from === rel; });
+  return moved ? { sha, subject, moved: true } : null;
 }
 
 /**

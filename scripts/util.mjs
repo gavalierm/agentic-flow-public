@@ -365,3 +365,6 @@ export function copyDir(src, dest, { filter = () => true } = {}) {
     else fs.copyFileSync(s, d);
   }
 }
+
+/** git options that print a path with diacritics as it is (not quoted "\304\276"). */
+export const GIT_PATHS = ['-c', 'core.quotepath=false'];

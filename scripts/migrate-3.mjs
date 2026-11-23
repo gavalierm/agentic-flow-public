@@ -23,7 +23,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { git, readJson, writeJson, PLUGIN_ROOT } from './util.mjs';
+import { git, readJson, writeJson, PLUGIN_ROOT, GIT_PATHS } from './util.mjs';
 import { stamp, live } from './lock.mjs';
 import { BRAIN_COMMIT_TAG, MIGRATE_MOVE_ENV, DOMAIN_MARKER, WORKFLOW_CONFIG, WORKTREES_DIR, brainScriptEnv } from './config.mjs';
 import { LAYOUTS, LAYOUT_KEY, ROLE_BRAIN, ROLE_REPO, layoutFor, dataLayoutVersion, layoutRole, dataName } from './layout.mjs';
@@ -33,7 +33,7 @@ import { MODES } from './topic-files.mjs';
 import { turnFields } from './topic-state.mjs';
 import { parseFrontmatter } from './frontmatter.mjs';
 import { operatorRepo, readPeople } from './people.mjs';
-import { moveNote as noteIn, otherCommitsSince, backToHead, trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand, leftoverProblems, fixDeployIgnores, removedByScript, removedNote, removedNotes } from './migrate.mjs';
+import { moveNote as noteIn, otherCommitsSince, backToHead, trackedFiles, readyForMove, readTriage, regenerateAdapter, adapterCommand, leftoverProblems, fixDeployIgnores, removedOnPurpose, removedNote, removedNotes } from './migrate.mjs';
 import { gitAccessProblem } from './brain.mjs';
 import { staleCatalog, rescanStale } from './catalog/stale.mjs';
 const LOCAL_CATALOG = 'local/catalog';
@@ -93,7 +93,6 @@ export function repoDecisionRefs(text, names) {
 const SCRATCH = 'scratch';
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const isText = (rel) => TEXT_EXT.has(path.posix.extname(rel).toLowerCase());
-const GIT_PATHS = ['-c', 'core.quotepath=false'];
 
 /** Content of a file: text, or the bytes of a binary one. */
 function readContent(abs) {
@@ -1291,7 +1290,7 @@ export function checkRepo(dir, { brainDir = null } = {}) {
         if (!fs.existsSync(path.join(other, to.slice(i + 1)))) problems.push(`${from}: moved to ${to}, not there`);
       } else if (!tracked.has(to)) {
         // A record removed on purpose after the move (save ... --remove) is no lost move (alice 2026-11-16).
-        const gone = removedByScript(dir, to);
+        const gone = removedOnPurpose(dir, to);
         if (gone) removedNote(removedLater, gone, to);
         else problems.push(`${from}: new place ${to}, not tracked`);
       }

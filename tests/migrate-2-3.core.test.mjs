@@ -479,8 +479,13 @@ test('--check: a record a brain script removed after the move is a note, a file 
     assert.equal(a.status, 0, a.out);
     const benv = { ...process.env, [BRAIN_SCRIPT_ENV]: '1' };
     const rm = (rel, msg) => { for (const args of [['rm', '-q', rel], ['commit', '-q', '--no-verify', '-m', msg]]) assert.equal(spawnSync('git', args, { cwd: fx.brain, env: benv }).status, 0); };
+    // A file renamed by a hand commit is at its new place, not lost (renamed skills in a brain of doma-pc 2026-11-23).
+    for (const args of [['mv', 'topics/alpha/handover.md', 'topics/alpha/handover-2.md'], ['commit', '-q', '--no-verify', '-m', 'renamed by hand']]) assert.equal(spawnSync('git', args, { cwd: fx.brain, env: benv }).status, 0);
+    let c = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check', '--fix']);
+    assert.equal(c.status, 0, c.out);
+    assert.match(c.stdout, /note: topics\/alpha\/handover\.md: moved to another place after the move by \w+ \(renamed by hand\)/);
     rm('memory/tool-x.md', `${BRAIN_COMMIT_TAG} remove memory tool-x`);
-    let c = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check']);
+    c = fx.run('migrate.mjs', [fx.brain, '--to', '2.1', '--check']);
     assert.equal(c.status, 0, c.out);
     assert.match(c.stdout, /note: memory\/tool-x\.md: removed after the move by \w+ \(\[brain-script\] remove memory tool-x\)/);
     // A topic closed after the move (done --topic removes topics/<id>/ through the brain writer): one note for its files.
