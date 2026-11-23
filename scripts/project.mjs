@@ -341,7 +341,9 @@ export async function connect({ project, repo = null, brain = null, renameBrain 
   if (joinBrain && joinBrain !== brainName) {
     if (brain && brain !== joinBrain) throw new Error(`domain ${path.basename(joinBase)} has the brain ${joinBrain} (${DOMAIN_MARKER}); a domain has one brain, --brain ${brain} does not fit it`);
     if (!exists(path.join(joinBase, joinBrain, '.git'))) throw new Error(`domain ${path.basename(joinBase)} names the brain ${joinBrain}, which is not in ${joinBase}: restore the domain first (project.mjs restore)`);
-    if (exists(path.join(joinBase, repoName))) throw new Error(`${path.join(joinBase, repoName)} exists; nothing is overwritten (P-018)`);
+    // A folder of the repo that exists is judged by the clone step: a clone of this repository goes on (a join that
+    // stopped after its clone, a network error 2026-11-23, could not be repeated: "exists; nothing is overwritten");
+    // any other folder is refused there and nothing is overwritten (P-018).
     return joinDomain({ base: joinBase, brainName: joinBrain, owner, me, repoName, foreign, setAside, root, apiUrl, token, agentTokenFile, remoteFor });
   }
   const aside0 = setAsideNamed(root, setAside);
