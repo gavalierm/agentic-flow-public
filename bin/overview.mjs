@@ -14,10 +14,16 @@
 //                                                         question, topic work not on origin, open P-055/P-075 mail,
 //                                                         brains in layout 1; lists the domains still to migrate to
 //                                                         layout 3 with the commands. Exit 1 while a finding is left.
+//   overview.mjs work [--since <date|Nd>] [--limit <n>] [--root <projects root>]
+//                                                         the work of every folder of the machine since a time (default
+//                                                         14d): topics with the path of their handover, decisions added,
+//                                                         commits of the code repos (the newest --limit per repo,
+//                                                         default 30). For a thread that writes about the work of other
+//                                                         domains. Read only, on request.
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { loadContext } from '../scripts/config.mjs';
 import { runClient, commsSettings, supervisorOf, parseAddress, addressArgs } from '../scripts/comms.mjs';
-import { overview, overviewLines, findingLine, findingKey, newFindings, readOverviewState, writeOverviewState } from '../scripts/overview.mjs';
+import { overview, overviewLines, findingLine, findingKey, newFindings, readOverviewState, writeOverviewState, machineWork, workLines, sinceTime } from '../scripts/overview.mjs';
 import { preRelease, preReleaseLines } from '../scripts/pre-release.mjs';
 
 const args = parseArgs(process.argv.slice(2));
@@ -40,6 +46,15 @@ try {
     const res = overview({ root, ctx, now });
     if (!res.root && !res.brains) fail('overview: no projects root of this machine (project.mjs root <dir>) and no domain above this folder; give --root <dir>');
     for (const l of overviewLines(res)) out(l);
+  } else if (cmd === 'work') {
+    let ctx = null;
+    try { ctx = loadContext({ project: args.project, requireBrain: false }); } catch { ctx = null; }
+    const since = sinceTime(typeof args.since === 'string' ? args.since : '14d', now);
+    if (since === null) fail('overview work: --since takes a date (2026-11-01) or a number of days (14d)');
+    const limit = Number(args.limit) > 0 ? Math.floor(Number(args.limit)) : 30;
+    const res = machineWork({ root, ctx, since, limit });
+    if (!res.root) fail('overview work: no projects root of this machine (project.mjs root <dir>) and no domain above this folder; give --root <dir>');
+    for (const l of workLines(res)) out(l);
   } else if (cmd === 'wake') {
     // Code without a thread id: the mail goes out as the project, never as an inherited thread.
     delete process.env.WORKFLOW_THREAD_ID;
@@ -68,7 +83,7 @@ try {
       out(`overview: ${fresh.length} new finding(s) mailed to ${dest}${sent.data?.id ? ` (${sent.data.id})` : ''}`);
     }
   } else {
-    fail('usage: overview.mjs [--root <dir>] | wake [--project <dir>]');
+    fail('usage: overview.mjs [--root <dir>] | work [--since <date|Nd>] [--limit <n>] [--root <dir>] | wake [--project <dir>]');
   }
 } catch (err) {
   fail(`overview: ${err.message}`);

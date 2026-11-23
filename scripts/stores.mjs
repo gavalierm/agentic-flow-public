@@ -21,7 +21,7 @@ const show = (p) => toPosix(p);
 export const lc = (v) => String(v ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
 
 /** Visible subfolders, never through a symlink (an old name of a renamed domain points to the same folder). */
-function subdirs(dir) {
+export function subdirs(dir) {
   try { return fs.readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => path.join(dir, e.name)); } catch { return []; }
 }
 

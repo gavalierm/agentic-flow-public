@@ -14,8 +14,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { git, localTime, readJson, relPosix, machineConfigDir } from './util.mjs';
-import { machineRoot } from './config.mjs';
-import { domainBrains } from './stores.mjs';
+import { machineRoot, brainExists, BRAIN_COMMIT_TAG, DOMAIN_MARKER } from './config.mjs';
+import { domainBrains, subdirs } from './stores.mjs';
+import { domainRepos } from './repo-knowledge.mjs';
 import { layoutOf, dataPath } from './layout.mjs';
 import { listTopicRecords } from './topic-files.mjs';
 import { isMainTopic, commsProjectName, supervisorOf } from './comms.mjs';
@@ -157,6 +158,81 @@ export function overviewLines(res) {
     ? `overview: ${res.findings.length} finding(s) in ${res.topics} open topic(s) of ${res.brains} brain(s)`
     : `overview: nothing waits for the supervisor (${res.topics} open topic(s) of ${res.brains} brain(s))`;
   return [head, ...res.findings.map(findingLine)];
+}
+
+/** `--since` of the work list: an ISO date or `<n>d` (days back from `now`); the time in ms, or null when it is neither. */
+export function sinceTime(value, now = Date.now()) {
+  const days = /^(\d+)d$/.exec(String(value ?? '').trim());
+  if (days) return ms(now) - Number(days[1]) * 86400_000;
+  const at = Date.parse(String(value ?? ''));
+  return Number.isNaN(at) ? null : at;
+}
+
+const day = (iso) => String(iso || '').slice(0, 10);
+const oneLine = (s, n = 140) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, n);
+
+/**
+ * The work of the machine since a time, for a reader that writes about it (operator 2026-11-23: a thread of one domain
+ * writes articles from the work of all of them): per folder under the projects root its topics changed since then (open
+ * and closed, with the path of the handover), the count of decisions added and the commits of its code repos without the commits of
+ * the workflow scripts. A folder counts with a domain marker or with a git repo of its own (the workflow's own repos have
+ * no brain). A brain gives topics and decisions, never commits: a copy of another machine's brain kept for reading gives
+ * nothing. Read only; one git call per repo and per topic, so it runs on request, never in a hook.
+ * [{ name, dir, topics: [{ brain, id, state, date, subject, handover }], decisions: [{ brain, count, dir }], repos: [{ name, total, commits: [{ date, subject }] }] }]
+ */
+export function machineWork({ root = null, ctx = null, since, limit = 30, env = process.env } = {}) {
+  const base = overviewRoot({ root, ctx, env });
+  if (!base) return { root: null, folders: [] };
+  const iso = new Date(since).toISOString();
+  const brains = domainBrains(base);
+  const folders = [];
+  for (const dir of subdirs(base)) {
+    const own = brains.filter((b) => b.domainRoot && path.resolve(b.domainRoot) === path.resolve(dir));
+    const repos = domainRepos({ root: dir }).filter((r) => fs.existsSync(path.join(r.dir, '.git')) && !brainExists(r.dir));
+    if (!fs.existsSync(path.join(dir, DOMAIN_MARKER)) && !repos.length) continue;
+    const folder = { name: path.basename(dir), dir, topics: [], decisions: [], repos: [] };
+    for (const b of own) {
+      const L = layoutOf(b.dir);
+      let recs = [];
+      try { recs = [...listTopicRecords(b.dir), ...listTopicRecords(b.dir, { closed: true })]; } catch { recs = []; }
+      for (const rec of recs) {
+        if (isMainTopic({ ...rec.topic, id: rec.id })) continue;
+        const date = lastStatePush(b.dir, rec.id) || rec.topic?.updated || rec.topic?.created || null;
+        if (ms(date) === null || ms(date) < since) continue;
+        const handover = path.join(rec.dir, L.handover);
+        folder.topics.push({ brain: b.name, id: rec.id, state: rec.topic?.state === 'closed' ? 'closed' : rec.topic?.turn?.state || rec.topic?.state || '', date: day(date), subject: oneLine(rec.topic?.subject), handover: fs.existsSync(handover) ? handover : rec.dir });
+      }
+      // Decisions as a count and their folder: a busy brain adds tens a week, and the topic that made them names them.
+      const decisions = dataPath(b.dir, 'decisions');
+      const added = git(['log', `--since=${iso}`, '--diff-filter=A', '--name-only', '--format=', '--', relPosix(b.dir, decisions)], { cwd: b.dir });
+      const count = (added.ok ? added.stdout.split('\n') : []).filter((l) => l.endsWith('.md') && fs.existsSync(path.join(b.dir, l))).length;
+      if (count) folder.decisions.push({ brain: b.name, count, dir: decisions });
+    }
+    for (const r of repos) {
+      const log = git(['log', `--since=${iso}`, '--no-merges', '--format=%cs%x09%s'], { cwd: r.dir });
+      const commits = (log.ok ? log.stdout.split('\n') : []).filter(Boolean).map((l) => { const [date, ...rest] = l.split('\t'); return { date, subject: rest.join('\t') }; })
+        .filter((c) => !c.subject.startsWith(`${BRAIN_COMMIT_TAG} `));
+      if (commits.length) folder.repos.push({ name: r.name, total: commits.length, commits: commits.slice(0, limit).map((c) => ({ date: c.date, subject: oneLine(c.subject) })) });
+    }
+    folder.topics.sort((a, b) => b.date.localeCompare(a.date));
+    if (folder.topics.length || folder.decisions.length || folder.repos.length) folders.push(folder);
+  }
+  return { root: base, since: iso, folders };
+}
+
+/** The work list as lines: a head line, then per folder its topics, decisions and repos. */
+export function workLines(res) {
+  const out = [`work since ${day(res.since)} under ${res.root}: ${res.folders.length} folder(s) with work (read only; a topic line ends with its handover, read only the ones you choose)`];
+  for (const f of res.folders) {
+    out.push(`== ${f.name}`);
+    for (const t of f.topics) out.push(`topic ${t.date} ${t.id} [${t.state}] ${t.subject} -> ${t.handover}`);
+    for (const d of f.decisions) out.push(`decisions: ${d.count} added -> ${d.dir}`);
+    for (const r of f.repos) {
+      out.push(`repo ${r.name}: ${r.total} commit(s)${r.total > r.commits.length ? `, the newest ${r.commits.length} (more: --limit <n>)` : ''}`);
+      for (const c of r.commits) out.push(`  ${c.date} ${c.subject}`);
+    }
+  }
+  return out;
 }
 
 /** The open obligations of the mail for the supervisor's session start (spec 10.5): owed and awaited, one line each. */
