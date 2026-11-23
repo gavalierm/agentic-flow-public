@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { PLUGIN_ROOT, readJson, writeJson, gitToplevel, git, isInside, realPathLoose, toPosix, machineConfigDir } from './util.mjs';
-import { tightenPolicy } from './policy-layers.mjs';
+import { tightenPolicy, RIGHTS_SECTIONS } from './policy-layers.mjs';
 import { withLock, LockBusy } from './lock.mjs';
 import { LAYOUT, dataPath, dataRel, dataLayoutVersion, layoutFor, isWorkPath, topicWorkLabel, hasData, hasScratch } from './layout.mjs';
 
@@ -291,7 +291,39 @@ export function brainExists(brainDir) {
 
 /** Policy of one brain: the plugin policy with `<brain>/policy.json` merged over it (brain-level commands, the domain brain). */
 export function loadPolicy(brainDir) {
-  return policyOver(brainDir ? readJson(dataPath(brainDir, 'policy'), {}) : null);
+  return policyOver(brainDir ? brainPolicy(brainDir).policy : null);
+}
+
+/**
+ * The policy file of a brain as it takes effect: { policy, uncommitted }. The sections that set the agent's rights
+ * (RIGHTS_SECTIONS) count only as committed: a change of them that lies uncommitted in the file (a script whose target the
+ * hook cannot read, an editor, `git checkout` of an older version) has no effect, HEAD decides, and `uncommitted` names
+ * the sections (broad test 2026-11-23: such a write changed the rights at once, past the gate of the brain writer).
+ * Cost (P-079): one stat per read; git runs only after the file changed, and its result is kept in local/ of the brain.
+ */
+export function brainPolicy(brainDir) {
+  const file = dataPath(brainDir, 'policy');
+  const disk = readJson(file, {}) || {};
+  let st;
+  try { st = fs.statSync(file); } catch { return { policy: disk, uncommitted: [] }; }
+  const seenFile = dataPath(brainDir, 'local', 'policy-seen.json');
+  const seen = readJson(seenFile, null);
+  if (seen && seen.mtime === st.mtimeMs && seen.size === st.size) return { policy: disk, uncommitted: [] };
+  const rel = dataRel(brainDir, 'policy');
+  const status = git(['status', '--porcelain', '--', rel], { cwd: brainDir });
+  if (!status.ok) return { policy: disk, uncommitted: [] }; // no repository: nothing is committed, the file decides
+  if (!status.stdout.trim()) {
+    try { writeJson(seenFile, { mtime: st.mtimeMs, size: st.size }); } catch { /* checked again at the next read */ }
+    return { policy: disk, uncommitted: [] };
+  }
+  const head = git(['show', `HEAD:${rel}`], { cwd: brainDir });
+  let committed = {};
+  try { committed = head.ok ? JSON.parse(head.stdout) || {} : {}; } catch { committed = {}; }
+  const uncommitted = RIGHTS_SECTIONS.filter((k) => JSON.stringify(disk?.[k]) !== JSON.stringify(committed[k]));
+  if (!uncommitted.length) return { policy: disk, uncommitted };
+  const policy = { ...(disk && typeof disk === 'object' && !Array.isArray(disk) ? disk : {}) };
+  for (const k of uncommitted) { if (committed[k] === undefined) delete policy[k]; else policy[k] = committed[k]; }
+  return { policy, uncommitted };
 }
 /** The plugin policy with the content of a brain policy file merged over it (also a content not on disk: the rights check of the brain writer). */
 export function policyOver(extra) {
@@ -576,7 +608,7 @@ export function markerAbove(dir) {
 function domainAbove(projectDir, home) {
   const found = markerAbove(projectDir);
   if (!found) return null;
-  const policy = found.brain ? readJson(dataPath(found.brain, 'policy'), {}) || {} : {};
+  const policy = found.brain ? brainPolicy(found.brain).policy : {};
   const allow = allowOutside(policy, home);
   return { ...found, allowOutside: allow.paths, sudo: allow.sudo };
 }
@@ -637,6 +669,8 @@ export function loadContext({ project, requireBrain = true } = {}) {
     config: readWorkflowConfig(projectDir),
     policy: composed.policy,
     policyIgnored: composed.ignored,
+    // Sections of rights changed in the policy file but not committed: they have no effect (brainPolicy); the start says so.
+    policyUncommitted: (() => { const b = domain?.brain || (ok ? brainDir : null); try { return b ? brainPolicy(b).uncommitted : []; } catch { return []; } })(),
     layers: composed.layers,
     thread: threadId(),
     pluginRoot: PLUGIN_ROOT,

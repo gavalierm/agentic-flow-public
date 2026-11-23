@@ -17,6 +17,9 @@ test('subagent_deny_commands: a listed command is refused in a subagent with its
       { match: 'upload\\.mjs\\b.*--apply', reason: 'the live write test is run by the thread' },
       { match: 'wipe\\.sh' },
     ] } }));
+    // The rights sections of the policy count only as committed (scripts/config.mjs brainPolicy).
+    fx.git(fx.brain, 'add', '-A');
+    fx.git(fx.brain, 'commit', '-q', '--no-verify', '-m', 'policy for test');
     const live = run(fx, 'node tools/upload.mjs --plan plan.json --apply', true);
     assert.equal(live.permissionDecision, 'deny');
     assert.match(live.permissionDecisionReason, /^the live write test is run by the thread \(policy harness\.subagent_deny_commands of the brain\)$/);

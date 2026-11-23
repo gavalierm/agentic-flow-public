@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setup } from './helpers.mjs';
+import { shellWrites, bashTargets, bashEdits, modeChangeTargets, historyOperation } from '../hooks/pre-tool-use.mjs';
 
 test('rights: brain.mjs write changes domain.allow_outside only after the operator\'s yes; allow_outside never opens another brain, a domain marker or the machine files', () => {
   const fx = setup();
@@ -69,10 +70,46 @@ test('rights: brain.mjs write changes domain.allow_outside only after the operat
     }
     const shell = fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command: `sed -i 's/a/b/' ${path.join(otherBrain, 'memory', 'x.md')}` }, cwd: fx.project, tool_use_id: 's1' }, { env: { HOME: home } }).json?.hookSpecificOutput || {};
     assert.equal(shell.permissionDecision, 'deny');
+    // Broad test 2026-11-23: the same files through the home variable, a link in the domain and git by hand stay closed.
+    fs.symlinkSync(otherBrain, path.join(fx.project, 'lnk'));
+    assert.equal(edit(path.join(fx.project, 'lnk', 'policy.json')).permissionDecision, 'deny', 'a link in the domain to another brain opens nothing');
+    const bash = (command) => fx.hook('pre-tool-use.mjs', { tool_name: 'Bash', tool_input: { command }, cwd: fx.project, tool_use_id: `b${++n}` }, { env: { HOME: home } }).json?.hookSpecificOutput || {};
+    for (const command of ["sed -i 's/1/2/' $HOME/.config/agentic-flow/pin.json", `git -C ${otherBrain} commit -am x`, `chmod 000 ${path.join(otherBrain, 'policy.json')}`, `dd if=/dev/null of=${path.join(home, '.config', 'agentic-flow', 'pin.json')}`]) {
+      fx.hook('user-prompt-submit.mjs', { prompt: 'pokračuj' });
+      const out = bash(command);
+      assert.equal(out.permissionDecision, 'deny', command);
+      assert.match(out.permissionDecisionReason, /domain\.allow_outside does not open it/, command);
+    }
+    // A rights change that lies uncommitted in the policy file has no effect, in both directions: HEAD decides.
+    fx.hook('user-prompt-submit.mjs', { prompt: 'pokračuj' });
+    fs.writeFileSync(pol, `${JSON.stringify({ ...head(), domain: { allow_outside: [] } }, null, 2)}\n`);
+    assert.notEqual(edit(path.join(home, '.bashrc')).permissionDecision, 'deny', 'an uncommitted removal of the exception removes nothing');
+    fx.git(fx.brain, 'checkout', '--', 'policy.json');
     const open = edit(path.join(home, '.bashrc'));
     assert.notEqual(open.permissionDecision, 'deny', `a file of the server that sets no rights stays open: ${open.permissionDecisionReason}`);
   } finally {
     fx.cleanup();
     fs.rmSync(home, { recursive: true, force: true });
   }
+});
+
+test('write boundary: the home folder as a variable or a bare ~, dd of=, chmod and git -C are read as what they are (broad test 2026-11-23)', () => {
+  const home = process.env.HOME;
+  const at = (p) => path.join(home, p);
+  assert.deepEqual(shellWrites('echo x > $HOME/srv/f', '/work'), [at('srv/f')]);
+  assert.deepEqual(shellWrites('cp a "${HOME}/srv/f"', '/work'), [at('srv/f')]);
+  assert.deepEqual(shellWrites('dd if=/dev/null of=~/srv/f', '/work'), [at('srv/f')]);
+  assert.deepEqual(bashTargets('rm -rf ~', '/work'), [home]);
+  assert.deepEqual(bashTargets('rm -rf $HOME/srv', '/work'), [at('srv')]);
+  assert.deepEqual(bashEdits("sed -i 's/1/2/' $HOME/srv/f", '/work'), [at('srv/f')]);
+  assert.deepEqual(shellWrites('HOME=/x; echo y > $HOME/f', '/work'), ['/x/f'], 'a HOME the command sets itself is that value');
+  assert.deepEqual(modeChangeTargets('chmod -R 000 ~/srv/f && chown root:root /etc/x y', '/work'), [at('srv/f'), '/etc/x', '/work/y']);
+  assert.deepEqual(modeChangeTargets('chmod +x run.sh', '/work'), ['/work/run.sh']);
+  assert.deepEqual(shellWrites('git clone --depth 1 https://example.com/a.git ~/srv/a', '/work'), [at('srv/a')]);
+  assert.deepEqual(shellWrites('git -C ~/srv init', '/work'), [at('srv')]);
+  assert.deepEqual(shellWrites('git worktree add -b x ~/srv/w main', '/work'), [at('srv/w')]);
+  assert.deepEqual(shellWrites('git -C /r commit -m x && git status', '/work'), []);
+  const asks = ['git reset --hard', 'git checkout --', 'git push --force'];
+  for (const c of ['git -C /repo reset --hard HEAD~1', 'git -c a.b=c -C /repo push --force', 'git --git-dir=/r/.git reset --hard']) assert.ok(historyOperation(c, asks), c);
+  assert.equal(historyOperation('git -C /repo status', asks), null);
 });

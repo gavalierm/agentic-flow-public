@@ -7,7 +7,7 @@ import path from 'node:path';
 import { missingTaskPaths } from '../scripts/waker.mjs';
 import { readHookInput, emit, permissionOutput, contextOutput, isMain } from '../scripts/hooks-io.mjs';
 import { dialogAnsweredInTurn, loadContext, loadPolicy, allowOutside, machineRoot, mainCheckout, markerAbove, DOMAIN_MARKER, WORKTREES_DIR, servicesDir, readThreadState, updateThreadState, patchThreadState, personaWritable, brainWritable, personaWritableDirs, brainEntries, SCRATCH_DIR, resolveBrain, threadStateFile } from '../scripts/config.mjs';
-import { git, isInside, toPosix, PLUGIN_ROOT, machineConfigDir } from '../scripts/util.mjs';
+import { git, isInside, toPosix, PLUGIN_ROOT, machineConfigDir, realPathLoose } from '../scripts/util.mjs';
 import { readDrift } from '../scripts/drift.mjs';
 import { parse, programIndex } from '../scripts/shell-parse.mjs';
 import { findRelatesTo } from '../scripts/find.mjs';
@@ -178,6 +178,9 @@ export function deniedCommand(command, rules, cwd = '', { key = 'harness.deny_co
 
 /** History operation that needs confirmation: a listed command as a whole word sequence, minus listed safe forms (P-018). */
 export function historyOperation(normalized, asks, except = []) {
+  // The options of git itself stand before the subcommand: `git -C <dir> reset --hard` is `git reset --hard` (it passed
+  // without the operator, broad test 2026-11-23).
+  normalized = String(normalized).replace(/\bgit((?:\s+(?:-[Cc]|--git-dir|--work-tree)(?:\s+|=)\S+)+)(?=\s)/g, 'git');
   const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const hit = (a) => new RegExp(`(^|[\\s;&|("'])${esc(a)}(?=\\s|$|[;&|)"'])`).test(normalized);
   // `git clean -nd`, `-ndx`, `-dn`: a dry run in a flag cluster lists files and removes nothing (the listed `git clean -n` is only the bare flag).
@@ -336,11 +339,29 @@ export function expandAssigned(command) {
 }
 
 /**
+ * The home folder written as `$HOME`, `${HOME}`, `$env:USERPROFILE`, `%USERPROFILE%` or `~` (bare or before `/`), as its path. A word
+ * with a variable is no path for the readers of targets, and they knew only `~/`: `echo x > $HOME/f`, `rm -rf $HOME/d`
+ * and `rm -rf ~` passed the write boundary (broad test 2026-11-23). A command that sets HOME itself is left to expandAssigned.
+ */
+export function expandHome(command, home = process.env.HOME || os.homedir()) {
+  const text = String(command);
+  if (!home || /(?:^|[\s;&|(])(?:export\s+)?HOME=/.test(text)) return text;
+  const dir = String(home).replace(/ /g, MASK[' ']);
+  // As the shell reads it: no variable in single quotes, no `~` in any quotes (`awk '$1 ~ /x/'` and `[[ $a =~ x ]]` hold no path).
+  return text.split(/('[^']*'|"(?:\\.|[^"\\])*")/).map((part, i) => {
+    if (i % 2 && part.startsWith("'")) return part;
+    const vars = part.replace(/\$(?:\{HOME\}|HOME\b)/g, dir).replace(/\$env:(?:USERPROFILE|HOME)\b|%USERPROFILE%/gi, dir);
+    return i % 2 ? vars : vars.replace(/(^|[\s(])~(?=$|[\s;&|)/])|(=)~(?=\/)/g, (m, lead, eq) => `${lead ?? eq}${dir}`);
+  }).join('');
+}
+
+/**
  * The system temp dir written through a variable or a temp-file helper, as its real path: `$TMPDIR`, `$TEMP`, `$TMP`
  * (bash), `$env:TEMP`, `[IO.Path]::GetTempPath()` (PowerShell), `%TEMP%` (cmd), `$(mktemp)`. Unexpanded they read as
  * a file in the session dir and the write passed (alice 2026-11-07: on Windows the temp tendency goes through $env:TEMP).
  */
 export function expandTemp(command, tmp = os.tmpdir()) {
+  command = expandHome(command);
   const dir = String(tmp).replace(/ /g, MASK[' ']);
   // A variable the command assigns itself (`export TMPDIR=scratch; mkdir -p $TMPDIR`) is left to expandAssigned, which expands it to that value.
   const own = new Set([...String(command).matchAll(/(?:^|[\s;&|(])(?:export\s+)?(TMPDIR|TEMP|TMP)=/gi)].map((m) => m[1].toUpperCase()));
@@ -682,6 +703,23 @@ export function shellWriteTargets(command, cwd = process.cwd(), env = process.en
       else if (positional.length > 1) add(positional[positional.length - 1]);
     }
     if (prog === 'tee' || prog === 'mkdir' || prog === 'touch') positional.forEach((w) => add(w));
+    // git makes a folder with clone, init and worktree add: the folder is the write (broad test 2026-11-23: `git clone <url>
+    // ~/x` and `git -C ~/x init` passed the boundary). Options that take a value are skipped with it.
+    if (prog === 'git') {
+      let i = 0;
+      let dir = null;
+      while (i < rest.length && rest[i].text.startsWith('-')) { if (rest[i].text === '-C' && rest[i + 1] && !rest[i + 1].dynamic) dir = rest[i + 1].text; i += ['-C', '-c'].includes(rest[i].text) ? 2 : 1; }
+      const sub = rest[i]?.text === 'worktree' && rest[i + 1]?.text === 'add' ? 'worktree add' : rest[i]?.text;
+      if (['clone', 'init', 'worktree add'].includes(sub)) {
+        const valued = /^(-b|-B|-o|-c|-j|-u|--branch|--origin|--config|--depth|--jobs|--reference|--reference-if-able|--separate-git-dir|--template|--upload-pack|--filter|--shallow-since|--shallow-exclude|--initial-branch|--object-format|--reason)$/;
+        const pos = [];
+        for (let k = i + (sub === 'worktree add' ? 2 : 1); k < rest.length; k++) { const t = rest[k].text; if (t.startsWith('-')) { if (valued.test(t)) k++; continue; } pos.push(rest[k]); }
+        const made = sub === 'clone' ? (pos[1] || (pos[0] && !pos[0].dynamic ? { text: path.basename(pos[0].text.replace(/[\\/]+$/, '')).replace(/\.git$/, '') } : null)) : sub === 'init' ? (pos[0] || { text: '.' }) : pos[0];
+        if (made && !made.dynamic && made.text) add(dir && !path.isAbsolute(made.text) ? path.join(dir, made.text) : made.text);
+      }
+    }
+    // `dd of=FILE` names its output as an operand, not as an option (broad test 2026-11-23).
+    if (prog === 'dd') for (const w of rest) { const m = !w.dynamic && /^of=(.+)$/.exec(w.text); if (m) add(m[1]); }
     if (prog !== 'cp' && prog !== 'mv') psWriteTargets(rest.map((w) => w.text), prog).forEach((w) => add(psValue(w)));
     // A bare `mktemp` / `New-TemporaryFile` creates the file in the system temp dir (`$(mktemp)` is expanded by expandTemp).
     // With a template and no -t the file is created where the template says (`mktemp scratch/x.XXXXXX`).
@@ -732,11 +770,41 @@ export function shellWrites(command, cwd = process.cwd(), env = process.env) {
 }
 
 /**
+ * Files whose mode or owner a shell command changes (chmod, chown, chgrp). No content is written, so the rules of brain
+ * data do not count them; the write boundary and the paths that set rights do (`chmod 000` on a file outside the domain
+ * passed, broad test 2026-11-23).
+ */
+export function modeChangeTargets(command, cwd = process.cwd()) {
+  const out = [];
+  let base = cwd;
+  const abs = (p) => path.resolve(base, gitBashPath(p));
+  for (const part of maskShell(command).split(/\s*(?:&&|\|\||;|\n|\|)\s*/)) {
+    const words = part.trim().split(/\s+/).filter(Boolean).filter((w) => !/^[0-9]*>/.test(w));
+    const lead = leadOf(words);
+    const prog = words[lead]?.split('/').pop();
+    if (prog === 'cd') { if (words[lead + 1] && !/[$`]/.test(words[lead + 1])) base = abs(unmask(words[lead + 1])); continue; }
+    if (!['chmod', 'chown', 'chgrp'].includes(prog)) continue;
+    const rest = words.slice(lead + 1);
+    const args = rest.filter((w) => !w.startsWith('-') && !/^['"]?[$<>|(`]/.test(w));
+    // The first operand is the mode or the owner, unless --reference names a file to copy it from.
+    out.push(...(rest.some((w) => w.startsWith('--reference')) ? args : args.slice(1)).map((w) => abs(unmask(w))));
+  }
+  return out;
+}
+
+/**
  * Where the agent may write (P-052). With a domain (v3, D-0002): the domain folder and the domain brain's explicit
  * `domain.allow_outside` list. Without one (layout not migrated yet): the project, its topic copies and, in a persona,
  * its managed sibling projects.
  */
 function insideProject(ctx, abs) {
+  if (!insideBoundary(ctx, abs)) return false;
+  // A link inside the boundary that leads out of it: the file written is the one the link reaches (broad test 2026-11-23:
+  // an Edit through <project>/link/… changed a file outside the domain).
+  const real = realPathLoose(abs);
+  return real === path.resolve(abs) || insideBoundary(ctx, real);
+}
+function insideBoundary(ctx, abs) {
   // D-0056: the work of a topic and its work files live in a brain of layout 2, also when the brain lies beside the project.
   if (inWorkFiles(ctx, abs)) return true;
   if (ctx.domain) return isInside(ctx.domain.root, abs) || ctx.domain.allowOutside.some((d) => isInside(d, abs));
@@ -772,6 +840,8 @@ function harnessPathWrite(ctx, targets) {
  */
 function rightsPathWrite(ctx, targets) {
   const own = ctx.domain?.root || ctx.projectDir;
+  // The path a link reaches counts too: a link in the domain to another brain opens nothing.
+  targets = targets.flatMap((t) => { const real = realPathLoose(t); return real === path.resolve(t) ? [t] : [t, real]; });
   const out = targets.filter((t) => !(own && isInside(own, t)) && !(ctx.brainDir && isInside(ctx.brainDir, t)));
   if (!out.length) return null;
   const config = machineConfigDir();
@@ -2093,7 +2163,8 @@ function pathChecks(input, ctx, cwd) {
     }
     const shared = sharedCheckoutWrite(ctx, [...targets, ...edits, ...shellWriteTargets(cmd, cwd).filter((w) => w.sure).map((w) => w.path)]) || sharedCheckoutGit(ctx, cmd, cwd);
     if (shared) return permissionOutput('deny', shared);
-    const harnessPath = harnessPathWrite(ctx, shellTargets);
+    const modes = modeChangeTargets(cmd, cwd);
+    const harnessPath = harnessPathWrite(ctx, [...shellTargets, ...modes, ...gitWriteDirs(cmd, cwd)]);
     if (harnessPath) return permissionOutput('deny', harnessPath);
     const skillsWrite = shellTargets.find((t) => isInside(ctx.projectDir, t) && ['/.claude/skills/', '/.agents/skills/'].some((d) => toPosix(t).includes(d)));
     if (skillsWrite) return permissionOutput('deny', `${toPosix(skillsWrite)}: .claude/skills/ in the project is generated from brain at session start; edit skills in brain via workflow:save (P-017)`);
@@ -2107,7 +2178,7 @@ function pathChecks(input, ctx, cwd) {
     if (marker) return permissionOutput('deny', marker);
     if (boundaryActive(ctx)) {
       const writes = shellWriteTargets(cmd, cwd);
-      const outside = [...writes.filter((w) => w.sure).map((w) => w.path), ...edits, ...targets].find((t) => !t.startsWith('/dev/') && !insideProject(ctx, t));
+      const outside = [...writes.filter((w) => w.sure).map((w) => w.path), ...edits, ...targets, ...modes].find((t) => !t.startsWith('/dev/') && !insideProject(ctx, t));
       if (outside) return permissionOutput('deny', `command writes ${outsideReason(ctx, outside)}`);
       // An output option of a program the table does not know: maybe a write, so the operator decides (hooks review C3).
       const guess = writes.find((w) => !w.sure && !insideProject(ctx, w.path));

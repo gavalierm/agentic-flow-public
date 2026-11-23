@@ -201,6 +201,7 @@ export function buildBootContext(ctx, { source = 'startup', harness = 'claude-co
   // Layers (D-0025): what the project layer could not loosen, and a "domain" in .workflow.json that does not match.
   const ignoredLine = policyIgnoredLine(ctx.policyIgnored);
   if (ignoredLine) notices.push(ignoredLine);
+  if (ctx.policyUncommitted?.length) notices.push(`policy: the policy file holds an uncommitted change of ${ctx.policyUncommitted.join(', ')}: it has no effect, the committed policy decides (an agent does not change its own rights, P-052); tell the operator once: they commit it themselves or it is dropped (git checkout HEAD -- <policy file> in the brain)`);
   if (ctx.domainError) notices.push(`domain: ${ctx.domainError}`);
   // Mail model 2, first run (4b step 5): the local waits go to the mail, the local message state goes (once per brain).
   if (ctx.brainDir && ctx.thread) { try { migrateLocalMail(ctx); } catch { /* retried at the next prompt */ } }
