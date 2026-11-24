@@ -385,7 +385,16 @@ export const REFUSING_ANSWER = /^\s*(nie\b|no\b|ne\b|neschv|zamiet|nepovo|nechaj
 /** flow-public#46: the operator's answers in dialogs of this turn (question and answer), kept by PostToolUse. */
 export function turnLifts(state = {}) {
   const since = state.turn_started_at || '';
-  return (Array.isArray(state.dialog_lifts) ? state.dialog_lifts : []).filter((l) => l && typeof l.text === 'string' && (!since || l.at >= since));
+  return keptLifts(state).filter((l) => !since || l.at >= since);
+}
+
+/**
+ * Every kept answer, also of a turn before this one (withLift drops those at the next answered dialog). Only for a yes
+ * that names its one harmless target in full (a thread title): a notice of the harness about a finished worker starts a
+ * new turn seconds after the answer, and the yes of the turn before was lost (a web project, 2026-11-23).
+ */
+export function keptLifts(state = {}) {
+  return (Array.isArray(state.dialog_lifts) ? state.dialog_lifts : []).filter((l) => l && typeof l.text === 'string');
 }
 
 /** flow-public#46: keeps an answer of the operator that does not refuse; a later call may then reach the targets it names. */

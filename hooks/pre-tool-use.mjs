@@ -43,7 +43,7 @@ import { taskCopyPaths } from '../scripts/topic.mjs';
 import { republishDeny, newArtifactDeny } from '../scripts/artifacts.mjs';
 import { renameGate } from '../scripts/thread-title.mjs';
 import { knownBrains } from '../scripts/update.mjs';
-import { analyze, bypassOf, bypassReason, callKey, closedTargets, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, namesPath, openByAnswers, runsText, segments, stateDenials, stripHeredocs, transcriptDenials, transcriptTurnText, turnLifts, awaitTranscriptToolUse, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
+import { analyze, bypassOf, bypassReason, callKey, closedTargets, gitHookBypass, guardConfigWrite, heredocRuns, innerShellTexts, namesPath, openByAnswers, runsText, segments, stateDenials, stripHeredocs, keptLifts, transcriptDenials, transcriptTurnText, turnLifts, awaitTranscriptToolUse, withDenial, withoutDataHeredocs } from '../scripts/bypass.mjs';
 
 export const HOOK_META = { event: 'PreToolUse', class: 'block+c', limit: '1 line', principles: ['P-012', 'P-013', 'P-018', 'P-024', 'P-025', 'P-031', 'P-036', 'P-052', 'P-053', 'P-041', 'P-054'] };
 
@@ -1721,9 +1721,10 @@ export function run(input) {
   const policy = ctx.policy;
   const resolve = (p) => path.resolve(cwd, gitBashPath(p));
 
-  // P-036 (operator 2026-11-19): a thread rename is never silent; it passes after the operator's yes in a dialog of this turn.
+  // P-036 (operator 2026-11-19): a thread rename is never silent; it passes after the operator's yes in a dialog (a yes that names the title also from the turn before).
   if (ctx.brainDir && ctx.thread && String(tool || '').endsWith('t3_thread_update')) {
-    const why = renameGate(tool, toolInput, turnLifts(readThreadState(ctx.brainDir, ctx.thread)));
+    const st = readThreadState(ctx.brainDir, ctx.thread);
+    const why = renameGate(tool, toolInput, turnLifts(st), keptLifts(st));
     if (why) return permissionOutput('deny', why);
   }
   // report-80357d47: a recorded artifact path published without url would get a new address (scripts/artifacts.mjs).

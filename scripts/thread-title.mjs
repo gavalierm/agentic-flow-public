@@ -103,15 +103,18 @@ const RENAME_NO = /^\s*(?:nie|ne|no|nechaj|nechať|ponechaj|ponechať|zachovaj|k
 
 /**
  * Operator 2026-11-19 (P-036): a thread rename (t3_thread_update rename or regenerate_title, own thread or another) passes
- * only after the operator's yes in a dialog of this turn; a rename to a title the dialog names that title. `lifts` are the
- * answered dialogs of the turn ({ text: question + "\n" + answer }). Returns the reason of the refusal, or null.
+ * only after the operator's yes in a dialog; a rename to a title the dialog names that title. `lifts` are the answered
+ * dialogs of the turn ({ text: question + "\n" + answer }), `kept` every kept one (bypass.mjs keptLifts). A rename to a
+ * title counts a kept yes that names the title: the turn may end between the answer and the call (a notice of a finished
+ * worker starts a new one, a web project, 2026-11-23). regenerate_title names no title, so it needs the yes of this turn.
+ * Returns the reason of the refusal, or null.
  */
-export function renameGate(toolName, toolInput, lifts = []) {
+export function renameGate(toolName, toolInput, lifts = [], kept = lifts) {
   if (!/(?:^|__)t3_thread_update$/.test(String(toolName || ''))) return null;
   const action = String(toolInput?.action || '');
   if (action !== 'rename' && action !== 'regenerate_title') return null;
   const title = String(toolInput?.title || '').trim();
-  const ok = lifts.some((l) => {
+  const ok = (action === 'rename' ? kept : lifts).some((l) => {
     const text = String(l?.text || '');
     const answer = text.slice(text.lastIndexOf('\n') + 1);
     if (RENAME_NO.test(answer)) return false;

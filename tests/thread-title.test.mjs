@@ -25,6 +25,11 @@ test('topic change: the hook asks for a dialog, the rename passes only after the
   assert.match(renameGate('mcp__t3-code__t3_thread_update', call, [{ text: `${q}\nNechať „Old title“` }]), /never silent/);
   assert.match(renameGate('mcp__t3-code__t3_thread_update', { ...call, title: 'Iný' }, [{ text: `${q}\nPremenovať na „URL z poznámky“` }]), /never silent/);
   assert.equal(renameGate('mcp__t3-code__t3_thread_update', call, [{ text: `${q}\nPremenovať na „URL z poznámky“` }]), null);
+  // a web project, 2026-11-23: a notice of a finished worker started a new turn 2 s after the yes; the kept yes still counts.
+  const kept = [{ text: `${q}\nPremenovať na „URL z poznámky“ (odporúčané)` }];
+  assert.equal(renameGate('mcp__t3-code__t3_thread_update', call, [], kept), null);
+  assert.match(renameGate('mcp__t3-code__t3_thread_update', { ...call, title: 'Iný' }, [], kept), /never silent/);
+  assert.match(renameGate('mcp__t3-code__t3_thread_update', { action: 'regenerate_title' }, [], kept), /never silent/);
   assert.match(renameGate('mcp__t3-code__t3_thread_update', { action: 'regenerate_title' }, []), /never silent/);
   assert.equal(renameGate('mcp__t3-code__t3_thread_list', {}, []), null);
 });
