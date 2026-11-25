@@ -22,10 +22,15 @@ export const T3_CLEAR_FIXED = '0.1.10';
 /** Data dir of the T3 server (T3CODE_HOME/userdata, else ~/.t3/userdata). */
 export const t3Home = (env = process.env) => path.join(env.T3CODE_HOME || path.join(os.homedir(), '.t3'), 'userdata');
 
-/** Version of the running T3 server from <t3-home>/server-runtime.json, null when unknown. */
-export function t3ServerVersion(home = t3Home()) {
-  try { return JSON.parse(fs.readFileSync(path.join(home, 'server-runtime.json'), 'utf8')).serverVersion ?? null; } catch { return null; }
+/** The running T3 server from <t3-home>/server-runtime.json: version, start time, host and port (null fields when missing). */
+export function t3Runtime(home = t3Home()) {
+  let d = {};
+  try { d = JSON.parse(fs.readFileSync(path.join(home, 'server-runtime.json'), 'utf8')); } catch { /* no server wrote it */ }
+  return { version: d.serverVersion ?? null, startedAt: d.startedAt ?? null, host: d.host ?? null, port: d.port ?? null };
 }
+
+/** Version of the running T3 server, null when unknown. */
+export const t3ServerVersion = (home) => t3Runtime(home).version;
 
 /** a >= b for dotted versions (0.1.10 > 0.1.9); false when either is unknown. */
 export function versionAtLeast(a, b) {

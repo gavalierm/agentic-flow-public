@@ -4,6 +4,9 @@
 // ("schvaľujem A" reached a session that had never offered A). One T3 thread has one thread state (keyed by the T3 thread
 // id), so UserPromptSubmit records each Claude session of the thread with the time of its last prompt. A prompt that lands
 // in a session while another session of the thread wrote turns after that time gets those turns in its context.
+// T3 0.1.11 (#38824) sends the next prompt to the new session, but the old one keeps running (pilot on 0.1.12, 2026-11-25):
+// its background task still runs a turn there. So the block goes both ways: the old session gets the prompts of the new
+// one, and the new session gets what the old one wrote into the thread.
 // The usual turn (one session) costs one comparison; a transcript is read only in the split case, and only its tail.
 import fs from 'node:fs';
 

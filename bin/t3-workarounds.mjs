@@ -3,6 +3,7 @@
 //   t3-workarounds.mjs list
 //   t3-workarounds.mjs check [--t3-home <dir>] [--t3 <bin>] [--thread <id>] [--since <iso>] [--no-upstream] [--json]
 // check exits 1 when a check FAILs (a T3 dependency of a workaround changed), else 0.
+// check first waits (up to 30 s) for a T3 server that just started: an upgrade runs it right after the start of the service.
 import { parseArgs, fail } from '../scripts/util.mjs';
 import { readRegistry, checkAll, formatResults } from '../scripts/t3-workarounds.mjs';
 

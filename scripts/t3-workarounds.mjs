@@ -3,11 +3,11 @@
 // Status per line: OK, FAIL (the workaround's T3 dependency changed), PENDING (nothing to judge yet), MANUAL (pilot step),
 // REMOVE (the upstream fix is merged: check the T3 version and drop the workaround).
 import fs from 'node:fs';
-import os from 'node:os';
+import net from 'node:net';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { RESUME_RE, versionAtLeast } from './t3-clear.mjs';
+import { RESUME_RE, versionAtLeast, t3Runtime, t3Home as serverHome } from './t3-clear.mjs';
 import { THREAD_GONE } from './thread-title.mjs';
 
 export const REGISTRY = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 't3-workarounds.json');
@@ -17,12 +17,29 @@ export function readRegistry(file = REGISTRY) {
   return JSON.parse(fs.readFileSync(file, 'utf8')).workarounds;
 }
 
-/** T3 server version and start time from <t3-home>/server-runtime.json (null fields when missing). */
-export function t3Runtime(t3Home) {
-  try {
-    const d = JSON.parse(fs.readFileSync(path.join(t3Home, 'server-runtime.json'), 'utf8'));
-    return { version: d.serverVersion ?? null, startedAt: d.startedAt ?? null };
-  } catch { return { version: null, startedAt: null }; }
+/** How long the check waits for a T3 server that just started (measured 2026-11-25: it writes server-runtime.json ~2.5 s after its start). */
+export const SERVER_WAIT_MS = 30_000;
+
+const portOpen = (host, port) => new Promise((resolve) => {
+  const s = net.connect({ host: host || '127.0.0.1', port, timeout: 1000 });
+  const done = (ok) => { s.destroy(); resolve(ok); };
+  s.once('connect', () => done(true)).once('error', () => done(false)).once('timeout', () => done(false));
+});
+
+/**
+ * Waits until the T3 server of `t3Home` runs: server-runtime.json names its port and the port takes a connection. A running
+ * server costs one connect. Cause (Bob 2026-11-25, T3 0.1.11 and 0.1.12): the upgrade ran the check right after the start of
+ * the service, so the version was unknown and `t3 thread show` failed with "No running T3 Code server". After `timeoutMs`
+ * the checks run anyway and name what is missing.
+ */
+export async function waitForServer(t3Home, { timeoutMs = SERVER_WAIT_MS, stepMs = 500, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  const end = now() + timeoutMs;
+  for (;;) {
+    const rt = t3Runtime(t3Home);
+    if (rt.port && await portOpen(rt.host, rt.port)) return rt;
+    if (now() >= end) return rt;
+    await sleep(stepMs);
+  }
 }
 
 /** Provider log lines written since `since` (ISO): the resume cursor must still be readable in the query.open events. */
@@ -117,8 +134,8 @@ export function newestThread(t3Home) {
 }
 
 /** Run all checks; returns { version, results: [{ id, status, message }] }. */
-export async function checkAll({ t3Home = path.join(os.homedir(), '.t3', 'userdata'), t3Bin = 't3', thread, since, upstream = true, fetchImpl, run, registry = REGISTRY } = {}) {
-  const rt = t3Runtime(t3Home);
+export async function checkAll({ t3Home = serverHome(), t3Bin = 't3', thread, since, upstream = true, fetchImpl, run, registry = REGISTRY, waitMs = SERVER_WAIT_MS } = {}) {
+  const rt = await waitForServer(t3Home, { timeoutMs: waitMs });
   const from = since ?? rt.startedAt;
   const results = [];
   const add = (id, r) => { if (r) results.push({ id, status: r[0], message: r[1] }); };
