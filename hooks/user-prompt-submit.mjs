@@ -21,7 +21,7 @@ import { updateNotice } from '../scripts/update-notice.mjs';
 import { startDriftJudge, ownWords, driftJob, noTopicJob } from '../scripts/drift.mjs';
 import { listTopics, heldTopics, mailboxTopics, NEW_TOPIC_ASK } from '../scripts/topic.mjs';
 import { brainWrite } from '../scripts/brain.mjs';
-import { verifyLocks, LOCK_LOST_LINE, countContinue, continueMax, STUCK_LINE } from '../scripts/topic-turn.mjs';
+import { verifyLocks, LOCK_LOST_LINE, countContinue, continueMax, STUCK_LINE, operatorItemsLine } from '../scripts/topic-turn.mjs';
 import { staleSessionCatchUp } from '../scripts/t3-stale-session.mjs';
 
 export const HOOK_META = { event: 'UserPromptSubmit', class: 'e+c', limit: '2 lines', principles: ['P-012', 'P-023', 'P-036', 'P-038', 'P-043', 'P-044', 'P-047', 'P-003', 'P-013', 'P-008'] };
@@ -484,6 +484,9 @@ export async function run(input) {
   // report-e2d5cf30: the question line read as "leave the handover step" let the turn end "hotovo" with that step open.
   const openStep = turnIntent === 'question' && (info.held || []).find((t) => !isMainTopic(t) && t.state !== 'paused' && t.next);
   if (openStep) extras.push(`the handover of topic ${openStep.id} has a next step ("${openStep.next}"): the question does not close or cancel it, so do not end "**Stav:** hotovo"; a step the operator already approved for the topic is no new change: do it after the answer (repeat the refused write, P-059, P-026); else end "**Stav:** čakám (na <what>)" with a waker or "**Stav:** otázka" with the step as a numbered item (P-061)`);
+  // The operator's own words may settle an item the handover holds for them (answer, done, refusal, another way): one line.
+  const operatorItems = turnSource === 'operator' && ownPlain(input.prompt) ? operatorItemsLine(held.filter((t) => !isMainTopic(t))) : null;
+  if (operatorItems) extras.push(operatorItems);
   // P-012: an operator task (no bell, no question, no done/nudge/save/error phrase) while the thread holds a work topic: a judge
   // compares the task with the topic subject in the background; PreToolUse refuses the first write of the turn once on a mismatch.
   // flow-public#72: a thread holding several work topics: the task is judged against all of them, not only the first.

@@ -59,6 +59,17 @@ export function topicFacts(topic, alarmsIn = {}, { turnEnd = Date.now(), now = D
   return { next, questions: questions === null ? null : questions.length, questionItems: questions || [], tasks: tasks === null ? null : tasks.length, alarms };
 }
 
+/**
+ * The line of an operator turn for a topic whose handover holds items for the operator (`topics`: the work topics the
+ * thread holds), or null. Cause (operator 2026-11-25): a task stayed in the handover and in every reply after the operator
+ * refused it and gave another way; the count check of Stop passes while the handover and the reply both still hold it.
+ */
+export function operatorItemsLine(topics) {
+  const open = topics.map((t) => ({ id: t.id, questions: (handoverQuestions(t.handover) || []).length, tasks: (handoverTasks(t.handover) || []).length })).filter((t) => t.questions + t.tasks > 0);
+  if (!open.length) return null;
+  return `${open.map((t) => `the handover of topic ${t.id} holds ${t.questions} open question(s) and ${t.tasks} task(s) for the operator`).join(', ')}: an item this message answers, reports done, refuses or replaces by another way leaves the handover in this turn (save.mjs handover <topic> --questions "<the rest>" --tasks "<the rest>"; "" empties a section); a task the operator refuses is not given again, do the work the way the message says (P-058)`;
+}
+
 /** The open questions of the held topics as one key: the operator saw them (their turn or a dialog) when it is unchanged. */
 export const questionsKey = (facts) => facts.flatMap((f) => (f.facts.questionItems || []).map((q) => `${f.topic.id}\u0000${String(q).trim()}`)).sort().join('\u0001');
 
