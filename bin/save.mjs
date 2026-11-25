@@ -123,9 +123,9 @@ export function nonEnglishScriptTokens(base, skillText = '', scriptNames = [base
   // dev-nahlad-tunel/nahlad.sh passed on its own folder name, 2026-11-11).
   for (const n of new Set([base, ...scriptNames])) text = text.split(n).join(' ').split(n.replace(/\.[^.]+$/, '')).join(' ');
   text = text.replace(/[^\s`'"()]*\/[^\s`'"()]*/g, ' ');
-  // Only a capitalized word (a product name: Cloudflare, Beszel) or an upper-case identifier part (ZENTRA_KEY) of the
-  // text counts, not Slovak prose without diacritics.
-  const capitalized = text.match(/(?<![\p{L}\d])\p{Lu}[a-z0-9]+(?![\p{L}\d])/gu) || [];
+  // Only a capitalized word (a proper name: Cloudflare, Beszel; also in camel case: VirginiaShop) or an upper-case
+  // identifier part (ZENTRA_KEY) of the text counts, not Slovak prose without diacritics.
+  const capitalized = text.match(/(?<![\p{L}\d])(?:\p{Lu}[a-z0-9]+)+(?![\p{L}\d])/gu) || [];
   const upper = text.match(/(?<![\p{L}\d])[A-Z][A-Z0-9]{3,}(?![\p{Ll}])/gu) || [];
   const inText = new Set([...capitalized, ...upper].map((w) => w.toLowerCase()));
   const known = (t) => words.has(t) || TECH_TERMS.has(t) || inText.has(t) || (t.startsWith('re') && t.length > 5 && words.has(t.slice(2)));
@@ -139,7 +139,7 @@ export function nonEnglishScriptTokens(base, skillText = '', scriptNames = [base
 }
 function checkScriptName(src, base, skillText, scriptNames) {
   const bad = nonEnglishScriptTokens(base, skillText, scriptNames);
-  if (bad.length) fail(`--script ${src}: the name must be English; not English: ${bad.join(', ')}. Name the action and its target, e.g. \`deploy-cloudflare.sh\`, not \`nasad-produkciu.sh\` or \`deploy-production.sh\` (P-049)`);
+  if (bad.length) fail(`--script ${src}: the name must be English; not English: ${bad.join(', ')}. Name the action and its target, e.g. \`deploy-cloudflare.sh\`, not \`nasad-produkciu.sh\` or \`deploy-production.sh\`. A proper name (product, supplier, service) passes when the skill text names it with a capital letter, e.g. \`Cloudflare\` (P-049)`);
 }
 
 export function scriptRunner(base, platform = process.platform, content = '') {
