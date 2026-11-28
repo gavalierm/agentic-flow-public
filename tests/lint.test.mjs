@@ -49,7 +49,9 @@ test('P-004: no absolute home paths, emails, local hostname or username in workf
 });
 
 test('P-034: no shell or python scripts, hook commands start with node', () => {
-  const bad = allFiles.filter((f) => /\.(sh|ps1|py|bash|zsh|bat|cmd)$/.test(f)).map((f) => path.relative(PLUGIN_ROOT, f));
+  // tools/maintainer/ holds the maintainer's own scripts (release, commit, pilot): they run on the maintainer's server only
+  // and never ship (tools/ is left out of the public copy, tools/publish/publish.mjs), so P-034 does not cover them.
+  const bad = allFiles.filter((f) => /\.(sh|ps1|py|bash|zsh|bat|cmd)$/.test(f)).map((f) => path.relative(PLUGIN_ROOT, f).split(path.sep).join('/')).filter((f) => !f.startsWith('tools/maintainer/'));
   assert.deepEqual(bad, []);
   const hooks = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'hooks', 'hooks.json'), 'utf8'));
   for (const [event, groups] of Object.entries(hooks.hooks)) {

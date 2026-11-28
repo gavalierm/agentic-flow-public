@@ -63,11 +63,15 @@ export function topicFacts(topic, alarmsIn = {}, { turnEnd = Date.now(), now = D
  * The line of an operator turn for a topic whose handover holds items for the operator (`topics`: the work topics the
  * thread holds), or null. Cause (operator 2026-11-25): a task stayed in the handover and in every reply after the operator
  * refused it and gave another way; the count check of Stop passes while the handover and the reply both still hold it.
+ * Cause (operator 2026-11-28): a task "plug the device into port 2 and write me" stayed for 5 days and about 60 replies:
+ * the operator did it without a message, the agent read that port several times and never compared it with the task.
+ * So the line carries the text of the tasks and names the agent's own reading as a way an item leaves.
  */
 export function operatorItemsLine(topics) {
-  const open = topics.map((t) => ({ id: t.id, questions: (handoverQuestions(t.handover) || []).length, tasks: (handoverTasks(t.handover) || []).length })).filter((t) => t.questions + t.tasks > 0);
+  const open = topics.map((t) => ({ id: t.id, questions: (handoverQuestions(t.handover) || []).length, tasks: handoverTasks(t.handover) || [] })).filter((t) => t.questions + t.tasks.length > 0);
   if (!open.length) return null;
-  return `${open.map((t) => `the handover of topic ${t.id} holds ${t.questions} open question(s) and ${t.tasks} task(s) for the operator`).join(', ')}: an item this message answers, reports done, refuses or replaces by another way leaves the handover in this turn (save.mjs handover <topic> --questions "<the rest>" --tasks "<the rest>"; "" empties a section); a task the operator refuses is not given again, do the work the way the message says (P-058)`;
+  const tasks = (t) => (t.tasks.length ? ` (${t.tasks.map((s) => `"${String(s).slice(0, 160)}"`).join(', ')})` : '');
+  return `${open.map((t) => `the handover of topic ${t.id} holds ${t.questions} open question(s) and ${t.tasks.length} task(s) for the operator${tasks(t)}`).join(', ')}: an item this message answers, reports done, refuses or replaces by another way leaves the handover in this turn (save.mjs handover <topic> --questions "<the rest>" --tasks "<the rest>"; "" empties a section); so does a task whose result you can read yourself (a device, a file, a service): compare it with what you read in this turn, read that state when your work reaches the system, and drop the task or its done part without the operator's report; a task the operator refuses is not given again, do the work the way the message says (P-058)`;
 }
 
 /** The open questions of the held topics as one key: the operator saw them (their turn or a dialog) when it is unchanged. */
